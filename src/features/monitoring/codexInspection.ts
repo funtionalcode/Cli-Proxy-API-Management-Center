@@ -19,6 +19,7 @@ export type CodexInspectionLogLevel = 'info' | 'success' | 'warning' | 'error';
 export type CodexInspectionAction = 'keep' | 'delete' | 'disable' | 'enable';
 export type CodexInspectionExecutionAction = Exclude<CodexInspectionAction, 'keep'>;
 export type CodexInspectionProgressStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'completed';
+export type CodexInspectionAutoActionMode = 'none' | 'disable' | 'delete';
 
 export interface CodexInspectionSettings {
   baseUrl: string;
@@ -42,7 +43,7 @@ export interface CodexInspectionConfigurableSettings {
   userAgent: string;
   usedPercentThreshold: number;
   sampleSize: number;
-  autoExecuteActions: boolean;
+  autoActionMode: CodexInspectionAutoActionMode;
 }
 
 export interface CodexInspectionAccount {
@@ -175,6 +176,11 @@ export class CodexInspectionStoppedError extends Error {
 }
 
 export const CODEX_INSPECTION_SETTINGS_STORAGE_KEY = 'cli-proxy-codex-inspection-settings-v1';
+export const CODEX_INSPECTION_AUTO_ACTION_MODES: readonly CodexInspectionAutoActionMode[] = [
+  'none',
+  'disable',
+  'delete',
+];
 
 export const DEFAULT_CODEX_INSPECTION_SETTINGS: CodexInspectionConfigurableSettings = {
   targetType: 'codex',
@@ -185,7 +191,7 @@ export const DEFAULT_CODEX_INSPECTION_SETTINGS: CodexInspectionConfigurableSetti
   userAgent: 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal',
   usedPercentThreshold: 100,
   sampleSize: 0,
-  autoExecuteActions: false,
+  autoActionMode: 'none',
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -212,12 +218,13 @@ const clampPositiveInteger = (value: number | undefined, fallback: number) => {
   return Math.max(1, Math.floor(value));
 };
 
-const normalizeThreshold = (value: number | undefined) => {
-  if (!Number.isFinite(value) || value === undefined || value < 0) return NaN;
-  if (value > 0 && value <= 1) {
-    return value * 100;
+const normalizeThreshold = (value: unknown) => {
+  const normalized = normalizeNumberValue(value);
+  if (normalized === null || !Number.isFinite(normalized) || normalized < 0) return NaN;
+  if (normalized > 0 && normalized <= 1) {
+    return normalized * 100;
   }
-  return value;
+  return normalized;
 };
 
 const readString = (value: unknown) => {
@@ -234,6 +241,23 @@ const readBoolean = (value: unknown, fallback: boolean) => {
     if (['false', '0', 'no', 'off'].includes(normalized)) return false;
   }
   return fallback;
+};
+
+const isAutoActionMode = (value: string): value is CodexInspectionAutoActionMode =>
+  CODEX_INSPECTION_AUTO_ACTION_MODES.includes(value as CodexInspectionAutoActionMode);
+
+const normalizeAutoActionMode = (
+  value: unknown,
+  legacyAutoExecuteActions?: unknown
+): CodexInspectionAutoActionMode => {
+  const normalized = readString(value).toLowerCase();
+  if (isAutoActionMode(normalized)) return normalized;
+
+  if (legacyAutoExecuteActions !== undefined) {
+    return readBoolean(legacyAutoExecuteActions, false) ? 'disable' : 'none';
+  }
+
+  return DEFAULT_CODEX_INSPECTION_SETTINGS.autoActionMode;
 };
 
 const readAuthFileName = (file: AuthFileItem) => {
@@ -271,6 +295,7 @@ const readConfigurableSettingsFromConfig = (
   config?: Config | null
 ): Partial<CodexInspectionConfigurableSettings> => {
   const clean = config?.clean ?? null;
+  const cleanRecord = isRecord(clean) ? clean : {};
   return {
     targetType: readString(clean?.targetType),
     workers: normalizeNumberValue(clean?.workers) ?? undefined,
@@ -280,12 +305,28 @@ const readConfigurableSettingsFromConfig = (
     userAgent: readString(clean?.userAgent),
     usedPercentThreshold: normalizeNumberValue(clean?.usedPercentThreshold) ?? undefined,
     sampleSize: normalizeNumberValue(clean?.sampleSize) ?? undefined,
-    autoExecuteActions: undefined,
+    autoActionMode:
+      cleanRecord.autoActionMode === undefined
+        ? undefined
+        : normalizeAutoActionMode(cleanRecord.autoActionMode),
   };
 };
 
+type CodexInspectionConfigurableSettingsInput = {
+  targetType?: unknown;
+  workers?: unknown;
+  deleteWorkers?: unknown;
+  timeout?: unknown;
+  retries?: unknown;
+  userAgent?: unknown;
+  usedPercentThreshold?: unknown;
+  sampleSize?: unknown;
+  autoExecuteActions?: unknown;
+  autoActionMode?: unknown;
+};
+
 const normalizeConfigurableSettings = (
-  input?: Partial<CodexInspectionConfigurableSettings> | null
+  input?: CodexInspectionConfigurableSettingsInput | null
 ): CodexInspectionConfigurableSettings => {
   const merged = {
     ...DEFAULT_CODEX_INSPECTION_SETTINGS,
@@ -326,10 +367,7 @@ const normalizeConfigurableSettings = (
       sampleSizeValue === null
         ? DEFAULT_CODEX_INSPECTION_SETTINGS.sampleSize
         : Math.max(0, Math.floor(sampleSizeValue)),
-    autoExecuteActions: readBoolean(
-      merged.autoExecuteActions,
-      DEFAULT_CODEX_INSPECTION_SETTINGS.autoExecuteActions
-    ),
+    autoActionMode: normalizeAutoActionMode(merged.autoActionMode, merged.autoExecuteActions),
   };
 };
 
@@ -1186,7 +1224,7 @@ export const executeCodexInspectionActions = async ({
 
   if (disableItems.length > 0) {
     onLog?.('info', `开始禁用 ${disableItems.length} 个账号`);
-    const disableOutcomes = await runConcurrently(disableItems, settings.workers, (item) =>
+    const disableOutcomes = await runConcurrently(disableItems, settings.deleteWorkers, (item) =>
       executeStatusChange(item, true)
     );
     disableOutcomes.forEach((outcome) => {
@@ -1200,7 +1238,7 @@ export const executeCodexInspectionActions = async ({
 
   if (enableItems.length > 0) {
     onLog?.('info', `开始启用 ${enableItems.length} 个账号`);
-    const enableOutcomes = await runConcurrently(enableItems, settings.workers, (item) =>
+    const enableOutcomes = await runConcurrently(enableItems, settings.deleteWorkers, (item) =>
       executeStatusChange(item, false)
     );
     enableOutcomes.forEach((outcome) => {
@@ -1235,6 +1273,32 @@ export const buildExecutionFailureMessage = (outcome: CodexInspectionExecutionOu
   `${outcome.displayAccount}：${outcome.error || '执行失败'}`;
 
 export const isSuggestedAction = (item: CodexInspectionResultItem) => item.action !== 'keep';
+
+export const resolveCodexInspectionAutoActionItems = (
+  mode: CodexInspectionAutoActionMode,
+  items: CodexInspectionResultItem[]
+): CodexInspectionResultItem[] => {
+  const normalizedMode = normalizeAutoActionMode(mode);
+  if (normalizedMode === 'none') return [];
+
+  if (normalizedMode === 'disable') {
+    return items
+      .filter((item) => item.action === 'delete' || item.action === 'disable')
+      .map((item) =>
+        item.action === 'delete'
+          ? {
+              ...item,
+              action: 'disable',
+              actionReason: item.actionReason
+                ? `${item.actionReason}；自动禁用策略改为禁用账号`
+                : '自动禁用策略改为禁用账号',
+            }
+          : item
+      );
+  }
+
+  return items.filter((item) => item.action === 'delete' || item.action === 'disable');
+};
 
 export const isCodexInspectionStoppedError = (
   error: unknown

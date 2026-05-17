@@ -6,13 +6,17 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
   IconChevronDown,
   IconChevronUp,
+  IconCheck,
+  IconCrosshair,
   IconExternalLink,
+  IconBot,
   IconRefreshCw,
   IconSettings,
+  IconShield,
+  IconTimer,
   IconTrash2,
 } from '@/components/ui/icons';
 import {
@@ -22,12 +26,15 @@ import {
   clearCodexInspectionConfigurableSettings,
   createCodexInspectionSession,
   DEFAULT_CODEX_INSPECTION_SETTINGS,
+  CODEX_INSPECTION_AUTO_ACTION_MODES,
   executeCodexInspectionActions,
   isCodexInspectionStoppedError,
   isSuggestedAction,
+  resolveCodexInspectionAutoActionItems,
   loadCodexInspectionConfigurableSettings,
   saveCodexInspectionConfigurableSettings,
   type CodexInspectionAction,
+  type CodexInspectionAutoActionMode,
   type CodexInspectionConfigurableSettings,
   type CodexInspectionLogLevel,
   type CodexInspectionProgressSnapshot,
@@ -70,10 +77,10 @@ type InspectionSettingsDraft = {
   userAgent: string;
   usedPercentThreshold: string;
   sampleSize: string;
-  autoExecuteActions: boolean;
+  autoActionMode: CodexInspectionAutoActionMode;
 };
 
-type InspectionSettingsDraftField = Exclude<keyof InspectionSettingsDraft, 'autoExecuteActions'>;
+type InspectionSettingsDraftField = Exclude<keyof InspectionSettingsDraft, 'autoActionMode'>;
 
 type PanelProps = {
   title: string;
@@ -81,6 +88,12 @@ type PanelProps = {
   extra?: ReactNode;
   children: ReactNode;
   className?: string;
+};
+
+type SettingsSectionProps = {
+  icon: ReactNode;
+  title: string;
+  children: ReactNode;
 };
 
 const ACTION_FILTERS: ActionFilter[] = ['all', 'delete', 'disable', 'enable'];
@@ -113,7 +126,7 @@ const toSettingsDraft = (settings: CodexInspectionConfigurableSettings): Inspect
   userAgent: settings.userAgent,
   usedPercentThreshold: String(settings.usedPercentThreshold),
   sampleSize: String(settings.sampleSize),
-  autoExecuteActions: settings.autoExecuteActions,
+  autoActionMode: settings.autoActionMode,
 });
 
 const formatActionLabel = (action: CodexInspectionAction, t: TFunction) => {
@@ -176,6 +189,18 @@ const filterByAction = (items: CodexInspectionResultItem[], filter: ActionFilter
   return items.filter((item) => item.action === filter);
 };
 
+const formatAutoActionModeLabel = (mode: CodexInspectionAutoActionMode, t: TFunction) => {
+  switch (mode) {
+    case 'delete':
+      return t('monitoring.codex_inspection_settings_auto_action_mode_delete');
+    case 'disable':
+      return t('monitoring.codex_inspection_settings_auto_action_mode_disable');
+    case 'none':
+    default:
+      return t('monitoring.codex_inspection_settings_auto_action_mode_none');
+  }
+};
+
 function Panel({ title, subtitle, extra, children, className }: PanelProps) {
   return (
     <Card className={[styles.panel, className].filter(Boolean).join(' ')}>
@@ -188,6 +213,18 @@ function Panel({ title, subtitle, extra, children, className }: PanelProps) {
       </div>
       {children}
     </Card>
+  );
+}
+
+function SettingsSection({ icon, title, children }: SettingsSectionProps) {
+  return (
+    <section className={styles.settingsSectionCard}>
+      <header className={styles.settingsSectionHeader}>
+        <span className={styles.settingsSectionIcon}>{icon}</span>
+        <span>{title}</span>
+      </header>
+      {children}
+    </section>
   );
 }
 
@@ -266,38 +303,57 @@ export function CodexInspectionPage() {
   }, []);
 
   const attachSessionPromise = useCallback(
-    (session: CodexInspectionSession, promise: Promise<CodexInspectionRunResult>, autoExecuteOnComplete: boolean) => {
+    (
+      session: CodexInspectionSession,
+      promise: Promise<CodexInspectionRunResult>,
+      autoActionMode: CodexInspectionAutoActionMode
+    ) => {
       const sessionId = session.id;
 
       void promise
         .then((nextResult) => {
           if (activeSessionIdRef.current !== sessionId) return;
           const nextActionableResults = nextResult.results.filter(isSuggestedAction);
+          const autoTargets = resolveCodexInspectionAutoActionItems(
+            autoActionMode,
+            nextActionableResults
+          );
           setResult(nextResult);
           setProgress(session.getProgress());
           setRunStatus('success');
           setLogsCollapsed(true);
-          if (autoExecuteOnComplete) {
-            if (nextActionableResults.length > 0 && executeItemsRef.current) {
+          if (autoActionMode !== 'none') {
+            if (autoTargets.length > 0 && executeItemsRef.current) {
               const startedMessage = t('monitoring.codex_inspection_auto_execute_started', {
-                count: nextActionableResults.length,
+                count: autoTargets.length,
+                mode: formatAutoActionModeLabel(autoActionMode, t),
               });
               appendLog('info', startedMessage);
               showNotification(startedMessage, 'info');
-              void executeItemsRef.current(nextActionableResults, {
+              void executeItemsRef.current(autoTargets, {
                 resultOverride: nextResult,
                 source: 'auto',
               });
               return;
             }
 
-            const noActionsMessage = t('monitoring.codex_inspection_auto_execute_no_actions');
-            appendLog('success', noActionsMessage);
-            showNotification(noActionsMessage, 'success');
-            return;
+            if (nextActionableResults.length > 0) {
+              const skippedMessage = t('monitoring.codex_inspection_auto_execute_skipped_by_mode', {
+                mode: formatAutoActionModeLabel(autoActionMode, t),
+                count: nextActionableResults.length,
+              });
+              appendLog('warning', skippedMessage);
+              showNotification(skippedMessage, 'info');
+              return;
+            }
           }
 
-          showNotification(t('monitoring.codex_inspection_run_success'), 'success');
+          const noActionsMessage =
+            nextActionableResults.length === 0
+              ? t('monitoring.codex_inspection_auto_execute_no_actions')
+              : t('monitoring.codex_inspection_run_success');
+          appendLog('success', noActionsMessage);
+          showNotification(noActionsMessage, 'success');
         })
         .catch((error) => {
           if (activeSessionIdRef.current !== sessionId) return;
@@ -324,7 +380,7 @@ export function CodexInspectionPage() {
       preserveLogs: boolean = false,
       introMessage: string = '',
       options?: {
-        autoExecute?: boolean;
+        autoActionMode?: CodexInspectionAutoActionMode;
       }
     ) => {
       if (connectionStatus !== 'connected') {
@@ -333,7 +389,7 @@ export function CodexInspectionPage() {
         return;
       }
 
-      const autoExecuteOnComplete = options?.autoExecute ?? inspectionSettings.autoExecuteActions;
+      const autoActionMode = options?.autoActionMode ?? inspectionSettings.autoActionMode;
 
       if (!preserveLogs) {
         setLogs([]);
@@ -376,7 +432,7 @@ export function CodexInspectionPage() {
       sessionRef.current = session;
       activeSessionIdRef.current = session.id;
       setProgress(session.getProgress());
-      attachSessionPromise(session, session.start(), autoExecuteOnComplete);
+      attachSessionPromise(session, session.start(), autoActionMode);
     },
     [
       apiBase,
@@ -695,10 +751,10 @@ export function CodexInspectionPage() {
     []
   );
 
-  const handleAutoExecuteChange = useCallback((value: boolean) => {
+  const handleAutoActionModeChange = useCallback((value: CodexInspectionAutoActionMode) => {
     setSettingsDraft((previous) => ({
       ...previous,
-      autoExecuteActions: value,
+      autoActionMode: value,
     }));
   }, []);
 
@@ -760,7 +816,7 @@ export function CodexInspectionPage() {
           }
           return parsed;
         })(),
-        autoExecuteActions: settingsDraft.autoExecuteActions,
+        autoActionMode: settingsDraft.autoActionMode,
       });
 
       setInspectionSettings(nextSettings);
@@ -824,6 +880,7 @@ export function CodexInspectionPage() {
       : runStatus === 'running'
         ? t('monitoring.codex_inspection_running')
         : t('monitoring.codex_inspection_run');
+  const autoActionModeLabel = formatAutoActionModeLabel(inspectionSettings.autoActionMode, t);
 
   return (
     <div className={styles.page}>
@@ -844,9 +901,9 @@ export function CodexInspectionPage() {
               <span>{`${t('monitoring.codex_inspection_threshold')}: ${inspectionSettings.usedPercentThreshold}%`}</span>
               <span>{`${t('monitoring.codex_inspection_workers')}: ${inspectionSettings.workers}`}</span>
               <span>{`${t('monitoring.codex_inspection_sample_size')}: ${inspectionSettings.sampleSize || t('common.no')}`}</span>
-              {inspectionSettings.autoExecuteActions ? (
+              {inspectionSettings.autoActionMode !== 'none' ? (
                 <span className={styles.statusMetaWarn}>
-                  {t('monitoring.codex_inspection_settings_auto_execute_actions_label')}
+                  {`${t('monitoring.codex_inspection_settings_auto_action_mode_label')}: ${autoActionModeLabel}`}
                 </span>
               ) : null}
               {lastFinishedLabel ? <span>{lastFinishedLabel}</span> : null}
@@ -1133,15 +1190,15 @@ export function CodexInspectionPage() {
         open={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         title={t('monitoring.codex_inspection_settings_title')}
-        width={920}
+        width={1040}
         className={styles.settingsModal}
       >
         <div className={styles.settingsBody}>
-          <section className={styles.settingsSection}>
-            <header className={styles.settingsSectionHeader}>
-              <span>{t('monitoring.codex_inspection_settings_group_strategy')}</span>
-            </header>
-            <div className={styles.settingsGrid}>
+          <SettingsSection
+            icon={<IconCrosshair size={18} />}
+            title={t('monitoring.codex_inspection_settings_group_strategy')}
+          >
+            <div className={`${styles.settingsGrid} ${styles.settingsGridStrategy}`}>
               <div className={styles.settingsField}>
                 <Input
                   label={t('monitoring.codex_inspection_settings_target_type_label')}
@@ -1174,13 +1231,13 @@ export function CodexInspectionPage() {
                 />
               </div>
             </div>
-          </section>
+          </SettingsSection>
 
-          <section className={styles.settingsSection}>
-            <header className={styles.settingsSectionHeader}>
-              <span>{t('monitoring.codex_inspection_settings_group_concurrency')}</span>
-            </header>
-            <div className={styles.settingsGrid}>
+          <SettingsSection
+            icon={<IconTimer size={18} />}
+            title={t('monitoring.codex_inspection_settings_group_concurrency')}
+          >
+            <div className={`${styles.settingsGrid} ${styles.settingsGridConcurrency}`}>
               <div className={styles.settingsField}>
                 <Input
                   label={t('monitoring.codex_inspection_settings_workers_label')}
@@ -1221,6 +1278,14 @@ export function CodexInspectionPage() {
                   step={1}
                 />
               </div>
+            </div>
+          </SettingsSection>
+
+          <SettingsSection
+            icon={<IconBot size={18} />}
+            title={t('monitoring.codex_inspection_settings_user_agent_label')}
+          >
+            <div className={styles.settingsGrid}>
               <div className={`${styles.settingsField} ${styles.settingsFieldWide}`}>
                 <Input
                   label={t('monitoring.codex_inspection_settings_user_agent_label')}
@@ -1230,36 +1295,83 @@ export function CodexInspectionPage() {
                 />
               </div>
             </div>
-          </section>
+          </SettingsSection>
 
-          <section className={styles.settingsSection}>
-            <header className={styles.settingsSectionHeader}>
-              <span>{t('monitoring.codex_inspection_settings_group_auto')}</span>
-            </header>
-            <div className={styles.settingsAutoCard}>
-              <div className={styles.settingsAutoToggle}>
-                <ToggleSwitch
-                  checked={settingsDraft.autoExecuteActions}
-                  onChange={handleAutoExecuteChange}
-                  label={t('monitoring.codex_inspection_settings_auto_execute_actions_label')}
-                  ariaLabel={t('monitoring.codex_inspection_settings_auto_execute_actions_label')}
-                  labelPosition="left"
-                />
+          <SettingsSection
+            icon={<IconSettings size={18} />}
+            title={t('monitoring.codex_inspection_settings_group_auto')}
+          >
+            <div className={styles.settingsAutoContent}>
+              <span className={styles.settingsAutoLabel}>
+                {t('monitoring.codex_inspection_settings_auto_action_mode_label')}
+              </span>
+              <div className={styles.settingsAutoCards}>
+                {CODEX_INSPECTION_AUTO_ACTION_MODES.map((mode) => {
+                  const active = settingsDraft.autoActionMode === mode;
+                  const toneClass =
+                    mode === 'delete'
+                      ? styles.settingsAutoOptionDelete
+                      : mode === 'disable'
+                        ? styles.settingsAutoOptionDisable
+                        : styles.settingsAutoOptionNone;
+                  const ModeIcon =
+                    mode === 'delete' ? IconTrash2 : mode === 'disable' ? IconShield : IconCrosshair;
+
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={[
+                        styles.settingsAutoOption,
+                        toneClass,
+                        active ? styles.settingsAutoOptionActive : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      onClick={() => handleAutoActionModeChange(mode)}
+                      aria-pressed={active}
+                    >
+                      <span className={styles.settingsAutoOptionIcon}>
+                        <ModeIcon size={34} />
+                      </span>
+                      <span className={styles.settingsAutoOptionText}>
+                        <strong>{formatAutoActionModeLabel(mode, t)}</strong>
+                        <small>
+                          {t(`monitoring.codex_inspection_settings_auto_action_mode_${mode}_desc`)}
+                        </small>
+                      </span>
+                      <span className={styles.settingsAutoOptionCheck}>
+                        {active ? <IconCheck size={14} /> : null}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
               <p className={styles.settingsAutoHint}>
-                {t('monitoring.codex_inspection_settings_auto_execute_actions_hint')}
+                {t('monitoring.codex_inspection_settings_auto_action_mode_hint')}
               </p>
-              {settingsDraft.autoExecuteActions ? (
-                <p className={styles.settingsAutoWarning}>
-                  {t('monitoring.codex_inspection_settings_auto_execute_warning')}
+              {settingsDraft.autoActionMode !== 'none' ? (
+                <p
+                  className={[
+                    styles.settingsAutoWarning,
+                    settingsDraft.autoActionMode === 'delete'
+                      ? styles.settingsAutoWarningDelete
+                      : styles.settingsAutoWarningDisable,
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                >
+                  {settingsDraft.autoActionMode === 'delete'
+                    ? t('monitoring.codex_inspection_settings_auto_action_mode_delete_warning')
+                    : t('monitoring.codex_inspection_settings_auto_action_mode_disable_warning')}
                 </p>
               ) : null}
             </div>
-          </section>
+          </SettingsSection>
         </div>
 
         <div className={styles.settingsActionsBar}>
-          <Button variant="secondary" onClick={handleResetSettings}>
+          <Button className={styles.settingsResetButton} variant="secondary" onClick={handleResetSettings}>
             {t('monitoring.codex_inspection_settings_reset_button')}
           </Button>
           <Button variant="secondary" onClick={() => setIsSettingsModalOpen(false)}>
