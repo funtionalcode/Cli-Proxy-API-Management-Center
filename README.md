@@ -7,7 +7,7 @@ A single-file Web UI for **CLI Proxy API (CPA)** plus an optional **Usage Servic
 Since v6.10.0, CPA no longer includes built-in usage statistics. This project now supports usage analytics through a long-running Usage Service that consumes the CPA usage queue, persists request events to SQLite, and exposes panel-compatible usage APIs.
 
 - **CPA Main project**: https://github.com/router-for-me/CLIProxyAPI
-- **Recommended CPA version**: >= v6.10.8
+- **Minimum required CPA version**: >= v7.1.0 (latest recommended)
 
 ## Panel Preview
 
@@ -44,7 +44,7 @@ Request statistics require the CPA usage queue:
 - CPA Management must be enabled because the usage queue uses the same availability and Management Key as `/v0/management`.
 - Request monitoring requires CPA usage publishing: set `usage-statistics-enabled: true`, or submit `{ "value": true }` to `PUT /usage-statistics-enabled`. CPA-Manager enables this automatically when request monitoring is enabled during setup or configuration save.
 - Disabling CPAM request monitoring only stops the Usage Service collector. It does not automatically disable CPA usage publishing or clear the CPA usage queue. If CPA usage publishing remains enabled, re-enabling request monitoring within the queue retention window may collect events retained while the collector was stopped.
-- CPA `v6.10.8+` is preferred because it exposes the HTTP usage queue endpoint `/v0/management/usage-queue`, which can pass through regular HTTP reverse proxies.
+- CPA `v7.1.0+` is recommended. CPA `v6.10.8+` already exposes the HTTP usage queue endpoint `/v0/management/usage-queue`, which can pass through regular HTTP reverse proxies.
 - Older CPA versions use the RESP queue protocol. Usage Service falls back to RESP in `auto` mode when the HTTP queue endpoint is unavailable. RESP listens on the CPA API port, usually `8317`, and cannot pass through a regular HTTP reverse proxy.
 - CPA keeps queue items in memory for `redis-usage-queue-retention-seconds`, default `60` seconds and maximum `3600` seconds. Keep Usage Service running continuously.
 - Usage Service `pollIntervalMs` must be less than or equal to the CPA queue retention window converted to milliseconds. Saves are rejected when the collector would poll too slowly and risk expired queue items.
@@ -339,12 +339,14 @@ Usage import accepts two file families: JSONL/NDJSON event files exported by Usa
 Frontend:
 
 ```bash
-npm install
+npm ci
 npm run dev
 npm run type-check
 npm run lint
 npm run build
 ```
+
+Open `http://localhost:5173`, then connect to your CLI Proxy API backend instance.
 
 Usage Service:
 
@@ -363,6 +365,7 @@ go run ./cmd/cpa-manager
 - The same workflow builds `Dockerfile.usage-service` and pushes `seakee/cpa-manager`.
 - The Docker image is published for `linux/amd64` and `linux/arm64`.
 - The workflow syncs `README.md` to the Docker Hub overview.
+- The UI version shown on the System page is injected at build time, preferring `VERSION`, then git tag, then the `package.json` fallback.
 - Required GitHub secrets:
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
@@ -373,7 +376,7 @@ go run ./cmd/cpa-manager
 - **Full Docker mode opens the login form instead of setup**: Usage Service is already configured. Enter the saved Management Key; the CPA URL comes from the server-side configuration.
 - **Wrong default CPA URL in first setup**: rebuild the panel with `VITE_DEFAULT_CPA_BASE_URL=<your-cpa-url>` or enter the correct CPA URL manually.
 - **Monitoring is empty**: enable CPA usage publishing, verify Usage Service `/status`, and confirm only one consumer is running.
-- **`unsupported RESP prefix 'H'`**: upgrade CPA to `v6.10.8+` and keep the default `USAGE_COLLECTOR_MODE=auto` so Usage Service uses the HTTP usage queue first. On older CPA or forced RESP mode, the CPA URL must be a container/host direct address for port `8317`, not a regular HTTP reverse-proxy domain.
+- **`unsupported RESP prefix 'H'`**: upgrade CPA to `v7.1.0+` and keep the default `USAGE_COLLECTOR_MODE=auto` so Usage Service uses the HTTP usage queue first. On older CPA or forced RESP mode, the CPA URL must be a container/host direct address for port `8317`, not a regular HTTP reverse-proxy domain.
 - **401 from Usage Service**: use the same Management Key that was saved during setup.
 - **Docker panel shows stale data**: check `/status` for `lastConsumedAt`, `lastInsertedAt`, and `lastError`.
 - **CPA panel mode has CORS errors**: set `USAGE_CORS_ORIGINS` to the CPA panel origin or keep the default `*` for private deployments.

@@ -7,7 +7,7 @@
 CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Usage Service 消费 CPA 的用量队列，把请求级事件写入 SQLite，并向面板提供兼容的用量查询接口。
 
 - **CPA 主项目**: https://github.com/router-for-me/CLIProxyAPI
-- **推荐 CPA 版本**: >= v6.10.8
+- **最低 CPA 版本要求**: >= v7.1.0（推荐最新）
 
 ## 面板预览
 
@@ -44,7 +44,7 @@ CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Usage Ser
 - CPA 必须启用 Management，因为用量队列与 `/v0/management` 使用相同的可用性条件和 Management Key。
 - 使用请求监控时，CPA 必须启用用量发布：配置 `usage-statistics-enabled: true`，或通过 `PUT /usage-statistics-enabled` 提交 `{ "value": true }`。CPA-Manager 初始化或保存启用请求监控时会自动打开该开关。
 - 关闭 CPAM 请求监控只会停止 Usage Service 采集器，不会自动关闭 CPA 用量发布或清空 CPA 用量队列。如果 CPA 用量发布仍开启，在队列保留时间内再次启用请求监控，可能会采集到关闭采集器期间保留的数据。
-- CPA `v6.10.8+` 推荐使用 HTTP 用量队列接口 `/v0/management/usage-queue`，可通过普通 HTTP 反代访问。
+- 推荐使用 CPA `v7.1.0+`。CPA `v6.10.8+` 已提供 HTTP 用量队列接口 `/v0/management/usage-queue`，可通过普通 HTTP 反代访问。
 - 旧版 CPA 使用 RESP 队列协议。Usage Service 在 `auto` 模式下，如果 HTTP 队列接口不可用，会回退到 RESP。RESP 监听在 CPA API 端口，通常是 `8317`，不能通过普通 HTTP 反代转发。
 - CPA 在内存中保留队列项的时间由 `redis-usage-queue-retention-seconds` 控制，默认 `60` 秒，最大 `3600` 秒。Usage Service 应保持常驻运行。
 - Usage Service 的 `pollIntervalMs` 必须小于等于 CPA 队列保留时间换算后的毫秒值；否则服务会拒绝保存，避免空闲轮询过慢导致队列项过期。
@@ -339,12 +339,14 @@ setup 后，`/status`、用量、模型价格和 `/v0/management/*` 反代接口
 前端：
 
 ```bash
-npm install
+npm ci
 npm run dev
 npm run type-check
 npm run lint
 npm run build
 ```
+
+打开 `http://localhost:5173`，然后连接到你的 CLI Proxy API 后端实例。
 
 Usage Service：
 
@@ -363,6 +365,7 @@ go run ./cmd/cpa-manager
 - 同一个 workflow 会构建 `Dockerfile.usage-service` 并推送 `seakee/cpa-manager`
 - Docker 镜像会发布 `linux/amd64` 和 `linux/arm64`
 - workflow 会把 `README.md` 同步到 Docker Hub overview
+- 系统信息页显示的 UI 版本在构建期注入，优先使用 `VERSION`，其次使用 git tag，最后回退到 `package.json`
 - 必需 GitHub secrets：
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
@@ -373,7 +376,7 @@ go run ./cmd/cpa-manager
 - **完整 Docker 方案打开的是登录表单而不是 setup**：Usage Service 已经配置过。输入已保存的 Management Key 即可，CPA 地址来自服务端配置。
 - **首次 setup 默认 CPA 地址不符合环境**：使用 `VITE_DEFAULT_CPA_BASE_URL=<your-cpa-url>` 重新构建面板，或手动填写正确的 CPA 地址。
 - **监控页为空**：确认 CPA 已启用用量发布，检查 Usage Service `/status`，并确认只有一个消费者。
-- **`unsupported RESP prefix 'H'`**：升级 CPA 到 `v6.10.8+` 后保持默认 `USAGE_COLLECTOR_MODE=auto`，Usage Service 会优先使用 HTTP 用量队列；旧版 CPA 或强制 RESP 时，CPA 地址必须是容器/主机内能直连 `8317` 的地址，不能是普通 HTTP 反代域名。
+- **`unsupported RESP prefix 'H'`**：升级 CPA 到 `v7.1.0+` 后保持默认 `USAGE_COLLECTOR_MODE=auto`，Usage Service 会优先使用 HTTP 用量队列；旧版 CPA 或强制 RESP 时，CPA 地址必须是容器/主机内能直连 `8317` 的地址，不能是普通 HTTP 反代域名。
 - **Usage Service 返回 401**：使用 setup 时保存的同一个 Management Key。
 - **Docker 面板数据不更新**：检查 `/status` 中的 `lastConsumedAt`、`lastInsertedAt`、`lastError`。
 - **CPA 控制面板方案有 CORS 错误**：将 `USAGE_CORS_ORIGINS` 设置为 CPA 面板来源；私有部署可保持默认 `*`。

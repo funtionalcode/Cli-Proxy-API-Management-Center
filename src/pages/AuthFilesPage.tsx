@@ -330,7 +330,7 @@ export function AuthFilesPage() {
     const persisted = readAuthFilesUiState();
     if (persisted) {
       if (typeof persisted.filter === 'string' && persisted.filter.trim()) {
-        setFilter(persisted.filter);
+        setFilter(normalizeProviderKey(persisted.filter));
       }
       if (typeof persisted.problemOnly === 'boolean') {
         setProblemOnly(persisted.problemOnly);
@@ -500,9 +500,8 @@ export function AuthFilesPage() {
   const existingTypes = useMemo(() => {
     const types = new Set<string>(['all']);
     files.forEach((file) => {
-      if (file.type) {
-        types.add(file.type);
-      }
+      const type = normalizeProviderKey(String(file.type ?? file.provider ?? ''));
+      if (type) types.add(type);
     });
     return Array.from(types);
   }, [files]);
@@ -535,8 +534,9 @@ export function AuthFilesPage() {
   const typeCounts = useMemo(() => {
     const counts: Record<string, number> = { all: filesMatchingStatusFilters.length };
     filesMatchingStatusFilters.forEach((file) => {
-      if (!file.type) return;
-      counts[file.type] = (counts[file.type] || 0) + 1;
+      const type = normalizeProviderKey(String(file.type ?? file.provider ?? ''));
+      if (!type) return;
+      counts[type] = (counts[type] || 0) + 1;
     });
     return counts;
   }, [filesMatchingStatusFilters]);
@@ -548,7 +548,8 @@ export function AuthFilesPage() {
     const normalizedTerm = normalizedSearch.toLowerCase();
 
     return filesMatchingStatusFilters.filter((item) => {
-      const matchType = filter === 'all' || item.type === filter;
+      const type = normalizeProviderKey(String(item.type ?? item.provider ?? ''));
+      const matchType = normalizedFilter === 'all' || type === normalizedFilter;
       const matchSearch =
         !normalizedSearch ||
         stringifySearchValue(getAuthFileSearchValues(item, t, codexQuota[item.name])).some(
@@ -561,7 +562,7 @@ export function AuthFilesPage() {
         );
       return matchType && matchSearch;
     });
-  }, [codexQuota, filesMatchingStatusFilters, filter, normalizedSearch, t, wildcardSearch]);
+  }, [codexQuota, filesMatchingStatusFilters, normalizedFilter, normalizedSearch, t, wildcardSearch]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -762,7 +763,7 @@ export function AuthFilesPage() {
   const renderFilterTags = () => (
     <div className={styles.filterTags}>
       {existingTypes.map((type) => {
-        const isActive = filter === type;
+        const isActive = normalizedFilter === type;
         const iconSrc = getAuthFileIcon(type, resolvedTheme);
         const color =
           type === 'all'
@@ -821,13 +822,15 @@ export function AuthFilesPage() {
       return t('auth_files.delete_filtered_result_button');
     }
     if (problemOnly) {
-      return filter === 'all'
+      return normalizedFilter === 'all'
         ? t('auth_files.delete_problem_button')
-        : t('auth_files.delete_problem_button_with_type', { type: getTypeLabel(t, filter) });
+        : t('auth_files.delete_problem_button_with_type', {
+            type: getTypeLabel(t, normalizedFilter),
+          });
     }
-    return filter === 'all'
+    return normalizedFilter === 'all'
       ? t('auth_files.delete_all_button')
-      : `${t('common.delete')} ${getTypeLabel(t, filter)}`;
+      : `${t('common.delete')} ${getTypeLabel(t, normalizedFilter)}`;
   })();
 
   return (
@@ -866,7 +869,7 @@ export function AuthFilesPage() {
               size="sm"
               onClick={() =>
                 handleDeleteAll({
-                  filter,
+                  filter: normalizedFilter,
                   problemOnly,
                   disabledOnly,
                   healthyOnly,
