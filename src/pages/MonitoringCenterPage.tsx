@@ -3609,10 +3609,16 @@ export function MonitoringCenterPage() {
                 const isExpanded = Boolean(expandedApiKeys[row.id]);
                 const keyMetrics = buildApiKeySummaryMetrics(row, hasPrices, i18n.language, t);
                 const keyMetricByKey = new Map(keyMetrics.map((metric) => [metric.key, metric]));
+                const rowClassName = [
+                  styles.apiKeySummaryRow,
+                  isExpanded ? styles.apiKeySummaryRowExpanded : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
 
                 return (
                   <Fragment key={row.id}>
-                    <tr className={styles.apiKeySummaryRow}>
+                    <tr className={rowClassName}>
                       <td>
                         <ApiKeySummaryPrimary
                           row={row}

@@ -1530,6 +1530,7 @@
   padding: 10px 12px;
   border-bottom: 1px solid var(--monitor-line);
   background: color-mix(in srgb, var(--monitor-surface) 88%, var(--monitor-surface-muted));
+  box-shadow: inset 0 -1px 0 var(--monitor-line);
 }
 
 .table.apiKeySummaryTable tbody td {
@@ -1554,6 +1555,10 @@
 
 .table.apiKeySummaryTable tbody .apiKeySummaryRow:hover td {
   background: var(--monitor-surface-hover);
+}
+
+.table.apiKeySummaryTable tbody .apiKeySummaryRowExpanded td {
+  border-bottom-color: transparent;
 }
 
 .innerTable {
