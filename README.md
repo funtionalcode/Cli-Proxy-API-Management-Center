@@ -253,7 +253,7 @@ The variables below are Usage Service runtime settings. Frontend build-time sett
 | `CPA_UPSTREAM_URL` | empty | Optional CPA base URL for unattended startup |
 | `CPA_MANAGEMENT_KEY` | empty | Optional CPA Management Key for unattended startup |
 | `CPA_MANAGEMENT_KEY_FILE` | `/run/secrets/cpa_management_key` | Optional file containing the Management Key |
-| `USAGE_COLLECTOR_MODE` | `auto` | Collection mode: `auto` prefers the HTTP usage queue and falls back to RESP for older CPA; `http` forces HTTP; `resp` forces RESP |
+| `USAGE_COLLECTOR_MODE` | `auto` | Collection mode: `auto` probes Redis Pub/Sub subscribe (CPA v7.0.7+), then HTTP usage queue, then RESP polling; `subscribe` forces Pub/Sub; `http` forces HTTP; `resp` forces RESP polling |
 | `USAGE_RESP_QUEUE` | `usage` | RESP key argument; CPA currently ignores it, leave the default unless upstream changes |
 | `USAGE_RESP_POP_SIDE` | `right` | `right` uses `RPOP`; `left` uses `LPOP` |
 | `USAGE_BATCH_SIZE` | `100` | Maximum queue records per pop |

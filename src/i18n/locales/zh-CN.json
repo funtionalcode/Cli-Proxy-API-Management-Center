@@ -579,6 +579,7 @@
     "sort_plan_desc": "套餐高到低",
     "sort_plan_asc": "套餐低到高",
     "priority_display": "优先级",
+    "project_id_display": "项目 ID",
     "page_size_label": "单页数量",
     "page_size_unit": "个/页",
     "view_mode_paged": "按页显示",

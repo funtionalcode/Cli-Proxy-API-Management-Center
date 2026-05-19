@@ -577,6 +577,7 @@
     "sort_plan_desc": "План от высокого к низкому",
     "sort_plan_asc": "План от низкого к высокому",
     "priority_display": "Приоритет",
+    "project_id_display": "ID проекта",
     "page_size_label": "На странице",
     "page_size_unit": "элементов",
     "view_mode_paged": "Постранично",

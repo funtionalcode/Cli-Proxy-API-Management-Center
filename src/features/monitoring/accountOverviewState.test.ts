@@ -63,6 +63,7 @@ const createEventRow = (overrides: Partial<MonitoringEventRow> = {}): Monitoring
   apiKeyLabel: overrides.apiKeyLabel ?? 'ak********sh',
   apiKeyMasked: overrides.apiKeyMasked ?? 'ak********sh',
   provider: overrides.provider ?? 'codex',
+  projectId: overrides.projectId ?? '',
   planType: overrides.planType ?? 'plus',
   channel: overrides.channel ?? 'default',
   channelHost: overrides.channelHost ?? 'localhost',

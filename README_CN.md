@@ -253,7 +253,7 @@ docker compose -f docker-compose.usage.yml up --build
 | `CPA_UPSTREAM_URL` | 空 | 可选 CPA 地址，用于无人值守启动 |
 | `CPA_MANAGEMENT_KEY` | 空 | 可选 CPA Management Key，用于无人值守启动 |
 | `CPA_MANAGEMENT_KEY_FILE` | `/run/secrets/cpa_management_key` | 可选密钥文件 |
-| `USAGE_COLLECTOR_MODE` | `auto` | 采集方式：`auto` 优先 HTTP 用量队列并在旧版 CPA 回退 RESP；`http` 强制 HTTP；`resp` 强制 RESP |
+| `USAGE_COLLECTOR_MODE` | `auto` | 采集方式：`auto` 依次尝试 Redis Pub/Sub 订阅（CPA v7.0.7+）、HTTP 用量队列、RESP 轮询；`subscribe` 强制订阅；`http` 强制 HTTP；`resp` 强制 RESP 轮询 |
 | `USAGE_RESP_QUEUE` | `usage` | RESP key 参数；当前 CPA 会忽略该值，除非上游行为变化，否则保持默认即可 |
 | `USAGE_RESP_POP_SIDE` | `right` | `right` 使用 `RPOP`；`left` 使用 `LPOP` |
 | `USAGE_BATCH_SIZE` | `100` | 每次最多弹出记录数 |

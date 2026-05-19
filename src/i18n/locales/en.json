@@ -579,6 +579,7 @@
     "sort_plan_desc": "Plan high to low",
     "sort_plan_asc": "Plan low to high",
     "priority_display": "Priority",
+    "project_id_display": "Project ID",
     "page_size_label": "Per page",
     "page_size_unit": "items",
     "view_mode_paged": "Paged",

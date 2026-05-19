@@ -27,6 +27,7 @@ import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
   normalizePlanType,
+  resolveAuthProvider,
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
@@ -93,6 +94,12 @@ const getAuthFileNoteValue = (file: AuthFileItem): string => {
   const raw = file.note ?? file['note'];
   if (raw === undefined || raw === null) return '';
   return String(raw).trim();
+};
+
+const hasInlineQuotaLayout = (file: AuthFileItem): boolean => {
+  if (isRuntimeOnlyAuthFile(file)) return false;
+  const provider = resolveAuthProvider(file);
+  return QUOTA_PROVIDER_TYPES.has(provider as QuotaProviderType);
 };
 
 const compareAuthFileNote = (
@@ -314,11 +321,6 @@ export function AuthFilesPage() {
 
   const disableControls = connectionStatus !== 'connected';
   const normalizedFilter = normalizeProviderKey(String(filter));
-  const quotaFilterType: QuotaProviderType | null = QUOTA_PROVIDER_TYPES.has(
-    normalizedFilter as QuotaProviderType
-  )
-    ? (normalizedFilter as QuotaProviderType)
-    : null;
   const pageSize = compactMode ? pageSizeByMode.compact : pageSizeByMode.regular;
 
   useEffect(() => {
@@ -608,6 +610,7 @@ export function AuthFilesPage() {
   const currentPage = Math.min(page, totalPages);
   const start = (currentPage - 1) * pageSize;
   const pageItems = sorted.slice(start, start + pageSize);
+  const pageHasInlineQuotaCards = !compactMode && pageItems.some(hasInlineQuotaLayout);
   const selectablePageItems = useMemo(
     () => pageItems.filter((file) => !isRuntimeOnlyAuthFile(file)),
     [pageItems]
@@ -1026,7 +1029,7 @@ export function AuthFilesPage() {
               />
             ) : (
               <div
-                className={`${styles.fileGrid} ${quotaFilterType ? styles.fileGridQuotaManaged : ''} ${compactMode ? styles.fileGridCompact : ''}`}
+                className={`${styles.fileGrid} ${pageHasInlineQuotaCards ? styles.fileGridQuotaManaged : ''} ${compactMode ? styles.fileGridCompact : ''}`}
               >
                 {pageItems.map((file) => (
                   <AuthFileCard
@@ -1038,7 +1041,6 @@ export function AuthFilesPage() {
                     disableControls={disableControls}
                     deleting={deleting}
                     statusUpdating={statusUpdating}
-                    quotaFilterType={quotaFilterType}
                     statusBarCache={statusBarCache}
                     onShowModels={showModels}
                     onDownload={handleDownload}

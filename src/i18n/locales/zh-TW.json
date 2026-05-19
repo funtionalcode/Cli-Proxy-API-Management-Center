@@ -577,6 +577,7 @@
     "sort_plan_desc": "方案高到低",
     "sort_plan_asc": "方案低到高",
     "priority_display": "優先順序",
+    "project_id_display": "專案 ID",
     "page_size_label": "單頁數量",
     "page_size_unit": "個/頁",
     "view_mode_paged": "分頁顯示",

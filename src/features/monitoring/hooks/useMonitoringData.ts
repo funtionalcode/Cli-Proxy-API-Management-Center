@@ -372,6 +372,7 @@ export type MonitoringEventRow = {
   apiKeyLabel: string;
   apiKeyMasked: string;
   provider: string;
+  projectId: string;
   planType: string;
   channel: string;
   channelHost: string;
@@ -1651,6 +1652,9 @@ const buildEventRows = (
       const snapshotProvider = readString(
         detail.auth_provider_snapshot ?? detail.authProviderSnapshot
       );
+      const snapshotProjectID = readString(
+        detail.auth_project_id_snapshot ?? detail.authProjectIdSnapshot
+      );
       const snapshotDisplay = snapshotAccount || snapshotLabel;
       const sourceLabel = authMeta?.label || snapshotDisplay || sourceMeta.displayName || authIndex;
       const sourceMasked = maskEmailLike(sourceLabel);
@@ -1714,6 +1718,7 @@ const buildEventRows = (
         apiKeyLabel,
         apiKeyMasked,
         provider: authMeta?.provider || snapshotProvider || sourceMeta.type || '-',
+        projectId: snapshotProjectID,
         planType: authMeta?.planType || '-',
         channel: channelLabel,
         channelHost: channelMeta?.host || '-',

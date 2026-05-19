@@ -34,6 +34,7 @@ const createMonitoringEventRow = (
   apiKeyLabel: overrides.apiKeyLabel ?? 'ak********sh',
   apiKeyMasked: overrides.apiKeyMasked ?? 'ak********sh',
   provider: overrides.provider ?? 'codex',
+  projectId: overrides.projectId ?? '',
   planType: overrides.planType ?? 'pro',
   channel: overrides.channel ?? 'codex',
   channelHost: overrides.channelHost ?? 'example.com',
