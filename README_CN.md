@@ -45,7 +45,7 @@ CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Usage Ser
 - 使用请求监控时，CPA 必须启用用量发布：配置 `usage-statistics-enabled: true`，或通过 `PUT /usage-statistics-enabled` 提交 `{ "value": true }`。CPA-Manager 初始化或保存启用请求监控时会自动打开该开关。
 - 关闭 CPAM 请求监控只会停止 Usage Service 采集器，不会自动关闭 CPA 用量发布或清空 CPA 用量队列。如果 CPA 用量发布仍开启，在队列保留时间内再次启用请求监控，可能会采集到关闭采集器期间保留的数据。
 - 推荐使用 CPA `v7.1.0+`。CPA `v6.10.8+` 已提供 HTTP 用量队列接口 `/v0/management/usage-queue`，可通过普通 HTTP 反代访问。
-- 旧版 CPA 使用 RESP 队列协议。Usage Service 在 `auto` 模式下，如果 HTTP 队列接口不可用，会回退到 RESP。RESP 监听在 CPA API 端口，通常是 `8317`，不能通过普通 HTTP 反代转发。
+- 旧版 CPA 使用 RESP 队列协议。Usage Service 在 `auto` 模式下，只有 subscribe 和 HTTP 队列采集都不可用时才会回退到 RESP。RESP 监听在 CPA API 端口，通常是 `8317`，不能通过普通 HTTP 反代转发。
 - CPA 在内存中保留队列项的时间由 `redis-usage-queue-retention-seconds` 控制，默认 `60` 秒，最大 `3600` 秒。Usage Service 应保持常驻运行。
 - Usage Service 的 `pollIntervalMs` 必须小于等于 CPA 队列保留时间换算后的毫秒值；否则服务会拒绝保存，避免空闲轮询过慢导致队列项过期。
 - 同一个 CPA 实例只应有一个 Usage Service 消费用量队列。
@@ -64,7 +64,7 @@ CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Usage Ser
       -> SQLite /data/usage.sqlite
 ```
 
-登录页会调用 `GET /usage-service/info`，识别当前是否由 Usage Service 托管。如果响应显示尚未配置，会进入 setup wizard：你填写 CPA 地址、Management Key，并选择是否启用请求监控。启用时还需要填写采集轮询间隔，Usage Service 会验证 CPA Management API，启用 CPA 用量统计，校验采集间隔不超过 CPA 队列保留时间，把 CPA-Manager 配置保存到 SQLite，按配置的采集模式启动采集器（默认 `auto`：优先 HTTP 队列，旧版回退 RESP），并从同源提供完整管理面板。关闭请求监控时仍会保存 CPA 连接用于反代管理接口，但不会启用 CPA 用量统计或启动采集器。
+登录页会调用 `GET /usage-service/info`，识别当前是否由 Usage Service 托管。如果响应显示尚未配置，会进入 setup wizard：你填写 CPA 地址、Management Key，并选择是否启用请求监控。启用时还需要填写采集轮询间隔，Usage Service 会验证 CPA Management API，启用 CPA 用量统计，校验采集间隔不超过 CPA 队列保留时间，把 CPA-Manager 配置保存到 SQLite，按配置的采集模式启动采集器（默认 `auto`：先 subscribe，再 HTTP 队列，最后回退 RESP），并从同源提供完整管理面板。关闭请求监控时仍会保存 CPA 连接用于反代管理接口，但不会启用 CPA 用量统计或启动采集器。
 
 Usage Service 配置完成后，新浏览器再次打开同一地址会使用普通登录表单。用户只需要输入 Management Key，面板会使用服务端已保存的 CPA 连接。
 
@@ -370,13 +370,44 @@ go run ./cmd/cpa-manager
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
 
+提示：直接用 `file://` 打开 `dist/index.html` 可能遇到浏览器 CORS 限制；更稳妥的方式是用 `npm run preview` 或其他静态服务器打开。
+
+## 技术栈
+
+- React 19 + TypeScript 6.0
+- Vite 8（单文件构建）
+- Zustand（状态管理）
+- Axios（HTTP 客户端）
+- react-router-dom v7（HashRouter）
+- Motion（动效）
+- CodeMirror 6（YAML 编辑器）
+- SCSS Modules（样式）
+- i18next（国际化）
+
+## 多语言支持
+
+目前支持四种语言：
+
+- 英文 (en)
+- 简体中文 (zh-CN)
+- 繁体中文 (zh-TW)
+- 俄文 (ru)
+
+界面语言会根据浏览器设置自动切换，也可在登录页或顶部语言菜单手动切换。
+
+## 浏览器兼容性
+
+- 构建目标：`ES2020`
+- 支持 Chrome、Firefox、Safari、Edge 等现代浏览器
+- 支持移动端响应式布局，可通过手机/平板访问。
+
 ## 常见问题
 
 - **完整 Docker 方案无法连接 CPA**：确认容器内能访问 CPA 地址。Linux 宿主机 CPA 需要 `--add-host=host.docker.internal:host-gateway`。
 - **完整 Docker 方案打开的是登录表单而不是 setup**：Usage Service 已经配置过。输入已保存的 Management Key 即可，CPA 地址来自服务端配置。
 - **首次 setup 默认 CPA 地址不符合环境**：使用 `VITE_DEFAULT_CPA_BASE_URL=<your-cpa-url>` 重新构建面板，或手动填写正确的 CPA 地址。
 - **监控页为空**：确认 CPA 已启用用量发布，检查 Usage Service `/status`，并确认只有一个消费者。
-- **`unsupported RESP prefix 'H'`**：升级 CPA 到 `v7.1.0+` 后保持默认 `USAGE_COLLECTOR_MODE=auto`，Usage Service 会优先使用 HTTP 用量队列；旧版 CPA 或强制 RESP 时，CPA 地址必须是容器/主机内能直连 `8317` 的地址，不能是普通 HTTP 反代域名。
+- **`unsupported RESP prefix 'H'`**：升级 CPA 到 `v7.1.0+` 后保持默认 `USAGE_COLLECTOR_MODE=auto`，Usage Service 会先尝试 subscribe 和 HTTP 用量队列，再回退 RESP；旧版 CPA 或强制 RESP 时，CPA 地址必须是容器/主机内能直连 `8317` 的地址，不能是普通 HTTP 反代域名。
 - **Usage Service 返回 401**：使用 setup 时保存的同一个 Management Key。
 - **Docker 面板数据不更新**：检查 `/status` 中的 `lastConsumedAt`、`lastInsertedAt`、`lastError`。
 - **CPA 控制面板方案有 CORS 错误**：将 `USAGE_CORS_ORIGINS` 设置为 CPA 面板来源；私有部署可保持默认 `*`。
@@ -385,6 +416,11 @@ go run ./cmd/cpa-manager
 
 ## 参考
 
+- CPA-Manager Wiki: https://github.com/seakee/CPA-Manager/wiki
+- Docker 部署指南: https://github.com/seakee/CPA-Manager/wiki/Docker-%E9%83%A8%E7%BD%B2-CPA%E2%80%90Manager
+- Usage Service 使用指南: https://github.com/seakee/CPA-Manager/wiki/CPA%E2%80%90Manager-Usage-Service-%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97
+- 反向代理指南: https://github.com/seakee/CPA-Manager/wiki/%E7%94%A8%E5%90%8C%E4%B8%80%E4%B8%AA%E5%9F%9F%E5%90%8D%E5%8F%8D%E4%BB%A3-CPA-%E4%B8%8E-CPA%E2%80%90Manager
+- 常见问题与解决方案: https://github.com/seakee/CPA-Manager/wiki/CPA%E2%80%90Manager-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E4%B8%8E%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88
 - CLIProxyAPI: https://github.com/router-for-me/CLIProxyAPI
 - Redis 用量队列文档: https://help.router-for.me/management/redis-usage-queue.html
 
