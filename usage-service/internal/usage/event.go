@@ -138,7 +138,7 @@ func NormalizeRaw(raw []byte) (Event, error) {
 		TimestampMS:           timestampMS,
 		Timestamp:             timestamp,
 		Provider:              readString(record, "provider", "type", "auth_type", "authType"),
-		Model:                 readString(record, "model", "model_name", "modelName"),
+		Model:                 readString(record, "alias", "model", "model_name", "modelName"),
 		Endpoint:              endpoint,
 		Method:                method,
 		Path:                  path,
