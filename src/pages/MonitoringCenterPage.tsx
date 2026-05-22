@@ -2876,13 +2876,21 @@ export function MonitoringCenterPage() {
     setSyncingPrices(true);
     try {
       const result = await syncModelPrices(syncPriceModels);
-      showNotification(
-        t('usage_stats.model_price_sync_success', {
-          count: result.imported,
-          source: result.source || 'LiteLLM',
-        }),
-        'success'
-      );
+      const unmatchedCount = result.unmatched?.length ?? 0;
+      const baseMessage = t('usage_stats.model_price_sync_success', {
+        count: result.imported,
+        source: result.source || 'LiteLLM',
+      });
+      if (unmatchedCount > 0) {
+        showNotification(
+          `${baseMessage}${t('usage_stats.model_price_sync_unmatched_suffix', {
+            count: unmatchedCount,
+          })}`,
+          'warning'
+        );
+      } else {
+        showNotification(baseMessage, 'success');
+      }
     } catch (error: unknown) {
       const rawMessage =
         error instanceof Error ? error.message : String(error || t('common.unknown_error'));
