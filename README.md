@@ -2,6 +2,8 @@
 
 [中文文档](README_CN.md)
 
+> **Maintenance status**: CPA-Manager is now in maintenance mode. Future work is limited to security maintenance and bug fixes. For new deployments, feature upgrades, and long-term use, migrate to [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus). See the [migration guide](https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/migration-from-cpa-manager.md) when upgrading from this project.
+
 A single-file Web UI for **CLI Proxy API (CPA)** plus an optional **Usage Service** for persistent usage analytics.
 
 **Main Project**: https://github.com/router-for-me/CLIProxyAPI  
@@ -88,6 +90,8 @@ Usage Service
 Use this when CPA still auto-downloads and serves the panel. This mode is served by CPA, so it does not show the Usage Service-hosted setup wizard. Request monitoring is optional; when Usage Service is not deployed, the panel hides the request monitoring entry and direct visits to the monitoring page show a setup hint. To use request monitoring, log in to CPA first, deploy Usage Service separately, then open **Configuration -> CPA-Manager Configuration**, enable it, enter the Usage Service URL, and save.
 
 ## Quick Start: Full Docker Mode
+
+> For new deployments, use [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus). The CPA-Manager deployment steps below are kept for users who still need to maintain existing installations.
 
 ### Docker Hub Image
 
@@ -362,6 +366,8 @@ go run ./cmd/cpa-manager
 
 ## Build and Release
 
+> Maintenance policy: CPA-Manager no longer plans feature releases. Except for security maintenance and bug fixes, release and upgrade work should move to [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus).
+
 - Vite builds a single-file `dist/index.html`.
 - Tagging `vX.Y.Z` triggers `.github/workflows/release.yml`.
 - The release workflow uploads `dist/management.html`, native packages, and `checksums.txt` to GitHub Releases.
@@ -420,6 +426,8 @@ The UI language is automatically detected from browser settings and can be manua
 
 ## References
 
+- CPA Manager Plus: https://github.com/seakee/CPA-Manager-Plus
+- Migration from CPA-Manager to CPA Manager Plus: https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/migration-from-cpa-manager.md
 - CPA-Manager Wiki: https://github.com/seakee/CPA-Manager/wiki
 - Docker deployment guide: https://github.com/seakee/CPA-Manager/wiki/Docker-Deployment
 - Usage Service guide: https://github.com/seakee/CPA-Manager/wiki/CPA%E2%80%90Manager-Usage-Service-Guide
