@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+> **维护状态**：CPA-Manager 已进入维护模式，后续仅做安全维护和 bug 修复。新部署、功能升级和长期使用建议迁移到 [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus)。从旧项目升级请参考 [迁移指南](https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/migration-from-cpa-manager.zh-CN.md)。
+
 这是面向 **CLI Proxy API（CPA）** 的单文件 Web 管理面板，并提供可选的 **Usage Service** 用于持久化请求统计。
 
 CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Usage Service 消费 CPA 的用量队列，把请求级事件写入 SQLite，并向面板提供兼容的用量查询接口。
@@ -84,6 +86,8 @@ Usage Service
 当你希望保留 CPA 自动下载并托管面板的机制时，使用这个方案。该模式由 CPA 托管页面，因此不会显示 Usage Service 托管面板的 setup wizard。请求监控是可选能力；如果没有部署 Usage Service，面板会自动隐藏请求监控入口，直接访问监控页时会提示先部署并配置 Usage Service。需要请求监控时，先登录 CPA，再单独部署 Usage Service，然后在面板的「配置面板 -> CPA-Manager 配置」中启用并填写地址。
 
 ## 快速开始：完整 Docker 方案
+
+> 新部署请优先使用 [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus)。以下 CPA-Manager 部署步骤仅供仍需维护旧实例的用户参考。
 
 ### Docker Hub 镜像
 
@@ -358,6 +362,8 @@ go run ./cmd/cpa-manager
 
 ## 构建与发布
 
+> 维护策略：CPA-Manager 不再规划功能发布；除安全维护和 bug 修复外，请将发布和升级工作转向 [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus)。
+
 - Vite 输出单文件 `dist/index.html`
 - 打 `vX.Y.Z` 标签会触发 `.github/workflows/release.yml`
 - 发布流程会上传 `dist/management.html`、原生运行包和 `checksums.txt` 到 GitHub Releases
@@ -416,6 +422,8 @@ go run ./cmd/cpa-manager
 
 ## 参考
 
+- CPA Manager Plus: https://github.com/seakee/CPA-Manager-Plus
+- CPA-Manager 到 CPA Manager Plus 迁移指南: https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/migration-from-cpa-manager.zh-CN.md
 - CPA-Manager Wiki: https://github.com/seakee/CPA-Manager/wiki
 - Docker 部署指南: https://github.com/seakee/CPA-Manager/wiki/Docker-%E9%83%A8%E7%BD%B2-CPA%E2%80%90Manager
 - Usage Service 使用指南: https://github.com/seakee/CPA-Manager/wiki/CPA%E2%80%90Manager-Usage-Service-%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97
