@@ -8,6 +8,7 @@ import { useAuthStore, useConfigStore, useNotificationStore, useOpenAIEditDraftS
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import type { ModelInfo } from '@/utils/models';
+import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
 import { buildApiKeyEntry } from '@/components/providers/utils';
@@ -93,14 +94,16 @@ const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
     Array<{
       apiKey: string;
       proxyUrl: string;
+      authIndex: string;
       headers: Array<{ key: string; value: string }>;
     }>
   >((acc, entry) => {
     const apiKey = String(entry?.apiKey ?? '').trim();
     const proxyUrl = String(entry?.proxyUrl ?? '').trim();
+    const authIndex = normalizeAuthIndex(entry?.authIndex) ?? '';
     const headers = normalizeKeyHeaders(entry?.headers);
-    if (!apiKey && !proxyUrl && headers.length === 0) return acc;
-    acc.push({ apiKey, proxyUrl, headers });
+    if (!apiKey && !proxyUrl && !authIndex && headers.length === 0) return acc;
+    acc.push({ apiKey, proxyUrl, authIndex, headers });
     return acc;
   }, []);
 
@@ -126,7 +129,13 @@ const areNormalizedApiKeyEntriesEqual = (
     const left = a[i];
     const right = b[i];
     if (!left || !right) return false;
-    if (left.apiKey !== right.apiKey || left.proxyUrl !== right.proxyUrl) return false;
+    if (
+      left.apiKey !== right.apiKey ||
+      left.proxyUrl !== right.proxyUrl ||
+      left.authIndex !== right.authIndex
+    ) {
+      return false;
+    }
     if (!areKeyValueEntriesEqual(left.headers, right.headers)) return false;
   }
   return true;
@@ -472,6 +481,7 @@ export function AiProvidersOpenAIEditLayout() {
         apiKeyEntries: form.apiKeyEntries.map((entry: ApiKeyEntry) => ({
           apiKey: entry.apiKey.trim(),
           proxyUrl: entry.proxyUrl?.trim() || undefined,
+          authIndex: normalizeAuthIndex(entry.authIndex) ?? undefined,
           headers: entry.headers,
         })),
       };
