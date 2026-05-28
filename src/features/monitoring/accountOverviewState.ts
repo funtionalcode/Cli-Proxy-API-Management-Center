@@ -719,15 +719,34 @@ const normalizeAccountIdentityValue = (value: unknown) =>
 const collectAccountIdentityCandidates = (values: unknown[]) =>
   Array.from(new Set(values.map((value) => normalizeAccountIdentityValue(value)).filter(Boolean)));
 
-const resolveMonitoringAccountIdentityFromAuthFile = (file: AuthFileItem) => {
+const readRecordField = (value: unknown, key: string): unknown =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+
+const collectMonitoringAuthFileIdentities = (file: AuthFileItem) => {
   const normalizedAuthIndex = normalizeRecentRequestAuthIndex(file.authIndex ?? file['auth_index']);
-  if (!normalizedAuthIndex) return null;
+  const idToken = file.id_token;
 
-  const identity = [file.account, file.email, file.label, file.name, normalizedAuthIndex]
-    .map((value) => normalizeAccountIdentityValue(value))
-    .find(Boolean);
+  const strongIdentities = collectAccountIdentityCandidates([
+    file.account,
+    file.email,
+    file.account_id,
+    file.accountId,
+    file.chatgpt_account_id,
+    file.chatgptAccountId,
+    readRecordField(idToken, 'email'),
+    readRecordField(idToken, 'account_id'),
+    readRecordField(idToken, 'accountId'),
+    readRecordField(idToken, 'chatgpt_account_id'),
+    readRecordField(idToken, 'chatgptAccountId'),
+  ]);
 
-  return identity || null;
+  if (strongIdentities.length > 0) {
+    return collectAccountIdentityCandidates([...strongIdentities, normalizedAuthIndex]);
+  }
+
+  return collectAccountIdentityCandidates([file.label, file.name, normalizedAuthIndex]);
 };
 
 const buildAccountAuthIndicesByIdentity = (authFilesByAuthIndex: Map<string, AuthFileItem>) => {
@@ -739,12 +758,11 @@ const buildAccountAuthIndicesByIdentity = (authFilesByAuthIndex: Map<string, Aut
     );
     if (!normalizedAuthIndex) return;
 
-    const identity = resolveMonitoringAccountIdentityFromAuthFile(file);
-    if (!identity) return;
-
-    const existing = indicesByIdentity.get(identity) ?? new Set<string>();
-    existing.add(normalizedAuthIndex);
-    indicesByIdentity.set(identity, existing);
+    collectMonitoringAuthFileIdentities(file).forEach((identity) => {
+      const existing = indicesByIdentity.get(identity) ?? new Set<string>();
+      existing.add(normalizedAuthIndex);
+      indicesByIdentity.set(identity, existing);
+    });
   });
 
   return indicesByIdentity;
@@ -758,9 +776,11 @@ export const buildMonitoringAccountAuthStateMap = (
 
   return new Map(
     rows.map((row) => {
-      const resolvedAuthIndices = collectAccountIdentityCandidates([row.account, row.id]).reduce<
-        Set<string>
-      >((set, candidate) => {
+      const resolvedAuthIndices = collectAccountIdentityCandidates([
+        row.account,
+        row.displayAccount,
+        row.id,
+      ]).reduce<Set<string>>((set, candidate) => {
         const authIndices = authIndicesByIdentity.get(candidate);
         authIndices?.forEach((authIndex) => set.add(authIndex));
         return set;

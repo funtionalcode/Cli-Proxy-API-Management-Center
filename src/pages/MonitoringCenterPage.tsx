@@ -109,6 +109,7 @@ import {
   normalizeAuthIndex,
   type ModelPrice,
 } from '@/utils/usage';
+import { buildLegacyAuthIndexAliases } from '@/features/monitoring/legacyAuthIndexAliases';
 import { downloadBlob } from '@/utils/download';
 import { sha256Hex } from '@/utils/apiKeyHash';
 import styles from './MonitoringCenterPage.module.scss';
@@ -2266,8 +2267,14 @@ export function MonitoringCenterPage() {
     const map = new Map<string, AuthFileItem>();
     authFiles.forEach((file) => {
       const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
-      if (!authIndex || map.has(authIndex)) return;
-      map.set(authIndex, file);
+      if (authIndex && !map.has(authIndex)) {
+        map.set(authIndex, file);
+      }
+      buildLegacyAuthIndexAliases(file).forEach((alias) => {
+        if (!map.has(alias)) {
+          map.set(alias, file);
+        }
+      });
     });
     return map;
   }, [authFiles]);
@@ -2333,10 +2340,6 @@ export function MonitoringCenterPage() {
     const resolvedBounds = resolveMonitoringStatusRangeBounds(scopedRows, accountStatusBounds);
     return resolvedBounds ? buildEmptyMonitoringStatusData(resolvedBounds) : EMPTY_STATUS_BAR_DATA;
   }, [accountStatusBounds, scopedRows]);
-  const accountAuthStateByRowId = useMemo(
-    () => buildMonitoringAccountAuthStateMap(accountRows, authFilesByAuthIndex),
-    [accountRows, authFilesByAuthIndex]
-  );
   const sortedAccountRows = useMemo(
     () => sortAccountRows(accountRows, accountSort),
     [accountRows, accountSort]
@@ -2344,6 +2347,20 @@ export function MonitoringCenterPage() {
   const displayedAccountRows = useMemo(
     () => (accountPageRows ? sortAccountRows(accountPageRows, accountSort) : sortedAccountRows),
     [accountPageRows, accountSort, sortedAccountRows]
+  );
+  const accountRowsForAuthState = useMemo(() => {
+    const rowsById = new Map<string, MonitoringAccountRow>();
+    accountRows.forEach((row) => rowsById.set(row.id, row));
+    displayedAccountRows.forEach((row) => {
+      if (!rowsById.has(row.id)) {
+        rowsById.set(row.id, row);
+      }
+    });
+    return Array.from(rowsById.values());
+  }, [accountRows, displayedAccountRows]);
+  const accountAuthStateByRowId = useMemo(
+    () => buildMonitoringAccountAuthStateMap(accountRowsForAuthState, authFilesByAuthIndex),
+    [accountRowsForAuthState, authFilesByAuthIndex]
   );
   const accountTotalCount =
     accountPageRows && usagePages?.accounts
@@ -2469,12 +2486,13 @@ export function MonitoringCenterPage() {
   }, [accountPage, accountPagination.currentPage, overallLoading, setCurrentAccountPage]);
 
   const accountQuotaTargetsByAccount = useMemo(
-    () => buildMonitoringAccountQuotaTargetsByAccount(accountRows, accountAuthStateByRowId),
-    [accountAuthStateByRowId, accountRows]
+    () =>
+      buildMonitoringAccountQuotaTargetsByAccount(accountRowsForAuthState, accountAuthStateByRowId),
+    [accountAuthStateByRowId, accountRowsForAuthState]
   );
   const accountAuthFilesByAccount = useMemo(() => {
     const map = new Map<string, Map<string, AuthFileItem>>();
-    accountRows.forEach((row) => {
+    accountRowsForAuthState.forEach((row) => {
       const authState = accountAuthStateByRowId.get(row.id);
       if (!authState) return;
       const filesByName = new Map<string, AuthFileItem>();
@@ -2482,7 +2500,7 @@ export function MonitoringCenterPage() {
       map.set(row.account, filesByName);
     });
     return map;
-  }, [accountRows, accountAuthStateByRowId]);
+  }, [accountRowsForAuthState, accountAuthStateByRowId]);
   const scopedFailureCount = scopedRows.filter((row) => row.failed).length;
   const savedPriceEntries = useMemo(
     () => Object.entries(modelPrices).sort((left, right) => left[0].localeCompare(right[0])),

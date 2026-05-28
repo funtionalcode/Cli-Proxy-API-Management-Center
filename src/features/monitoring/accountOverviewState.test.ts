@@ -388,6 +388,70 @@ describe('accountOverviewState', () => {
     expect(accountState?.enabledState).toBe('enabled');
   });
 
+  it('builds account auth state for paged account rows without auth indices', () => {
+    const authFilesByIndex = new Map<string, AuthFileItem>([
+      [
+        'current-auth-index',
+        {
+          name: 'oauth-refreshed.json',
+          authIndex: 'current-auth-index',
+          email: 'account@example.com',
+          account_id: 'chatgpt-account-id',
+          disabled: false,
+        },
+      ],
+    ]);
+
+    const rows = [
+      createAccountRow({
+        id: 'account@example.com',
+        account: 'account@example.com',
+        displayAccount: 'account@example.com',
+        authLabels: [],
+        authIndices: [],
+      }),
+    ];
+
+    const result = buildMonitoringAccountAuthStateMap(rows, authFilesByIndex);
+    const accountState = result.get('account@example.com');
+
+    expect(accountState?.files.map((file) => file.name)).toEqual(['oauth-refreshed.json']);
+    expect(accountState?.toggleableFileNames).toEqual(['oauth-refreshed.json']);
+    expect(accountState?.enabledState).toBe('enabled');
+  });
+
+  it('uses current auth file state when oauth refresh changes the auth index', () => {
+    const authFilesByIndex = new Map<string, AuthFileItem>([
+      [
+        'new-auth-index',
+        {
+          name: 'account.codex.json',
+          authIndex: 'new-auth-index',
+          email: 'account@example.com',
+          chatgpt_account_id: 'chatgpt-account-id',
+          disabled: false,
+        },
+      ],
+    ]);
+
+    const rows = [
+      createAccountRow({
+        id: 'account@example.com',
+        account: 'account@example.com',
+        displayAccount: 'account@example.com',
+        authLabels: ['account.codex.json'],
+        authIndices: ['old-auth-index'],
+      }),
+    ];
+
+    const result = buildMonitoringAccountAuthStateMap(rows, authFilesByIndex);
+    const accountState = result.get('account@example.com');
+
+    expect(accountState?.files.map((file) => file.name)).toEqual(['account.codex.json']);
+    expect(accountState?.toggleableFileNames).toEqual(['account.codex.json']);
+    expect(accountState?.enabledState).toBe('enabled');
+  });
+
   it('builds account health status from filtered monitoring rows within the selected range', () => {
     const startMs = Date.UTC(2026, 4, 10, 0, 0, 0);
     const endMs = Date.UTC(2026, 4, 17, 0, 0, 0) - 1;
