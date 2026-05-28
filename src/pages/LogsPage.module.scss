@@ -722,3 +722,26 @@
     height: 280px;
   }
 }
+
+.toggleRow {
+  display: flex;
+  gap: $spacing-lg;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.latencyFilterInputs {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  flex-wrap: wrap;
+}
+
+.latencyFilterInput {
+  width: 100px;
+}
+
+.latencyFilterSeparator {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
