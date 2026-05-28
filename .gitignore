@@ -16,6 +16,7 @@ codex_usage.json
 style.md
 
 node_modules
+pnpm-lock.yaml
 dist
 dist-ssr
 *.local
