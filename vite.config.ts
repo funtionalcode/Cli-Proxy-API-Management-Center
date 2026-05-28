@@ -35,13 +35,30 @@ function getVersion(): string {
   return 'dev';
 }
 
+// 自定义插件：重命名 index.html 为 management.html
+function renameOutputPlugin() {
+  return {
+    name: 'rename-output',
+    closeBundle() {
+      const distDir = path.resolve(__dirname, 'dist');
+      const oldPath = path.join(distDir, 'index.html');
+      const newPath = path.join(distDir, 'management.html');
+      if (fs.existsSync(oldPath)) {
+        fs.renameSync(oldPath, newPath);
+        console.log('Renamed dist/index.html -> dist/management.html');
+      }
+    }
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     viteSingleFile({
       removeViteModuleLoader: true
-    })
+    }),
+    renameOutputPlugin()
   ],
   define: {
     __APP_VERSION__: JSON.stringify(getVersion())
