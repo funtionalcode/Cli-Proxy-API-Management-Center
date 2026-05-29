@@ -986,6 +986,15 @@ type UsageBreakdownPageItem struct {
 	Models          []UsageBreakdownModelItem `json:"models,omitempty"`
 }
 
+type UsageRealtimePageItem struct {
+	usage.Event
+	StreamKey           string `json:"stream_key,omitempty"`
+	StreamTotalRequests int64  `json:"stream_total_requests"`
+	StreamSuccessCount  int64  `json:"stream_success_count"`
+	StreamFailureCount  int64  `json:"stream_failure_count"`
+	StreamRecentPattern []bool `json:"stream_recent_pattern,omitempty"`
+}
+
 type UsageBreakdownModelItem struct {
 	Model           string `json:"model"`
 	ResolvedModel   string `json:"resolved_model,omitempty"`
@@ -1514,6 +1523,14 @@ func (s *Store) usageRealtimePage(ctx context.Context, filter UsageSummaryFilter
 	if err := s.db.QueryRowContext(ctx, `select count(*) from usage_events`+whereClause, args...).Scan(&totalItems); err != nil {
 		return UsagePage{}, err
 	}
+	summary, err := s.usageSummary(ctx, filter, false)
+	if err != nil {
+		return UsagePage{}, err
+	}
+	streamAggregates, err := s.usageRealtimeStreamAggregates(ctx, whereClause, args)
+	if err != nil {
+		return UsagePage{}, err
+	}
 	events, err := s.queryEvents(ctx, whereClause, args, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return UsagePage{}, err
@@ -1522,8 +1539,8 @@ func (s *Store) usageRealtimePage(ctx context.Context, filter UsageSummaryFilter
 		Page:       page,
 		PageSize:   pageSize,
 		TotalItems: totalItems,
-		Usage:      payloadSummaryFromEvents(events),
-		Items:      events,
+		Usage:      summary,
+		Items:      buildUsageRealtimePageItems(events, streamAggregates),
 	}, nil
 }
 
@@ -2059,32 +2076,138 @@ func payloadSummaryFromBreakdownDetails(details []usageBreakdownDetail) usage.Pa
 	return payload
 }
 
-func payloadSummaryFromEvents(events []usage.Event) usage.Payload {
-	payload := usage.Payload{APIs: map[string]*usage.APIAggregate{}}
+type usageRealtimeStreamAggregate struct {
+	TotalRequests int64
+	SuccessCount  int64
+	FailureCount  int64
+	RecentPattern []bool
+}
+
+const (
+	usageRealtimeStreamAccountExpr  = `coalesce(nullif(account_snapshot, ''), nullif(auth_label_snapshot, ''), nullif(source, ''), nullif(auth_index, ''), '-')`
+	usageRealtimeStreamProviderExpr = `coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), '-')`
+	usageRealtimeStreamModelExpr    = `coalesce(nullif(model, ''), '-')`
+	usageRealtimeStreamChannelExpr  = `coalesce(nullif(auth_index, ''), nullif(source, ''), nullif(auth_provider_snapshot, ''), nullif(provider, ''), '-')`
+)
+
+func (s *Store) usageRealtimeStreamAggregates(ctx context.Context, whereClause string, args []any) (map[string]usageRealtimeStreamAggregate, error) {
+	rows, err := s.db.QueryContext(ctx, `select
+		`+usageRealtimeStreamAccountExpr+`,
+		`+usageRealtimeStreamProviderExpr+`,
+		`+usageRealtimeStreamModelExpr+`,
+		`+usageRealtimeStreamChannelExpr+`,
+		count(*),
+		coalesce(sum(case when failed = 0 then 1 else 0 end), 0),
+		coalesce(sum(case when failed != 0 then 1 else 0 end), 0)
+		from usage_events`+whereClause+`
+		group by
+			`+usageRealtimeStreamAccountExpr+`,
+			`+usageRealtimeStreamProviderExpr+`,
+			`+usageRealtimeStreamModelExpr+`,
+			`+usageRealtimeStreamChannelExpr, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	aggregates := map[string]usageRealtimeStreamAggregate{}
+	for rows.Next() {
+		var account, provider, model, channel string
+		var aggregate usageRealtimeStreamAggregate
+		if err := rows.Scan(
+			&account,
+			&provider,
+			&model,
+			&channel,
+			&aggregate.TotalRequests,
+			&aggregate.SuccessCount,
+			&aggregate.FailureCount,
+		); err != nil {
+			return nil, err
+		}
+		aggregates[usageRealtimeStreamKey(account, provider, model, channel)] = aggregate
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	patternRows, err := s.db.QueryContext(ctx, `select
+		stream_account,
+		stream_provider,
+		stream_model,
+		stream_channel,
+		failed
+		from (
+			select
+				`+usageRealtimeStreamAccountExpr+` as stream_account,
+				`+usageRealtimeStreamProviderExpr+` as stream_provider,
+				`+usageRealtimeStreamModelExpr+` as stream_model,
+				`+usageRealtimeStreamChannelExpr+` as stream_channel,
+				failed,
+				timestamp_ms,
+				id,
+				row_number() over (
+					partition by
+						`+usageRealtimeStreamAccountExpr+`,
+						`+usageRealtimeStreamProviderExpr+`,
+						`+usageRealtimeStreamModelExpr+`,
+						`+usageRealtimeStreamChannelExpr+`
+					order by timestamp_ms desc, id desc
+				) as stream_rank
+			from usage_events`+whereClause+`
+		)
+		where stream_rank <= 10
+		order by stream_account, stream_provider, stream_model, stream_channel, timestamp_ms asc, id asc`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer patternRows.Close()
+
+	for patternRows.Next() {
+		var account, provider, model, channel string
+		var failed int
+		if err := patternRows.Scan(&account, &provider, &model, &channel, &failed); err != nil {
+			return nil, err
+		}
+		key := usageRealtimeStreamKey(account, provider, model, channel)
+		aggregate := aggregates[key]
+		aggregate.RecentPattern = append(aggregate.RecentPattern, failed == 0)
+		aggregates[key] = aggregate
+	}
+	if err := patternRows.Err(); err != nil {
+		return nil, err
+	}
+	return aggregates, nil
+}
+
+func buildUsageRealtimePageItems(events []usage.Event, aggregates map[string]usageRealtimeStreamAggregate) []UsageRealtimePageItem {
+	items := make([]UsageRealtimePageItem, 0, len(events))
 	for _, event := range events {
-		payload.TotalRequests++
-		if event.Failed {
-			payload.FailureCount++
-		} else {
-			payload.SuccessCount++
-		}
-		payload.TotalTokens += event.TotalTokens
-		payload.Tokens.InputTokens += event.InputTokens
-		payload.Tokens.OutputTokens += event.OutputTokens
-		payload.Tokens.ReasoningTokens += event.ReasoningTokens
-		payload.Tokens.CachedTokens += event.CachedTokens
-		payload.Tokens.CacheTokens += event.CacheTokens
-		payload.Tokens.TotalTokens += event.TotalTokens
-		if event.LatencyMS != nil {
-			payload.LatencySumMS += *event.LatencyMS
-			payload.LatencyCount++
-		}
+		streamKey := usageRealtimeStreamKeyForEvent(event)
+		aggregate := aggregates[streamKey]
+		items = append(items, UsageRealtimePageItem{
+			Event:               event,
+			StreamKey:           streamKey,
+			StreamTotalRequests: aggregate.TotalRequests,
+			StreamSuccessCount:  aggregate.SuccessCount,
+			StreamFailureCount:  aggregate.FailureCount,
+			StreamRecentPattern: aggregate.RecentPattern,
+		})
 	}
-	if payload.LatencyCount > 0 {
-		averageLatency := payload.LatencySumMS / payload.LatencyCount
-		payload.LatencyMS = &averageLatency
-	}
-	return payload
+	return items
+}
+
+func usageRealtimeStreamKeyForEvent(event usage.Event) string {
+	return usageRealtimeStreamKey(
+		firstNonEmpty(event.AccountSnapshot, event.AuthLabelSnapshot, event.Source, event.AuthIndex, "-"),
+		firstNonEmpty(event.AuthProviderSnapshot, event.Provider, "-"),
+		firstNonEmpty(event.Model, "-"),
+		firstNonEmpty(event.AuthIndex, event.Source, event.AuthProviderSnapshot, event.Provider, "-"),
+	)
+}
+
+func usageRealtimeStreamKey(account string, provider string, model string, channel string) string {
+	return strings.Join([]string{account, provider, model, channel}, "\x00")
 }
 
 func (s *Store) RecentEvents(ctx context.Context, limit int) ([]usage.Event, error) {

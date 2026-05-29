@@ -653,27 +653,47 @@ func TestStoreUsageBreakdownPagePaginatesRealtimeRows(t *testing.T) {
 
 	_, err = db.InsertEvents(context.Background(), []usage.Event{
 		{
-			EventHash:   "realtime-page-old",
-			TimestampMS: 1_778_000_001_000,
-			Timestamp:   "2026-05-06T00:00:01Z",
-			Model:       "gpt-test",
-			Endpoint:    "POST /v1/chat/completions",
-			TotalTokens: 10,
+			EventHash:            "realtime-page-old",
+			TimestampMS:          1_778_000_001_000,
+			Timestamp:            "2026-05-06T00:00:01Z",
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AccountSnapshot:      "alice@example.com",
+			AuthProviderSnapshot: "codex",
+			TotalTokens:          10,
 		},
 		{
-			EventHash:   "realtime-page-new",
-			TimestampMS: 1_778_000_002_000,
-			Timestamp:   "2026-05-06T00:00:02Z",
-			Model:       "gpt-test",
-			Endpoint:    "POST /v1/chat/completions",
-			TotalTokens: 20,
+			EventHash:            "realtime-page-new",
+			TimestampMS:          1_778_000_002_000,
+			Timestamp:            "2026-05-06T00:00:02Z",
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AccountSnapshot:      "alice@example.com",
+			AuthProviderSnapshot: "codex",
+			TotalTokens:          20,
+			Failed:               true,
+		},
+		{
+			EventHash:            "realtime-page-other-stream",
+			TimestampMS:          1_778_000_003_000,
+			Timestamp:            "2026-05-06T00:00:03Z",
+			Provider:             "codex",
+			Model:                "gpt-other",
+			Endpoint:             "POST /v1/chat/completions",
+			AccountSnapshot:      "bob@example.com",
+			AuthProviderSnapshot: "codex",
+			TotalTokens:          30,
 		},
 	})
 	if err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
 
-	page, err := db.UsageBreakdownPage(context.Background(), UsageBreakdownRealtime, UsageSummaryFilter{}, UsagePageFilter{
+	page, err := db.UsageBreakdownPage(context.Background(), UsageBreakdownRealtime, UsageSummaryFilter{
+		Model: "gpt-test",
+	}, UsagePageFilter{
 		Page:     2,
 		PageSize: 1,
 	})
@@ -686,9 +706,92 @@ func TestStoreUsageBreakdownPagePaginatesRealtimeRows(t *testing.T) {
 	if details := collectTestDetails(page.Usage); len(details) != 0 {
 		t.Fatalf("realtime page usage details len = %d, want direct items only", len(details))
 	}
-	items, ok := page.Items.([]usage.Event)
+	if page.Usage.TotalRequests != 2 || page.Usage.SuccessCount != 1 || page.Usage.FailureCount != 1 || page.Usage.TotalTokens != 30 {
+		t.Fatalf("realtime usage summary = %#v, want filtered range summary", page.Usage)
+	}
+	items, ok := page.Items.([]UsageRealtimePageItem)
 	if !ok || len(items) != 1 || items[0].EventHash != "realtime-page-old" {
 		t.Fatalf("realtime page items = %#v, want direct oldest event", page.Items)
+	}
+	if items[0].StreamTotalRequests != 2 || items[0].StreamSuccessCount != 1 || items[0].StreamFailureCount != 1 {
+		t.Fatalf("stream totals = %#v, want full filtered stream totals", items[0])
+	}
+	if len(items[0].StreamRecentPattern) != 2 || !items[0].StreamRecentPattern[0] || items[0].StreamRecentPattern[1] {
+		t.Fatalf("stream recent pattern = %#v, want [true false]", items[0].StreamRecentPattern)
+	}
+}
+
+func TestStoreUsageBreakdownPageSplitsRealtimeStreamsByAuthIndex(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	_, err = db.InsertEvents(context.Background(), []usage.Event{
+		{
+			EventHash:            "stream-auth-a",
+			TimestampMS:          1_778_000_001_000,
+			Timestamp:            "2026-05-06T00:00:01Z",
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AccountSnapshot:      "alice@example.com",
+			AuthProviderSnapshot: "codex",
+			AuthIndex:            "auth-a",
+		},
+		{
+			EventHash:            "stream-auth-b",
+			TimestampMS:          1_778_000_002_000,
+			Timestamp:            "2026-05-06T00:00:02Z",
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AccountSnapshot:      "alice@example.com",
+			AuthProviderSnapshot: "codex",
+			AuthIndex:            "auth-b",
+			Failed:               true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	page, err := db.UsageBreakdownPage(context.Background(), UsageBreakdownRealtime, UsageSummaryFilter{}, UsagePageFilter{
+		Page:     1,
+		PageSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("usage realtime page: %v", err)
+	}
+	if page.TotalItems != 2 {
+		t.Fatalf("total items = %d, want 2", page.TotalItems)
+	}
+	items, ok := page.Items.([]UsageRealtimePageItem)
+	if !ok || len(items) != 2 {
+		t.Fatalf("realtime page items = %#v, want two realtime items", page.Items)
+	}
+	if items[0].StreamKey == items[1].StreamKey {
+		t.Fatalf("stream keys should differ for distinct auth indices: %#v", items)
+	}
+	for _, item := range items {
+		if item.StreamTotalRequests != 1 {
+			t.Fatalf("stream totals = %#v, want isolated per-auth-index total", item)
+		}
+		switch item.AuthIndex {
+		case "auth-a":
+			if item.StreamSuccessCount != 1 || item.StreamFailureCount != 0 {
+				t.Fatalf("auth-a stream aggregate = %#v, want one success", item)
+			}
+		case "auth-b":
+			if item.StreamSuccessCount != 0 || item.StreamFailureCount != 1 {
+				t.Fatalf("auth-b stream aggregate = %#v, want one failure", item)
+			}
+		default:
+			t.Fatalf("unexpected auth index in realtime item: %#v", item)
+		}
 	}
 }
 
