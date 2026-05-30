@@ -8,6 +8,7 @@ import {
 } from './MonitoringCenterPage';
 import { buildEmptyMonitoringStatusData } from '@/features/monitoring/accountOverviewState';
 import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
+import { buildModelPriceCandidateModels } from '@/features/monitoring/modelPriceCandidates';
 import type { MonitoringEventRow } from '@/features/monitoring/hooks/useMonitoringData';
 
 const t = ((key: string, options?: Record<string, unknown>) => {
@@ -129,6 +130,41 @@ const createMonitoringEventRow = (
 });
 
 describe('MonitoringCenterPage account card', () => {
+  it('builds model price candidates from summary facets when detail rows are empty', () => {
+    expect(
+      buildModelPriceCandidateModels(
+        [' gpt-5 ', 'gemini-2.5-flash', ''],
+        [],
+        {
+          'claude-sonnet-4-5': {
+            prompt: 3,
+            completion: 15,
+            cache: 0.3,
+          },
+        }
+      )
+    ).toEqual(['claude-sonnet-4-5', 'gemini-2.5-flash', 'gpt-5']);
+  });
+
+  it('keeps legacy row and saved-price model candidates available', () => {
+    expect(
+      buildModelPriceCandidateModels(
+        [],
+        [
+          createMonitoringEventRow({ model: 'gpt-4.1' }),
+          createMonitoringEventRow({ id: 'row-2', model: ' gpt-4.1 ' }),
+        ],
+        {
+          'codex-mini-latest': {
+            prompt: 1,
+            completion: 4,
+            cache: 0.1,
+          },
+        }
+      )
+    ).toEqual(['codex-mini-latest', 'gpt-4.1']);
+  });
+
   it('uses server realtime stream identities without duplicating final totals per row', () => {
     const rows = buildRealtimeLogRows([
       createMonitoringEventRow({
