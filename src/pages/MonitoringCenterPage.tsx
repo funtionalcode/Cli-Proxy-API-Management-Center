@@ -90,6 +90,7 @@ import {
   getNextMonitoringStatusBlockIndex,
 } from '@/features/monitoring/healthStatusAccessibility';
 import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
+import { buildModelPriceCandidateModels } from '@/features/monitoring/modelPriceCandidates';
 import { MonitoringPanel } from '@/features/monitoring/components/MonitoringPanel';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
@@ -2284,10 +2285,8 @@ export function MonitoringCenterPage() {
 
   const syncPriceModels = useMemo(
     () =>
-      Array.from(new Set([...filteredRows.map((row) => row.model), ...Object.keys(modelPrices)]))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right)),
-    [filteredRows, modelPrices]
+      buildModelPriceCandidateModels(filterFacets.models, filteredRows, modelPrices),
+    [filterFacets.models, filteredRows, modelPrices]
   );
 
   const priceModelOptions = useMemo(
