@@ -1312,6 +1312,47 @@ $openai-toolbar-control-height: 36px;
   text-align: center;
 }
 
+.keyTableInputWrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.keyTableSecretInput {
+  padding-right: 42px;
+}
+
+.keyTableVisibilityButton {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    color $transition-fast,
+    background-color $transition-fast;
+
+  &:hover:not(:disabled) {
+    color: var(--primary-color);
+    background: var(--color-primary-light-9);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
 .addKeyButton {
   align-self: auto;
   margin-top: 0;

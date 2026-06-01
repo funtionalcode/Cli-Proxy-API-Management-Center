@@ -9,6 +9,7 @@ import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Modal } from '@/components/ui/Modal';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { IconEye, IconEyeOff } from '@/components/ui/icons';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
@@ -42,9 +43,9 @@ const buildEmptyForm = (): ProviderFormState => ({
 });
 
 const parseIndexParam = (value: string | undefined) => {
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!value || !/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 };
 
 const getErrorMessage = (err: unknown) => {
@@ -118,6 +119,7 @@ export function AiProvidersCodexEditPage() {
   const [modelDiscoveryError, setModelDiscoveryError] = useState('');
   const [modelDiscoverySearch, setModelDiscoverySearch] = useState('');
   const [modelDiscoverySelected, setModelDiscoverySelected] = useState<Set<string>>(new Set());
+  const [showApiKey, setShowApiKey] = useState(false);
   const autoFetchSignatureRef = useRef<string>('');
   const modelDiscoveryRequestIdRef = useRef(0);
 
@@ -550,9 +552,24 @@ export function AiProvidersCodexEditPage() {
           <>
             <Input
               label={t('ai_providers.codex_add_modal_key_label')}
+              type={showApiKey ? 'text' : 'password'}
+              name="codex-provider-api-key"
+              autoComplete="new-password"
               value={form.apiKey}
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={disableControls || saving}
+              rightElement={
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  aria-label={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  title={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  disabled={disableControls || saving}
+                >
+                  {showApiKey ? <IconEyeOff size={16} /> : <IconEye size={16} />}
+                </button>
+              }
             />
             <Input
               label={t('ai_providers.priority_label')}

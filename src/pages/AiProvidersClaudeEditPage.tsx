@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { IconEye, IconEyeOff } from '@/components/ui/icons';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { apiCallApi, getApiCallErrorMessage } from '@/services/api';
@@ -72,6 +73,7 @@ export function AiProvidersClaudeEditPage() {
 
   const swipeRef = useEdgeSwipeBack({ onBack: handleBack });
   const [isTesting, setIsTesting] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const lastCloakConfigRef = useRef<typeof form.cloak>(null);
 
   useEffect(() => {
@@ -312,9 +314,24 @@ export function AiProvidersClaudeEditPage() {
           <div className={styles.openaiEditForm}>
             <Input
               label={t('ai_providers.claude_add_modal_key_label')}
+              type={showApiKey ? 'text' : 'password'}
+              name="claude-provider-api-key"
+              autoComplete="new-password"
               value={form.apiKey}
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={saving || disableControls || isTesting}
+              rightElement={
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  aria-label={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  title={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  disabled={saving || disableControls || isTesting}
+                >
+                  {showApiKey ? <IconEyeOff size={16} /> : <IconEye size={16} />}
+                </button>
+              }
             />
             <Input
               label={t('ai_providers.priority_label')}
