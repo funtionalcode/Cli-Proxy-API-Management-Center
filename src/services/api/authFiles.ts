@@ -5,11 +5,7 @@
 import { apiClient } from './client';
 import type { AuthFilesResponse } from '@/types/authFile';
 import { compareAuthFilePlan } from '@/features/authFiles/constants';
-import type {
-  DeepSeekBalancePayload,
-  OAuthModelAliasEntry,
-  OllamaBalancePayload,
-} from '@/types';
+import type { OAuthModelAliasEntry } from '@/types';
 import { parseTimestampMs } from '@/utils/timestamp';
 
 type StatusError = { status?: number };

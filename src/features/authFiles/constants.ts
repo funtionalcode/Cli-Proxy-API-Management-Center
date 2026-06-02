@@ -162,8 +162,9 @@ export const getAuthFilePlanValue = (file: AuthFileItem): string => {
   }
 
   const balance = file.balance;
-  if (balance && typeof balance.group === 'string' && balance.group.trim()) {
-    return balance.group.trim();
+  if (balance && typeof balance === 'object' && !Array.isArray(balance)) {
+    const group = (balance as Record<string, unknown>).group;
+    if (typeof group === 'string' && group.trim()) return group.trim();
   }
 
   const idToken = file['id_token'];
