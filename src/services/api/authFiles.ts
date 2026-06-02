@@ -4,6 +4,7 @@
 
 import { apiClient } from './client';
 import type { AuthFilesResponse } from '@/types/authFile';
+import { compareAuthFilePlan } from '@/features/authFiles/constants';
 import type {
   DeepSeekBalancePayload,
   OAuthModelAliasEntry,
@@ -288,11 +289,13 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
   });
 
   const normalizedFiles = Array.from(grouped.values()).map(mergeAuthFileEntries);
-  normalizedFiles.sort((left, right) =>
-    readTextField(left, 'name').localeCompare(readTextField(right, 'name'), undefined, {
+  normalizedFiles.sort((left, right) => {
+    const planCompare = compareAuthFilePlan(left, right);
+    if (planCompare !== 0) return planCompare;
+    return readTextField(left, 'name').localeCompare(readTextField(right, 'name'), undefined, {
       sensitivity: 'accent',
-    })
-  );
+    });
+  });
 
   return {
     ...payload,

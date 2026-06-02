@@ -161,6 +161,50 @@ export const normalizeProviderKey = (value: string) => {
   return key;
 };
 
+export const normalizePlanKey = (value: string): string =>
+  value.trim().toLowerCase().replace(/[-_\s]/g, '');
+
+export const getPlanSortRank = (value: unknown): number => {
+  const key = typeof value === 'string' ? normalizePlanKey(value) : '';
+  if (key === 'pro20x') return 0;
+  if (key === 'pro5x') return 1;
+  if (key === 'plus') return 2;
+  if (key === 'free') return 3;
+  return 4;
+};
+
+export const getAuthFilePlanValue = (file: AuthFileItem): string => {
+  const directCandidates = [file['group'], file['plan_type'], file.planType, file['plan'], file['account_type']];
+  for (const value of directCandidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+
+  const balance = file.balance;
+  if (balance && typeof balance.group === 'string' && balance.group.trim()) {
+    return balance.group.trim();
+  }
+
+  const idToken = file['id_token'];
+  if (idToken && typeof idToken === 'object' && !Array.isArray(idToken)) {
+    const planType = (idToken as Record<string, unknown>)['plan_type'];
+    if (typeof planType === 'string' && planType.trim()) return planType.trim();
+  }
+
+  return '';
+};
+
+export const compareAuthFilePlan = (left: AuthFileItem, right: AuthFileItem): number => {
+  const leftPlan = getAuthFilePlanValue(left);
+  const rightPlan = getAuthFilePlanValue(right);
+  const rankDiff = getPlanSortRank(leftPlan) - getPlanSortRank(rightPlan);
+  if (rankDiff !== 0) return rankDiff;
+  if (getPlanSortRank(leftPlan) === 4) {
+    const planCompare = leftPlan.localeCompare(rightPlan, undefined, { sensitivity: 'accent' });
+    if (planCompare !== 0) return planCompare;
+  }
+  return 0;
+};
+
 export const getAuthFileStatusMessage = (file: AuthFileItem): string => {
   const raw = file['status_message'] ?? file.statusMessage;
   if (typeof raw === 'string') return raw.trim();
