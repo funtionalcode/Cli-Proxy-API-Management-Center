@@ -32,6 +32,7 @@ import {
   resolveCodexPlanType,
 } from '@/utils/quota';
 import {
+  compareAuthFilePlan,
   MAX_CARD_PAGE_SIZE,
   MIN_CARD_PAGE_SIZE,
   QUOTA_PROVIDER_TYPES,
@@ -577,6 +578,8 @@ export function AuthFilesPage() {
     const copy = [...filtered];
     if (sortMode === 'default') {
       copy.sort((a, b) => {
+        const planCompare = compareAuthFilePlan(a, b);
+        if (planCompare !== 0) return planCompare;
         const providerA = normalizeProviderKey(String(a.provider ?? a.type ?? 'unknown'));
         const providerB = normalizeProviderKey(String(b.provider ?? b.type ?? 'unknown'));
         const providerCompare = providerA.localeCompare(providerB);
