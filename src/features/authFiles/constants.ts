@@ -11,6 +11,13 @@ import iconKimiLight from '@/assets/icons/kimi-light.svg';
 import iconQwen from '@/assets/icons/qwen.svg';
 import iconVertex from '@/assets/icons/vertex.svg';
 import type { AuthFileItem } from '@/types';
+import {
+  comparePlanValuesByRank,
+  getCodexPlanSortRank,
+  normalizePlanKey as normalizeQuotaPlanKey,
+  type PlanSortDirection,
+} from '@/utils/quota/plans';
+import { resolveCodexPlanType } from '@/utils/quota/resolvers';
 import { parseTimestamp } from '@/utils/timestamp';
 
 export type ThemeColors = { bg: string; text: string; border?: string };
@@ -143,20 +150,23 @@ export const normalizeProviderKey = (value: string) => {
   return key;
 };
 
-export const normalizePlanKey = (value: string): string =>
-  value.trim().toLowerCase().replace(/[-_\s]/g, '');
+export const normalizePlanKey = (value: string): string => normalizeQuotaPlanKey(value);
 
 export const getPlanSortRank = (value: unknown): number => {
-  const key = typeof value === 'string' ? normalizePlanKey(value) : '';
-  if (key === 'pro20x') return 0;
-  if (key === 'pro5x') return 1;
-  if (key === 'plus') return 2;
-  if (key === 'free') return 3;
-  return 4;
+  return getCodexPlanSortRank(value) ?? -1;
 };
 
 export const getAuthFilePlanValue = (file: AuthFileItem): string => {
-  const directCandidates = [file['group'], file['plan_type'], file.planType, file['plan'], file['account_type']];
+  const codexPlan = resolveCodexPlanType(file);
+  if (codexPlan) return codexPlan;
+
+  const directCandidates = [
+    file['group'],
+    file['plan'],
+    file['chatgpt_plan_type'],
+    file['plan_type'],
+    file.planType,
+  ];
   for (const value of directCandidates) {
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
@@ -173,19 +183,20 @@ export const getAuthFilePlanValue = (file: AuthFileItem): string => {
     if (typeof planType === 'string' && planType.trim()) return planType.trim();
   }
 
+  const accountType = file['account_type'];
+  if (typeof accountType === 'string' && accountType.trim()) return accountType.trim();
+
   return '';
 };
 
-export const compareAuthFilePlan = (left: AuthFileItem, right: AuthFileItem): number => {
+export const compareAuthFilePlan = (
+  left: AuthFileItem,
+  right: AuthFileItem,
+  direction: PlanSortDirection = 'desc'
+): number => {
   const leftPlan = getAuthFilePlanValue(left);
   const rightPlan = getAuthFilePlanValue(right);
-  const rankDiff = getPlanSortRank(leftPlan) - getPlanSortRank(rightPlan);
-  if (rankDiff !== 0) return rankDiff;
-  if (getPlanSortRank(leftPlan) === 4) {
-    const planCompare = leftPlan.localeCompare(rightPlan, undefined, { sensitivity: 'accent' });
-    if (planCompare !== 0) return planCompare;
-  }
-  return 0;
+  return comparePlanValuesByRank(leftPlan, rightPlan, direction);
 };
 
 export const getAuthFileStatusMessage = (file: AuthFileItem): string => {

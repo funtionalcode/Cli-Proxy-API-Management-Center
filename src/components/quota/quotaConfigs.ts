@@ -40,10 +40,14 @@ import {
   isKimiFile,
   isRuntimeOnlyAuthFile,
   isXaiFile,
-  normalizePlanType,
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
+import {
+  getCodexPlanSortRank as getCodexPlanSortRankValue,
+  isPremiumCodexPlanType,
+  normalizePlanKey,
+} from '@/utils/quota/plans';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import styles from '@/pages/QuotaPage.module.scss';
 
@@ -241,33 +245,25 @@ const renderAntigravityItems = (
 };
 
 const PREMIUM_GEMINI_CLI_TIER_IDS = new Set(['g1-ultra-tier']);
-const PREMIUM_CODEX_PLAN_TYPES = new Set(['pro', 'prolite', 'pro-lite', 'pro_lite']);
 
 const getCodexPlanLabel = (planType: string | null | undefined, t: TFunction): string | null => {
-  const normalized = normalizePlanType(planType);
-  if (!normalized) return null;
-  if (normalized === 'pro') return t('codex_quota.plan_pro');
-  if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') {
+  const key = normalizePlanKey(planType);
+  if (!key) return null;
+  if (key === 'pro' || key === 'pro20x') return t('codex_quota.plan_pro');
+  if (key === 'prolite' || key === 'pro5x') {
     return t('codex_quota.plan_prolite');
   }
-  if (normalized === 'plus') return t('codex_quota.plan_plus');
-  if (normalized === 'team') return t('codex_quota.plan_team');
-  if (normalized === 'free') return t('codex_quota.plan_free');
-  return planType || normalized;
+  if (key === 'plus') return t('codex_quota.plan_plus');
+  if (key === 'team') return t('codex_quota.plan_team');
+  if (key === 'free') return t('codex_quota.plan_free');
+  return planType || key;
 };
 
 const getCodexEffectivePlanType = (file: AuthFileItem, quota?: CodexQuotaState): string | null =>
   resolveCodexPlanType(file) ?? quota?.planType ?? null;
 
 const getCodexPlanSortRank = (file: AuthFileItem, quota?: CodexQuotaState): number | null => {
-  const normalized = normalizePlanType(getCodexEffectivePlanType(file, quota));
-  if (!normalized) return null;
-  if (normalized === 'pro') return 50;
-  if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') return 40;
-  if (normalized === 'team') return 30;
-  if (normalized === 'plus') return 20;
-  if (normalized === 'free') return 10;
-  return 0;
+  return getCodexPlanSortRankValue(getCodexEffectivePlanType(file, quota));
 };
 
 const getCodexSearchText = (
@@ -291,7 +287,7 @@ const renderCodexItems = (
   const windows = quota.windows ?? [];
   const planType = quota.planType ?? null;
   const planLabel = getCodexPlanLabel(planType, t);
-  const isPremiumPlan = PREMIUM_CODEX_PLAN_TYPES.has(normalizePlanType(planType) ?? '');
+  const isPremiumPlan = isPremiumCodexPlanType(planType);
   const nodes: ReactNode[] = [];
 
   if (planLabel) {

@@ -26,17 +26,18 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
-  normalizePlanType,
   resolveAuthProvider,
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
+import { comparePlanValuesByRank, normalizePlanKey } from '@/utils/quota/plans';
 import {
   compareAuthFilePlan,
   MAX_CARD_PAGE_SIZE,
   MIN_CARD_PAGE_SIZE,
   QUOTA_PROVIDER_TYPES,
   clampCardPageSize,
+  getAuthFilePlanValue,
   getAuthFileIcon,
   getTypeColor,
   getTypeLabel,
@@ -87,8 +88,6 @@ const buildWildcardSearch = (value: string): RegExp | null => {
   const pattern = value.split('*').map(escapeWildcardSearchSegment).join('.*');
   return new RegExp(pattern, 'i');
 };
-
-const PREMIUM_CODEX_PLAN_TYPES = new Set(['pro', 'prolite', 'pro-lite', 'pro_lite']);
 
 const compareAuthFileName = (left: { name: string }, right: { name: string }) =>
   left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -162,31 +161,20 @@ const stringifySearchValue = (value: unknown): string[] => {
 };
 
 const getCodexPlanLabel = (planType: string | null | undefined, t: TFunction): string | null => {
-  const normalized = normalizePlanType(planType);
-  if (!normalized) return null;
-  if (normalized === 'pro') return t('codex_quota.plan_pro');
-  if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') {
+  const key = normalizePlanKey(planType);
+  if (!key) return null;
+  if (key === 'pro' || key === 'pro20x') return t('codex_quota.plan_pro');
+  if (key === 'prolite' || key === 'pro5x') {
     return t('codex_quota.plan_prolite');
   }
-  if (normalized === 'plus') return t('codex_quota.plan_plus');
-  if (normalized === 'team') return t('codex_quota.plan_team');
-  if (normalized === 'free') return t('codex_quota.plan_free');
-  return planType || normalized;
+  if (key === 'plus') return t('codex_quota.plan_plus');
+  if (key === 'team') return t('codex_quota.plan_team');
+  if (key === 'free') return t('codex_quota.plan_free');
+  return planType || key;
 };
 
 const getAuthFilePlanType = (file: AuthFileItem, quota?: CodexQuotaState): string | null =>
-  resolveCodexPlanType(file) ?? quota?.planType ?? null;
-
-const getAuthFilePlanSortRank = (file: AuthFileItem, quota?: CodexQuotaState): number | null => {
-  const normalized = normalizePlanType(getAuthFilePlanType(file, quota));
-  if (!normalized) return null;
-  if (normalized === 'pro') return 50;
-  if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') return 40;
-  if (normalized === 'team') return 30;
-  if (normalized === 'plus') return 20;
-  if (normalized === 'free') return 10;
-  return 0;
-};
+  (resolveCodexPlanType(file) ?? quota?.planType ?? getAuthFilePlanValue(file)) || null;
 
 const getAuthFileSearchValues = (file: AuthFileItem, t: TFunction, quota?: CodexQuotaState) => {
   const planType = getAuthFilePlanType(file, quota);
@@ -598,17 +586,12 @@ export function AuthFilesPage() {
       );
     } else if (sortMode === 'plan-asc' || sortMode === 'plan-desc') {
       copy.sort((a, b) => {
-        const leftRank = getAuthFilePlanSortRank(a, codexQuota[a.name]);
-        const rightRank = getAuthFilePlanSortRank(b, codexQuota[b.name]);
-        const leftKnown = leftRank !== null && leftRank !== undefined;
-        const rightKnown = rightRank !== null && rightRank !== undefined;
-
-        if (leftKnown || rightKnown) {
-          if (!leftKnown) return 1;
-          if (!rightKnown) return -1;
-          const rankDiff = sortMode === 'plan-desc' ? rightRank - leftRank : leftRank - rightRank;
-          if (rankDiff !== 0) return rankDiff;
-        }
+        const planCompare = comparePlanValuesByRank(
+          getAuthFilePlanType(a, codexQuota[a.name]),
+          getAuthFilePlanType(b, codexQuota[b.name]),
+          sortMode === 'plan-desc' ? 'desc' : 'asc'
+        );
+        if (planCompare !== 0) return planCompare;
 
         return compareAuthFileName(a, b);
       });
