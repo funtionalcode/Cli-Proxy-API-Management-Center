@@ -62,6 +62,11 @@ const getErrorMessage = (err: unknown): string => {
   return typeof message === 'string' ? message : '';
 };
 
+const getFormattedLogFilename = (name: string): string => {
+  if (/\.log$/i.test(name)) return name.replace(/\.log$/i, '.formatted.txt');
+  return `${name}.formatted.txt`;
+};
+
 type TabType = 'logs' | 'errors' | 'success';
 
 export function LogsPage() {
@@ -261,6 +266,23 @@ export function LogsPage() {
     }
   };
 
+  const downloadFormattedErrorLog = async (name: string) => {
+    try {
+      const response = await logsApi.downloadFormattedErrorLog(name);
+      downloadBlob({
+        filename: getFormattedLogFilename(name),
+        blob: new Blob([response.data], { type: 'text/plain' })
+      });
+      showNotification(t('logs.formatted_log_download_success'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.download_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
   const loadSuccessLogs = async () => {
     if (connectionStatus !== 'connected') {
       setLoadingSuccesses(false);
@@ -289,6 +311,23 @@ export function LogsPage() {
       const response = await logsApi.downloadSuccessLog(name);
       downloadBlob({ filename: name, blob: new Blob([response.data], { type: 'text/plain' }) });
       showNotification(t('logs.success_log_download_success'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.download_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
+  const downloadFormattedSuccessLog = async (name: string) => {
+    try {
+      const response = await logsApi.downloadFormattedSuccessLog(name);
+      downloadBlob({
+        filename: getFormattedLogFilename(name),
+        blob: new Blob([response.data], { type: 'text/plain' })
+      });
+      showNotification(t('logs.formatted_log_download_success'), 'success');
     } catch (err: unknown) {
       const message = getErrorMessage(err);
       showNotification(
@@ -1039,6 +1078,14 @@ export function LogsPage() {
                           >
                             {t('logs.error_logs_download')}
                           </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => downloadFormattedErrorLog(item.name)}
+                            disabled={disableControls}
+                          >
+                            {t('logs.error_logs_download_formatted')}
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -1113,6 +1160,14 @@ export function LogsPage() {
                             disabled={disableControls}
                           >
                             {t('logs.success_logs_download')}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => downloadFormattedSuccessLog(item.name)}
+                            disabled={disableControls}
+                          >
+                            {t('logs.success_logs_download_formatted')}
                           </Button>
                         </div>
                       </div>

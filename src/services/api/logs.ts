@@ -50,11 +50,23 @@ export const logsApi = {
       timeout: LOGS_TIMEOUT_MS
     }),
 
+  downloadFormattedErrorLog: (filename: string) =>
+    apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}/formatted`, {
+      responseType: 'blob',
+      timeout: LOGS_TIMEOUT_MS
+    }),
+
   fetchSuccessLogs: (): Promise<SuccessLogsResponse> =>
     apiClient.get('/request-success-logs', { timeout: LOGS_TIMEOUT_MS }),
 
   downloadSuccessLog: (filename: string) =>
     apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}`, {
+      responseType: 'blob',
+      timeout: LOGS_TIMEOUT_MS
+    }),
+
+  downloadFormattedSuccessLog: (filename: string) =>
+    apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}/formatted`, {
       responseType: 'blob',
       timeout: LOGS_TIMEOUT_MS
     }),
