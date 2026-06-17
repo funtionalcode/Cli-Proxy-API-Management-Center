@@ -45,6 +45,7 @@ export type OpenAIEditOutletContext = {
 const buildEmptyForm = (): OpenAIFormState => ({
   name: '',
   priority: undefined,
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   headers: [],
@@ -93,17 +94,22 @@ const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
   (entries ?? []).reduce<
     Array<{
       apiKey: string;
+      weight: number | null;
       proxyUrl: string;
       authIndex: string;
       headers: Array<{ key: string; value: string }>;
     }>
   >((acc, entry) => {
     const apiKey = String(entry?.apiKey ?? '').trim();
+    const weight =
+      entry?.weight !== undefined && Number.isFinite(entry.weight) && entry.weight > 0
+        ? Math.trunc(entry.weight)
+        : null;
     const proxyUrl = String(entry?.proxyUrl ?? '').trim();
     const authIndex = normalizeAuthIndex(entry?.authIndex) ?? '';
     const headers = normalizeKeyHeaders(entry?.headers);
-    if (!apiKey && !proxyUrl && !authIndex && headers.length === 0) return acc;
-    acc.push({ apiKey, proxyUrl, authIndex, headers });
+    if (!apiKey && weight === null && !proxyUrl && !authIndex && headers.length === 0) return acc;
+    acc.push({ apiKey, weight, proxyUrl, authIndex, headers });
     return acc;
   }, []);
 
@@ -111,6 +117,10 @@ const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEd
   name: String(form.name ?? '').trim(),
   priority:
     form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : null,
+  weight:
+    form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null,
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   headers: normalizeHeaderEntries(form.headers),
@@ -131,6 +141,7 @@ const areNormalizedApiKeyEntriesEqual = (
     if (!left || !right) return false;
     if (
       left.apiKey !== right.apiKey ||
+      left.weight !== right.weight ||
       left.proxyUrl !== right.proxyUrl ||
       left.authIndex !== right.authIndex
     ) {
@@ -307,6 +318,7 @@ export function AiProvidersOpenAIEditLayout() {
       const seededForm: OpenAIFormState = {
         name: initialData.name,
         priority: initialData.priority,
+        weight: initialData.weight,
         prefix: initialData.prefix ?? '',
         baseUrl: initialData.baseUrl,
         headers: headersToEntries(initialData.headers),
@@ -413,6 +425,11 @@ export function AiProvidersOpenAIEditLayout() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(() => {
+    return form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null;
+  }, [form.weight]);
   const normalizedTestModel = useMemo(() => String(testModel ?? '').trim(), [testModel]);
   const isHeadersDirty = useMemo(() => {
     if (!baseline) return false;
@@ -431,6 +448,7 @@ export function AiProvidersOpenAIEditLayout() {
     baseline !== null &&
     (baseline.name !== form.name.trim() ||
       baseline.priority !== normalizedPriority ||
+      baseline.weight !== normalizedWeight ||
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.testModel !== normalizedTestModel ||
@@ -480,6 +498,10 @@ export function AiProvidersOpenAIEditLayout() {
         headers: buildHeaderObject(form.headers),
         apiKeyEntries: form.apiKeyEntries.map((entry: ApiKeyEntry) => ({
           apiKey: entry.apiKey.trim(),
+          weight:
+            entry.weight !== undefined && Number.isFinite(entry.weight) && entry.weight > 0
+              ? Math.trunc(entry.weight)
+              : undefined,
           proxyUrl: entry.proxyUrl?.trim() || undefined,
           authIndex: normalizeAuthIndex(entry.authIndex) ?? undefined,
           headers: entry.headers,
@@ -487,6 +509,9 @@ export function AiProvidersOpenAIEditLayout() {
       };
       if (form.priority !== undefined && Number.isFinite(form.priority)) {
         payload.priority = Math.trunc(form.priority);
+      }
+      if (form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0) {
+        payload.weight = Math.trunc(form.weight);
       }
       if (initialData?.disabled !== undefined) {
         payload.disabled = initialData.disabled;

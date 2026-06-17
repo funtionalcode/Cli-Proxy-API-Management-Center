@@ -18,6 +18,7 @@ export type AuthFileFieldsPatch = {
   websockets?: boolean;
   headers?: Record<string, string>;
   priority?: number;
+  weight?: number;
   note?: string;
 };
 type AuthFileBatchFailure = { name: string; error: string };

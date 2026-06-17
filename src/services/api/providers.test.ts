@@ -18,9 +18,16 @@ import { providersApi } from './providers';
 import { normalizeOpenAIProvider } from './transformers';
 import type { ProviderKeyConfig, OpenAIProviderConfig } from '@/types';
 
-const claudeConfig = (overrides: Partial<ProviderKeyConfig> = {}): ProviderKeyConfig => ({
+type WeightedProviderKeyConfig = ProviderKeyConfig & { weight?: number };
+type WeightedOpenAIProviderConfig = OpenAIProviderConfig & { weight?: number };
+type WeightedApiKeyEntry = OpenAIProviderConfig['apiKeyEntries'][number] & { weight?: number };
+
+const claudeConfig = (
+  overrides: Partial<WeightedProviderKeyConfig> = {}
+): WeightedProviderKeyConfig => ({
   apiKey: overrides.apiKey ?? 'sk-current',
   priority: overrides.priority,
+  weight: overrides.weight,
   prefix: overrides.prefix ?? '',
   baseUrl: overrides.baseUrl ?? 'https://api.anthropic.com',
   proxyUrl: overrides.proxyUrl,
@@ -208,6 +215,20 @@ describe('providersApi.saveClaudeConfigs raw-field preservation', () => {
     ]);
     expect(body[0]).not.toHaveProperty('auth_index');
   });
+
+  it('serializes weight for provider keys', async () => {
+    mocks.get.mockResolvedValue({ 'claude-api-key': [] });
+
+    await providersApi.saveClaudeConfigs([claudeConfig({ weight: 3 })]);
+
+    const body = lastPutBody();
+    expect(body).toEqual([
+      expect.objectContaining({
+        'api-key': 'sk-current',
+        weight: 3,
+      }),
+    ]);
+  });
 });
 
 describe('providersApi.saveOpenAIProviders raw-field preservation', () => {
@@ -217,7 +238,9 @@ describe('providersApi.saveOpenAIProviders raw-field preservation', () => {
     mocks.put.mockResolvedValue(undefined);
   });
 
-  const openAIConfig = (overrides: Partial<OpenAIProviderConfig> = {}): OpenAIProviderConfig => ({
+  const openAIConfig = (
+    overrides: Partial<WeightedOpenAIProviderConfig> = {}
+  ): WeightedOpenAIProviderConfig => ({
     name: overrides.name ?? 'router-1',
     baseUrl: overrides.baseUrl ?? 'https://openai.example.com/v1',
     apiKeyEntries: overrides.apiKeyEntries ?? [
@@ -228,6 +251,7 @@ describe('providersApi.saveOpenAIProviders raw-field preservation', () => {
     headers: overrides.headers,
     models: overrides.models,
     priority: overrides.priority,
+    weight: overrides.weight,
     testModel: overrides.testModel,
   });
 
@@ -349,6 +373,45 @@ describe('providersApi.saveOpenAIProviders raw-field preservation', () => {
 
     expect(provider?.apiKeyEntries).toEqual([{ apiKey: '', authIndex: '7', headers: undefined }]);
   });
+
+  it('serializes provider and apiKeyEntries weights', async () => {
+    mocks.get.mockResolvedValue({ 'openai-compatibility': [] });
+
+    await providersApi.saveOpenAIProviders([
+      openAIConfig({
+        weight: 4,
+        apiKeyEntries: [
+          { apiKey: 'sk-1', proxyUrl: '', authIndex: '', headers: {}, weight: 2 } as WeightedApiKeyEntry,
+        ],
+      }),
+    ]);
+
+    const body = lastPutBody();
+    expect(body[0]).toEqual(
+      expect.objectContaining({
+        name: 'router-1',
+        weight: 4,
+      })
+    );
+    expect(body[0]['api-key-entries']).toEqual([
+      expect.objectContaining({
+        'api-key': 'sk-1',
+        weight: 2,
+      }),
+    ]);
+  });
+
+  it('normalizes provider and apiKeyEntries weights', () => {
+    const provider = normalizeOpenAIProvider({
+      name: 'router-1',
+      'base-url': 'https://openai.example.com/v1',
+      weight: 5,
+      'api-key-entries': [{ 'api-key': 'sk-1', weight: 3 }],
+    }) as WeightedOpenAIProviderConfig | null;
+
+    expect(provider?.weight).toBe(5);
+    expect((provider?.apiKeyEntries[0] as WeightedApiKeyEntry | undefined)?.weight).toBe(3);
+  });
 });
 
 describe('providersApi.saveGeminiKeys uses GEMINI_KEY_FIELDS (no websockets/cloak)', () => {
@@ -402,6 +465,26 @@ describe('providersApi.saveGeminiKeys uses GEMINI_KEY_FIELDS (no websockets/cloa
       expect.objectContaining({
         'api-key': 'g-key',
         'auth-index': '9',
+      }),
+    ]);
+  });
+
+  it('serializes weight for Gemini keys', async () => {
+    mocks.get.mockResolvedValue({ 'gemini-api-key': [] });
+
+    await providersApi.saveGeminiKeys([
+      {
+        apiKey: 'g-key',
+        baseUrl: 'https://generativelanguage.googleapis.com',
+        weight: 4,
+      },
+    ]);
+
+    const body = lastPutBody();
+    expect(body).toEqual([
+      expect.objectContaining({
+        'api-key': 'g-key',
+        weight: 4,
       }),
     ]);
   });

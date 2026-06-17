@@ -23,11 +23,13 @@ export type KeyTestStatus = {
 export type OpenAIEditBaseline = {
   name: string;
   priority: number | null;
+  weight: number | null;
   prefix: string;
   baseUrl: string;
   headers: Array<{ key: string; value: string }>;
   apiKeyEntries: Array<{
     apiKey: string;
+    weight: number | null;
     proxyUrl: string;
     authIndex: string;
     headers: Array<{ key: string; value: string }>;
@@ -68,6 +70,7 @@ const resolveAction = <T,>(action: SetStateAction<T>, prev: T): T =>
 
 const buildEmptyForm = (): OpenAIFormState => ({
   name: '',
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   headers: [],

@@ -29,6 +29,7 @@ type LocationState = { fromAiProviders?: boolean } | null;
 const buildEmptyForm = (): GeminiFormState => ({
   apiKey: '',
   priority: undefined,
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -65,6 +66,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 type GeminiFormBaseline = {
   apiKey: string;
   priority: number | null;
+  weight: number | null;
   prefix: string;
   baseUrl: string;
   proxyUrl: string;
@@ -77,6 +79,10 @@ const buildGeminiBaseline = (form: GeminiFormState): GeminiFormBaseline => ({
   apiKey: String(form.apiKey ?? '').trim(),
   priority:
     form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : null,
+  weight:
+    form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null,
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   proxyUrl: String(form.proxyUrl ?? '').trim(),
@@ -402,6 +408,11 @@ export function AiProvidersGeminiEditPage() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(() => {
+    return form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null;
+  }, [form.weight]);
   const isHeadersDirty = useMemo(
     () => !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders),
     [baseline.headers, normalizedHeaders]
@@ -417,6 +428,7 @@ export function AiProvidersGeminiEditPage() {
   const isDirty =
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.priority !== normalizedPriority ||
+    baseline.weight !== normalizedWeight ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
     baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
@@ -452,6 +464,10 @@ export function AiProvidersGeminiEditPage() {
       const payload: GeminiKeyConfig = {
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
+        weight:
+          form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+            ? Math.trunc(form.weight)
+            : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: form.baseUrl?.trim() || undefined,
         proxyUrl: form.proxyUrl?.trim() || undefined,
@@ -562,6 +578,26 @@ export function AiProvidersGeminiEditPage() {
                 setForm((prev) => ({
                   ...prev,
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+                }));
+              }}
+              disabled={disableControls || saving}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const parsed = raw.trim() === '' ? undefined : Number(raw);
+                setForm((prev) => ({
+                  ...prev,
+                  weight:
+                    parsed !== undefined && Number.isFinite(parsed) && parsed > 0
+                      ? parsed
+                      : undefined,
                 }));
               }}
               disabled={disableControls || saving}

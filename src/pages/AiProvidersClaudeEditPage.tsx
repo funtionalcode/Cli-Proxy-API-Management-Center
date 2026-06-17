@@ -333,6 +333,26 @@ export function AiProvidersClaudeEditPage() {
               disabled={saving || disableControls || isTesting}
             />
             <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const parsed = raw.trim() === '' ? undefined : Number(raw);
+                setForm((prev) => ({
+                  ...prev,
+                  weight:
+                    parsed !== undefined && Number.isFinite(parsed) && parsed > 0
+                      ? parsed
+                      : undefined,
+                }));
+              }}
+              disabled={saving || disableControls || isTesting}
+            />
+            <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}
               value={form.prefix ?? ''}

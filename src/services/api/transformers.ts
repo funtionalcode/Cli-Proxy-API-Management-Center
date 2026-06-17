@@ -46,6 +46,16 @@ const normalizeNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const normalizeIntegerNumber = (value: unknown): number | undefined => {
+  const parsed = normalizeNumber(value);
+  return parsed !== undefined ? Math.trunc(parsed) : undefined;
+};
+
+const normalizePositiveIntegerNumber = (value: unknown): number | undefined => {
+  const parsed = normalizeIntegerNumber(value);
+  return parsed !== undefined && parsed > 0 ? parsed : undefined;
+};
+
 const normalizeModelAliases = (models: unknown): ModelAlias[] => {
   if (!Array.isArray(models)) return [];
   return models
@@ -132,6 +142,7 @@ const normalizeApiKeyEntry = (entry: unknown): ApiKeyEntry | null => {
 
   const proxyUrl = record ? record['proxy-url'] ?? record.proxyUrl : undefined;
   const headers = record ? normalizeHeaders(record.headers) : undefined;
+  const weight = normalizePositiveIntegerNumber(record?.weight ?? record?.['weight']);
 
   const result: ApiKeyEntry = {
     apiKey: trimmed,
@@ -139,6 +150,7 @@ const normalizeApiKeyEntry = (entry: unknown): ApiKeyEntry | null => {
     headers
   };
   if (authIndex) result.authIndex = authIndex;
+  if (weight !== undefined) result.weight = weight;
   return result;
 };
 
@@ -160,6 +172,8 @@ const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => 
       config.priority = parsed;
     }
   }
+  const weight = normalizePositiveIntegerNumber(record?.weight ?? record?.['weight']);
+  if (weight !== undefined) config.weight = weight;
   const prefix = normalizePrefix(record?.prefix ?? record?.['prefix']);
   if (prefix) config.prefix = prefix;
   const baseUrl = record ? record['base-url'] ?? record.baseUrl : undefined;
@@ -229,6 +243,8 @@ const normalizeGeminiKeyConfig = (item: unknown): GeminiKeyConfig | null => {
       config.priority = parsed;
     }
   }
+  const weight = normalizePositiveIntegerNumber(record?.weight ?? record?.['weight']);
+  if (weight !== undefined) config.weight = weight;
   const prefix = normalizePrefix(record?.prefix ?? record?.['prefix']);
   if (prefix) config.prefix = prefix;
   const baseUrl = record ? record['base-url'] ?? record.baseUrl ?? record['base_url'] : undefined;
@@ -265,6 +281,7 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
   const headers = normalizeHeaders(provider.headers);
   const models = normalizeModelAliases(provider.models);
   const priority = provider.priority ?? provider['priority'];
+  const weight = normalizePositiveIntegerNumber(provider.weight ?? provider['weight']);
   const testModel = provider['test-model'] ?? provider.testModel;
 
   const result: OpenAIProviderConfig = {
@@ -280,6 +297,7 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
   if (headers) result.headers = headers;
   if (models.length) result.models = models;
   if (priority !== undefined) result.priority = Number(priority);
+  if (weight !== undefined) result.weight = weight;
   if (testModel) result.testModel = String(testModel);
   const authIndex = normalizeAuthIndex(
     provider['auth-index'] ?? provider.authIndex ?? provider['auth_index']

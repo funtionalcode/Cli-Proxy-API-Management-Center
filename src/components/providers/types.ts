@@ -9,6 +9,7 @@ export interface ModelEntry {
 export interface OpenAIFormState {
   name: string;
   priority?: number;
+  weight?: number;
   prefix: string;
   baseUrl: string;
   headers: HeaderEntry[];

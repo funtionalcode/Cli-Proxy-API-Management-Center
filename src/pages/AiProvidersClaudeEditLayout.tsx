@@ -45,6 +45,7 @@ const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
   authIndex: '',
   priority: undefined,
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -98,6 +99,10 @@ const buildClaudeBaseline = (form: ProviderFormState): ClaudeEditBaseline => ({
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
     form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : null,
+  weight:
+    form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null,
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   proxyUrl: String(form.proxyUrl ?? '').trim(),
@@ -293,6 +298,11 @@ export function AiProvidersClaudeEditLayout() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(() => {
+    return form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+      ? Math.trunc(form.weight)
+      : null;
+  }, [form.weight]);
   const isHeadersDirty = useMemo(() => {
     if (!baseline) return false;
     return !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders);
@@ -315,6 +325,7 @@ export function AiProvidersClaudeEditLayout() {
     (baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
+      baseline.weight !== normalizedWeight ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
       baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
@@ -410,6 +421,10 @@ export function AiProvidersClaudeEditLayout() {
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
+        weight:
+          form.weight !== undefined && Number.isFinite(form.weight) && form.weight > 0
+            ? Math.trunc(form.weight)
+            : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: (form.baseUrl ?? '').trim() || undefined,
         proxyUrl: form.proxyUrl?.trim() || undefined,

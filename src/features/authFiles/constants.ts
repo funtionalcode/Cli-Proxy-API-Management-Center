@@ -248,6 +248,11 @@ export const parsePriorityValue = (value: unknown): number | undefined => {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 };
 
+export const parseWeightValue = (value: unknown): number | undefined => {
+  const parsed = parsePriorityValue(value);
+  return parsed !== undefined && parsed > 0 ? parsed : undefined;
+};
+
 export const normalizeExcludedModels = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
 

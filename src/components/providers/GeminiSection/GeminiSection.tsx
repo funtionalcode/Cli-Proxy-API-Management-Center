@@ -124,6 +124,12 @@ export function GeminiSection({
                     <span className={styles.fieldValue}>{item.priority}</span>
                   </div>
                 )}
+                {item.weight !== undefined && (
+                  <div className={styles.fieldRow}>
+                    <span className={styles.fieldLabel}>{t('common.weight')}:</span>
+                    <span className={styles.fieldValue}>{item.weight}</span>
+                  </div>
+                )}
                 {item.prefix && (
                   <div className={styles.fieldRow}>
                     <span className={styles.fieldLabel}>{t('common.prefix')}:</span>

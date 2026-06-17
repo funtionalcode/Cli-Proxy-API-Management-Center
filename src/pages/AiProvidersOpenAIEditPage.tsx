@@ -374,7 +374,20 @@ export function AiProvidersOpenAIEditPage() {
     const list = entries.length ? entries : [buildApiKeyEntry()];
 
     const updateEntry = (idx: number, field: keyof ApiKeyEntry, value: string) => {
-      const next = list.map((entry, i) => (i === idx ? { ...entry, [field]: value } : entry));
+      const next = list.map((entry, i) => {
+        if (i !== idx) return entry;
+        if (field === 'weight') {
+          const parsed = value.trim() === '' ? undefined : Number(value);
+          return {
+            ...entry,
+            weight:
+              parsed !== undefined && Number.isFinite(parsed) && parsed > 0
+                ? parsed
+                : undefined,
+          };
+        }
+        return { ...entry, [field]: value };
+      });
       setForm((prev) => ({ ...prev, apiKeyEntries: next }));
       setDraftKeyTestStatus(idx, { status: 'idle', message: '' });
       setTestStatus('idle');
@@ -422,6 +435,7 @@ export function AiProvidersOpenAIEditPage() {
             <div className={styles.keyTableColIndex}>#</div>
             <div className={styles.keyTableColStatus}>{t('common.status')}</div>
             <div className={styles.keyTableColKey}>{t('common.api_key')}</div>
+            <div className={styles.keyTableColWeight}>{t('common.weight')}</div>
             <div className={styles.keyTableColProxy}>{t('common.proxy_url')}</div>
             <div className={styles.keyTableColAction}>{t('common.action')}</div>
           </div>
@@ -455,6 +469,19 @@ export function AiProvidersOpenAIEditPage() {
                     disabled={saving || disableControls || isTestingKeys}
                     className={`input ${styles.keyTableInput}`}
                     placeholder={t('ai_providers.openai_key_placeholder')}
+                  />
+                </div>
+
+                <div className={styles.keyTableColWeight}>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={entry.weight ?? ''}
+                    onChange={(e) => updateEntry(index, 'weight', e.target.value)}
+                    disabled={saving || disableControls || isTestingKeys}
+                    className={`input ${styles.keyTableInput}`}
+                    placeholder={t('ai_providers.weight_placeholder')}
                   />
                 </div>
 
@@ -555,6 +582,26 @@ export function AiProvidersOpenAIEditPage() {
                 setForm((prev) => ({
                   ...prev,
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+                }));
+              }}
+              disabled={saving || disableControls || isTestingKeys}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const parsed = raw.trim() === '' ? undefined : Number(raw);
+                setForm((prev) => ({
+                  ...prev,
+                  weight:
+                    parsed !== undefined && Number.isFinite(parsed) && parsed > 0
+                      ? parsed
+                      : undefined,
                 }));
               }}
               disabled={saving || disableControls || isTestingKeys}

@@ -3,11 +3,22 @@ import type { AuthFileItem } from '@/types';
 import {
   compareAuthFilePlan,
   getAuthFilePlanValue,
+  parseWeightValue,
 } from './constants';
 
 const authFile = (overrides: Partial<AuthFileItem>): AuthFileItem => ({
   name: 'auth.json',
   ...overrides,
+});
+
+describe('auth file weight parsing', () => {
+  it('accepts positive integers only', () => {
+    expect(parseWeightValue('3')).toBe(3);
+    expect(parseWeightValue(2)).toBe(2);
+    expect(parseWeightValue('0')).toBeUndefined();
+    expect(parseWeightValue('-1')).toBeUndefined();
+    expect(parseWeightValue('1.5')).toBeUndefined();
+  });
 });
 
 describe('auth file plan sorting', () => {

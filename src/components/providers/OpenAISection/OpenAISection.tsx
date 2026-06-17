@@ -671,6 +671,12 @@ function OpenAISectionInner({
               <span className={styles.fieldValue}>{provider.priority}</span>
             </div>
           )}
+          {provider.weight !== undefined && (
+            <div className={styles.fieldRow}>
+              <span className={styles.fieldLabel}>{t('common.weight')}:</span>
+              <span className={styles.fieldValue}>{provider.weight}</span>
+            </div>
+          )}
           {provider.prefix && (
             <div className={styles.fieldRow}>
               <span className={styles.fieldLabel}>{t('common.prefix')}:</span>
@@ -725,6 +731,11 @@ function OpenAISectionInner({
                     >
                       <span className={styles.apiKeyEntryIndex}>{entryIndex + 1}</span>
                       <span className={styles.apiKeyEntryKey}>{maskApiKey(entry.apiKey)}</span>
+                      {entry.weight !== undefined && (
+                        <span className={styles.apiKeyEntryProxy}>
+                          {t('common.weight')}: {entry.weight}
+                        </span>
+                      )}
                       {entry.proxyUrl && (
                         <span className={styles.apiKeyEntryProxy}>{entry.proxyUrl}</span>
                       )}
