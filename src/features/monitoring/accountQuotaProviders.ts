@@ -92,22 +92,14 @@ const buildCodexAccountQuotaWindows = (
     const clampedUsed =
       window.usedPercent === null ? null : Math.max(0, Math.min(100, window.usedPercent));
     const remainingPercent = clampedUsed === null ? null : Math.max(0, 100 - clampedUsed);
-    let usageLabel: string | null = null;
-
-    if (
-      window.limitWindowSeconds !== null &&
-      window.limitWindowSeconds > 0 &&
-      clampedUsed !== null
-    ) {
-      const totalHours = window.limitWindowSeconds / 3600;
-      const usedHours = (totalHours * clampedUsed) / 100;
-      const formatHours = (value: number) =>
-        Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
-      usageLabel = t('codex_quota.window_usage', {
-        used: formatHours(usedHours),
-        total: formatHours(totalHours),
-      });
-    }
+    const usageLabel =
+      clampedUsed === null
+        ? null
+        : t('codex_quota.window_usage', {
+            percent: Number.isInteger(clampedUsed)
+              ? clampedUsed.toFixed(0)
+              : clampedUsed.toFixed(1),
+          });
 
     return {
       id: window.id,
@@ -147,9 +139,7 @@ const geminiBucketToAccountWindow = (
   t: TFunction
 ): AccountQuotaWindow => {
   const clamped =
-    bucket.remainingFraction === null
-      ? null
-      : Math.max(0, Math.min(1, bucket.remainingFraction));
+    bucket.remainingFraction === null ? null : Math.max(0, Math.min(1, bucket.remainingFraction));
   const remainingPercent = clamped === null ? null : clamped * 100;
   const usageLabel =
     bucket.remainingAmount === null || bucket.remainingAmount === undefined
@@ -167,11 +157,7 @@ const geminiBucketToAccountWindow = (
 const kimiRowToAccountWindow = (row: KimiQuotaRow, t: TFunction): AccountQuotaWindow => {
   const { limit, used } = row;
   const remainingPercent =
-    limit > 0
-      ? Math.max(0, Math.min(100, ((limit - used) / limit) * 100))
-      : used > 0
-        ? 0
-        : null;
+    limit > 0 ? Math.max(0, Math.min(100, ((limit - used) / limit) * 100)) : used > 0 ? 0 : null;
   const label = row.labelKey
     ? t(row.labelKey, (row.labelParams ?? {}) as Record<string, string | number>)
     : (row.label ?? '');
@@ -214,10 +200,7 @@ const xaiBillingToAccountWindow = (
   };
 };
 
-const formatXaiPayAsYouGoSubtitle = (
-  billing: XaiBillingSummary,
-  t: TFunction
-): string | null => {
+const formatXaiPayAsYouGoSubtitle = (billing: XaiBillingSummary, t: TFunction): string | null => {
   const onDemandCap = billing.onDemandCapCents ?? 0;
   const label = t('xai_quota.pay_as_you_go_label');
   const value =

@@ -1,5 +1,11 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
 ARG VERSION=dev
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG all_proxy
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -9,14 +15,27 @@ RUN VERSION=$VERSION npm run build
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS service-build
 ARG TARGETOS
 ARG TARGETARCH
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG all_proxy
+ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /src
 COPY usage-service ./usage-service
-COPY --from=web-build /app/dist/index.html ./usage-service/internal/httpapi/web/management.html
+COPY --from=web-build /app/dist/management.html ./usage-service/internal/httpapi/web/management.html
 WORKDIR /src/usage-service
-RUN go mod download
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/cpa-manager ./cmd/cpa-manager
+RUN GOPROXY=$GOPROXY go mod download
+RUN GOPROXY=$GOPROXY CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/cpa-manager ./cmd/cpa-manager
 
 FROM alpine:3.21
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG all_proxy
 RUN apk add --no-cache ca-certificates wget
 WORKDIR /app
 COPY --from=service-build /out/cpa-manager /usr/local/bin/cpa-manager

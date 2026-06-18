@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthFileItem } from '@/types';
 import { authFilesApi } from '@/services/api/authFiles';
+
+const requestCodexUsageRawMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/services/api/codexQuota', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api/codexQuota')>();
+  return {
+    ...actual,
+    requestCodexUsageRaw: requestCodexUsageRawMock,
+  };
+});
+
 import {
   CODEX_INSPECTION_LAST_RUN_STORAGE_KEY,
   CODEX_INSPECTION_SETTINGS_STORAGE_KEY,
+  createCodexInspectionSession,
   createCodexInspectionConnectionFingerprint,
   executeCodexInspectionActions,
   hydrateCodexInspectionLastRun,
@@ -103,6 +115,7 @@ const createRunResult = (): CodexInspectionRunResult => {
 };
 
 afterEach(() => {
+  requestCodexUsageRawMock.mockReset();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -111,7 +124,10 @@ describe('Codex inspection settings', () => {
   it('migrates legacy auto execute settings to auto disable', () => {
     const storage = createStorage();
     vi.stubGlobal('localStorage', storage);
-    storage.setItem(CODEX_INSPECTION_SETTINGS_STORAGE_KEY, JSON.stringify({ autoExecuteActions: true }));
+    storage.setItem(
+      CODEX_INSPECTION_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ autoExecuteActions: true })
+    );
 
     expect(loadCodexInspectionConfigurableSettings(null).autoActionMode).toBe('disable');
   });
@@ -123,7 +139,9 @@ describe('resolveCodexInspectionAutoActionItems', () => {
   const enableItem = createResultItem('enable');
 
   it('does nothing when automatic mode is none', () => {
-    expect(resolveCodexInspectionAutoActionItems('none', [deleteItem, disableItem, enableItem])).toEqual([]);
+    expect(
+      resolveCodexInspectionAutoActionItems('none', [deleteItem, disableItem, enableItem])
+    ).toEqual([]);
   });
 
   it('turns delete suggestions into disable actions in auto disable mode', () => {
@@ -188,6 +206,121 @@ describe('executeCodexInspectionActions', () => {
   });
 });
 
+describe('createCodexInspectionSession', () => {
+  it('keeps enabled accounts when only short-term Codex quota is exhausted', async () => {
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [
+        {
+          name: 'monthly.json',
+          type: 'codex',
+          authIndex: '9',
+          account: 'monthly@example.com',
+          accountId: 'account-monthly',
+        } as AuthFileItem,
+      ],
+    });
+    requestCodexUsageRawMock.mockResolvedValue({
+      result: {
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: null,
+      },
+      payload: {
+        rate_limit: {
+          allowed: true,
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 18_000,
+          },
+          secondary_window: {
+            used_percent: 5,
+            limit_window_seconds: 2_592_000,
+          },
+        },
+      },
+    });
+
+    const session = createCodexInspectionSession({
+      config: null,
+      apiBase: 'https://cpa.example.test',
+      managementKey: 'management-token',
+      settings: {
+        targetType: 'codex',
+        workers: 1,
+        timeout: 1000,
+        usedPercentThreshold: 100,
+      },
+    });
+
+    const result = await session.start();
+
+    expect(result.results).toMatchObject([
+      {
+        action: 'keep',
+        actionReason: '5 小时额度达到阈值，但月额度仍可用，暂不禁用账号',
+        usedPercent: 5,
+        isQuota: false,
+      },
+    ]);
+  });
+
+  it('disables enabled accounts when monthly Codex quota reaches the threshold', async () => {
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [
+        {
+          name: 'monthly-full.json',
+          type: 'codex',
+          authIndex: '10',
+          account: 'monthly-full@example.com',
+        } as AuthFileItem,
+      ],
+    });
+    requestCodexUsageRawMock.mockResolvedValue({
+      result: {
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: null,
+      },
+      payload: {
+        rate_limit: {
+          allowed: true,
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 2_592_000,
+          },
+        },
+      },
+    });
+
+    const session = createCodexInspectionSession({
+      config: null,
+      apiBase: 'https://cpa.example.test',
+      managementKey: 'management-token',
+      settings: {
+        targetType: 'codex',
+        workers: 1,
+        timeout: 1000,
+        usedPercentThreshold: 100,
+      },
+    });
+
+    const result = await session.start();
+
+    expect(result.results).toMatchObject([
+      {
+        action: 'disable',
+        actionReason: '月额度达到阈值，建议禁用账号',
+        usedPercent: 100,
+        isQuota: true,
+      },
+    ]);
+  });
+});
+
 describe('Codex inspection last-run cache', () => {
   it('creates stable connection fingerprints without storing raw inputs', () => {
     const fingerprint = createCodexInspectionConnectionFingerprint(
@@ -196,7 +329,10 @@ describe('Codex inspection last-run cache', () => {
     );
 
     expect(fingerprint).toBe(
-      createCodexInspectionConnectionFingerprint('https://cpa.example.test', 'management-secret-token')
+      createCodexInspectionConnectionFingerprint(
+        'https://cpa.example.test',
+        'management-secret-token'
+      )
     );
     expect(fingerprint).not.toContain('management-secret-token');
     expect(fingerprint).not.toContain('cpa.example.test');

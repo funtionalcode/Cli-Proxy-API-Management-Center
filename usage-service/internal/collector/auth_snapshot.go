@@ -39,6 +39,18 @@ func newAuthSnapshotResolver() *authSnapshotResolver {
 	}
 }
 
+func (r *authSnapshotResolver) clear() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.baseURL = ""
+	r.managementKey = ""
+	r.expiresAt = time.Time{}
+	r.snapshots = nil
+}
+
 func (r *authSnapshotResolver) lookup(ctx context.Context, cfg RuntimeConfig, authIndices map[string]struct{}) map[string]authSnapshot {
 	if r == nil || len(authIndices) == 0 {
 		return nil

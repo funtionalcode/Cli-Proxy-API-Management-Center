@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${VERSION:-dev}"
 out_dir="${OUT_DIR:-"${repo_root}/dist/native"}"
-web_html="${WEB_HTML:-"${repo_root}/dist/index.html"}"
+web_html="${WEB_HTML:-"${repo_root}/dist/management.html"}"
 binary_name="cpa-manager"
 
 if [ ! -f "${web_html}" ]; then

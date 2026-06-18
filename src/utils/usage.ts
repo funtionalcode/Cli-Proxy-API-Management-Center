@@ -46,6 +46,15 @@ export interface UsageDetail {
   failure_count?: number;
   latency_sum_ms?: number;
   latency_count?: number;
+  __streamKey?: string;
+  __streamTotalRequests?: number;
+  __streamSuccessCount?: number;
+  __streamFailureCount?: number;
+  __streamRecentPattern?: unknown[];
+  __streamRequestCount?: number;
+  __streamSuccessCountToEvent?: number;
+  __streamFailureCountToEvent?: number;
+  __streamRecentPatternToEvent?: unknown[];
   __modelName?: string;
   __resolvedModel?: string;
   __timestampMs?: number;

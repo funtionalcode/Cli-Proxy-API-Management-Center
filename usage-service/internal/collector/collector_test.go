@@ -268,3 +268,66 @@ func TestManagerConsumesSubscribeStream(t *testing.T) {
 		t.Fatalf("total inserted = %d, want 1", status.TotalInserted)
 	}
 }
+
+func TestManagerSkipsUsageControlPayloadsAndRefreshesSnapshots(t *testing.T) {
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "subscribe"), db)
+	manager.snapshotResolver.baseURL = "http://127.0.0.1:1455"
+	manager.snapshotResolver.managementKey = "management-key"
+	manager.snapshotResolver.expiresAt = time.Now().Add(time.Minute)
+	manager.snapshotResolver.snapshots = map[string]authSnapshot{
+		"auth-1": {
+			Account:      "alice@example.com",
+			Label:        "Alice",
+			FileName:     "alice.json",
+			Provider:     "codex",
+			CapturedAtMS: time.Now().UnixMilli(),
+		},
+	}
+
+	ctx := context.Background()
+	cfg := RuntimeConfig{
+		CPAUpstreamURL: "http://127.0.0.1:1455",
+		ManagementKey:  "management-key",
+	}
+
+	if err := manager.processItems(ctx, cfg, []string{
+		"  ",
+		`{"support_refresh":true}`,
+	}); err != nil {
+		t.Fatalf("process support refresh: %v", err)
+	}
+
+	events, deadLetters, err := db.Counts(ctx)
+	if err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if events != 0 {
+		t.Fatalf("events = %d, want 0", events)
+	}
+	if deadLetters != 0 {
+		t.Fatalf("dead letters = %d, want 0", deadLetters)
+	}
+	if len(manager.snapshotResolver.snapshots) != 1 {
+		t.Fatalf("support_refresh cleared snapshots, want cache retained")
+	}
+
+	if err := manager.processItems(ctx, cfg, []string{`{"refresh":true}`}); err != nil {
+		t.Fatalf("process refresh: %v", err)
+	}
+
+	events, deadLetters, err = db.Counts(ctx)
+	if err != nil {
+		t.Fatalf("counts after refresh: %v", err)
+	}
+	if events != 0 {
+		t.Fatalf("events after refresh = %d, want 0", events)
+	}
+	if deadLetters != 0 {
+		t.Fatalf("dead letters after refresh = %d, want 0", deadLetters)
+	}
+	if manager.snapshotResolver.baseURL != "" || manager.snapshotResolver.managementKey != "" ||
+		!manager.snapshotResolver.expiresAt.IsZero() || manager.snapshotResolver.snapshots != nil {
+		t.Fatalf("refresh did not clear snapshot cache")
+	}
+}

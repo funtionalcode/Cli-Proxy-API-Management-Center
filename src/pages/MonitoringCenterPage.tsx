@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type MouseEvent,
   type ReactNode,
 } from 'react';
 import { Link } from 'react-router-dom';
@@ -66,6 +67,7 @@ import {
   resolveMonitoringStatusRangeBounds,
   shouldClampAccountOverviewPage,
   shouldResetAccountOverviewPage,
+  sortApiKeyRows,
   sortAccountRows,
   readAccountOverviewUiState,
   writeAccountOverviewUiState,
@@ -73,6 +75,8 @@ import {
   writeMonitoringTransientUiState,
   normalizeMonitoringAutoRefreshMs,
   type AccountOverviewPageResetState,
+  type ApiKeySortKey,
+  type ApiKeySortState,
   type AccountSortKey,
   type MonitoringAccountAuthState,
   type AccountSortState,
@@ -87,6 +91,7 @@ import {
   getNextMonitoringStatusBlockIndex,
 } from '@/features/monitoring/healthStatusAccessibility';
 import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
+import { buildModelPriceCandidateModels } from '@/features/monitoring/modelPriceCandidates';
 import { MonitoringPanel } from '@/features/monitoring/components/MonitoringPanel';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
@@ -109,12 +114,14 @@ import {
   normalizeAuthIndex,
   type ModelPrice,
 } from '@/utils/usage';
+import { buildLegacyAuthIndexAliases } from '@/features/monitoring/legacyAuthIndexAliases';
 import { downloadBlob } from '@/utils/download';
 import { sha256Hex } from '@/utils/apiKeyHash';
 import styles from './MonitoringCenterPage.module.scss';
 
 const TIME_RANGE_OPTIONS: Array<{ value: MonitoringTimeRange; labelKey: string }> = [
   { value: 'today', labelKey: 'monitoring.range_today' },
+  { value: 'yesterday', labelKey: 'monitoring.range_yesterday' },
   { value: '7d', labelKey: 'monitoring.range_7d' },
   { value: '14d', labelKey: 'monitoring.range_14d' },
   { value: '30d', labelKey: 'monitoring.range_30d' },
@@ -201,11 +208,15 @@ type AccountQuotaState = {
   lastRefreshedAt?: number;
 };
 
-type AccountOverviewColumn = {
+type SortableOverviewColumn<TSortKey extends string> = {
   key: string;
   label: string;
-  sortKey?: AccountSortKey;
+  sortKey?: TSortKey;
 };
+
+type AccountOverviewColumn = SortableOverviewColumn<AccountSortKey>;
+
+type ApiKeyOverviewColumn = SortableOverviewColumn<ApiKeySortKey>;
 
 type AccountSummaryMetric = {
   key: string;
@@ -467,14 +478,20 @@ const buildApiKeySummaryMetrics = (
   },
 ];
 
-const buildRealtimeLogRows = (rows: MonitoringEventRow[]): RealtimeLogRow[] => {
+export const buildRealtimeLogRows = (rows: MonitoringEventRow[]): RealtimeLogRow[] => {
   const sortedAsc = [...rows].sort(
     (left, right) => left.timestampMs - right.timestampMs || left.id.localeCompare(right.id)
   );
   const metricsByStream = new Map<string, { total: number; success: number; pattern: boolean[] }>();
 
   const enriched = sortedAsc.map((row) => {
-    const streamKey = [row.account, row.provider, row.model, row.channel].join('::');
+    const fallbackStreamKey = [row.account, row.provider, row.model, row.channel].join('::');
+    const serverTotal = row.serverStreamTotalCalls;
+    const hasServerAggregate = typeof serverTotal === 'number' && serverTotal > 0;
+    const streamKey =
+      hasServerAggregate && row.serverStreamKey
+        ? `server:${row.serverStreamKey}`
+        : fallbackStreamKey;
     const previous = metricsByStream.get(streamKey) ?? { total: 0, success: 0, pattern: [] };
     const nextPattern = [...previous.pattern, !row.failed].slice(-10);
     const next = {
@@ -483,13 +500,26 @@ const buildRealtimeLogRows = (rows: MonitoringEventRow[]): RealtimeLogRow[] => {
       pattern: nextPattern,
     };
     metricsByStream.set(streamKey, next);
+    const serverRequestCount = row.serverStreamRequestCount;
+    const serverSuccessToEvent = row.serverStreamSuccessCallsToEvent;
+    const serverPatternToEvent = row.serverStreamRecentPatternToEvent;
+    const hasServerEventMetrics = typeof serverRequestCount === 'number' && serverRequestCount > 0;
 
     return {
       ...row,
       streamKey,
-      requestCount: next.total,
-      successRate: next.total > 0 ? next.success / next.total : 1,
-      recentPattern: nextPattern,
+      requestCount: hasServerEventMetrics ? serverRequestCount : next.total,
+      successRate: hasServerEventMetrics
+        ? Math.max(serverSuccessToEvent ?? 0, 0) / serverRequestCount
+        : next.total > 0
+          ? next.success / next.total
+          : 1,
+      recentPattern:
+        hasServerEventMetrics &&
+        Array.isArray(serverPatternToEvent) &&
+        serverPatternToEvent.length > 0
+          ? serverPatternToEvent
+          : nextPattern,
     } satisfies RealtimeLogRow;
   });
 
@@ -1892,6 +1922,9 @@ export function MonitoringCenterPage() {
   const [accountSort, setAccountSort] = useState<AccountSortState>(
     initialAccountOverviewUiState.current.sort
   );
+  const [apiKeySort, setApiKeySort] = useState<ApiKeySortState>(
+    initialAccountOverviewUiState.current.apiKeySort
+  );
   const [accountPageByMode, setAccountPageByMode] = useState(() => ({
     table: 1,
     card: initialAccountOverviewUiState.current.cardPagination.page,
@@ -2010,6 +2043,8 @@ export function MonitoringCenterPage() {
       apiKeys: {
         page: apiKeyPage,
         pageSize: apiKeyPageSize,
+        sortKey: apiKeySort.key,
+        sortDirection: apiKeySort.direction,
       },
       realtime: {
         page: realtimePage,
@@ -2027,6 +2062,8 @@ export function MonitoringCenterPage() {
       accountSort.key,
       apiKeyPage,
       apiKeyPageSize,
+      apiKeySort.direction,
+      apiKeySort.key,
       realtimePage,
       realtimePageSize,
     ]
@@ -2131,6 +2168,7 @@ export function MonitoringCenterPage() {
     writeAccountOverviewUiState({
       mode: accountOverviewMode,
       sort: accountSort,
+      apiKeySort,
       cardPagination: {
         page: accountPageByMode.card,
         pageSize: accountPageSizeByMode.card,
@@ -2157,6 +2195,7 @@ export function MonitoringCenterPage() {
     accountPageSizeByMode.card,
     accountPageSizeByMode.table,
     accountSort,
+    apiKeySort,
     apiKeyPageSize,
     autoRefreshMs,
     realtimePageSize,
@@ -2247,11 +2286,8 @@ export function MonitoringCenterPage() {
   );
 
   const syncPriceModels = useMemo(
-    () =>
-      Array.from(new Set([...filteredRows.map((row) => row.model), ...Object.keys(modelPrices)]))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right)),
-    [filteredRows, modelPrices]
+    () => buildModelPriceCandidateModels(filterFacets.models, filteredRows, modelPrices),
+    [filterFacets.models, filteredRows, modelPrices]
   );
 
   const priceModelOptions = useMemo(
@@ -2266,8 +2302,14 @@ export function MonitoringCenterPage() {
     const map = new Map<string, AuthFileItem>();
     authFiles.forEach((file) => {
       const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
-      if (!authIndex || map.has(authIndex)) return;
-      map.set(authIndex, file);
+      if (authIndex && !map.has(authIndex)) {
+        map.set(authIndex, file);
+      }
+      buildLegacyAuthIndexAliases(file).forEach((alias) => {
+        if (!map.has(alias)) {
+          map.set(alias, file);
+        }
+      });
     });
     return map;
   }, [authFiles]);
@@ -2333,10 +2375,6 @@ export function MonitoringCenterPage() {
     const resolvedBounds = resolveMonitoringStatusRangeBounds(scopedRows, accountStatusBounds);
     return resolvedBounds ? buildEmptyMonitoringStatusData(resolvedBounds) : EMPTY_STATUS_BAR_DATA;
   }, [accountStatusBounds, scopedRows]);
-  const accountAuthStateByRowId = useMemo(
-    () => buildMonitoringAccountAuthStateMap(accountRows, authFilesByAuthIndex),
-    [accountRows, authFilesByAuthIndex]
-  );
   const sortedAccountRows = useMemo(
     () => sortAccountRows(accountRows, accountSort),
     [accountRows, accountSort]
@@ -2345,19 +2383,40 @@ export function MonitoringCenterPage() {
     () => (accountPageRows ? sortAccountRows(accountPageRows, accountSort) : sortedAccountRows),
     [accountPageRows, accountSort, sortedAccountRows]
   );
+  const accountRowsForAuthState = useMemo(() => {
+    const rowsById = new Map<string, MonitoringAccountRow>();
+    accountRows.forEach((row) => rowsById.set(row.id, row));
+    displayedAccountRows.forEach((row) => {
+      if (!rowsById.has(row.id)) {
+        rowsById.set(row.id, row);
+      }
+    });
+    return Array.from(rowsById.values());
+  }, [accountRows, displayedAccountRows]);
+  const accountAuthStateByRowId = useMemo(
+    () => buildMonitoringAccountAuthStateMap(accountRowsForAuthState, authFilesByAuthIndex),
+    [accountRowsForAuthState, authFilesByAuthIndex]
+  );
   const accountTotalCount =
     accountPageRows && usagePages?.accounts
       ? Math.max(0, usagePages.accounts.total_items)
       : sortedAccountRows.length;
+  const sortedApiKeyRows = useMemo(
+    () => sortApiKeyRows(apiKeyRows, apiKeySort),
+    [apiKeyRows, apiKeySort]
+  );
+  const displayedApiKeyRows = useMemo(
+    () => (apiKeyPageRows ? sortApiKeyRows(apiKeyPageRows, apiKeySort) : sortedApiKeyRows),
+    [apiKeyPageRows, apiKeySort, sortedApiKeyRows]
+  );
   const groupedRealtimeRows = useMemo(
     () => buildRealtimeMonitorRows(scopedStatsRows),
     [scopedStatsRows]
   );
-  const displayedApiKeyRows = apiKeyPageRows ?? apiKeyRows;
   const apiKeyTotalCount =
     apiKeyPageRows && usagePages?.apiKeys
       ? Math.max(0, usagePages.apiKeys.total_items)
-      : apiKeyRows.length;
+      : sortedApiKeyRows.length;
   const realtimeLogRows = useMemo(
     () => buildRealtimeLogRows(realtimePageRows ?? scopedRows),
     [realtimePageRows, scopedRows]
@@ -2394,13 +2453,13 @@ export function MonitoringCenterPage() {
             usagePages.apiKeys.page_size,
             usagePages.apiKeys.total_items
           )
-        : buildPaginationState(apiKeyRows, apiKeyPage, apiKeyPageSize),
+        : buildPaginationState(sortedApiKeyRows, apiKeyPage, apiKeyPageSize),
     [
       apiKeyPage,
       apiKeyPageRows,
       apiKeyPageSize,
-      apiKeyRows,
       displayedApiKeyRows,
+      sortedApiKeyRows,
       usagePages?.apiKeys,
     ]
   );
@@ -2460,21 +2519,35 @@ export function MonitoringCenterPage() {
 
   useEffect(() => {
     if (
-      !shouldClampAccountOverviewPage(overallLoading, accountPage, accountPagination.currentPage)
+      !shouldClampAccountOverviewPage(overallLoading, accountPage, accountPagination.currentPage, {
+        requestedPage: accountPage,
+        responsePage: usagePages?.accounts?.page ?? accountPage,
+        requestedPageSize: accountPageSize,
+        responsePageSize: usagePages?.accounts?.page_size ?? accountPageSize,
+      })
     ) {
       return;
     }
 
     setCurrentAccountPage(accountPagination.currentPage);
-  }, [accountPage, accountPagination.currentPage, overallLoading, setCurrentAccountPage]);
+  }, [
+    accountPage,
+    accountPageSize,
+    accountPagination.currentPage,
+    overallLoading,
+    setCurrentAccountPage,
+    usagePages?.accounts?.page,
+    usagePages?.accounts?.page_size,
+  ]);
 
   const accountQuotaTargetsByAccount = useMemo(
-    () => buildMonitoringAccountQuotaTargetsByAccount(accountRows, accountAuthStateByRowId),
-    [accountAuthStateByRowId, accountRows]
+    () =>
+      buildMonitoringAccountQuotaTargetsByAccount(accountRowsForAuthState, accountAuthStateByRowId),
+    [accountAuthStateByRowId, accountRowsForAuthState]
   );
   const accountAuthFilesByAccount = useMemo(() => {
     const map = new Map<string, Map<string, AuthFileItem>>();
-    accountRows.forEach((row) => {
+    accountRowsForAuthState.forEach((row) => {
       const authState = accountAuthStateByRowId.get(row.id);
       if (!authState) return;
       const filesByName = new Map<string, AuthFileItem>();
@@ -2482,7 +2555,7 @@ export function MonitoringCenterPage() {
       map.set(row.account, filesByName);
     });
     return map;
-  }, [accountRows, accountAuthStateByRowId]);
+  }, [accountRowsForAuthState, accountAuthStateByRowId]);
   const scopedFailureCount = scopedRows.filter((row) => row.failed).length;
   const savedPriceEntries = useMemo(
     () => Object.entries(modelPrices).sort((left, right) => left[0].localeCompare(right[0])),
@@ -2543,15 +2616,31 @@ export function MonitoringCenterPage() {
     [t]
   );
 
-  const apiKeyOverviewColumns = useMemo<AccountOverviewColumn[]>(
+  const apiKeyOverviewColumns = useMemo<ApiKeyOverviewColumn[]>(
     () => [
       { key: 'api-key', label: t('monitoring.api_key_summary_col_key') },
-      { key: 'total-calls', label: t('monitoring.total_calls') },
-      { key: 'success-calls', label: t('monitoring.account_overview_col_success') },
-      { key: 'failure-calls', label: t('monitoring.account_overview_col_failure') },
-      { key: 'total-tokens', label: t('monitoring.total_tokens') },
-      { key: 'estimated-cost', label: t('monitoring.account_overview_col_cost') },
-      { key: 'latest-request-time', label: t('monitoring.latest_request_time') },
+      { key: 'total-calls', label: t('monitoring.total_calls'), sortKey: 'totalCalls' },
+      {
+        key: 'success-calls',
+        label: t('monitoring.account_overview_col_success'),
+        sortKey: 'successCalls',
+      },
+      {
+        key: 'failure-calls',
+        label: t('monitoring.account_overview_col_failure'),
+        sortKey: 'failureCalls',
+      },
+      { key: 'total-tokens', label: t('monitoring.total_tokens'), sortKey: 'totalTokens' },
+      {
+        key: 'estimated-cost',
+        label: t('monitoring.account_overview_col_cost'),
+        sortKey: 'totalCost',
+      },
+      {
+        key: 'latest-request-time',
+        label: t('monitoring.latest_request_time'),
+        sortKey: 'lastSeenAt',
+      },
     ],
     [t]
   );
@@ -2568,6 +2657,27 @@ export function MonitoringCenterPage() {
       }));
   }, [accountOverviewColumns, t]);
 
+  const apiKeySortOptions = useMemo(() => {
+    const prefix = t('monitoring.account_overview_sort_prefix');
+    const options: Array<{ value: ApiKeySortKey; label: string }> = [
+      { value: 'totalCalls', label: t('monitoring.total_calls') },
+      { value: 'successCalls', label: t('monitoring.success_calls') },
+      { value: 'failureCalls', label: t('monitoring.failure_calls') },
+      { value: 'successRate', label: t('monitoring.success_rate') },
+      { value: 'totalTokens', label: t('monitoring.total_tokens') },
+      { value: 'inputTokens', label: t('monitoring.input_tokens') },
+      { value: 'outputTokens', label: t('monitoring.output_tokens') },
+      { value: 'cachedTokens', label: t('monitoring.cached_tokens') },
+      { value: 'totalCost', label: t('monitoring.account_overview_col_cost') },
+      { value: 'lastSeenAt', label: t('monitoring.latest_request_time') },
+    ];
+
+    return options.map((option) => ({
+      value: option.value,
+      label: `${prefix}${option.label}`,
+    }));
+  }, [t]);
+
   const accountPageSizeOptions =
     accountOverviewMode === 'card'
       ? ACCOUNT_OVERVIEW_CARD_PAGE_SIZE_OPTIONS
@@ -2577,7 +2687,7 @@ export function MonitoringCenterPage() {
     {
       label: t('monitoring.total_calls'),
       value: formatCompactNumber(scopedSummary.totalCalls),
-      meta: `${accountRows.length} ${t('monitoring.accounts_suffix')}`,
+      meta: `${accountTotalCount} ${t('monitoring.accounts_suffix')}`,
     },
     {
       label: t('monitoring.call_success_rate'),
@@ -2697,6 +2807,17 @@ export function MonitoringCenterPage() {
 
   const handleCustomDraftEndChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setCustomDraftEndInput(event.target.value);
+  }, []);
+
+  const openDateTimePicker = useCallback((event: MouseEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    input.focus();
+    try {
+      input.showPicker?.();
+    } catch {
+      // Some browsers only allow showPicker during trusted user gestures.
+      // Keeping focus preserves the native fallback behavior.
+    }
   }, []);
 
   const applyCustomTimeRange = useCallback(() => {
@@ -2940,6 +3061,33 @@ export function MonitoringCenterPage() {
     },
     [resetCurrentAccountPage]
   );
+
+  const handleApiKeySortKeyChange = useCallback((key: ApiKeySortKey) => {
+    setApiKeyPage(1);
+    setApiKeySort((previous) =>
+      previous.key === key
+        ? previous
+        : {
+            key,
+            direction: 'desc',
+          }
+    );
+  }, []);
+
+  const handleApiKeySort = useCallback((key: ApiKeySortKey) => {
+    setApiKeyPage(1);
+    setApiKeySort((previous) =>
+      previous.key === key
+        ? {
+            key,
+            direction: previous.direction === 'desc' ? 'asc' : 'desc',
+          }
+        : {
+            key,
+            direction: 'desc',
+          }
+    );
+  }, []);
 
   const handleAccountPageChange = useCallback(
     (page: number) => {
@@ -3722,8 +3870,25 @@ export function MonitoringCenterPage() {
         subtitle={t('monitoring.api_key_summary_desc')}
         className={styles.apiKeyPanel}
         extra={
-          <div className={styles.inlineMetrics}>
-            <span>{t('monitoring.api_key_summary_keys_count', { count: apiKeyTotalCount })}</span>
+          <div className={styles.accountOverviewHeaderActions}>
+            <div className={styles.accountOverviewToolbarRow}>
+              <div className={styles.accountOverviewSortBar}>
+                <Select
+                  className={styles.accountOverviewSortSelect}
+                  triggerClassName={styles.accountOverviewSortSelectTrigger}
+                  value={apiKeySort.key}
+                  options={apiKeySortOptions}
+                  onChange={(value) => handleApiKeySortKeyChange(value as ApiKeySortKey)}
+                  ariaLabel={t('monitoring.account_overview_sort_label')}
+                  fullWidth={false}
+                />
+              </div>
+              <div className={styles.inlineMetrics}>
+                <span>
+                  {t('monitoring.api_key_summary_keys_count', { count: apiKeyTotalCount })}
+                </span>
+              </div>
+            </div>
           </div>
         }
       >
@@ -3736,9 +3901,49 @@ export function MonitoringCenterPage() {
             </colgroup>
             <thead>
               <tr>
-                {apiKeyOverviewColumns.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
+                {apiKeyOverviewColumns.map((column) => {
+                  const sortKey = column.sortKey;
+
+                  if (!sortKey) {
+                    return <th key={column.key}>{column.label}</th>;
+                  }
+
+                  const isActive = apiKeySort.key === sortKey;
+                  const SortIcon = isActive
+                    ? apiKeySort.direction === 'desc'
+                      ? IconChevronDown
+                      : IconChevronUp
+                    : null;
+
+                  return (
+                    <th
+                      key={column.key}
+                      aria-sort={
+                        isActive
+                          ? apiKeySort.direction === 'desc'
+                            ? 'descending'
+                            : 'ascending'
+                          : 'none'
+                      }
+                    >
+                      <button
+                        type="button"
+                        className={[
+                          styles.sortableHeaderButton,
+                          isActive ? styles.sortableHeaderButtonActive : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' ')}
+                        onClick={() => handleApiKeySort(sortKey)}
+                      >
+                        <span>{column.label}</span>
+                        <span className={styles.sortIndicator} aria-hidden="true">
+                          {SortIcon ? <SortIcon size={14} /> : null}
+                        </span>
+                      </button>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -3983,6 +4188,7 @@ export function MonitoringCenterPage() {
               label={t('monitoring.custom_range_start')}
               value={customDraftStartInput}
               onChange={handleCustomDraftStartChange}
+              onClick={openDateTimePicker}
               className={styles.customRangeInput}
               aria-invalid={Boolean(customDraftTimeRangeError)}
             />
@@ -3991,6 +4197,7 @@ export function MonitoringCenterPage() {
               label={t('monitoring.custom_range_end')}
               value={customDraftEndInput}
               onChange={handleCustomDraftEndChange}
+              onClick={openDateTimePicker}
               className={styles.customRangeInput}
               aria-invalid={Boolean(customDraftTimeRangeError)}
             />

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
+import { IconEye, IconEyeOff } from '@/components/ui/icons';
 import { modelsToEntries } from '@/components/ui/modelInputListUtils';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
@@ -34,9 +35,9 @@ const buildEmptyForm = (): VertexFormState => ({
 });
 
 const parseIndexParam = (value: string | undefined) => {
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!value || !/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 };
 
 const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) =>
@@ -91,6 +92,7 @@ export function AiProvidersVertexEditPage() {
   const [error, setError] = useState('');
   const [form, setForm] = useState<VertexFormState>(() => buildEmptyForm());
   const [baseline, setBaseline] = useState(() => buildVertexBaseline(buildEmptyForm()));
+  const [showApiKey, setShowApiKey] = useState(false);
 
   const hasIndexParam = typeof params.index === 'string';
   const editIndex = useMemo(() => parseIndexParam(params.index), [params.index]);
@@ -339,9 +341,24 @@ export function AiProvidersVertexEditPage() {
             <Input
               label={t('ai_providers.vertex_add_modal_key_label')}
               placeholder={t('ai_providers.vertex_add_modal_key_placeholder')}
+              type={showApiKey ? 'text' : 'password'}
+              name="vertex-provider-api-key"
+              autoComplete="new-password"
               value={form.apiKey}
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={disableControls || saving}
+              rightElement={
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  aria-label={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  title={showApiKey ? t('login.hide_key') : t('login.show_key')}
+                  disabled={disableControls || saving}
+                >
+                  {showApiKey ? <IconEyeOff size={16} /> : <IconEye size={16} />}
+                </button>
+              }
             />
             <Input
               label={t('ai_providers.prefix_label')}

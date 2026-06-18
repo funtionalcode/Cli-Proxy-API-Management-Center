@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -385,9 +386,24 @@ func (m *Manager) processItems(ctx context.Context, cfg RuntimeConfig, items []s
 	})
 	events := make([]usage.Event, 0, len(items))
 	for _, item := range items {
-		event, err := usage.NormalizeRaw([]byte(item))
+		payload := strings.TrimSpace(item)
+		if payload == "" {
+			continue
+		}
+		control, enabled := classifyUsageControlPayload(payload)
+		switch control {
+		case usageControlSupportRefresh:
+			continue
+		case usageControlRefresh:
+			if enabled && m.snapshotResolver != nil {
+				m.snapshotResolver.clear()
+			}
+			continue
+		}
+
+		event, err := usage.NormalizeRaw([]byte(payload))
 		if err != nil {
-			_ = m.store.AddDeadLetter(ctx, item, err)
+			_ = m.store.AddDeadLetter(ctx, payload, err)
 			m.setStatus(func(status *Status) {
 				status.DeadLetters++
 			})
@@ -408,6 +424,30 @@ func (m *Manager) processItems(ctx context.Context, cfg RuntimeConfig, items []s
 		})
 	}
 	return nil
+}
+
+type usageControlPayload string
+
+const (
+	usageControlNone           usageControlPayload = ""
+	usageControlSupportRefresh usageControlPayload = "support_refresh"
+	usageControlRefresh        usageControlPayload = "refresh"
+)
+
+func classifyUsageControlPayload(payload string) (usageControlPayload, bool) {
+	var record map[string]bool
+	if err := json.Unmarshal([]byte(payload), &record); err != nil || len(record) != 1 {
+		return usageControlNone, false
+	}
+	for key, enabled := range record {
+		switch key {
+		case "support_refresh":
+			return usageControlSupportRefresh, enabled
+		case "refresh":
+			return usageControlRefresh, enabled
+		}
+	}
+	return usageControlNone, false
 }
 
 func (m *Manager) enrichAccountSnapshots(ctx context.Context, cfg RuntimeConfig, events []usage.Event) {

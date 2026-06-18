@@ -344,7 +344,6 @@ export interface XaiQuotaState {
   errorStatus?: number;
 }
 
-// Xiaomi balance payload types
 export interface XiaomiBalancePayload {
   month_used?: number;
   month_limit?: number;
@@ -372,7 +371,6 @@ export interface XiaomiQuotaState {
   fetchedAt: string | null;
 }
 
-// Anyrouter balance payload types
 export interface AnyrouterBalancePayload {
   user_id?: number;
   username?: string;
@@ -406,7 +404,6 @@ export interface AnyrouterQuotaState {
   fetchedAt: string | null;
 }
 
-// Token usage summary
 export interface TokenUsageSummary {
   inputTokens: number;
   outputTokens: number;

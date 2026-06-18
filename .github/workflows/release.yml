@@ -47,7 +47,6 @@ jobs:
       - name: Prepare release assets
         run: |
           cd dist
-          mv index.html management.html
           ls -lh management.html
 
       - name: Generate release notes

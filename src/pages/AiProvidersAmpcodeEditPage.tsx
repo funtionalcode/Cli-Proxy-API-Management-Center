@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { IconEye, IconEyeOff } from '@/components/ui/icons';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
@@ -106,6 +107,7 @@ export function AiProvidersAmpcodeEditPage() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [baseline, setBaseline] = useState(() => buildAmpcodeBaseline(buildAmpcodeFormState(null)));
+  const [showUpstreamApiKey, setShowUpstreamApiKey] = useState(false);
   const initializedRef = useRef(false);
   const mountedRef = useRef(false);
 
@@ -389,11 +391,25 @@ export function AiProvidersAmpcodeEditPage() {
         <Input
           label={t('ai_providers.ampcode_upstream_api_key_label')}
           placeholder={t('ai_providers.ampcode_upstream_api_key_placeholder')}
-          type="password"
+          type={showUpstreamApiKey ? 'text' : 'password'}
+          name="ampcode-upstream-api-key"
+          autoComplete="new-password"
           value={form.upstreamApiKey}
           onChange={(e) => setForm((prev) => ({ ...prev, upstreamApiKey: e.target.value }))}
           disabled={loading || saving || disableControls}
           hint={t('ai_providers.ampcode_upstream_api_key_hint')}
+          rightElement={
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowUpstreamApiKey((prev) => !prev)}
+              aria-label={showUpstreamApiKey ? t('login.hide_key') : t('login.show_key')}
+              title={showUpstreamApiKey ? t('login.hide_key') : t('login.show_key')}
+              disabled={loading || saving || disableControls}
+            >
+              {showUpstreamApiKey ? <IconEyeOff size={16} /> : <IconEye size={16} />}
+            </button>
+          }
         />
         <div className={layoutStyles.upstreamApiKeyRow}>
           <div className={layoutStyles.upstreamApiKeyHint}>

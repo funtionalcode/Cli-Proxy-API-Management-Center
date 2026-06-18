@@ -104,14 +104,42 @@ describe('fetchAccountQuotaEntry', () => {
     expect(entry.windows[0].usageLabel).toContain('codex_quota.window_usage');
   });
 
-  it('returns an error entry when Codex fetch fails', async () => {
-    requestCodexUsageRawMock.mockResolvedValue({ result: { statusCode: 500 }, payload: null });
+  it('maps Codex monthly windows for account quota cards', async () => {
+    requestCodexUsageRawMock.mockResolvedValue({
+      result: { statusCode: 200 },
+      payload: {
+        plan_type: 'free',
+        rate_limit: {
+          primary_window: {
+            used_percent: 5,
+            limit_window_seconds: 2_592_000,
+            reset_after_seconds: 2_592_000,
+          },
+        },
+      },
+    });
 
     const entry = await fetchAccountQuotaEntry(
-      baseTarget({ provider: 'codex' }),
+      baseTarget({ provider: 'codex', accountId: 'acc-monthly' }),
       undefined,
       t
     );
+
+    expect(entry.subtitle).toBe('codex_quota.plan_free');
+    expect(entry.windows).toMatchObject([
+      {
+        id: 'monthly',
+        label: 'codex_quota.monthly_window',
+        remainingPercent: 95,
+        usageLabel: 'codex_quota.window_usage:{"percent":"5"}',
+      },
+    ]);
+  });
+
+  it('returns an error entry when Codex fetch fails', async () => {
+    requestCodexUsageRawMock.mockResolvedValue({ result: { statusCode: 500 }, payload: null });
+
+    const entry = await fetchAccountQuotaEntry(baseTarget({ provider: 'codex' }), undefined, t);
 
     expect(entry.error).toBe('HTTP 500');
     expect(entry.errorStatus).toBe(500);
@@ -142,11 +170,7 @@ describe('fetchAccountQuotaEntry', () => {
     });
 
     const file = baseFile({ type: 'claude' });
-    const entry = await fetchAccountQuotaEntry(
-      baseTarget({ provider: 'claude' }),
-      file,
-      t
-    );
+    const entry = await fetchAccountQuotaEntry(baseTarget({ provider: 'claude' }), file, t);
 
     expect(entry.error).toBeUndefined();
     expect(entry.subtitle).toContain('claude_quota.plan_max');
@@ -199,11 +223,7 @@ describe('fetchAccountQuotaEntry', () => {
     });
 
     const file = baseFile({ type: 'gemini-cli', account: 'demo (proj-x)' });
-    const entry = await fetchAccountQuotaEntry(
-      baseTarget({ provider: 'gemini-cli' }),
-      file,
-      t
-    );
+    const entry = await fetchAccountQuotaEntry(baseTarget({ provider: 'gemini-cli' }), file, t);
 
     expect(entry.error).toBeUndefined();
     expect(entry.subtitle).toBeNull();
@@ -306,22 +326,14 @@ describe('fetchAccountQuotaEntry', () => {
   });
 
   it('returns error entry when xAI auth file is missing', async () => {
-    const entry = await fetchAccountQuotaEntry(
-      baseTarget({ provider: 'xai' }),
-      undefined,
-      t
-    );
+    const entry = await fetchAccountQuotaEntry(baseTarget({ provider: 'xai' }), undefined, t);
 
     expect(entry.error).toBe('xai_quota.missing_auth_index');
     expect(entry.windows).toEqual([]);
   });
 
   it('returns error entry when a non-Codex provider receives no file', async () => {
-    const entry = await fetchAccountQuotaEntry(
-      baseTarget({ provider: 'claude' }),
-      undefined,
-      t
-    );
+    const entry = await fetchAccountQuotaEntry(baseTarget({ provider: 'claude' }), undefined, t);
 
     expect(entry.error).toBe('claude_quota.missing_auth_index');
     expect(entry.windows).toEqual([]);
