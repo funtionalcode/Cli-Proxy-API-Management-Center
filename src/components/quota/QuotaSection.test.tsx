@@ -2,9 +2,13 @@ import { act, useEffect } from 'react';
 import { create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthFileItem } from '@/types';
-import type { QuotaConfig } from './quotaConfigs';
+import type { QuotaConfig, QuotaSortMode } from './quotaConfigs';
 import { QuotaSection } from './QuotaSection';
 import { useQuotaLoader } from './useQuotaLoader';
+import type {
+  QuotaAccountDisplayMode,
+  QuotaSectionViewMode,
+} from '@/features/quota/quotaPageUiState';
 
 type TestQuotaState = {
   status: 'idle' | 'loading' | 'success' | 'error';
@@ -162,6 +166,9 @@ const renderSection = (
   options: {
     config?: QuotaConfig<TestQuotaState, TestQuotaData>;
     files?: AuthFileItem[];
+    sortMode?: QuotaSortMode;
+    viewMode?: QuotaSectionViewMode;
+    accountDisplayMode?: QuotaAccountDisplayMode;
   } = {}
 ) => {
   let renderer!: ReactTestRenderer;
@@ -172,7 +179,9 @@ const renderSection = (
         files={options.files ?? [testFile]}
         loading={false}
         disabled={false}
-        accountDisplayMode="masked"
+        accountDisplayMode={options.accountDisplayMode ?? 'masked'}
+        sortMode={options.sortMode}
+        viewMode={options.viewMode}
       />
     );
   });
@@ -187,6 +196,12 @@ const findButtonByText = (renderer: ReactTestRenderer, text: string) => {
 
 const findButtonsByText = (renderer: ReactTestRenderer, text: string) =>
   renderer.root.findAllByType('button').filter((node) => getText(node).includes(text));
+
+const getRenderedAccountTitles = (renderer: ReactTestRenderer): string[] =>
+  renderer.root
+    .findAllByType('span')
+    .map((node) => node.props.title)
+    .filter((title): title is string => typeof title === 'string' && title.includes('@'));
 
 const flushMicrotasks = async () => {
   await Promise.resolve();
@@ -375,6 +390,39 @@ describe('QuotaSection account display mode', () => {
       .filter((node) => getText(node) === 'quota loaded');
     expect(quotaItems).toHaveLength(1);
     expect(findButtonsByText(renderer, 'codex_quota.reset_action_button')).toHaveLength(1);
+  });
+
+  it('sorts quota cards by plan rank when plan sorting is selected', () => {
+    const rankedConfig: QuotaConfig<TestQuotaState, TestQuotaData> = {
+      ...testConfig,
+      getPlanSortRank: (file) => {
+        if (file.provider === 'pro') return 50;
+        if (file.provider === 'plus') return 20;
+        if (file.provider === 'free') return 10;
+        return null;
+      },
+    };
+    const files: AuthFileItem[] = [
+      { ...testFile, name: 'free@example.com.json', provider: 'free' },
+      { ...testFile, name: 'unknown@example.com.json', provider: 'unknown' },
+      { ...testFile, name: 'pro@example.com.json', provider: 'pro' },
+      { ...testFile, name: 'plus@example.com.json', provider: 'plus' },
+    ];
+
+    const renderer = renderSection({
+      config: rankedConfig,
+      files,
+      sortMode: 'plan-desc',
+      viewMode: 'all',
+      accountDisplayMode: 'full',
+    });
+
+    expect(getRenderedAccountTitles(renderer)).toEqual([
+      'pro@example.com.json',
+      'plus@example.com.json',
+      'free@example.com.json',
+      'unknown@example.com.json',
+    ]);
   });
 
   it('stores bulk same-name quota results by auth file identity', async () => {

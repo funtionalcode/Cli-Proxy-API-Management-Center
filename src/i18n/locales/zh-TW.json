@@ -836,6 +836,7 @@
     "codex_plan_filter_all": "全部方案",
     "codex_plan_filter_unknown": "未知方案",
     "priority_display": "優先順序",
+    "weight_display": "權重",
     "project_id_display": "專案 ID",
     "page_size_label": "單頁數量",
     "page_size_unit": "個/頁",

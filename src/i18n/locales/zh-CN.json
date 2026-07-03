@@ -836,6 +836,7 @@
     "codex_plan_filter_all": "全部套餐",
     "codex_plan_filter_unknown": "未知套餐",
     "priority_display": "优先级",
+    "weight_display": "权重",
     "project_id_display": "项目 ID",
     "page_size_label": "单页数量",
     "page_size_unit": "个/页",

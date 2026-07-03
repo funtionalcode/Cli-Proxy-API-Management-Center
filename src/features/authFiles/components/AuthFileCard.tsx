@@ -30,6 +30,7 @@ import {
   isRuntimeOnlyAuthFile,
   normalizeProviderKey,
   parsePriorityValue,
+  parseWeightValue,
   type QuotaProviderType,
   type ResolvedTheme,
 } from '@/features/authFiles/constants';
@@ -142,6 +143,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
     Boolean(rawStatusMessage) && !HEALTHY_STATUS_MESSAGES.has(rawStatusMessage.toLowerCase());
 
   const priorityValue = parsePriorityValue(file.priority ?? file['priority']);
+  const weightValue = parseWeightValue(file.weight ?? file['weight']);
   const projectIdValue = getProjectIdValue(file);
   const noteValue = typeof file.note === 'string' ? file.note.trim() : '';
   const subscription =
@@ -340,6 +342,12 @@ export function AuthFileCard(props: AuthFileCardProps) {
                 <span className={`${styles.metaValue} ${styles.priorityValue}`}>
                   {priorityValue}
                 </span>
+              </div>
+            )}
+            {weightValue !== undefined && (
+              <div className={`${styles.metaItem} ${styles.weightBadge}`}>
+                <span className={styles.metaLabel}>{t('auth_files.weight_display')}</span>
+                <span className={`${styles.metaValue} ${styles.weightValue}`}>{weightValue}</span>
               </div>
             )}
             {projectIdValue && (

@@ -836,6 +836,7 @@
     "codex_plan_filter_all": "All plans",
     "codex_plan_filter_unknown": "Unknown plan",
     "priority_display": "Priority",
+    "weight_display": "Weight",
     "project_id_display": "Project ID",
     "page_size_label": "Per page",
     "page_size_unit": "items",
