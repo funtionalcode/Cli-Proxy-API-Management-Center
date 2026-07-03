@@ -1,11 +1,4 @@
-import type {
-  AmpcodeConfig,
-  AmpcodeModelMapping,
-  AmpcodeUpstreamApiKeyMapping,
-  ApiKeyEntry,
-  OpenAIProviderConfig,
-  TokenUsageSummary,
-} from '@/types';
+import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import {
   buildRecentRequestCompositeKey,
   mergeRecentRequestBucketGroups,
@@ -16,8 +9,6 @@ import {
   type RecentRequestUsageEntry,
   type StatusBarData,
 } from '@/utils/recentRequests';
-import type { AmpcodeFormState, AmpcodeUpstreamApiKeyEntry, ModelEntry } from './types';
-
 export const DISABLE_ALL_MODELS_RULE = '*';
 
 export const hasDisableAllModelsRule = (models?: string[]) =>
@@ -87,6 +78,21 @@ export const buildOpenAIChatCompletionsEndpoint = (baseUrl: string): string => {
     return trimmed;
   }
   return `${trimmed}/chat/completions`;
+};
+
+export const buildCodexResponsesEndpoint = (baseUrl: string): string => {
+  const trimmed = normalizeOpenAIBaseUrl(baseUrl);
+  if (!trimmed) return '';
+  if (/\/v1\/responses$/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/\/v1\/models$/i.test(trimmed)) {
+    return trimmed.replace(/\/models$/i, '/responses');
+  }
+  if (/\/v1$/i.test(trimmed)) {
+    return `${trimmed}/responses`;
+  }
+  return `${trimmed}/v1/responses`;
 };
 
 export const buildClaudeMessagesEndpoint = (baseUrl: string): string => {
@@ -240,28 +246,6 @@ export function getOpenAIProviderRecentStatusData(
   );
 }
 
-const EMPTY_TOKEN_USAGE: TokenUsageSummary = {
-  inputTokens: 0,
-  outputTokens: 0,
-  totalTokens: 0,
-};
-
-export function getProviderTokenUsage(
-  _usageByProvider: ProviderRecentUsageMap,
-  _provider: string,
-  _apiKey?: string,
-  _baseUrl?: string
-): TokenUsageSummary {
-  return EMPTY_TOKEN_USAGE;
-}
-
-export function getOpenAIProviderTotalTokenUsage(
-  _provider: OpenAIProviderConfig,
-  _usageByProvider: ProviderRecentUsageMap
-): TokenUsageSummary {
-  return EMPTY_TOKEN_USAGE;
-}
-
 export const getProviderConfigKey = (
   config: {
     authIndex?: unknown;
@@ -296,75 +280,7 @@ export const getOpenAIEntryKey = (entry: ApiKeyEntry, index: number): string => 
 
 export const buildApiKeyEntry = (input?: Partial<ApiKeyEntry>): ApiKeyEntry => ({
   apiKey: input?.apiKey ?? '',
-  weight: input?.weight,
   proxyUrl: input?.proxyUrl ?? '',
+  authIndex: input?.authIndex ?? '',
   headers: input?.headers ?? {},
-});
-
-export const ampcodeMappingsToEntries = (mappings?: AmpcodeModelMapping[]): ModelEntry[] => {
-  if (!Array.isArray(mappings) || mappings.length === 0) {
-    return [{ name: '', alias: '' }];
-  }
-  return mappings.map((mapping) => ({
-    name: mapping.from ?? '',
-    alias: mapping.to ?? '',
-  }));
-};
-
-export const entriesToAmpcodeMappings = (entries: ModelEntry[]): AmpcodeModelMapping[] => {
-  const seen = new Set<string>();
-  const mappings: AmpcodeModelMapping[] = [];
-
-  entries.forEach((entry) => {
-    const from = entry.name.trim();
-    const to = entry.alias.trim();
-    if (!from || !to) return;
-    const key = from.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    mappings.push({ from, to });
-  });
-
-  return mappings;
-};
-
-export const ampcodeUpstreamApiKeysToEntries = (
-  mappings?: AmpcodeUpstreamApiKeyMapping[]
-): AmpcodeUpstreamApiKeyEntry[] => {
-  if (!Array.isArray(mappings) || mappings.length === 0) {
-    return [{ upstreamApiKey: '', clientApiKeysText: '' }];
-  }
-
-  return mappings.map((mapping) => ({
-    upstreamApiKey: mapping.upstreamApiKey ?? '',
-    clientApiKeysText: Array.isArray(mapping.apiKeys) ? mapping.apiKeys.join('\n') : '',
-  }));
-};
-
-export const entriesToAmpcodeUpstreamApiKeys = (
-  entries: AmpcodeUpstreamApiKeyEntry[]
-): AmpcodeUpstreamApiKeyMapping[] => {
-  const seen = new Set<string>();
-  const mappings: AmpcodeUpstreamApiKeyMapping[] = [];
-
-  entries.forEach((entry) => {
-    const upstreamApiKey = String(entry?.upstreamApiKey ?? '').trim();
-    if (!upstreamApiKey || seen.has(upstreamApiKey)) return;
-
-    const apiKeys = Array.from(new Set(parseTextList(String(entry?.clientApiKeysText ?? ''))));
-    if (!apiKeys.length) return;
-
-    seen.add(upstreamApiKey);
-    mappings.push({ upstreamApiKey, apiKeys });
-  });
-
-  return mappings;
-};
-
-export const buildAmpcodeFormState = (ampcode?: AmpcodeConfig | null): AmpcodeFormState => ({
-  upstreamUrl: ampcode?.upstreamUrl ?? '',
-  upstreamApiKey: '',
-  forceModelMappings: ampcode?.forceModelMappings ?? false,
-  mappingEntries: ampcodeMappingsToEntries(ampcode?.modelMappings),
-  upstreamApiKeyEntries: ampcodeUpstreamApiKeysToEntries(ampcode?.upstreamApiKeys),
 });

@@ -3,12 +3,24 @@
  * 基于原项目 src/modules/login.js 和 src/core/connection.js
  */
 
+export type AuthSessionMode = 'manager_embedded' | 'external_panel';
+
 // 登录凭据
 export interface LoginCredentials {
   apiBase: string;
   managementKey: string;
   rememberPassword?: boolean;
+  sessionMode?: AuthSessionMode;
+  sessionPanelBase?: string;
 }
+
+export type LoginRecoveryMode = 'manager_config';
+
+export interface LoginResult {
+  recoveryMode?: LoginRecoveryMode;
+}
+
+export type RestoreSessionResult = LoginResult | false;
 
 // 认证状态
 export interface AuthState {
@@ -18,6 +30,7 @@ export interface AuthState {
   rememberPassword: boolean;
   serverVersion: string | null;
   serverBuildDate: string | null;
+  supportsPlugin: boolean;
 }
 
 // 连接状态

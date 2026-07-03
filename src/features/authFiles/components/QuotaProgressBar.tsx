@@ -1,4 +1,4 @@
-import styles from '@/pages/AuthFilesPage.module.scss';
+import styles from '@/features/authFiles/AuthFilesPage.module.scss';
 
 export type QuotaProgressBarProps = {
   percent: number | null;
@@ -25,4 +25,3 @@ export function QuotaProgressBar({ percent, highThreshold, mediumThreshold }: Qu
     </div>
   );
 }
-

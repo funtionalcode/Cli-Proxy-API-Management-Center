@@ -1,0 +1,391 @@
+import type { TFunction } from 'i18next';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mocks } = vi.hoisted(() => ({
+  mocks: {
+    getSubscription: vi.fn(),
+    request: vi.fn(),
+  },
+}));
+
+vi.mock('@/services/api/apiCall', () => ({
+  apiCallApi: {
+    request: mocks.request,
+  },
+  getApiCallErrorMessage: (result: { statusCode: number; bodyText?: string }) =>
+    `${result.statusCode} ${result.bodyText ?? ''}`.trim(),
+}));
+
+vi.mock('@/services/api/antigravitySubscription', () => ({
+  antigravitySubscriptionApi: {
+    get: mocks.getSubscription,
+  },
+}));
+
+import {
+  ANTIGRAVITY_AVAILABLE_MODELS_URLS,
+  ANTIGRAVITY_QUOTA_SUMMARY_URLS,
+  ANTIGRAVITY_USER_AGENT,
+  CODEX_RATE_LIMIT_RESET_CREDITS_URL,
+  CODEX_USAGE_URL,
+} from './constants';
+import {
+  buildXaiBillingSummary,
+  fetchAntigravityQuota,
+  fetchClaudeQuota,
+  fetchCodexQuota,
+} from './providerRequests';
+
+const t = ((key: string) => key) as TFunction;
+
+beforeEach(() => {
+  mocks.getSubscription.mockReset();
+  mocks.getSubscription.mockResolvedValue(null);
+  mocks.request.mockReset();
+});
+
+describe('fetchCodexQuota', () => {
+  it('fetches reset credit details after usage and prefers detail counts', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          plan_type: 'plus',
+          rate_limit_reset_credits: {
+            available_count: 1,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          available_count: 2,
+          credits: [
+            {
+              id: 'credit-1',
+              reset_type: 'codex_rate_limits',
+              status: 'available',
+              granted_at: '2026-06-01T00:00:00Z',
+              expires_at: '2026-06-30T00:00:00Z',
+            },
+          ],
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: ' auth-1 ',
+        id_token: { account_id: 'acct-1' },
+      },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      authIndex: 'auth-1',
+      method: 'GET',
+      url: CODEX_USAGE_URL,
+      header: expect.objectContaining({
+        Authorization: 'Bearer $TOKEN$',
+        'Chatgpt-Account-Id': 'acct-1',
+      }),
+    });
+    expect(mocks.request.mock.calls[1][0]).toMatchObject({
+      authIndex: 'auth-1',
+      method: 'GET',
+      url: CODEX_RATE_LIMIT_RESET_CREDITS_URL,
+      header: expect.objectContaining({
+        Accept: 'application/json',
+        'OpenAI-Beta': 'codex-1',
+        Originator: 'Codex Desktop',
+        'Chatgpt-Account-Id': 'acct-1',
+      }),
+    });
+    expect(mocks.request.mock.calls[1][1]).toMatchObject({ timeout: 8000 });
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(2);
+    expect(result.rateLimitResetCredits).toHaveLength(1);
+    expect(result.rateLimitResetCreditsError).toBeNull();
+  });
+
+  it('keeps usage quota data when reset credit details fail', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          plan_type: 'plus',
+          rate_limit_reset_credits: {
+            available_count: 1,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 502,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'bad gateway',
+        body: null,
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(1);
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.rateLimitResetCreditsError).toBe('502 bad gateway');
+  });
+
+  it('uses localized reset credit errors for invalid detail payloads', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          plan_type: 'plus',
+          rate_limit_reset_credits: {
+            available_count: 1,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          unexpected: true,
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(1);
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.rateLimitResetCreditsError).toBe('codex_quota.reset_credits_invalid_payload');
+  });
+});
+
+describe('fetchClaudeQuota', () => {
+  it('keeps usage quota data when profile lookup fails', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: {
+            utilization: 12,
+            resets_at: '2026-07-01T10:00:00Z',
+          },
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.planType).toBeNull();
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]).toMatchObject({
+      id: 'five-hour',
+      usedPercent: 12,
+    });
+  });
+});
+
+describe('buildXaiBillingSummary', () => {
+  it('normalizes cents fields from mixed object and snake-case payloads', () => {
+    const summary = buildXaiBillingSummary({
+      monthly_limit: { val: '15000' },
+      used: { val: 3750 },
+      on_demand_cap: '2500',
+      billing_period_end: '2026-07-31T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: 15000,
+      usedCents: 3750,
+      onDemandCapCents: 2500,
+      billingPeriodEnd: '2026-07-31T00:00:00Z',
+      usedPercent: 25,
+    });
+  });
+});
+
+describe('fetchAntigravityQuota', () => {
+  it('uses quota summary data and includes subscription plan data', async () => {
+    mocks.getSubscription.mockResolvedValue({
+      plan: 'pro',
+      tierName: 'Antigravity Pro',
+      tierId: 'g1-pro-tier',
+    });
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        groups: [
+          {
+            displayName: 'Gemini models',
+            buckets: [
+              {
+                bucketId: 'gemini-weekly',
+                displayName: 'Weekly limit',
+                window: 'weekly',
+                remainingFraction: 0.7,
+                resetTime: '2026-07-02T00:00:00Z',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await fetchAntigravityQuota(
+      {
+        name: 'antigravity.json',
+        type: 'antigravity',
+        authIndex: 'ag-1',
+        project_id: 'project-1',
+      },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      url: ANTIGRAVITY_QUOTA_SUMMARY_URLS[0],
+    });
+    expect(mocks.getSubscription).toHaveBeenCalledWith('ag-1');
+    expect(result.subscription).toEqual({
+      plan: 'pro',
+      tierName: 'Antigravity Pro',
+      tierId: 'g1-pro-tier',
+    });
+    expect(result.groups[0]).toMatchObject({
+      label: 'Gemini models',
+      buckets: [
+        {
+          label: 'Weekly limit',
+          remainingFraction: 0.7,
+        },
+      ],
+    });
+  });
+
+  it('falls back to available models when summary endpoints have no usable data', async () => {
+    ANTIGRAVITY_QUOTA_SUMMARY_URLS.forEach(() => {
+      mocks.request.mockResolvedValueOnce({
+        statusCode: 404,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'not found',
+        body: null,
+      });
+    });
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        models: {
+          'claude-sonnet-4-6': {
+            displayName: 'Claude Sonnet 4.6',
+            quotaInfo: { remainingFraction: 0.5 },
+            apiProvider: 'API_PROVIDER_ANTHROPIC_VERTEX',
+          },
+          'gemini-3-pro-high': {
+            displayName: 'Gemini 3 Pro',
+            quotaInfo: { remainingFraction: 0.8 },
+            apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+          },
+        },
+        agentModelSorts: [
+          {
+            groups: [{ modelIds: ['gemini-3-pro-high'] }],
+          },
+        ],
+      },
+    });
+
+    const result = await fetchAntigravityQuota(
+      {
+        name: 'antigravity.json',
+        type: 'antigravity',
+        authIndex: 'ag-1',
+        project_id: 'project-1',
+      },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(ANTIGRAVITY_QUOTA_SUMMARY_URLS.length + 1);
+    expect(mocks.request.mock.calls[mocks.request.mock.calls.length - 1]?.[0]).toMatchObject({
+      url: ANTIGRAVITY_AVAILABLE_MODELS_URLS[0],
+    });
+    expect(result.groups.map((group) => group.id)).toEqual(['claude-gpt', 'gemini']);
+  });
+
+  it('sends the generated Antigravity user agent', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 403,
+      hasStatusCode: true,
+      header: {},
+      bodyText: 'forbidden',
+      body: null,
+    });
+
+    await expect(
+      fetchAntigravityQuota(
+        {
+          name: 'antigravity.json',
+          type: 'antigravity',
+          authIndex: 'ag-1',
+          project_id: 'project-1',
+        },
+        t
+      )
+    ).rejects.toThrow();
+
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      authIndex: 'ag-1',
+      method: 'POST',
+      header: expect.objectContaining({
+        Authorization: 'Bearer $TOKEN$',
+        'User-Agent': ANTIGRAVITY_USER_AGENT,
+      }),
+    });
+  });
+});

@@ -11,13 +11,6 @@ import iconKimiLight from '@/assets/icons/kimi-light.svg';
 import iconQwen from '@/assets/icons/qwen.svg';
 import iconVertex from '@/assets/icons/vertex.svg';
 import type { AuthFileItem } from '@/types';
-import {
-  comparePlanValuesByRank,
-  getCodexPlanSortRank,
-  normalizePlanKey as normalizeQuotaPlanKey,
-  type PlanSortDirection,
-} from '@/utils/quota/plans';
-import { resolveCodexPlanType } from '@/utils/quota/resolvers';
 import { parseTimestamp } from '@/utils/timestamp';
 
 export type ThemeColors = { bg: string; text: string; border?: string };
@@ -31,13 +24,12 @@ export type AuthFileModelItem = {
 };
 export type AuthFileIconAsset = string | { light: string; dark: string };
 
-export type QuotaProviderType = 'antigravity' | 'claude' | 'codex' | 'gemini-cli' | 'kimi' | 'xai';
+export type QuotaProviderType = 'antigravity' | 'claude' | 'codex' | 'kimi' | 'xai';
 
 export const QUOTA_PROVIDER_TYPES = new Set<QuotaProviderType>([
   'antigravity',
   'claude',
   'codex',
-  'gemini-cli',
   'kimi',
   'xai',
 ]);
@@ -49,6 +41,7 @@ export const AUTH_FILE_REFRESH_WARNING_MS = 24 * 60 * 60 * 1000;
 export const INTEGER_STRING_PATTERN = /^[+-]?\d+$/;
 export const TRUTHY_TEXT_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 export const FALSY_TEXT_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
+export const AUTH_FILE_WEBSOCKET_PROVIDERS = new Set(['codex', 'xai']);
 
 // 标签类型颜色配置 — 基于各提供商 Logo 品牌色调配，确保彼此不重复
 export const TYPE_COLORS: Record<string, TypeColorSet> = {
@@ -66,11 +59,6 @@ export const TYPE_COLORS: Record<string, TypeColorSet> = {
   gemini: {
     light: { bg: '#e3f2fd', text: '#1565c0' },
     dark: { bg: '#0d47a1', text: '#64b5f6' },
-  },
-  // Gemini-CLI: 同 Gemini 图标，用更深的海军蓝区分
-  'gemini-cli': {
-    light: { bg: '#e0e8ff', text: '#1e4fa3' },
-    dark: { bg: '#1c3f73', text: '#a8c7ff' },
   },
   // AI Studio: 使用 Gemini 图标，中性灰标签
   aistudio: {
@@ -123,7 +111,6 @@ export const AUTH_FILE_ICONS: Record<string, AuthFileIconAsset> = {
   claude: iconClaude,
   codex: iconCodex,
   gemini: iconGemini,
-  'gemini-cli': iconGemini,
   xai: { light: iconGrok, dark: iconGrokDark },
   iflow: iconIflow,
   kimi: { light: iconKimiLight, dark: iconKimiDark },
@@ -148,55 +135,6 @@ export const normalizeProviderKey = (value: string) => {
   const key = value.trim().toLowerCase().replace(/_/g, '-');
   if (key === 'x-ai' || key === 'grok') return 'xai';
   return key;
-};
-
-export const normalizePlanKey = (value: string): string => normalizeQuotaPlanKey(value);
-
-export const getPlanSortRank = (value: unknown): number => {
-  return getCodexPlanSortRank(value) ?? -1;
-};
-
-export const getAuthFilePlanValue = (file: AuthFileItem): string => {
-  const codexPlan = resolveCodexPlanType(file);
-  if (codexPlan) return codexPlan;
-
-  const directCandidates = [
-    file['group'],
-    file['plan'],
-    file['chatgpt_plan_type'],
-    file['plan_type'],
-    file.planType,
-  ];
-  for (const value of directCandidates) {
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-
-  const balance = file.balance;
-  if (balance && typeof balance === 'object' && !Array.isArray(balance)) {
-    const group = (balance as Record<string, unknown>).group;
-    if (typeof group === 'string' && group.trim()) return group.trim();
-  }
-
-  const idToken = file['id_token'];
-  if (idToken && typeof idToken === 'object' && !Array.isArray(idToken)) {
-    const planType = (idToken as Record<string, unknown>)['plan_type'];
-    if (typeof planType === 'string' && planType.trim()) return planType.trim();
-  }
-
-  const accountType = file['account_type'];
-  if (typeof accountType === 'string' && accountType.trim()) return accountType.trim();
-
-  return '';
-};
-
-export const compareAuthFilePlan = (
-  left: AuthFileItem,
-  right: AuthFileItem,
-  direction: PlanSortDirection = 'desc'
-): number => {
-  const leftPlan = getAuthFilePlanValue(left);
-  const rightPlan = getAuthFilePlanValue(right);
-  return comparePlanValuesByRank(leftPlan, rightPlan, direction);
 };
 
 export const getAuthFileStatusMessage = (file: AuthFileItem): string => {
@@ -248,11 +186,6 @@ export const parsePriorityValue = (value: unknown): number | undefined => {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 };
 
-export const parseWeightValue = (value: unknown): number | undefined => {
-  const parsed = parsePriorityValue(value);
-  return parsed !== undefined && parsed > 0 ? parsed : undefined;
-};
-
 export const normalizeExcludedModels = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
 
@@ -285,10 +218,13 @@ export const parseDisableCoolingValue = (value: unknown): boolean | undefined =>
   return undefined;
 };
 
-export const readCodexAuthFileWebsockets = (value: Record<string, unknown>): boolean =>
+export const supportsAuthFileWebsockets = (providerKey: string): boolean =>
+  AUTH_FILE_WEBSOCKET_PROVIDERS.has(normalizeProviderKey(providerKey));
+
+export const readAuthFileWebsockets = (value: Record<string, unknown>): boolean =>
   parseDisableCoolingValue(value.websockets ?? value.websocket) ?? false;
 
-export const applyCodexAuthFileWebsockets = (
+export const applyAuthFileWebsockets = (
   value: Record<string, unknown>,
   websockets: boolean
 ): Record<string, unknown> => {
@@ -297,6 +233,9 @@ export const applyCodexAuthFileWebsockets = (
   next.websockets = websockets;
   return next;
 };
+
+export const readCodexAuthFileWebsockets = readAuthFileWebsockets;
+export const applyCodexAuthFileWebsockets = applyAuthFileWebsockets;
 
 export function isRuntimeOnlyAuthFile(file: AuthFileItem): boolean {
   const raw = file['runtime_only'] ?? file.runtimeOnly;

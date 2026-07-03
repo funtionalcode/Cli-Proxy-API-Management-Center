@@ -7,48 +7,14 @@ export type ThemeColors = { bg: string; text: string; border?: string };
 export type TypeColorSet = { light: ThemeColors; dark?: ThemeColors };
 export type ResolvedTheme = 'light' | 'dark';
 
-// API payload types
-export interface GeminiCliQuotaBucket {
-  modelId?: string;
-  model_id?: string;
-  tokenType?: string;
-  token_type?: string;
-  remainingFraction?: number | string;
-  remaining_fraction?: number | string;
-  remainingAmount?: number | string;
-  remaining_amount?: number | string;
-  resetTime?: string;
-  reset_time?: string;
-}
-
-export interface GeminiCliQuotaPayload {
-  buckets?: GeminiCliQuotaBucket[];
-}
-
-export interface GeminiCliCredits {
-  creditType?: string;
-  credit_type?: string;
-  creditAmount?: string | number;
-  credit_amount?: string | number;
-}
-
-export interface GeminiCliUserTier {
-  id?: string;
-  name?: string;
-  description?: string;
-  availableCredits?: GeminiCliCredits[];
-  available_credits?: GeminiCliCredits[];
-}
-
-export interface GeminiCliCodeAssistPayload {
-  currentTier?: GeminiCliUserTier | null;
-  current_tier?: GeminiCliUserTier | null;
-  paidTier?: GeminiCliUserTier | null;
-  paid_tier?: GeminiCliUserTier | null;
-}
-
 export interface AntigravityQuotaInfo {
   displayName?: string;
+  display_name?: string;
+  model?: string;
+  apiProvider?: string;
+  api_provider?: string;
+  modelProvider?: string;
+  model_provider?: string;
   quotaInfo?: {
     remainingFraction?: number | string;
     remaining_fraction?: number | string;
@@ -67,26 +33,90 @@ export interface AntigravityQuotaInfo {
 
 export type AntigravityModelsPayload = Record<string, AntigravityQuotaInfo>;
 
+export interface AntigravityQuotaSummaryBucketPayload {
+  bucketId?: string;
+  bucket_id?: string;
+  displayName?: string;
+  display_name?: string;
+  window?: string;
+  resetTime?: string;
+  reset_time?: string;
+  remainingFraction?: number | string;
+  remaining_fraction?: number | string;
+  description?: string;
+}
+
+export interface AntigravityQuotaSummaryGroupPayload {
+  displayName?: string;
+  display_name?: string;
+  description?: string;
+  buckets?: AntigravityQuotaSummaryBucketPayload[];
+}
+
+export interface AntigravityQuotaSummaryPayload {
+  groups?: AntigravityQuotaSummaryGroupPayload[];
+  models?: AntigravityModelsPayload;
+  defaultAgentModelId?: string;
+  default_agent_model_id?: string;
+  agentModelSorts?: Array<{
+    displayName?: string;
+    display_name?: string;
+    groups?: Array<{
+      modelIds?: string[];
+      model_ids?: string[];
+    }>;
+  }>;
+  agent_model_sorts?: Array<{
+    displayName?: string;
+    display_name?: string;
+    groups?: Array<{
+      modelIds?: string[];
+      model_ids?: string[];
+    }>;
+  }>;
+  commandModelIds?: string[];
+  command_model_ids?: string[];
+  tabModelIds?: string[];
+  tab_model_ids?: string[];
+  imageGenerationModelIds?: string[];
+  image_generation_model_ids?: string[];
+  mqueryModelIds?: string[];
+  mquery_model_ids?: string[];
+  webSearchModelIds?: string[];
+  web_search_model_ids?: string[];
+  commitMessageModelIds?: string[];
+  commit_message_model_ids?: string[];
+  deprecatedModelIds?: Record<
+    string,
+    {
+      newModelId?: string;
+      new_model_id?: string;
+      oldModelEnum?: string;
+      old_model_enum?: string;
+      newModelEnum?: string;
+      new_model_enum?: string;
+    }
+  >;
+  deprecated_model_ids?: Record<
+    string,
+    {
+      newModelId?: string;
+      new_model_id?: string;
+      oldModelEnum?: string;
+      old_model_enum?: string;
+      newModelEnum?: string;
+      new_model_enum?: string;
+    }
+  >;
+  tieredModelIds?: Record<string, string[]>;
+  tiered_model_ids?: Record<string, string[]>;
+}
+
 export interface AntigravityQuotaGroupDefinition {
   id: string;
   label: string;
   identifiers: string[];
   labelFromModel?: boolean;
-}
-
-export interface GeminiCliQuotaGroupDefinition {
-  id: string;
-  label: string;
-  preferredModelId?: string;
-  modelIds: string[];
-}
-
-export interface GeminiCliParsedBucket {
-  modelId: string;
-  tokenType: string | null;
-  remainingFraction: number | null;
-  remainingAmount: number | null;
-  resetTime: string | undefined;
 }
 
 export interface CodexUsageWindow {
@@ -119,7 +149,49 @@ export interface CodexAdditionalRateLimit {
   rateLimit?: CodexRateLimitInfo | null;
 }
 
+export interface CodexCreditsInfo {
+  has_credits?: boolean;
+  hasCredits?: boolean;
+  unlimited?: boolean;
+  overage_limit_reached?: boolean;
+  overageLimitReached?: boolean;
+  balance?: number | string | null;
+  approx_local_messages?: number | string | null;
+  approxLocalMessages?: number | string | null;
+  approx_cloud_messages?: number | string | null;
+  approxCloudMessages?: number | string | null;
+}
+
+export interface CodexSpendControlInfo {
+  reached?: boolean;
+  individual_limit?: number | string | null;
+  individualLimit?: number | string | null;
+}
+
+export interface CodexRateLimitResetCreditsInfo {
+  available_count?: number | string;
+  availableCount?: number | string;
+}
+
+export interface CodexRateLimitResetCredit {
+  id: string;
+  status: string;
+  grantedAt: string;
+  expiresAt: string;
+}
+
+export interface CodexResetCreditsSummary {
+  availableCount: number | null;
+  credits: CodexRateLimitResetCredit[];
+  invalidPayload: boolean;
+}
+
 export interface CodexUsagePayload {
+  user_id?: string;
+  userId?: string;
+  account_id?: string;
+  accountId?: string;
+  email?: string;
   plan_type?: string;
   planType?: string;
   rate_limit?: CodexRateLimitInfo | null;
@@ -128,6 +200,18 @@ export interface CodexUsagePayload {
   codeReviewRateLimit?: CodexRateLimitInfo | null;
   additional_rate_limits?: CodexAdditionalRateLimit[] | null;
   additionalRateLimits?: CodexAdditionalRateLimit[] | null;
+  credits?: CodexCreditsInfo | null;
+  spend_control?: CodexSpendControlInfo | null;
+  spendControl?: CodexSpendControlInfo | null;
+  rate_limit_reached_type?: string | null;
+  rateLimitReachedType?: string | null;
+  promo?: unknown;
+  referral_beacon?: unknown;
+  referralBeacon?: unknown;
+  rate_limit_reset_credits?: CodexRateLimitResetCreditsInfo | null;
+  rateLimitResetCredits?: CodexRateLimitResetCreditsInfo | null;
+  subscription_active_until?: string | number | null;
+  subscriptionActiveUntil?: string | number | null;
 }
 
 // Claude API payload types
@@ -197,34 +281,31 @@ export interface ClaudeQuotaState {
 export interface AntigravityQuotaGroup {
   id: string;
   label: string;
-  models: string[];
+  description?: string;
+  models?: string[];
+  buckets: AntigravityQuotaBucket[];
+}
+
+export interface AntigravityQuotaSubscription {
+  plan: string | null;
+  tierName: string | null;
+  tierId: string | null;
+}
+
+export interface AntigravityQuotaBucket {
+  id: string;
+  label: string;
+  window?: string;
   remainingFraction: number;
   resetTime?: string;
+  description?: string;
 }
 
 export interface AntigravityQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
   groups: AntigravityQuotaGroup[];
-  error?: string;
-  errorStatus?: number;
-}
-
-export interface GeminiCliQuotaBucketState {
-  id: string;
-  label: string;
-  remainingFraction: number | null;
-  remainingAmount: number | null;
-  resetTime: string | undefined;
-  tokenType: string | null;
-  modelIds?: string[];
-}
-
-export interface GeminiCliQuotaState {
-  status: 'idle' | 'loading' | 'success' | 'error';
-  buckets: GeminiCliQuotaBucketState[];
-  tierLabel?: string | null;
-  tierId?: string | null;
-  creditBalance?: number | null;
+  subscription?: AntigravityQuotaSubscription | null;
+  serverTimeOffsetMs?: number | null;
   error?: string;
   errorStatus?: number;
 }
@@ -236,14 +317,36 @@ export interface CodexQuotaWindow {
   labelParams?: Record<string, string | number>;
   usedPercent: number | null;
   resetLabel: string;
+  limitWindowSeconds?: number | null;
 }
 
 export interface CodexQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
   windows: CodexQuotaWindow[];
   planType?: string | null;
+  activeLimit?: string | null;
+  creditsHasCredits?: boolean | null;
+  creditsUnlimited?: boolean | null;
+  creditsBalance?: string | null;
+  rateLimitReachedType?: string | null;
+  primaryOverSecondaryLimitPercent?: number | null;
+  subscriptionActiveUntil?: string | null;
+  rateLimitResetCreditsAvailableCount?: number | null;
+  rateLimitResetCredits?: CodexRateLimitResetCredit[];
+  rateLimitResetCreditsError?: string | null;
+  authFileKey?: string;
+  authFileName?: string;
+  authIndex?: string | null;
+  fetchedAtMs?: number;
+  failedAtMs?: number;
   error?: string;
   errorStatus?: number;
+  observedFromUsageHeaders?: boolean;
+  observedResetCreditsUnknown?: boolean;
+  observedAtMs?: number;
+  observedTraceId?: string;
+  observedErrorKind?: string;
+  observedErrorCode?: string;
 }
 
 // Kimi API payload types
@@ -342,70 +445,4 @@ export interface XaiQuotaState {
   billing: XaiBillingSummary | null;
   error?: string;
   errorStatus?: number;
-}
-
-export interface XiaomiBalancePayload {
-  month_used?: number;
-  month_limit?: number;
-  month_percent?: number;
-  plan_used?: number;
-  plan_limit?: number;
-  plan_percent?: number;
-  compensation_used?: number;
-  compensation_limit?: number;
-  source?: string;
-  fetched_at?: string;
-}
-
-export interface XiaomiQuotaState {
-  status: 'success';
-  monthUsed: number | null;
-  monthLimit: number | null;
-  monthPercent: number | null;
-  planUsed: number | null;
-  planLimit: number | null;
-  planPercent: number | null;
-  compensationUsed: number | null;
-  compensationLimit: number | null;
-  source: string | null;
-  fetchedAt: string | null;
-}
-
-export interface AnyrouterBalancePayload {
-  user_id?: number;
-  username?: string;
-  display_name?: string;
-  group?: string;
-  quota?: number;
-  used_quota?: number;
-  request_count?: number;
-  aff_code?: string;
-  aff_count?: number;
-  aff_quota?: number;
-  aff_history_quota?: number;
-  source?: string;
-  fetched_at?: string;
-}
-
-export interface AnyrouterQuotaState {
-  status: 'success';
-  userId: number | null;
-  username: string | null;
-  displayName: string | null;
-  group: string | null;
-  quota: number | null;
-  usedQuota: number | null;
-  requestCount: number | null;
-  affCode: string | null;
-  affCount: number | null;
-  affQuota: number | null;
-  affHistoryQuota: number | null;
-  source: string | null;
-  fetchedAt: string | null;
-}
-
-export interface TokenUsageSummary {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
 }

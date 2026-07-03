@@ -10,9 +10,18 @@
 @use './layout.scss';
 
 body {
-  background-color: var(--bg-secondary);
+  background-color: var(--app-bg);
   color: var(--text-primary);
-  transition: background-color $transition-normal, color $transition-normal;
+  transition:
+    background-color $transition-normal,
+    color $transition-normal;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
 }
 
 html.modal-open,
@@ -22,6 +31,12 @@ body.modal-open {
 
 body.modal-open .content {
   overflow: hidden;
+}
+
+.app-content {
+  position: relative;
+  z-index: 1;
+  min-height: 100%;
 }
 
 // 滚动条样式

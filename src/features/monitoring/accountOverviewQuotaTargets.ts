@@ -4,24 +4,29 @@ import {
   isClaudeFile,
   isCodexFile,
   isDisabledAuthFile,
-  isGeminiCliFile,
   isKimiFile,
-  isRuntimeOnlyAuthFile,
   isXaiFile,
   normalizeAuthIndex,
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
-import type { QuotaType } from '@/components/quota';
 import type { MonitoringAccountAuthState } from './accountOverviewState';
 import type { MonitoringAccountRow } from './hooks/useMonitoringData';
 
+export type MonitoringAccountQuotaProvider =
+  | 'antigravity'
+  | 'claude'
+  | 'codex'
+  | 'kimi'
+  | 'xai';
+
 export type MonitoringAccountQuotaTarget = {
   key: string;
-  provider: QuotaType;
+  provider: MonitoringAccountQuotaProvider;
   authIndex: string;
   authLabel: string;
   fileName: string;
+  file: AuthFileItem;
   accountId: string | null;
   planType: string | null;
 };
@@ -40,52 +45,45 @@ const readAuthFileQuotaLabel = (file: AuthFileItem, authIndex: string) => {
   return authIndex;
 };
 
-const resolveQuotaProvider = (file: AuthFileItem): QuotaType | null => {
+export const resolveMonitoringAccountQuotaProvider = (
+  file: AuthFileItem
+): MonitoringAccountQuotaProvider | null => {
   if (isCodexFile(file)) return 'codex';
   if (isClaudeFile(file)) return 'claude';
   if (isAntigravityFile(file)) return 'antigravity';
-  if (isGeminiCliFile(file)) return 'gemini-cli';
   if (isKimiFile(file)) return 'kimi';
   if (isXaiFile(file)) return 'xai';
   return null;
 };
 
-const isProviderTargetable = (file: AuthFileItem, provider: QuotaType) => {
+const isQuotaTargetable = (file: AuthFileItem) => {
   if (isDisabledAuthFile(file)) return false;
-  if (provider === 'gemini-cli' && isRuntimeOnlyAuthFile(file)) return false;
   return true;
 };
 
-/**
- * Derive the set of quota providers this account actually exercised by
- * walking the row's request-path auth indices and resolving each matching
- * file's provider. Accounts that share an email across providers (e.g.
- * antigravity + codex) should only surface quotas for the providers the
- * account actually used in monitored traffic.
- */
-const resolveActiveProvidersForRow = (
+const resolveActiveQuotaProvidersForRow = (
   row: MonitoringAccountRow,
   authState: MonitoringAccountAuthState | undefined
-): Set<QuotaType> => {
-  const active = new Set<QuotaType>();
-  if (!authState) return active;
+): Set<MonitoringAccountQuotaProvider> => {
+  const activeProviders = new Set<MonitoringAccountQuotaProvider>();
+  if (!authState) return activeProviders;
 
   const rowAuthIndices = new Set(
     row.authIndices
       .map((value) => normalizeAuthIndex(value))
       .filter((value): value is string => Boolean(value))
   );
-  if (rowAuthIndices.size === 0) return active;
+  if (rowAuthIndices.size === 0) return activeProviders;
 
   authState.files.forEach((file) => {
     const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
     if (!authIndex || !rowAuthIndices.has(authIndex)) return;
 
-    const provider = resolveQuotaProvider(file);
-    if (provider) active.add(provider);
+    const provider = resolveMonitoringAccountQuotaProvider(file);
+    if (provider) activeProviders.add(provider);
   });
 
-  return active;
+  return activeProviders;
 };
 
 export const buildMonitoringAccountQuotaTargetsByAccount = (
@@ -96,36 +94,35 @@ export const buildMonitoringAccountQuotaTargetsByAccount = (
     rows.map((row) => {
       const bucket = new Map<string, MonitoringAccountQuotaTarget>();
       const authState = authStateByRowId.get(row.id);
-      const activeProviders = resolveActiveProvidersForRow(row, authState);
+      const activeProviders = resolveActiveQuotaProvidersForRow(row, authState);
 
-      if (activeProviders.size > 0) {
-        authState?.files.forEach((file) => {
-          const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
-          if (!authIndex) return;
+      authState?.files.forEach((file) => {
+        const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+        const provider = resolveMonitoringAccountQuotaProvider(file);
+        if (!authIndex || !provider || !activeProviders.has(provider)) return;
+        if (!isQuotaTargetable(file)) return;
 
-          const provider = resolveQuotaProvider(file);
-          if (!provider || !activeProviders.has(provider)) return;
-          if (!isProviderTargetable(file, provider)) return;
+        const dedupeKey = `${provider}::${authIndex}::${file.name}`;
+        if (bucket.has(dedupeKey)) return;
 
-          const dedupeKey = `${authIndex}::${file.name}`;
-          if (bucket.has(dedupeKey)) return;
-
-          bucket.set(dedupeKey, {
-            key: dedupeKey,
-            provider,
-            authIndex,
-            authLabel: readAuthFileQuotaLabel(file, authIndex),
-            fileName: file.name,
-            accountId: provider === 'codex' ? resolveCodexChatgptAccountId(file) : null,
-            planType: provider === 'codex' ? resolveCodexPlanType(file) : null,
-          });
+        bucket.set(dedupeKey, {
+          key: dedupeKey,
+          provider,
+          authIndex,
+          authLabel: readAuthFileQuotaLabel(file, authIndex),
+          fileName: file.name,
+          file,
+          accountId: provider === 'codex' ? resolveCodexChatgptAccountId(file) : null,
+          planType: provider === 'codex' ? resolveCodexPlanType(file) : null,
         });
-      }
+      });
 
       return [
         row.account,
-        Array.from(bucket.values()).sort((left, right) =>
-          left.authLabel.localeCompare(right.authLabel)
+        Array.from(bucket.values()).sort(
+          (left, right) =>
+            left.authLabel.localeCompare(right.authLabel) ||
+            left.provider.localeCompare(right.provider)
         ),
       ] as const;
     })

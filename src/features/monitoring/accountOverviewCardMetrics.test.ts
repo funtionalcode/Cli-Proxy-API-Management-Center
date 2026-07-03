@@ -9,6 +9,8 @@ describe('accountOverviewCardMetrics', () => {
       { key: 'output-tokens', label: 'Output', value: '30' },
       { key: 'total-tokens', label: 'Total', value: '100' },
       { key: 'input-tokens', label: 'Input', value: '70' },
+      { key: 'cache-creation-tokens', label: 'Cache Create', value: '5' },
+      { key: 'cache-read-tokens', label: 'Cache Read', value: '12' },
     ];
 
     expect(sortAccountOverviewCardMetrics(metrics).map((metric) => metric.key)).toEqual([
@@ -16,6 +18,8 @@ describe('accountOverviewCardMetrics', () => {
       'input-tokens',
       'output-tokens',
       'cached-tokens',
+      'cache-creation-tokens',
+      'cache-read-tokens',
     ]);
   });
 });

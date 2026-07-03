@@ -7,6 +7,9 @@ const { mocks } = vi.hoisted(() => {
     mocks: {
       list: vi.fn(),
       saveJsonObject: vi.fn(),
+      deleteFiles: vi.fn(),
+      patchFields: vi.fn(),
+      patchFieldsForAuthIndexes: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
     },
@@ -35,6 +38,9 @@ vi.mock('@/services/api', () => ({
   authFilesApi: {
     list: mocks.list,
     saveJsonObject: mocks.saveJsonObject,
+    deleteFiles: mocks.deleteFiles,
+    patchFields: mocks.patchFields,
+    patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
   },
 }));
 
@@ -89,11 +95,17 @@ const mountUseAuthFilesData = (): UseAuthFilesDataHarness => {
 beforeEach(() => {
   mocks.list.mockReset();
   mocks.saveJsonObject.mockReset();
+  mocks.deleteFiles.mockReset();
+  mocks.patchFields.mockReset();
+  mocks.patchFieldsForAuthIndexes.mockReset();
   mocks.showNotification.mockReset();
   mocks.showConfirmation.mockReset();
 
   mocks.list.mockResolvedValue({ files: [] });
   mocks.saveJsonObject.mockResolvedValue(undefined);
+  mocks.deleteFiles.mockResolvedValue({ deleted: 0, failed: [], files: [] });
+  mocks.patchFields.mockResolvedValue(undefined);
+  mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
 });
 
 describe('buildPastedAuthJsonPayload', () => {
@@ -135,13 +147,58 @@ describe('buildPastedAuthJsonPayload', () => {
       })
     );
 
-    expect(result.resolvedFileName).toBe('session-user-tag-example-com.codex.json');
+    expect(result.resolvedFileName).toBe('codex-session-session.user+tag@example.com.json');
     expect(result.authJson).toMatchObject({
       type: 'codex',
       email: 'Session.User+tag@example.com',
       account_id: 'session-account',
       access_token: 'plain-access-token',
     });
+  });
+
+  it('derives a default file name for multi-account sub2api auth JSON', () => {
+    const result = buildPastedAuthJsonPayload(
+      'sub2api',
+      'codex-account.json',
+      JSON.stringify({
+        exported_at: '2026-06-01T12:00:00.000Z',
+        proxies: [],
+        accounts: [
+          {
+            name: 'First OpenAI',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              access_token: 'first-access-token',
+              email: 'first@example.com',
+            },
+          },
+          {
+            name: 'Second OpenAI',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              access_token: 'second-access-token',
+              email: 'second@example.com',
+            },
+          },
+        ],
+      })
+    );
+
+    expect(result.resolvedFileName).toBe('sub2api-codex-accounts.codex.json');
+    expect(result.authJson).toEqual([
+      expect.objectContaining({
+        type: 'codex',
+        email: 'first@example.com',
+        access_token: 'first-access-token',
+      }),
+      expect.objectContaining({
+        type: 'codex',
+        email: 'second@example.com',
+        access_token: 'second-access-token',
+      }),
+    ]);
   });
 });
 
@@ -158,9 +215,9 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       .getCurrent()
       .savePastedAuthJson('session', 'codex-account.json', sessionInput);
 
-    expect(savedName).toBe('session-user-tag-example-com.codex.json');
+    expect(savedName).toBe('codex-session-session.user+tag@example.com.json');
     expect(mocks.saveJsonObject).toHaveBeenCalledWith(
-      'session-user-tag-example-com.codex.json',
+      'codex-session-session.user+tag@example.com.json',
       expect.objectContaining({
         type: 'codex',
         email: 'Session.User+tag@example.com',
@@ -169,7 +226,7 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       })
     );
     expect(mocks.showNotification).toHaveBeenCalledWith(
-      'auth_files.paste_success:session-user-tag-example-com.codex.json',
+      'auth_files.paste_success:codex-session-session.user+tag@example.com.json',
       'success'
     );
     expect(mocks.list).toHaveBeenCalledTimes(1);
@@ -184,10 +241,60 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       access_token: 'existing-access-token',
     };
 
-    const savedName = await hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', JSON.stringify(cpaInput));
+    const savedName = await hook
+      .getCurrent()
+      .savePastedAuthJson('cpa', 'custom-auth.json', JSON.stringify(cpaInput));
 
     expect(savedName).toBe('custom-auth.json');
     expect(mocks.saveJsonObject).toHaveBeenCalledWith('custom-auth.json', cpaInput);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it('saves converted sub2api JSON as a CPA auth array', async () => {
+    const hook = mountUseAuthFilesData();
+    const sub2apiInput = JSON.stringify({
+      exported_at: '2026-06-01T12:00:00.000Z',
+      proxies: [],
+      accounts: [
+        {
+          name: 'First OpenAI',
+          platform: 'openai',
+          type: 'oauth',
+          credentials: {
+            access_token: 'first-access-token',
+            email: 'first@example.com',
+          },
+        },
+        {
+          name: 'Second OpenAI',
+          platform: 'openai',
+          type: 'oauth',
+          credentials: {
+            access_token: 'second-access-token',
+            email: 'second@example.com',
+          },
+        },
+      ],
+    });
+
+    const savedName = await hook
+      .getCurrent()
+      .savePastedAuthJson('sub2api', 'codex-account.json', sub2apiInput);
+
+    expect(savedName).toBe('sub2api-codex-accounts.codex.json');
+    expect(mocks.saveJsonObject).toHaveBeenCalledWith('sub2api-codex-accounts.codex.json', [
+      expect.objectContaining({
+        type: 'codex',
+        email: 'first@example.com',
+        access_token: 'first-access-token',
+      }),
+      expect.objectContaining({
+        type: 'codex',
+        email: 'second@example.com',
+        access_token: 'second-access-token',
+      }),
+    ]);
     expect(mocks.list).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
@@ -294,7 +401,9 @@ describe('useAuthFilesData savePastedAuthJson', () => {
     const hook = mountUseAuthFilesData();
     const invalidInput = JSON.stringify({ foo: 'bar' });
 
-    await expect(hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', invalidInput)).rejects.toThrow();
+    await expect(
+      hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', invalidInput)
+    ).rejects.toThrow();
 
     expect(mocks.saveJsonObject).not.toHaveBeenCalled();
     expect(mocks.showNotification).not.toHaveBeenCalled();
@@ -313,9 +422,9 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       new Error('upload failed for token sk-secret-value')
     );
 
-    await expect(hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)).rejects.toThrow(
-      'notification.save_failed'
-    );
+    await expect(
+      hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)
+    ).rejects.toThrow('notification.save_failed');
 
     expect(mocks.showNotification).not.toHaveBeenCalled();
     expect(mocks.list).not.toHaveBeenCalled();
@@ -393,12 +502,12 @@ describe('useAuthFilesData savePastedAuthJson', () => {
     });
     mocks.saveJsonObject.mockRejectedValueOnce(new Error('upload failed'));
 
-    await expect(hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)).rejects.toThrow(
-      'notification.save_failed'
-    );
-    await expect(hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)).resolves.toBe(
-      'custom-auth.json'
-    );
+    await expect(
+      hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)
+    ).rejects.toThrow('notification.save_failed');
+    await expect(
+      hook.getCurrent().savePastedAuthJson('cpa', 'custom-auth.json', validInput)
+    ).resolves.toBe('custom-auth.json');
 
     expect(mocks.saveJsonObject).toHaveBeenCalledTimes(2);
     expect(mocks.list).toHaveBeenCalledTimes(1);
@@ -406,6 +515,116 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       'auth_files.paste_success:custom-auth.json',
       'success'
     );
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData handleDeleteAll', () => {
+  it('deletes only the provided filtered files for custom result filters', async () => {
+    const hook = mountUseAuthFilesData();
+    const resetResultFilters = vi.fn();
+    const resetFilterToAll = vi.fn();
+
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        { name: 'codex-limited.json', type: 'codex' },
+        { name: 'codex-ok.json', type: 'codex' },
+      ],
+    });
+    mocks.deleteFiles.mockResolvedValueOnce({
+      deleted: 1,
+      failed: [],
+      files: ['codex-limited.json'],
+    });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+
+    act(() => {
+      hook.getCurrent().handleDeleteAll({
+        filter: 'all',
+        problemOnly: false,
+        disabledOnly: false,
+        healthyOnly: false,
+        filteredFiles: [{ name: 'codex-limited.json', type: 'codex' }],
+        onResetFilterToAll: resetFilterToAll,
+        onResetProblemOnly: vi.fn(),
+        onResetDisabledOnly: vi.fn(),
+        onResetHealthyOnly: vi.fn(),
+        onResetResultFilters: resetResultFilters,
+      });
+    });
+
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void> }
+      | undefined;
+    expect(confirmation?.onConfirm).toBeTypeOf('function');
+    expect(mocks.showConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'auth_files.delete_filtered_result_confirm_file_scope',
+      })
+    );
+
+    await act(async () => {
+      await confirmation?.onConfirm?.();
+    });
+
+    expect(mocks.deleteFiles).toHaveBeenCalledWith(['codex-limited.json']);
+    expect(resetFilterToAll).not.toHaveBeenCalled();
+    expect(resetResultFilters).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.delete_filtered_result_success',
+      'success'
+    );
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData batchPatchFields', () => {
+  it('patches selected auth indexes from the same file in one request', async () => {
+    const hook = mountUseAuthFilesData();
+
+    let result: Awaited<ReturnType<ReturnType<typeof useAuthFilesData>['batchPatchFields']>> = null;
+    await act(async () => {
+      result = await hook.getCurrent().batchPatchFields(
+        [
+          { name: 'shared-codex.json', authIndex: 'auth-1' },
+          { name: 'shared-codex.json', authIndex: 'auth-2' },
+          { name: 'shared-codex.json', authIndex: 'auth-1' },
+        ],
+        { priority: 10 }
+      );
+    });
+
+    expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledWith(
+      'shared-codex.json',
+      ['auth-1', 'auth-2'],
+      { priority: 10 }
+    );
+    expect(mocks.patchFields).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: 2, failed: 0, failedNames: [] });
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.batch_fields_success',
+      'success'
+    );
+    hook.unmount();
+  });
+
+  it('falls back to file-level field patching when auth index is absent', async () => {
+    const hook = mountUseAuthFilesData();
+
+    let result: Awaited<ReturnType<ReturnType<typeof useAuthFilesData>['batchPatchFields']>> = null;
+    await act(async () => {
+      result = await hook
+        .getCurrent()
+        .batchPatchFields([{ name: 'single-codex.json' }], { websockets: false });
+    });
+
+    expect(mocks.patchFields).toHaveBeenCalledWith('single-codex.json', { websockets: false });
+    expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: 1, failed: 0, failedNames: [] });
     hook.unmount();
   });
 });

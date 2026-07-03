@@ -1,0 +1,396 @@
+@use '@/styles/variables' as v;
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 24px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-backdrop-filter);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+
+  .headerLeft,
+  .headerRight {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 24px;
+  }
+
+  .headerLeft {
+    flex: 1 1 auto;
+  }
+
+  .headerRight {
+    flex: 0 0 auto;
+  }
+
+  .connectionStatus {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    .statusDot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 0 8px currentColor;
+
+      &.connected { color: #10b981; background: #10b981; }
+      &.connecting { color: #f59e0b; background: #f59e0b; animation: pulse 1.5s infinite; }
+      &.disconnected { color: #ef4444; background: #ef4444; }
+    }
+
+    .statusInfo {
+      display: flex;
+      flex-direction: column;
+      .statusLabel { font-size: 11px; color: var(--text-tertiary); line-height: 1; margin-bottom: 2px; }
+      .statusValue { font-size: 13px; font-weight: 600; color: #10b981; }
+    }
+  }
+
+  .apiBaseBlock {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    .apiLabel { font-size: 11px; color: var(--text-tertiary); line-height: 1; margin-bottom: 2px; }
+    .apiValue {
+      max-width: min(36vw, 520px);
+      overflow: hidden;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-primary);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .timeDisplay {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    .time { font-size: 16px; font-weight: 600; line-height: 1; white-space: nowrap; }
+    .date { font-size: 12px; color: var(--text-tertiary); }
+  }
+
+  .headerActions {
+    display: flex;
+    gap: 8px;
+
+    .actionBtn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 8px 14px;
+      background: var(--app-surface-muted);
+      border: 1px solid var(--app-border);
+      border-radius: var(--app-radius-md);
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+      cursor: pointer;
+
+      &:hover {
+        background: var(--app-accent-soft);
+        border-color: var(--color-primary);
+        transform: translateY(-1px);
+      }
+    }
+  }
+}
+
+.overviewRow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+.metricsRow {
+  min-width: 0;
+
+  .sectionTitle {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    &::before {
+      content: '';
+      width: 4px;
+      height: 16px;
+      background: var(--color-primary);
+      border-radius: 2px;
+    }
+  }
+}
+
+.chartsRow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+.dataRow {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.18fr) minmax(230px, 0.95fr) minmax(260px, 1.12fr) minmax(240px, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.bottomSummaryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(360px, 1.15fr);
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+
+  .quickStatsPanel,
+  .configCard {
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-backdrop-filter);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--app-radius-md);
+  }
+
+  .quickStatsPanel {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .bentoGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    min-height: 100%;
+
+    .bentoCard {
+      border-right: 1px solid var(--app-border);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      text-decoration: none;
+      color: inherit;
+      position: relative;
+      overflow: hidden;
+
+      &:last-child {
+        border-right: 0;
+      }
+
+      &:hover {
+        transform: none;
+        box-shadow: none;
+
+        .bentoArrow {
+          transform: none;
+          opacity: 0.5;
+        }
+      }
+
+      .bentoIcon {
+        width: 38px;
+        height: 38px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--app-accent-soft);
+        color: var(--color-primary);
+        border-radius: 10px;
+      }
+
+      .bentoContent {
+        display: flex;
+        flex-direction: column;
+        .bentoValue { font-size: 30px; font-weight: 700; line-height: 1.2; order: 2; }
+        .bentoLabel { font-size: 14px; color: var(--text-primary); margin-top: 4px; order: 1; }
+        .bentoSublabel {
+          order: 3;
+          font-size: 12px;
+          color: var(--text-muted);
+          margin-top: 8px;
+          line-height: 1.4;
+        }
+      }
+
+      .bentoArrow {
+        position: absolute;
+        bottom: 16px;
+        right: 18px;
+        font-size: 14px;
+        color: var(--color-primary);
+        font-weight: 600;
+        opacity: 0.5;
+        transition: all 0.2s;
+      }
+    }
+  }
+
+  .configCard {
+    padding: 16px 20px;
+
+    .configHeader {
+      margin-bottom: 12px;
+      h3 { font-size: 16px; font-weight: 600; margin: 0; }
+    }
+
+    .configGrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 18px;
+
+      .configItem {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+
+        &.fullWidth {
+          grid-column: 1 / -1;
+        }
+
+        .configLabel { font-size: 13px; color: var(--text-tertiary); }
+        .configValue {
+          font-size: 13px; font-weight: 600;
+          &.on { color: #10b981; }
+          &.off { color: var(--text-muted); }
+        }
+        .configValueMono {
+          min-width: 0;
+          overflow: hidden;
+          font-family: v.$font-mono;
+          font-size: 12px;
+          color: var(--color-primary);
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .configBadge {
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          background: var(--app-accent-soft);
+          color: var(--color-primary);
+        }
+      }
+    }
+
+    .configLink {
+      display: inline-block;
+      margin-top: 14px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--color-primary);
+      text-decoration: none;
+      &:hover { text-decoration: underline; }
+    }
+  }
+}
+
+.configBadgeRoundRobin {
+  color: var(--color-primary);
+  background: var(--app-accent-soft);
+}
+
+.configBadgeFillFirst {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.configBadgeUnknown {
+  color: var(--text-tertiary);
+  background: var(--app-surface-muted);
+}
+
+@keyframes pulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@media (max-width: 1200px) {
+  .dataRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bottomSummaryRow .bentoGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .header {
+    flex-wrap: wrap;
+    gap: 12px;
+
+    .headerRight {
+      margin-left: auto;
+    }
+  }
+
+  .bottomSummaryRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+
+    .headerLeft,
+    .headerRight {
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .apiBaseBlock .apiValue {
+      max-width: 54vw;
+    }
+  }
+
+  .dataRow {
+    grid-template-columns: 1fr;
+  }
+
+  .bottomSummaryRow .bentoGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .bottomSummaryRow .bentoGrid .bentoCard {
+    border-right: 0;
+    border-bottom: 1px solid var(--app-border);
+  }
+}
+
+@media (max-width: 520px) {
+  .header {
+    padding: 12px;
+
+    .headerLeft,
+    .headerRight {
+      flex-wrap: wrap;
+    }
+
+    .timeDisplay {
+      align-items: flex-start;
+      width: 100%;
+    }
+  }
+
+  .bottomSummaryRow .configCard .configGrid {
+    grid-template-columns: 1fr;
+  }
+}

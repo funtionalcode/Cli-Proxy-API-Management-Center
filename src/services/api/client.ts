@@ -7,10 +7,17 @@ import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { ApiClientConfig, ApiError } from '@/types';
 import {
   BUILD_DATE_HEADER_KEYS,
+  CPA_SUPPORT_PLUGIN_HEADER_KEYS,
   REQUEST_TIMEOUT_MS,
   VERSION_HEADER_KEYS
 } from '@/utils/constants';
 import { computeApiUrl } from '@/utils/connection';
+import {
+  handleDemoApiRequest,
+  handleDemoFormRequest,
+  handleDemoRawRequest,
+} from '@/features/demo/demoApi';
+import { isDemoMode } from '@/features/demo/demoMode';
 
 class ApiClient {
   private instance: AxiosInstance;
@@ -81,6 +88,19 @@ class ApiClient {
     return null;
   }
 
+  private readBooleanHeader(
+    headers: Record<string, unknown> | undefined,
+    keys: string[]
+  ): boolean | null {
+    const value = this.readHeader(headers, keys);
+    if (value === null) return null;
+
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return null;
+  }
+
   /**
    * 设置请求/响应拦截器
    */
@@ -111,12 +131,20 @@ class ApiClient {
         const headers = response.headers as Record<string, string | undefined>;
         const version = this.readHeader(headers, VERSION_HEADER_KEYS);
         const buildDate = this.readHeader(headers, BUILD_DATE_HEADER_KEYS);
+        const supportsPlugin = this.readBooleanHeader(headers, CPA_SUPPORT_PLUGIN_HEADER_KEYS);
 
         // 触发版本更新事件（后续通过 store 处理）
         if (version || buildDate) {
           window.dispatchEvent(
             new CustomEvent('server-version-update', {
               detail: { version: version || null, buildDate: buildDate || null }
+            })
+          );
+        }
+        if (supportsPlugin !== null) {
+          window.dispatchEvent(
+            new CustomEvent('server-plugin-support-update', {
+              detail: { supportsPlugin }
             })
           );
         }
@@ -172,6 +200,9 @@ class ApiClient {
    * GET 请求
    */
   async get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoApiRequest<T>('get', url, undefined, config);
+    }
     const response = await this.instance.get<T>(url, config);
     return response.data;
   }
@@ -180,6 +211,9 @@ class ApiClient {
    * POST 请求
    */
   async post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoApiRequest<T>('post', url, data, config);
+    }
     const response = await this.instance.post<T>(url, data, config);
     return response.data;
   }
@@ -188,6 +222,9 @@ class ApiClient {
    * PUT 请求
    */
   async put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoApiRequest<T>('put', url, data, config);
+    }
     const response = await this.instance.put<T>(url, data, config);
     return response.data;
   }
@@ -196,6 +233,9 @@ class ApiClient {
    * PATCH 请求
    */
   async patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoApiRequest<T>('patch', url, data, config);
+    }
     const response = await this.instance.patch<T>(url, data, config);
     return response.data;
   }
@@ -204,6 +244,9 @@ class ApiClient {
    * DELETE 请求
    */
   async delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoApiRequest<T>('delete', url, undefined, config);
+    }
     const response = await this.instance.delete<T>(url, config);
     return response.data;
   }
@@ -212,6 +255,9 @@ class ApiClient {
    * 获取原始响应（用于下载等场景）
    */
   async getRaw(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoRawRequest(url, config);
+    }
     return this.instance.get(url, config);
   }
 
@@ -223,6 +269,9 @@ class ApiClient {
     formData: FormData,
     config?: AxiosRequestConfig
   ): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoFormRequest<T>(url, formData, config);
+    }
     const response = await this.instance.post<T>(url, formData, {
       ...config,
       headers: {
@@ -237,6 +286,9 @@ class ApiClient {
    * 保留对 axios.request 的访问，便于下载等场景
    */
   async requestRaw(config: AxiosRequestConfig): Promise<AxiosResponse> {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return handleDemoRawRequest(config.url || '/', config);
+    }
     return this.instance.request(config);
   }
 }

@@ -47,7 +47,7 @@ type Layer = {
 
 type TransitionDirection = 'forward' | 'backward';
 
-type TransitionVariant = 'vertical' | 'ios';
+type TransitionVariant = 'vertical' | 'ios' | 'none';
 
 export function PageTransition({
   render,
@@ -94,6 +94,7 @@ export function PageTransition({
     scrollPositionsRef.current.set(currentLayerKey, exitScrollOffset);
 
     enterScrollOffsetRef.current = scrollPositionsRef.current.get(location.key) ?? 0;
+    const enterScrollOffset = enterScrollOffsetRef.current;
     const resolveOrderIndex = (pathname?: string) => {
       if (!getRouteOrder || !pathname) return null;
       const index = getRouteOrder(pathname);
@@ -104,6 +105,26 @@ export function PageTransition({
     const nextVariant: TransitionVariant = getTransitionVariant
       ? getTransitionVariant(currentLayerPathname ?? '', location.pathname)
       : 'vertical';
+
+    if (nextVariant === 'none') {
+      const nextCurrent: Layer = { key: location.key, location, status: 'current' };
+      nextLayersRef.current = null;
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setLayers((prev) => {
+          const previousCurrent = prev.find((layer) => layer.status === 'current');
+          if (previousCurrent?.key === nextCurrent.key) return prev;
+          return [nextCurrent];
+        });
+      });
+      if (scrollContainer && exitScrollOffset !== enterScrollOffset) {
+        scrollContainer.scrollTo({ top: enterScrollOffset, left: 0, behavior: 'auto' });
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
 
     let nextDirection: TransitionDirection =
       fromIndex === null || toIndex === null || fromIndex === toIndex

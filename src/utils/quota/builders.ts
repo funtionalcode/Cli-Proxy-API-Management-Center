@@ -3,139 +3,18 @@
  */
 
 import type {
+  AntigravityQuotaBucket,
   AntigravityQuotaGroup,
-  AntigravityQuotaGroupDefinition,
   AntigravityQuotaInfo,
   AntigravityModelsPayload,
-  GeminiCliParsedBucket,
-  GeminiCliQuotaBucketState,
+  AntigravityQuotaSummaryPayload,
   KimiUsagePayload,
   KimiUsageDetail,
   KimiLimitItem,
   KimiLimitWindow,
   KimiQuotaRow,
 } from '@/types';
-import {
-  ANTIGRAVITY_QUOTA_GROUPS,
-  GEMINI_CLI_GROUP_LOOKUP,
-  GEMINI_CLI_GROUP_ORDER,
-} from './constants';
-import { normalizeQuotaFraction } from './parsers';
-import { isIgnoredGeminiCliModel } from './validators';
-
-export function pickEarlierResetTime(current?: string, next?: string): string | undefined {
-  if (!current) return next;
-  if (!next) return current;
-  const currentTime = new Date(current).getTime();
-  const nextTime = new Date(next).getTime();
-  if (Number.isNaN(currentTime)) return next;
-  if (Number.isNaN(nextTime)) return current;
-  return currentTime <= nextTime ? current : next;
-}
-
-export function minNullableNumber(current: number | null, next: number | null): number | null {
-  if (current === null) return next;
-  if (next === null) return current;
-  return Math.min(current, next);
-}
-
-export function buildGeminiCliQuotaBuckets(
-  buckets: GeminiCliParsedBucket[]
-): GeminiCliQuotaBucketState[] {
-  if (buckets.length === 0) return [];
-
-  type GeminiCliQuotaBucketGroup = {
-    id: string;
-    label: string;
-    tokenType: string | null;
-    modelIds: string[];
-    preferredModelId?: string;
-    preferredBucket?: GeminiCliParsedBucket;
-    fallbackRemainingFraction: number | null;
-    fallbackRemainingAmount: number | null;
-    fallbackResetTime: string | undefined;
-  };
-
-  const grouped = new Map<string, GeminiCliQuotaBucketGroup>();
-
-  buckets.forEach((bucket) => {
-    if (isIgnoredGeminiCliModel(bucket.modelId)) return;
-    const group = GEMINI_CLI_GROUP_LOOKUP.get(bucket.modelId);
-    const groupId = group?.id ?? bucket.modelId;
-    const label = group?.label ?? bucket.modelId;
-    const tokenKey = bucket.tokenType ?? '';
-    const mapKey = `${groupId}::${tokenKey}`;
-    const existing = grouped.get(mapKey);
-
-    if (!existing) {
-      const preferredModelId = group?.preferredModelId;
-      const preferredBucket =
-        preferredModelId && bucket.modelId === preferredModelId ? bucket : undefined;
-      grouped.set(mapKey, {
-        id: `${groupId}${tokenKey ? `-${tokenKey}` : ''}`,
-        label,
-        tokenType: bucket.tokenType,
-        modelIds: [bucket.modelId],
-        preferredModelId,
-        preferredBucket,
-        fallbackRemainingFraction: bucket.remainingFraction,
-        fallbackRemainingAmount: bucket.remainingAmount,
-        fallbackResetTime: bucket.resetTime,
-      });
-      return;
-    }
-
-    existing.fallbackRemainingFraction = minNullableNumber(
-      existing.fallbackRemainingFraction,
-      bucket.remainingFraction
-    );
-    existing.fallbackRemainingAmount = minNullableNumber(
-      existing.fallbackRemainingAmount,
-      bucket.remainingAmount
-    );
-    existing.fallbackResetTime = pickEarlierResetTime(existing.fallbackResetTime, bucket.resetTime);
-    existing.modelIds.push(bucket.modelId);
-
-    if (existing.preferredModelId && bucket.modelId === existing.preferredModelId) {
-      existing.preferredBucket = bucket;
-    }
-  });
-
-  const toGroupOrder = (bucket: GeminiCliQuotaBucketGroup): number => {
-    const tokenSuffix = bucket.tokenType ? `-${bucket.tokenType}` : '';
-    const groupId = bucket.id.endsWith(tokenSuffix)
-      ? bucket.id.slice(0, bucket.id.length - tokenSuffix.length)
-      : bucket.id;
-    return GEMINI_CLI_GROUP_ORDER.get(groupId) ?? Number.MAX_SAFE_INTEGER;
-  };
-
-  return Array.from(grouped.values())
-    .sort((a, b) => {
-      const orderDiff = toGroupOrder(a) - toGroupOrder(b);
-      if (orderDiff !== 0) return orderDiff;
-      const tokenTypeA = a.tokenType ?? '';
-      const tokenTypeB = b.tokenType ?? '';
-      return tokenTypeA.localeCompare(tokenTypeB);
-    })
-    .map((bucket) => {
-      const uniqueModelIds = Array.from(new Set(bucket.modelIds));
-      const preferred = bucket.preferredBucket;
-      const remainingFraction = preferred
-        ? preferred.remainingFraction
-        : bucket.fallbackRemainingFraction;
-      const remainingAmount = preferred ? preferred.remainingAmount : bucket.fallbackRemainingAmount;
-      const resetTime = preferred ? preferred.resetTime : bucket.fallbackResetTime;
-      return {
-        id: bucket.id,
-        label: bucket.label,
-        remainingFraction,
-        remainingAmount,
-        resetTime,
-        tokenType: bucket.tokenType,
-        modelIds: uniqueModelIds,
-      };
-    });
-}
+import { normalizeQuotaFraction, normalizeStringValue } from './parsers';
 
 export function getAntigravityQuotaInfo(entry?: AntigravityQuotaInfo): {
   remainingFraction: number | null;
@@ -151,7 +30,7 @@ export function getAntigravityQuotaInfo(entry?: AntigravityQuotaInfo): {
   const remainingFraction = normalizeQuotaFraction(remainingValue);
   const resetValue = quotaInfo.resetTime ?? quotaInfo.reset_time;
   const resetTime = typeof resetValue === 'string' ? resetValue : undefined;
-  const displayName = typeof entry.displayName === 'string' ? entry.displayName : undefined;
+  const displayName = normalizeStringValue(entry.displayName ?? entry.display_name) ?? undefined;
 
   return {
     remainingFraction,
@@ -180,77 +59,296 @@ export function findAntigravityModel(
   return null;
 }
 
-export function buildAntigravityQuotaGroups(
-  models: AntigravityModelsPayload
-): AntigravityQuotaGroup[] {
-  const groups: AntigravityQuotaGroup[] = [];
-  const definitions = new Map(
-    ANTIGRAVITY_QUOTA_GROUPS.map((definition) => [definition.id, definition] as const)
+const ANTIGRAVITY_BUCKET_WINDOW_ORDER = new Map<string, number>([
+  ['5h', 0],
+  ['five-hour', 0],
+  ['five_hour', 0],
+  ['weekly', 1],
+  ['week', 1],
+]);
+
+function toStableId(value: string, fallback: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function getAntigravityWindowOrder(bucket: AntigravityQuotaBucket): number {
+  const window = bucket.window?.toLowerCase();
+  if (!window) return Number.MAX_SAFE_INTEGER;
+  return ANTIGRAVITY_BUCKET_WINDOW_ORDER.get(window) ?? Number.MAX_SAFE_INTEGER;
+}
+
+type AntigravityModelQuotaEntry = {
+  id: string;
+  label: string;
+  remainingFraction: number;
+  resetTime?: string;
+  description: string;
+};
+
+function uniqueStringList(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  values.forEach((value) => {
+    const normalized = normalizeStringValue(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    result.push(normalized);
+  });
+
+  return result;
+}
+
+function getPayloadModelIds(
+  payload: AntigravityQuotaSummaryPayload | undefined,
+  camelKey: keyof AntigravityQuotaSummaryPayload,
+  snakeKey: keyof AntigravityQuotaSummaryPayload
+): string[] {
+  const rawValue = payload?.[camelKey] ?? payload?.[snakeKey];
+  if (!Array.isArray(rawValue)) return [];
+  return uniqueStringList(rawValue.filter((value): value is string => typeof value === 'string'));
+}
+
+function getAntigravityAgentModelIds(payload?: AntigravityQuotaSummaryPayload): string[] {
+  const sorts = payload?.agentModelSorts ?? payload?.agent_model_sorts ?? [];
+  if (!Array.isArray(sorts)) return [];
+
+  return uniqueStringList(
+    sorts.flatMap((sort) =>
+      Array.isArray(sort?.groups)
+        ? sort.groups.flatMap((group) => group?.modelIds ?? group?.model_ids ?? [])
+        : []
+    )
   );
+}
 
-  const buildGroup = (
-    def: AntigravityQuotaGroupDefinition,
-    overrideResetTime?: string
-  ): AntigravityQuotaGroup | null => {
-    const matches = def.identifiers
-      .map((identifier) => findAntigravityModel(models, identifier))
-      .filter((entry): entry is { id: string; entry: AntigravityQuotaInfo } => Boolean(entry));
+function getTieredAntigravityModelIds(
+  payload: AntigravityQuotaSummaryPayload | undefined,
+  tier: string
+): string[] {
+  const tiered = payload?.tieredModelIds ?? payload?.tiered_model_ids;
+  const rawValue = tiered?.[tier];
+  if (!Array.isArray(rawValue)) return [];
+  return uniqueStringList(rawValue.filter((value): value is string => typeof value === 'string'));
+}
 
-    const quotaEntries = matches
-      .map(({ id, entry }) => {
-        const info = getAntigravityQuotaInfo(entry);
-        const remainingFraction = info.remainingFraction ?? (info.resetTime ? 0 : null);
-        if (remainingFraction === null) return null;
-        return {
-          id,
-          remainingFraction,
-          resetTime: info.resetTime,
-          displayName: info.displayName,
-        };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+function resolveAntigravityModelId(
+  id: string,
+  models: AntigravityModelsPayload,
+  payload?: AntigravityQuotaSummaryPayload
+): string {
+  if (models[id]) return id;
 
-    if (quotaEntries.length === 0) return null;
+  const deprecated = payload?.deprecatedModelIds ?? payload?.deprecated_model_ids;
+  const replacement = deprecated?.[id]?.newModelId ?? deprecated?.[id]?.new_model_id;
+  if (replacement && models[replacement]) return replacement;
 
-    const remainingFraction = Math.min(...quotaEntries.map((entry) => entry.remainingFraction));
-    const resetTime =
-      overrideResetTime ?? quotaEntries.map((entry) => entry.resetTime).find(Boolean);
-    const displayName = quotaEntries.map((entry) => entry.displayName).find(Boolean);
-    const label = def.labelFromModel && displayName ? displayName : def.label;
+  return id;
+}
 
-    return {
-      id: def.id,
-      label,
-      models: quotaEntries.map((entry) => entry.id),
-      remainingFraction,
-      resetTime,
-    };
+function getAntigravityModelSearchText(id: string, entry: AntigravityQuotaInfo): string {
+  return [
+    id,
+    entry.displayName,
+    entry.display_name,
+    entry.model,
+    entry.apiProvider,
+    entry.api_provider,
+    entry.modelProvider,
+    entry.model_provider,
+  ]
+    .map((value) => (typeof value === 'string' ? value.toLowerCase() : ''))
+    .join(' ');
+}
+
+function getAntigravityModelNameSearchText(id: string, entry: AntigravityQuotaInfo): string {
+  return [id, entry.displayName, entry.display_name, entry.model]
+    .map((value) => (typeof value === 'string' ? value.toLowerCase() : ''))
+    .join(' ');
+}
+
+function isAntigravityExternalModel(id: string, entry: AntigravityQuotaInfo): boolean {
+  const searchText = getAntigravityModelSearchText(id, entry);
+  return (
+    searchText.includes('anthropic') ||
+    searchText.includes('openai') ||
+    searchText.includes('claude') ||
+    searchText.includes('gpt')
+  );
+}
+
+function isAntigravityGeminiModel(id: string, entry: AntigravityQuotaInfo): boolean {
+  const searchText = getAntigravityModelSearchText(id, entry);
+  const nameSearchText = getAntigravityModelNameSearchText(id, entry);
+  return (
+    nameSearchText.includes('gemini') ||
+    searchText.includes('api_provider_google_gemini') ||
+    searchText.includes('google_gemini')
+  );
+}
+
+function getAntigravityModelQuotaEntry(
+  id: string,
+  models: AntigravityModelsPayload,
+  payload?: AntigravityQuotaSummaryPayload
+): AntigravityModelQuotaEntry | null {
+  const resolvedId = resolveAntigravityModelId(id, models, payload);
+  const model = findAntigravityModel(models, resolvedId);
+  if (!model) return null;
+
+  const info = getAntigravityQuotaInfo(model.entry);
+  const remainingFraction = info.remainingFraction ?? (info.resetTime ? 0 : null);
+  if (remainingFraction === null) return null;
+
+  return {
+    id: model.id,
+    label: info.displayName ?? model.id,
+    remainingFraction,
+    resetTime: info.resetTime,
+    description: model.id,
   };
+}
 
-  const appendGroup = (
-    id: string,
-    overrideResetTime?: string
-  ): AntigravityQuotaGroup | null => {
-    const definition = definitions.get(id);
-    if (!definition) return null;
-    const group = buildGroup(definition, overrideResetTime);
-    if (group) {
-      groups.push(group);
-    }
-    return group;
+function pickEarlierResetTime(current?: string, next?: string): string | undefined {
+  if (!current) return next;
+  if (!next) return current;
+  const currentTime = new Date(current).getTime();
+  const nextTime = new Date(next).getTime();
+  if (Number.isNaN(currentTime)) return next;
+  if (Number.isNaN(nextTime)) return current;
+  return currentTime <= nextTime ? current : next;
+}
+
+function buildAntigravitySharedGroup(
+  id: string,
+  label: string,
+  modelIds: string[],
+  models: AntigravityModelsPayload,
+  payload: AntigravityQuotaSummaryPayload | undefined
+): AntigravityQuotaGroup | null {
+  const entries = uniqueStringList(modelIds)
+    .map((modelId) => getAntigravityModelQuotaEntry(modelId, models, payload))
+    .filter((entry): entry is AntigravityModelQuotaEntry => Boolean(entry));
+
+  if (entries.length === 0) return null;
+
+  const remainingFraction = Math.min(...entries.map((entry) => entry.remainingFraction));
+  const resetTime = entries.reduce<string | undefined>(
+    (current, entry) => pickEarlierResetTime(current, entry.resetTime),
+    undefined
+  );
+  const modelIdsForDescription = entries.map((entry) => entry.id);
+
+  return {
+    id,
+    label,
+    models: modelIdsForDescription,
+    buckets: [
+      {
+        id: `${id}-shared`,
+        label,
+        remainingFraction,
+        resetTime,
+        description: modelIdsForDescription.join(', '),
+      },
+    ],
   };
+}
 
-  appendGroup('claude-gpt');
-  const gemini31ProGroup = appendGroup('gemini-3-1-pro-series');
-  const geminiProGroup = appendGroup('gemini-3-pro');
-  const geminiProResetTime = gemini31ProGroup?.resetTime ?? geminiProGroup?.resetTime;
-  appendGroup('gemini-2-5-flash');
-  appendGroup('gemini-2-5-flash-lite');
-  appendGroup('gemini-2-5-cu');
-  appendGroup('gemini-3-flash');
-  appendGroup('gemini-image', geminiProResetTime);
+export function buildAntigravityQuotaGroupsFromModels(
+  models: AntigravityModelsPayload,
+  payload?: AntigravityQuotaSummaryPayload
+): AntigravityQuotaGroup[] {
+  const modelIds = Object.keys(models);
+  const tabModelIds = new Set(getPayloadModelIds(payload, 'tabModelIds', 'tab_model_ids'));
+  const geminiModelIds = uniqueStringList([
+    ...getAntigravityAgentModelIds(payload),
+    ...getTieredAntigravityModelIds(payload, 'pro'),
+    ...getTieredAntigravityModelIds(payload, 'flash'),
+    ...getTieredAntigravityModelIds(payload, 'flashLite'),
+    ...getPayloadModelIds(payload, 'commandModelIds', 'command_model_ids'),
+    ...getPayloadModelIds(payload, 'imageGenerationModelIds', 'image_generation_model_ids'),
+    ...getPayloadModelIds(payload, 'mqueryModelIds', 'mquery_model_ids'),
+    ...getPayloadModelIds(payload, 'webSearchModelIds', 'web_search_model_ids'),
+    ...getPayloadModelIds(payload, 'commitMessageModelIds', 'commit_message_model_ids'),
+    ...modelIds.filter((id) => isAntigravityGeminiModel(id, models[id])),
+  ]).filter((id) => !tabModelIds.has(id) && models[id] && isAntigravityGeminiModel(id, models[id]));
 
-  return groups;
+  return [
+    buildAntigravitySharedGroup(
+      'claude-gpt',
+      'Claude/GPT',
+      modelIds.filter((id) => isAntigravityExternalModel(id, models[id])),
+      models,
+      payload
+    ),
+    buildAntigravitySharedGroup('gemini', 'Gemini', geminiModelIds, models, payload),
+  ].filter((group): group is AntigravityQuotaGroup => group !== null);
+}
+
+export function buildAntigravityQuotaGroups(
+  payload: AntigravityQuotaSummaryPayload
+): AntigravityQuotaGroup[] {
+  const groups = Array.isArray(payload.groups) ? payload.groups : [];
+  const parsedGroups = groups
+    .map((group, groupIndex): AntigravityQuotaGroup | null => {
+      const label =
+        normalizeStringValue(group.displayName ?? group.display_name) ??
+        `Quota Group ${groupIndex + 1}`;
+      const groupId = toStableId(label, `quota-group-${groupIndex + 1}`);
+      const buckets = Array.isArray(group.buckets) ? group.buckets : [];
+      const parsedBuckets = buckets
+        .map((bucket, bucketIndex): AntigravityQuotaBucket | null => {
+          const remainingFraction = normalizeQuotaFraction(
+            bucket.remainingFraction ?? bucket.remaining_fraction
+          );
+          if (remainingFraction === null) return null;
+
+          const window = normalizeStringValue(bucket.window) ?? undefined;
+          const rawId =
+            normalizeStringValue(bucket.bucketId ?? bucket.bucket_id) ??
+            `${groupId}-${window ?? `bucket-${bucketIndex + 1}`}`;
+          const label = normalizeStringValue(bucket.displayName ?? bucket.display_name) ?? rawId;
+
+          return {
+            id: rawId,
+            label,
+            window,
+            remainingFraction,
+            resetTime: normalizeStringValue(bucket.resetTime ?? bucket.reset_time) ?? undefined,
+            description: normalizeStringValue(bucket.description) ?? undefined,
+          };
+        })
+        .filter((bucket): bucket is AntigravityQuotaBucket => bucket !== null)
+        .sort((a, b) => {
+          const orderDiff = getAntigravityWindowOrder(a) - getAntigravityWindowOrder(b);
+          if (orderDiff !== 0) return orderDiff;
+          return a.label.localeCompare(b.label);
+        });
+
+      if (parsedBuckets.length === 0) return null;
+
+      return {
+        id: groupId,
+        label,
+        description: normalizeStringValue(group.description) ?? undefined,
+        buckets: parsedBuckets,
+      };
+    })
+    .filter((group): group is AntigravityQuotaGroup => group !== null);
+
+  if (parsedGroups.length > 0) return parsedGroups;
+
+  if (payload.models && typeof payload.models === 'object' && !Array.isArray(payload.models)) {
+    return buildAntigravityQuotaGroupsFromModels(payload.models, payload);
+  }
+
+  return [];
 }
 
 function toInt(value: unknown): number | null {
@@ -307,11 +405,11 @@ function kimiResetHint(data: Record<string, unknown>): string | undefined {
 
 function kimiDurationToken(duration: number, rawTimeUnit: unknown): string {
   const unit = typeof rawTimeUnit === 'string' ? rawTimeUnit.trim().toUpperCase() : '';
-  if (unit === 'MINUTES') {
+  if (unit === 'MINUTE' || unit === 'MINUTES') {
     return duration % 60 === 0 ? `${duration / 60}h` : `${duration}m`;
   }
-  if (unit === 'HOURS') return `${duration}h`;
-  if (unit === 'DAYS') return `${duration}d`;
+  if (unit === 'HOUR' || unit === 'HOURS') return `${duration}h`;
+  if (unit === 'DAY' || unit === 'DAYS') return `${duration}d`;
   return `${duration}s`;
 }
 
@@ -393,8 +491,12 @@ export function buildKimiQuotaRows(payload: KimiUsagePayload): KimiQuotaRow[] {
   const limits = payload.limits;
   if (Array.isArray(limits)) {
     limits.forEach((item, idx) => {
-      const detail = (item.detail && typeof item.detail === 'object' ? item.detail : item) as KimiUsageDetail | KimiLimitItem;
-      const window = (item.window && typeof item.window === 'object' ? item.window : {}) as KimiLimitWindow;
+      const detail = (item.detail && typeof item.detail === 'object' ? item.detail : item) as
+        | KimiUsageDetail
+        | KimiLimitItem;
+      const window = (
+        item.window && typeof item.window === 'object' ? item.window : {}
+      ) as KimiLimitWindow;
       const fallbackLabel = kimiLimitLabel(item, detail, window, idx);
       const row = toKimiUsageRow(detail as Record<string, unknown>, fallbackLabel);
       if (row) {

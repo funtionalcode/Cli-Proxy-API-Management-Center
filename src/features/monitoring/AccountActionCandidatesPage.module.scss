@@ -1,0 +1,348 @@
+.page {
+  --action-surface: var(--bg-primary);
+  --action-surface-raised: color-mix(in srgb, var(--bg-primary) 82%, var(--surface-subtle));
+  --action-surface-muted: var(--surface-subtle);
+  --action-line: var(--border-color);
+  --action-line-strong: var(--border-primary);
+  --action-ink: var(--text-primary);
+  --action-muted: var(--text-secondary);
+  --action-accent: var(--primary-color);
+  --action-danger: var(--error-color);
+  --action-warning: var(--warning-color);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  color: var(--action-ink);
+}
+
+.hero,
+.panel {
+  border: 1px solid var(--action-line);
+  background: var(--action-surface);
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--action-danger) 12%, transparent), transparent 34%),
+    repeating-linear-gradient(90deg, transparent 0 18px, color-mix(in srgb, var(--action-line) 42%, transparent) 18px 19px);
+  opacity: 0.55;
+}
+
+.heroMain,
+.heroStats {
+  position: relative;
+  z-index: 1;
+}
+
+.heroMain {
+  display: grid;
+  justify-items: start;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin-bottom: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--action-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--action-surface-raised) 92%, transparent);
+  color: var(--action-muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.backLink:hover {
+  border-color: color-mix(in srgb, var(--action-accent) 45%, var(--action-line-strong));
+  color: var(--action-ink);
+}
+
+.kicker {
+  margin: 0 0 6px;
+  color: var(--action-danger);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(24px, 3.4vw, 38px);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+}
+
+.description {
+  max-width: 820px;
+  margin: 8px 0 0;
+  color: var(--action-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.heroStats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.statCard {
+  min-width: 120px;
+  padding: 10px;
+  border: 1px solid var(--action-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--action-surface-raised) 92%, transparent);
+}
+
+.statValue {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 850;
+}
+
+.statLabel {
+  color: var(--action-muted);
+  font-size: 11px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--action-line);
+  border-radius: 16px;
+  background: var(--action-surface);
+}
+
+.filterGroup,
+.actions,
+.rowActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filterButton,
+.statusBadge,
+.actionBadge,
+.metaPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--action-line);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.filterButton {
+  min-height: 30px;
+  padding: 0 10px;
+  background: var(--action-surface-raised);
+  color: var(--action-muted);
+  cursor: pointer;
+}
+
+.filterButton:hover,
+.filterButtonActive {
+  border-color: color-mix(in srgb, var(--action-accent) 45%, var(--action-line-strong));
+  color: var(--action-ink);
+}
+
+.filterButtonActive {
+  background: color-mix(in srgb, var(--action-accent) 12%, var(--action-surface));
+}
+
+.panel {
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  min-width: 1100px;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--action-line);
+  text-align: left;
+  vertical-align: top;
+  font-size: 12px;
+}
+
+.table th {
+  background: var(--action-surface-muted);
+  color: var(--action-muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.accountCell,
+.fileCell,
+.reasonCell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.accountCell strong,
+.fileCell strong {
+  word-break: break-word;
+}
+
+.accountCell span,
+.fileCell span,
+.reasonCell small,
+.timeCell small {
+  color: var(--action-muted);
+  font-size: 11px;
+}
+
+.reasonCell {
+  max-width: 360px;
+}
+
+.reasonCell strong {
+  color: var(--action-ink);
+  line-height: 1.45;
+}
+
+.errorText {
+  color: #b42318 !important;
+  font-weight: 700;
+}
+
+.statusBadge,
+.actionBadge,
+.metaPill {
+  width: fit-content;
+  padding: 5px 8px;
+}
+
+.statusPending {
+  border-color: color-mix(in srgb, var(--action-danger) 42%, var(--action-line));
+  background: color-mix(in srgb, var(--action-danger) 10%, var(--action-surface));
+  color: var(--action-danger);
+}
+
+.statusResolved,
+.statusDeleted,
+.statusIgnored {
+  background: var(--action-surface-muted);
+  color: var(--action-muted);
+}
+
+.actionDelete {
+  border-color: color-mix(in srgb, var(--action-danger) 38%, var(--action-line));
+  color: var(--action-danger);
+}
+
+.actionReauth {
+  border-color: color-mix(in srgb, var(--action-warning) 42%, var(--action-line));
+  color: var(--action-warning);
+}
+
+.metaPill {
+  font-family: var(--font-mono);
+}
+
+.timeCell {
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+}
+
+.rowActions {
+  min-width: 270px;
+}
+
+.rowActions :global(.btn > span),
+.actions :global(.btn > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.emptyState,
+.errorState {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 42px 16px;
+  color: var(--action-muted);
+  text-align: center;
+}
+
+.errorState {
+  color: var(--action-danger);
+}
+
+.evidenceBox {
+  max-height: 62vh;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--action-line);
+  border-radius: 12px;
+  background: var(--action-surface-muted);
+  color: var(--action-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 900px) {
+  .hero,
+  .toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .heroStats {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .toolbar {
+    display: grid;
+  }
+}

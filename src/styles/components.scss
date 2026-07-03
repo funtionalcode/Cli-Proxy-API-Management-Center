@@ -14,12 +14,16 @@ button:disabled {
   justify-content: center;
   gap: $spacing-sm;
   border: 1px solid transparent;
-  border-radius: $radius-md;
-  padding: 10px 14px;
+  border-radius: var(--app-radius-md);
+  height: 40px;
+  padding: 0 14px;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
   transition: all $transition-fast;
-  background-color: var(--bg-secondary);
+  background-color: var(--app-surface-muted);
   color: var(--text-primary);
 
   &:not(:disabled) {
@@ -36,37 +40,36 @@ button:disabled {
 
   &:focus-visible {
     outline: none;
-    box-shadow:
-      0 0 0 3px var(--primary-ring, color-mix(in srgb, var(--primary-color) 20%, transparent)),
-      var(--shadow);
   }
 
   &.btn-primary {
-    background-color: var(--primary-color);
+    background: var(--primary-color);
     color: var(--primary-contrast, #fff);
     border-color: var(--primary-color);
     box-shadow: 0 8px 18px -14px color-mix(in srgb, var(--primary-color) 72%, transparent);
 
     &:hover {
-      background-color: var(--primary-hover);
+      background: var(--primary-hover);
+      transform: translateY(-1px);
       border-color: var(--primary-hover);
       box-shadow: 0 10px 22px -14px color-mix(in srgb, var(--primary-color) 76%, transparent);
     }
 
     &:active {
-      background-color: var(--primary-active);
+      background: var(--primary-active);
       border-color: var(--primary-active);
+      transform: translateY(0);
     }
   }
 
   &.btn-secondary {
-    background: var(--bg-primary);
-    border-color: var(--border-color);
+    background: var(--app-surface-muted);
+    border-color: var(--app-border);
     color: var(--text-secondary);
 
     &:hover {
-      background: var(--color-primary-light-9);
-      border-color: var(--color-primary-light-7);
+      background: var(--app-accent-soft);
+      border-color: var(--border-hover);
       color: var(--primary-color);
     }
 
@@ -83,7 +86,7 @@ button:disabled {
 
     &:hover {
       color: var(--primary-color);
-      background: var(--color-primary-light-9);
+      background: var(--app-accent-soft);
     }
 
     &:active {
@@ -107,19 +110,75 @@ button:disabled {
     }
   }
 
+  &:focus-visible:not(:disabled) {
+    border-color: var(--focus-border);
+    box-shadow: inset 0 0 0 1px var(--focus-inset);
+  }
+
+  &:not(.btn-primary):not(.btn-danger):focus-visible:not(:disabled) {
+    background: var(--focus-bg);
+    color: var(--focus-text);
+  }
+
+  &.btn-primary:focus-visible:not(:disabled),
+  &.btn-danger:focus-visible:not(:disabled) {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-contrast) 42%, transparent);
+  }
+
   &.btn-full {
     width: 100%;
   }
 
-  &.btn-sm {
-    padding: 8px 10px;
-    font-size: 14px;
+  &:where(.btn-sm) {
+    height: 34px;
+    padding: 0 12px;
+    border-radius: var(--app-radius-md);
+    font-size: 13px;
+    gap: 6px;
+  }
+
+  &:where(.btn-xs) {
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    gap: 6px;
+  }
+
+  &:where(.btn-icon-only) {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+    gap: 0;
+  }
+
+  &:where(.btn-sm):where(.btn-icon-only) {
+    width: 34px;
+    min-width: 34px;
+  }
+
+  &:where(.btn-xs):where(.btn-icon-only) {
+    width: 30px;
+    min-width: 30px;
   }
 
   &:disabled {
     opacity: 0.6;
     cursor: not-allowed;
     box-shadow: none;
+  }
+
+  > span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: inherit;
+    min-width: 0;
+    line-height: inherit;
+  }
+
+  svg {
+    flex-shrink: 0;
   }
 }
 
@@ -141,18 +200,44 @@ button:disabled {
 .input,
 textarea {
   width: 100%;
-  border: 1px solid var(--border-color);
-  border-radius: $radius-md;
+  border: 1px solid var(--app-input-border);
+  border-radius: var(--app-radius-sm);
   padding: 10px 12px;
-  background-color: var(--bg-secondary);
+  background-color: var(--app-input-bg);
   color: var(--text-primary);
-  transition: border-color $transition-fast, box-shadow $transition-fast;
+  transition:
+    border-color $transition-fast,
+    box-shadow $transition-fast;
 
   &:focus {
     outline: none;
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px var(--primary-ring, color-mix(in srgb, var(--primary-color) 20%, transparent));
+    background-color: var(--app-input-bg-focus);
+    border-color: var(--app-input-border-focus);
+    box-shadow: 0 0 0 1px var(--app-input-border-focus) inset;
   }
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.input.input-with-right-element {
+  padding-right: 48px;
+}
+
+.input-right-element {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+}
+
+.input[type='password']::-ms-reveal,
+.input[type='password']::-ms-clear {
+  display: none;
 }
 
 .form-group {
@@ -173,11 +258,13 @@ textarea {
 }
 
 .card {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: $radius-lg;
-  box-shadow: var(--shadow);
-  padding: $spacing-lg;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-backdrop-filter);
+  -webkit-backdrop-filter: var(--glass-backdrop-filter);
+  padding: var(--app-card-padding);
 }
 
 .card-header {
@@ -241,12 +328,12 @@ textarea {
 
 .notification-container {
   position: fixed;
-  top: $spacing-lg;
+  top: calc(var(--header-height, 50px) + 12px);
   right: $spacing-lg;
   display: flex;
   flex-direction: column;
   gap: $spacing-sm;
-  z-index: $z-notification;
+  z-index: 10050;
   max-width: 360px;
 }
 
@@ -274,11 +361,13 @@ textarea {
 
 .notification {
   padding: $spacing-md;
-  border-radius: $radius-md;
-  box-shadow: var(--shadow);
-  border: 1px solid var(--border-color);
-  background: var(--bg-primary);
+  border-radius: var(--app-radius-md);
+  box-shadow: var(--glass-shadow);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
   color: var(--text-primary);
+  backdrop-filter: var(--glass-backdrop-filter);
+  -webkit-backdrop-filter: var(--glass-backdrop-filter);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -320,7 +409,9 @@ textarea {
     color: var(--text-secondary);
     border-radius: $radius-md;
     cursor: pointer;
-    transition: color 0.15s ease, background-color 0.15s ease;
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease;
 
     svg {
       display: block;
@@ -328,7 +419,7 @@ textarea {
 
     &:hover {
       color: var(--text-primary);
-      background: var(--bg-secondary);
+      background: var(--surface-subtle-hover);
     }
   }
 }
@@ -370,7 +461,7 @@ textarea {
 
   input:checked + .track {
     background: var(--primary-color);
-    box-shadow: 0 0 0 3px var(--color-primary-light-8);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-active) 70%, transparent);
   }
 
   input:checked + .track .thumb {
@@ -392,9 +483,9 @@ textarea {
 .pill {
   padding: 4px 10px;
   border-radius: $radius-full;
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
   color: var(--text-secondary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-subtle);
   font-size: 12px;
 }
 
@@ -513,15 +604,18 @@ textarea {
   width: 32px;
   height: 32px;
   padding: 0;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   cursor: pointer;
   border-radius: $radius-full;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.15s ease;
   z-index: 10;
 
   svg {
@@ -530,7 +624,7 @@ textarea {
 
   &:hover {
     color: var(--text-primary);
-    background: var(--bg-tertiary);
+    background: var(--surface-subtle-hover);
     transform: scale(1.1);
   }
 
@@ -546,7 +640,7 @@ textarea {
 
   &:disabled:hover {
     color: var(--text-secondary);
-    background: var(--bg-secondary);
+    background: var(--surface-subtle);
     transform: none;
   }
 }
@@ -634,10 +728,10 @@ textarea {
 }
 
 .empty-state {
-  border: 1px dashed var(--border-color);
+  border: 1px dashed var(--border-subtle-dashed);
   border-radius: $radius-lg;
   padding: $spacing-lg;
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
   display: flex;
   justify-content: space-between;
   gap: $spacing-md;
@@ -653,7 +747,8 @@ textarea {
     width: 42px;
     height: 42px;
     border-radius: $radius-full;
-    border: 2px solid var(--border-color);
+    border: 2px solid var(--border-subtle);
+    background: var(--surface-subtle-strong);
     display: grid;
     place-items: center;
     color: var(--text-secondary);
@@ -726,8 +821,9 @@ textarea {
 
   .item-subtitle {
     color: var(--text-secondary);
-    font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
-      monospace;
+    font-family:
+      ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
     word-break: break-all;
   }
 
@@ -781,7 +877,7 @@ textarea {
   }
 
   .table-header {
-    background: var(--bg-secondary);
+    background: var(--surface-subtle-strong);
     font-weight: 700;
     color: var(--text-primary);
   }
@@ -827,14 +923,16 @@ textarea {
 }
 
 .log-viewer {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
   border-radius: $radius-md;
   padding: $spacing-md;
   max-height: 520px;
   overflow: auto;
   white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
   color: var(--text-primary);
 }
 

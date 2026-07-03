@@ -4,11 +4,11 @@ import { authFilesApi, type AuthFileFieldsPatch } from '@/services/api';
 import type { AuthFileItem } from '@/types';
 import { useNotificationStore } from '@/stores';
 import {
-  applyCodexAuthFileWebsockets,
+  applyAuthFileWebsockets,
   normalizeProviderKey,
   parsePriorityValue,
-  parseWeightValue,
-  readCodexAuthFileWebsockets,
+  readAuthFileWebsockets,
+  supportsAuthFileWebsockets,
 } from '@/features/authFiles/constants';
 
 type AuthFileHeaders = Record<string, string>;
@@ -24,7 +24,6 @@ export type PrefixProxyEditorField =
   | 'prefix'
   | 'proxyUrl'
   | 'priority'
-  | 'weight'
   | 'websockets'
   | 'note'
   | 'headersText';
@@ -45,7 +44,6 @@ export type PrefixProxyEditorState = {
   prefix: string;
   proxyUrl: string;
   priority: string;
-  weight: string;
   websockets: boolean;
   websocketsTouched: boolean;
   note: string;
@@ -120,20 +118,6 @@ const buildInvalidContentPreview = (text: string): string => {
   return `${trimmed.slice(0, INVALID_CONTENT_PREVIEW_LIMIT)}\n...`;
 };
 
-const buildInvalidAuthFileContentState = (
-  text: string,
-  resolveError: (key: AuthFileContentErrorKey) => string
-): Pick<
-  PrefixProxyEditorState,
-  'loading' | 'error' | 'rawText' | 'originalText' | 'invalidContentPreview'
-> => ({
-  loading: false,
-  error: resolveError(getAuthFileContentErrorKey(text)),
-  rawText: text,
-  originalText: text,
-  invalidContentPreview: buildInvalidContentPreview(text),
-});
-
 const getAuthFileContentErrorKey = (text: string): AuthFileContentErrorKey => {
   const head = text.trimStart().slice(0, 4096).toLowerCase();
   const looksLikeHtml =
@@ -151,6 +135,20 @@ const getAuthFileContentErrorKey = (text: string): AuthFileContentErrorKey => {
     ? 'auth_files.prefix_proxy_html_challenge'
     : 'auth_files.prefix_proxy_invalid_json';
 };
+
+const buildInvalidAuthFileContentState = (
+  text: string,
+  resolveError: (key: AuthFileContentErrorKey) => string
+): Pick<
+  PrefixProxyEditorState,
+  'loading' | 'error' | 'rawText' | 'originalText' | 'invalidContentPreview'
+> => ({
+  loading: false,
+  error: resolveError(getAuthFileContentErrorKey(text)),
+  rawText: text,
+  originalText: text,
+  invalidContentPreview: buildInvalidContentPreview(text),
+});
 
 const hasKeys = (value: Record<string, unknown> | AuthFileFieldsPatch | null): boolean =>
   Boolean(value && Object.keys(value).length > 0);
@@ -251,30 +249,11 @@ const buildAuthFileFieldsPatch = (
     }
   }
 
-  const originalWeight = parseWeightValue(original.weight);
-  const weightText = editor.weight.trim();
-  const nextWeight = parseWeightValue(weightText);
-  if (!weightText) {
-    if (originalWeight !== undefined) {
-      patch.weight = 0;
-    }
-  } else if (nextWeight !== undefined && nextWeight !== originalWeight) {
-    patch.weight = nextWeight;
-  }
-
   if (editor.noteTouched) {
     const originalNote = normalizeTextField(original.note);
     const nextNote = editor.note.trim();
     if (nextNote !== originalNote) {
       patch.note = nextNote;
-    }
-  }
-
-  if (editor.providerKey === 'codex' && editor.websocketsTouched) {
-    const originalWebsockets = readCodexAuthFileWebsockets(original);
-    const nextWebsockets = Boolean(editor.websockets);
-    if (nextWebsockets !== originalWebsockets) {
-      patch.websockets = nextWebsockets;
     }
   }
 
@@ -289,6 +268,14 @@ const buildAuthFileFieldsPatch = (
     );
     if (headersPatch) {
       patch.headers = headersPatch;
+    }
+  }
+
+  if (supportsAuthFileWebsockets(editor.providerKey) && editor.websocketsTouched) {
+    const originalWebsockets = readAuthFileWebsockets(original);
+    const nextWebsockets = Boolean(editor.websockets);
+    if (nextWebsockets !== originalWebsockets) {
+      patch.websockets = nextWebsockets;
     }
   }
 
@@ -325,14 +312,6 @@ const buildPrefixProxyUpdatedText = (
     }
   }
 
-  if (patch.weight !== undefined) {
-    if (patch.weight === 0) {
-      delete next.weight;
-    } else {
-      next.weight = patch.weight;
-    }
-  }
-
   if (patch.note !== undefined) {
     if (patch.note) {
       next.note = patch.note;
@@ -344,7 +323,7 @@ const buildPrefixProxyUpdatedText = (
   applyHeadersPatch(next, patch.headers);
 
   if (patch.websockets !== undefined) {
-    next = applyCodexAuthFileWebsockets(next, patch.websockets);
+    next = applyAuthFileWebsockets(next, patch.websockets);
   }
 
   return JSON.stringify(next);
@@ -402,7 +381,6 @@ export function useAuthFilesPrefixProxyEditor(
       prefix: '',
       proxyUrl: '',
       priority: '',
-      weight: '',
       websockets: false,
       websocketsTouched: false,
       note: '',
@@ -446,11 +424,12 @@ export function useAuthFilesPrefixProxyEditor(
       const prefix = typeof json.prefix === 'string' ? json.prefix : '';
       const proxyUrl = typeof json.proxy_url === 'string' ? json.proxy_url : '';
       const priority = parsePriorityValue(json.priority);
-      const weight = parseWeightValue(json.weight);
       const providerKey = normalizeProviderKey(
         String(json.type ?? json.provider ?? file.type ?? file.provider ?? '')
       );
-      const websockets = providerKey === 'codex' ? readCodexAuthFileWebsockets(json) : false;
+      const websockets = supportsAuthFileWebsockets(providerKey)
+        ? readAuthFileWebsockets(json)
+        : false;
       const note = typeof json.note === 'string' ? json.note : '';
       const headers = json.headers;
       let headersText = '';
@@ -474,7 +453,6 @@ export function useAuthFilesPrefixProxyEditor(
           prefix,
           proxyUrl,
           priority: priority !== undefined ? String(priority) : '',
-          weight: weight !== undefined ? String(weight) : '',
           websockets,
           websocketsTouched: false,
           note,
@@ -504,7 +482,6 @@ export function useAuthFilesPrefixProxyEditor(
       if (field === 'prefix') return { ...prev, prefix: String(value) };
       if (field === 'proxyUrl') return { ...prev, proxyUrl: String(value) };
       if (field === 'priority') return { ...prev, priority: String(value) };
-      if (field === 'weight') return { ...prev, weight: String(value) };
       if (field === 'websockets') {
         return { ...prev, websockets: Boolean(value), websocketsTouched: true };
       }

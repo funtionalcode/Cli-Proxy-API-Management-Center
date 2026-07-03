@@ -1,0 +1,303 @@
+@use '@/styles/variables.scss' as *;
+@use '@/styles/mixins.scss' as *;
+
+// 类型 / 标识 / 地址 / 模型 / 优先级 / 近期请求 / 启用 / 操作
+$table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px 60px 108px;
+
+.table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: $table-columns;
+  align-items: center;
+  gap: 12px;
+  padding: $spacing-sm $spacing-md;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-color);
+
+  @include mobile {
+    display: none;
+  }
+}
+
+.row {
+  display: grid;
+  grid-template-columns: $table-columns;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px $spacing-md;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background $transition-fast;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--surface-subtle);
+    outline: none;
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  @include mobile {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      'type identity toggle'
+      'url url url'
+      'priority models models'
+      'recent recent recent'
+      'actions actions actions';
+    row-gap: 6px;
+    padding: $spacing-md;
+    border: 1px solid var(--border-color);
+    border-radius: $radius-md;
+    margin-bottom: $spacing-sm;
+    background: var(--bg-primary);
+  }
+}
+
+// 停用行：仅信息单元格降透明度，开关与操作保持可交互的视觉权重
+.rowDisabled {
+  .cellType,
+  .cellIdentity,
+  .cellUrl,
+  .cellPriority,
+  .cellModels,
+  .cellRecent {
+    opacity: 0.55;
+  }
+}
+
+.cellType {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  @include mobile {
+    grid-area: type;
+  }
+}
+
+.kindIconFrame {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.kindIcon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.kindIconCodex {
+  transform: scale(1.16);
+}
+
+.kindIconOpenai {
+  transform: scale(0.98);
+}
+
+.kindLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.cellIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+
+  @include mobile {
+    grid-area: identity;
+  }
+}
+
+.identityMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.identityLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  @include text-ellipsis;
+}
+
+.identityMeta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.cellUrl {
+  font-size: 12px;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+
+  @include mobile {
+    grid-area: url;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.cellNumeric {
+  text-align: right;
+
+  @include mobile {
+    text-align: left;
+  }
+}
+
+.cellPriority,
+.cellModels {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+
+  @include mobile {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+.cellPriority {
+  @include mobile {
+    grid-area: priority;
+  }
+}
+
+.cellModels {
+  @include mobile {
+    grid-area: models;
+  }
+}
+
+.cellRecentHeader {
+  padding-left: 16px;
+
+  @include mobile {
+    padding-left: 0;
+  }
+}
+
+// 仅移动端展示的内联字段名
+.cellCaption {
+  display: none;
+
+  @include mobile {
+    display: inline;
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+}
+
+.cellRecent {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  min-width: 0;
+  width: 360px;
+  max-width: 360px;
+  padding-left: 16px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  @include mobile {
+    grid-area: recent;
+    width: 100%;
+    max-width: 100%;
+    padding-left: 0;
+  }
+}
+
+// 中和 ProviderStatusBar 默认样式中的纵向留白，保证单行对齐
+.recentBarWrap {
+  flex: 1;
+  min-width: 228px;
+  max-width: 260px;
+
+  > div {
+    margin-top: 0;
+    padding: 0;
+    max-width: 100%;
+  }
+
+  @include mobile {
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+.noRecent {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.statSuccess {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: $success-color;
+  flex-shrink: 0;
+}
+
+.statFailure {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: $error-color;
+  flex-shrink: 0;
+}
+
+.cellToggle {
+  display: flex;
+  justify-content: flex-start;
+  cursor: default;
+
+  @include mobile {
+    grid-area: toggle;
+    justify-content: flex-end;
+  }
+}
+
+.cellActions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: default;
+
+  @include mobile {
+    grid-area: actions;
+    justify-content: flex-end;
+    padding-top: 2px;
+  }
+}
+
+.cellActionsHeader {
+  text-align: center;
+}

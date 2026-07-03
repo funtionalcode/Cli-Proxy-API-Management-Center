@@ -7,21 +7,25 @@ import {
   useRef,
   useState,
 } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { PageTransition } from '@/components/common/PageTransition';
 import { MainRoutes } from '@/router/MainRoutes';
 import {
+  IconGithub,
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
+  IconSidebarInspection,
   IconSidebarLogs,
   IconSidebarMonitor,
   IconSidebarOauth,
+  IconSidebarPlugins,
   IconSidebarProviders,
   IconSidebarQuota,
   IconSidebarSystem,
+  IconSidebarUsage,
 } from '@/components/ui/icons';
 import { INLINE_LOGO_JPEG } from '@/assets/logoInline';
 import {
@@ -30,24 +34,41 @@ import {
   useLanguageStore,
   useNotificationStore,
   useThemeStore,
+  useVisualEffectsStore,
 } from '@/stores';
+import { pluginsApi } from '@/services/api';
+import {
+  collectPluginResourceEntries,
+  isPluginManagementNavVisible,
+  isPluginResourceNavVisible,
+  PLUGIN_RESOURCES_REFRESH_EVENT,
+  resolvePluginAssetURL,
+  type PluginResourceEntry,
+} from '@/features/plugins/pluginResources';
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { useLocalStorage } from '@/hooks/useLocalStorage';
-import { useRequestMonitoringAvailability } from '@/hooks/useRequestMonitoringAvailability';
-import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER } from '@/utils/constants';
+import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
+import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
+import { getDemoLogoutPath, prefixRouteBase, stripRouteBase } from '@/features/demo/demoMode';
+import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER, STORAGE_KEY_SIDEBAR } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';
-import type { Theme } from '@/types';
+import type { Theme, VisualEffectsMode } from '@/types';
+
+const SIDEBAR_ICON_SIZE = 20;
+const GITHUB_REPOSITORY_URL = 'https://github.com/seakee/CPA-Manager-Plus';
 
 const sidebarIcons: Record<string, ReactNode> = {
-  dashboard: <IconSidebarDashboard size={18} />,
-  aiProviders: <IconSidebarProviders size={18} />,
-  authFiles: <IconSidebarAuthFiles size={18} />,
-  oauth: <IconSidebarOauth size={18} />,
-  quota: <IconSidebarQuota size={18} />,
-  monitoring: <IconSidebarMonitor size={18} />,
-  config: <IconSidebarConfig size={18} />,
-  logs: <IconSidebarLogs size={18} />,
-  system: <IconSidebarSystem size={18} />,
+  dashboard: <IconSidebarDashboard size={SIDEBAR_ICON_SIZE} />,
+  aiProviders: <IconSidebarProviders size={SIDEBAR_ICON_SIZE} />,
+  authFiles: <IconSidebarAuthFiles size={SIDEBAR_ICON_SIZE} />,
+  oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
+  quota: <IconSidebarQuota size={SIDEBAR_ICON_SIZE} />,
+  usageAnalytics: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
+  codexInspection: <IconSidebarInspection size={SIDEBAR_ICON_SIZE} />,
+  monitoring: <IconSidebarMonitor size={SIDEBAR_ICON_SIZE} />,
+  plugins: <IconSidebarPlugins size={SIDEBAR_ICON_SIZE} />,
+  config: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
+  logs: <IconSidebarLogs size={SIDEBAR_ICON_SIZE} />,
+  system: <IconSidebarSystem size={SIDEBAR_ICON_SIZE} />,
 };
 
 // Header action icons - smaller size for header buttons
@@ -84,14 +105,18 @@ const headerIcons = {
       <path d="m6 6 12 12" />
     </svg>
   ),
-  chevronLeft: (
+  sidebarCollapse: (
     <svg {...headerIconProps}>
-      <path d="m14 18-6-6 6-6" />
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d="m16 9-3 3 3 3" />
     </svg>
   ),
-  chevronRight: (
+  sidebarExpand: (
     <svg {...headerIconProps}>
-      <path d="m10 6 6 6-6 6" />
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d="m13 9 3 3-3 3" />
     </svg>
   ),
   language: (
@@ -119,35 +144,32 @@ const headerIcons = {
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />
     </svg>
   ),
-  whiteTheme: (
-    <svg {...headerIconProps}>
-      <circle cx="12" cy="12" r="7" />
-      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
-    </svg>
-  ),
   autoTheme: (
     <svg {...headerIconProps}>
-      <defs>
-        <clipPath id="mainLayoutAutoThemeSunLeftHalf">
-          <rect x="0" y="0" width="12" height="24" />
-        </clipPath>
-      </defs>
-      <circle cx="12" cy="12" r="4" />
-      <circle
-        cx="12"
-        cy="12"
-        r="4"
-        clipPath="url(#mainLayoutAutoThemeSunLeftHalf)"
-        fill="currentColor"
-      />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="M4.93 4.93l1.41 1.41" />
-      <path d="M17.66 17.66l1.41 1.41" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="M6.34 17.66l-1.41 1.41" />
-      <path d="M19.07 4.93l-1.41 1.41" />
+      <rect x="4" y="5" width="16" height="11" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 16v5" />
+      <path d="M9 11a3 3 0 0 1 5.2-2" />
+      <path d="M14.5 7v2h-2" />
+      <path d="M15 11a3 3 0 0 1-5.2 2" />
+      <path d="M9.5 15v-2h2" />
+    </svg>
+  ),
+  visualEffectsFull: (
+    <svg {...headerIconProps}>
+      <path d="m12 3 1.85 5.15L19 10l-5.15 1.85L12 17l-1.85-5.15L5 10l5.15-1.85L12 3z" />
+      <path d="M5 3v4" />
+      <path d="M3 5h4" />
+      <path d="M19 17v4" />
+      <path d="M17 19h4" />
+    </svg>
+  ),
+  visualEffectsReduced: (
+    <svg {...headerIconProps}>
+      <path d="M4 14a8 8 0 0 1 16 0" />
+      <path d="M12 14l4-5" />
+      <path d="M8 14h8" />
+      <path d="M5 19h14" />
     </svg>
   ),
   logout: (
@@ -159,90 +181,102 @@ const headerIcons = {
   ),
 };
 
-const THEME_CARDS: Array<{
+const THEME_OPTIONS: Array<{
   key: Theme;
   labelKey: string;
-  colors: { bg: string; card: string; border: string; text: string; textMuted: string };
+  icon: ReactNode;
 }> = [
+  { key: 'auto', labelKey: 'theme.auto', icon: headerIcons.autoTheme },
+  { key: 'white', labelKey: 'theme.white', icon: headerIcons.sun },
+  { key: 'dark', labelKey: 'theme.dark', icon: headerIcons.moon },
+];
+
+const VISUAL_EFFECTS_OPTIONS: Array<{
+  key: VisualEffectsMode;
+  labelKey: string;
+  icon: ReactNode;
+}> = [
+  { key: 'full', labelKey: 'visual_effects.full', icon: headerIcons.visualEffectsFull },
   {
-    key: 'auto',
-    labelKey: 'theme.auto',
-    colors: {
-      bg: 'linear-gradient(135deg, #ffffff 0 50%, #111111 50% 100%)',
-      card: 'linear-gradient(135deg, #ffffff 0 50%, #1a1a1a 50% 100%)',
-      border: '#bdbdbd',
-      text: '#2d2a26',
-      textMuted: 'linear-gradient(135deg, #c9c9c9 0 50%, #5a5a5a 50% 100%)',
-    },
-  },
-  {
-    key: 'white',
-    labelKey: 'theme.white',
-    colors: {
-      bg: '#ffffff',
-      card: '#ffffff',
-      border: '#e5e5e5',
-      text: '#2d2a26',
-      textMuted: '#a29c95',
-    },
-  },
-  {
-    key: 'light',
-    labelKey: 'theme.light',
-    colors: {
-      bg: '#faf9f5',
-      card: '#f0eee8',
-      border: '#e3e1db',
-      text: '#2d2a26',
-      textMuted: '#a29c95',
-    },
-  },
-  {
-    key: 'dark',
-    labelKey: 'theme.dark',
-    colors: {
-      bg: '#151412',
-      card: '#1d1b18',
-      border: '#3a3530',
-      text: '#f6f4f1',
-      textMuted: '#9c958d',
-    },
+    key: 'reduced',
+    labelKey: 'visual_effects.reduced',
+    icon: headerIcons.visualEffectsReduced,
   },
 ];
 
-export function MainLayout() {
+function PluginSidebarIcon({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  const showImage = Boolean(src) && !failed;
+
+  return showImage ? (
+    <img src={src} alt="" onError={() => setFailed(true)} />
+  ) : (
+    <IconSidebarPlugins size={SIDEBAR_ICON_SIZE} />
+  );
+}
+
+type NavItem = {
+  path: string;
+  label: string;
+  shortLabel?: string;
+  icon: ReactNode;
+  exact?: boolean;
+};
+
+interface MainLayoutProps {
+  routeBase?: string;
+  demoMode?: boolean;
+}
+
+export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps = {}) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
   const location = useLocation();
+  const navigate = useNavigate();
+  const routePathname = stripRouteBase(location.pathname, routeBase);
 
   const logout = useAuthStore((state) => state.logout);
+  const connectionStatus = useAuthStore((state) => state.connectionStatus);
+  const apiBase = useAuthStore((state) => state.apiBase);
+  const supportsPlugin = useAuthStore((state) => state.supportsPlugin);
 
   const config = useConfigStore((state) => state.config);
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const clearCache = useConfigStore((state) => state.clearCache);
-  const requestMonitoringAvailability = useRequestMonitoringAvailability();
+  const featureAvailability = usePanelFeatureAvailability();
 
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
+  const visualEffectsMode = useVisualEffectsStore((state) => state.mode);
+  const setVisualEffectsMode = useVisualEffectsStore((state) => state.setMode);
   const language = useLanguageStore((state) => state.language);
   const setLanguage = useLanguageStore((state) => state.setLanguage);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage(
-    'mainLayout.sidebarCollapsed',
-    false
-  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_SIDEBAR) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [visualEffectsMenuOpen, setVisualEffectsMenuOpen] = useState(false);
+  const [pluginResources, setPluginResources] = useState<PluginResourceEntry[]>([]);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const languageMenuRef = useRef<HTMLDivElement | null>(null);
   const themeMenuRef = useRef<HTMLDivElement | null>(null);
+  const visualEffectsMenuRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
 
-  const fullBrandName = 'CLI Proxy API Management Center';
+  const fullBrandName = 'CPA Manager Plus';
   const abbrBrandName = t('title.abbr');
-  const isLogsPage = location.pathname.startsWith('/logs');
+  const isLogsPage = routePathname.startsWith('/logs');
+  const isPluginResourcePage = routePathname.startsWith('/plugin-pages');
   const showSidebarLabels = !sidebarCollapsed || sidebarOpen;
+  const pluginControlMenuVisible = isPluginManagementNavVisible({ supportsPlugin });
+  const configPluginsEnabled = config?.pluginsEnabled;
 
   // 将顶部悬浮控制区高度写入 CSS 变量，供移动端粘性元素和浮层避让。
   useLayoutEffect(() => {
@@ -357,14 +391,48 @@ export function MainLayout() {
     };
   }, [themeMenuOpen]);
 
+  useEffect(() => {
+    if (!visualEffectsMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!visualEffectsMenuRef.current?.contains(event.target as Node)) {
+        setVisualEffectsMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setVisualEffectsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [visualEffectsMenuOpen]);
+
   const toggleLanguageMenu = useCallback(() => {
     setLanguageMenuOpen((prev) => !prev);
     setThemeMenuOpen(false);
+    setVisualEffectsMenuOpen(false);
   }, []);
 
   const toggleThemeMenu = useCallback(() => {
     setThemeMenuOpen((prev) => !prev);
     setLanguageMenuOpen(false);
+    setVisualEffectsMenuOpen(false);
+  }, []);
+
+  const toggleVisualEffectsMenu = useCallback(() => {
+    setVisualEffectsMenuOpen((prev) => !prev);
+    setLanguageMenuOpen(false);
+    setThemeMenuOpen(false);
   }, []);
 
   const handleThemeSelect = useCallback(
@@ -373,6 +441,14 @@ export function MainLayout() {
       setThemeMenuOpen(false);
     },
     [setTheme]
+  );
+
+  const handleVisualEffectsSelect = useCallback(
+    (nextMode: VisualEffectsMode) => {
+      setVisualEffectsMode(nextMode);
+      setVisualEffectsMenuOpen(false);
+    },
+    [setVisualEffectsMode]
   );
 
   const handleLanguageSelect = useCallback(
@@ -392,21 +468,156 @@ export function MainLayout() {
     });
   }, [fetchConfig]);
 
-  const navItems = [
-    { path: '/', label: t('nav.dashboard'), icon: sidebarIcons.dashboard },
-    { path: '/config', label: t('nav.config_management'), icon: sidebarIcons.config },
-    { path: '/ai-providers', label: t('nav.ai_providers'), icon: sidebarIcons.aiProviders },
-    { path: '/auth-files', label: t('nav.auth_files'), icon: sidebarIcons.authFiles },
-    { path: '/oauth', label: t('nav.oauth', { defaultValue: 'OAuth' }), icon: sidebarIcons.oauth },
-    { path: '/quota', label: t('nav.quota_management'), icon: sidebarIcons.quota },
-    ...(requestMonitoringAvailability.available
-      ? [{ path: '/monitoring', label: t('nav.monitoring_center'), icon: sidebarIcons.monitoring }]
+  const loadPluginResources = useCallback(async () => {
+    if (connectionStatus !== 'connected' || !supportsPlugin) {
+      setPluginResources([]);
+      return;
+    }
+
+    try {
+      const plugins = await pluginsApi.list();
+      setPluginResources(
+        isPluginResourceNavVisible({
+          supportsPlugin,
+          pluginsEnabled: plugins.pluginsEnabled,
+        })
+          ? collectPluginResourceEntries(plugins.plugins)
+          : []
+      );
+    } catch {
+      setPluginResources([]);
+    }
+  }, [connectionStatus, supportsPlugin]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadPluginResources();
+    }, 0);
+
+    window.addEventListener(PLUGIN_RESOURCES_REFRESH_EVENT, loadPluginResources);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(PLUGIN_RESOURCES_REFRESH_EVENT, loadPluginResources);
+    };
+  }, [apiBase, configPluginsEnabled, loadPluginResources]);
+
+  const fileLogsAvailable = isFileLogsAvailable(config);
+  const navShortLabel = (key: string, fallback: string) => {
+    const shortKey = `${key}_short`;
+    const label = t(shortKey, { defaultValue: fallback });
+    return label === shortKey ? fallback : label;
+  };
+  const dashboardNavItem: NavItem = {
+    path: '/', label: t('nav.dashboard'),
+    shortLabel: navShortLabel('nav.dashboard', t('nav.dashboard')),
+    icon: sidebarIcons.dashboard,
+  };
+  const usageAnalyticsNavItem = featureAvailability.requestMonitoringAvailable
+    ? {
+        path: '/usage-analytics',
+        label: t('nav.usage_analytics'),
+        shortLabel: navShortLabel('nav.usage_analytics', t('nav.usage_analytics')),
+        icon: sidebarIcons.usageAnalytics,
+      }
+    : null;
+  const monitoringNavItem = featureAvailability.requestMonitoringAvailable
+    ? {
+        path: '/monitoring',
+        label: t('nav.monitoring_center'),
+        shortLabel: navShortLabel('nav.monitoring_center', t('nav.monitoring_center')),
+        icon: sidebarIcons.monitoring,
+      }
+    : null;
+  const operationNavItems: NavItem[] = [
+    ...(fileLogsAvailable
+      ? [
+          {
+            path: '/logs',
+            label: t('nav.logs'),
+            shortLabel: navShortLabel('nav.logs', t('nav.logs')),
+            icon: sidebarIcons.logs,
+          },
+        ]
       : []),
-    ...(config?.loggingToFile
-      ? [{ path: '/logs', label: t('nav.logs'), icon: sidebarIcons.logs }]
-      : []),
-    { path: '/system', label: t('nav.system_info'), icon: sidebarIcons.system },
   ];
+  const pluginControlNavItems: NavItem[] = pluginControlMenuVisible
+    ? [
+        {
+          path: '/plugins',
+          label: t('nav.plugins'),
+          shortLabel: navShortLabel('nav.plugins', t('nav.plugins')),
+          icon: sidebarIcons.plugins,
+        },
+      ]
+    : [];
+  const pluginResourceNavItems: NavItem[] = pluginControlMenuVisible
+    ? pluginResources.map((resource) => ({
+        path: resource.route,
+        label: resource.label,
+        shortLabel: resource.label,
+        icon: <PluginSidebarIcon src={resolvePluginAssetURL(resource.pluginLogo, apiBase)} />,
+      }))
+    : [];
+  const navSections: NavItem[][] = [
+    [
+      dashboardNavItem,
+      ...(usageAnalyticsNavItem ? [usageAnalyticsNavItem] : []),
+      ...(monitoringNavItem ? [monitoringNavItem] : []),
+    ],
+    [
+      {
+        path: '/config',
+        label: t('nav.config_management'),
+        shortLabel: navShortLabel('nav.config_management', t('nav.config_management')),
+        icon: sidebarIcons.config,
+      },
+      {
+        path: '/ai-providers',
+        label: t('nav.ai_providers'),
+        shortLabel: navShortLabel('nav.ai_providers', t('nav.ai_providers')),
+        icon: sidebarIcons.aiProviders,
+      },
+      ...pluginControlNavItems,
+    ],
+    [
+      {
+        path: '/auth-files',
+        label: t('nav.auth_files'),
+        shortLabel: navShortLabel('nav.auth_files', t('nav.auth_files')),
+        icon: sidebarIcons.authFiles,
+      },
+      {
+        path: '/oauth',
+        label: t('nav.oauth', { defaultValue: 'OAuth' }),
+        shortLabel: navShortLabel('nav.oauth', t('nav.oauth', { defaultValue: 'OAuth' })),
+        icon: sidebarIcons.oauth,
+      },
+      {
+        path: '/quota',
+        label: t('nav.quota_management'),
+        shortLabel: navShortLabel('nav.quota_management', t('nav.quota_management')),
+        icon: sidebarIcons.quota,
+      },
+      {
+        path: '/codex-inspection',
+        label: t('nav.codex_inspection'),
+        shortLabel: navShortLabel('nav.codex_inspection', t('nav.codex_inspection')),
+        icon: sidebarIcons.codexInspection,
+      },
+    ],
+    operationNavItems,
+    pluginResourceNavItems,
+    [
+      {
+        path: '/system',
+        label: t('nav.system_info'),
+        shortLabel: navShortLabel('nav.system_info', t('nav.system_info')),
+        icon: sidebarIcons.system,
+      },
+    ],
+  ].filter((section) => section.length > 0);
+  const navItems = navSections.flat();
   const navOrder = navItems.map((item) => item.path);
   const getRouteOrder = (pathname: string) => {
     const trimmedPath =
@@ -421,7 +632,6 @@ export function MainLayout() {
         if (normalizedPath.startsWith('/ai-providers/codex')) return aiProvidersIndex + 0.2;
         if (normalizedPath.startsWith('/ai-providers/claude')) return aiProvidersIndex + 0.3;
         if (normalizedPath.startsWith('/ai-providers/vertex')) return aiProvidersIndex + 0.4;
-        if (normalizedPath.startsWith('/ai-providers/ampcode')) return aiProvidersIndex + 0.5;
         if (normalizedPath.startsWith('/ai-providers/openai')) return aiProvidersIndex + 0.6;
         return aiProvidersIndex + 0.05;
       }
@@ -460,13 +670,14 @@ export function MainLayout() {
       pathname === '/ai-providers' || pathname.startsWith('/ai-providers/');
     if (isAuthFiles(from) && isAuthFiles(to)) return 'ios';
     if (isAiProviders(from) && isAiProviders(to)) return 'ios';
-    return 'vertical';
+    return 'none';
   }, []);
 
   const handleRefreshAll = async () => {
     clearCache();
     const results = await Promise.allSettled([
       fetchConfig(undefined, true),
+      loadPluginResources(),
       triggerHeaderRefresh(),
     ]);
     const rejected = results.find((result) => result.status === 'rejected');
@@ -482,145 +693,235 @@ export function MainLayout() {
     }
     showNotification(t('notification.data_refreshed'), 'success');
   };
+  const handleLogout = () => {
+    if (demoMode) {
+      navigate(getDemoLogoutPath(routeBase), { replace: true });
+      return;
+    }
+    logout();
+  };
   const mobileSidebarToggleLabel = sidebarOpen
     ? t('sidebar.toggle_collapse', { defaultValue: 'Close navigation' })
     : t('sidebar.toggle_expand', { defaultValue: 'Open navigation' });
+  const normalizedLocationPath =
+    routePathname.length > 1 && routePathname.endsWith('/')
+      ? routePathname.slice(0, -1)
+      : routePathname;
+  const currentPath = normalizedLocationPath === '/dashboard' ? '/' : normalizedLocationPath;
+  const matchesNavPath = (item: NavItem, pathname: string) =>
+    item.path === '/' || item.exact
+      ? pathname === item.path
+      : pathname === item.path || pathname.startsWith(`${item.path}/`);
+  const activeNavItem =
+    [...navItems]
+      .sort((a, b) => b.path.length - a.path.length)
+      .find((item) => matchesNavPath(item, currentPath)) ?? navItems[0];
+  const currentRouteLabel = activeNavItem?.label ?? fullBrandName;
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
+    <div
+      className={[
+        'app-shell',
+        sidebarCollapsed ? 'sidebar-is-collapsed' : '',
+        isPluginResourcePage ? 'plugin-resource-shell' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <header className="main-header" ref={headerRef}>
-        <div className="mobile-sidebar-actions">
-          <Button
-            className="mobile-menu-btn"
-            variant="ghost"
-            size="sm"
-            onClick={() => setSidebarOpen((prev) => !prev)}
-            title={mobileSidebarToggleLabel}
-            aria-label={mobileSidebarToggleLabel}
-          >
-            {sidebarOpen ? headerIcons.close : headerIcons.menu}
-          </Button>
-        </div>
+        <div className="navbar">
+          <div className="navbar-left">
+            <button
+              type="button"
+              className="hamburger-container"
+              onClick={() => {
+                if (window.matchMedia('(max-width: 768px)').matches) {
+                  setSidebarOpen((prev) => !prev);
+                  return;
+                }
+                setSidebarCollapsed((prev) => {
+                  const next = !prev;
+                  try {
+                    localStorage.setItem(STORAGE_KEY_SIDEBAR, String(next));
+                  } catch {
+                    /* ignore storage failures */
+                  }
+                  return next;
+                });
+              }}
+              title={mobileSidebarToggleLabel}
+              aria-label={mobileSidebarToggleLabel}
+            >
+              {sidebarOpen
+                ? headerIcons.close
+                : sidebarCollapsed
+                  ? headerIcons.sidebarExpand
+                  : headerIcons.sidebarCollapse}
+            </button>
 
-        <div className="header-actions floating-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleRefreshAll}
-            title={t('header.refresh_all')}
-          >
-            {headerIcons.refresh}
-          </Button>
-          <div className={`language-menu ${languageMenuOpen ? 'open' : ''}`} ref={languageMenuRef}>
+            <nav
+              className="app-breadcrumb"
+              aria-label={t('common.navigation', { defaultValue: 'Navigation' })}
+            >
+              <span className="breadcrumb-item">{currentRouteLabel}</span>
+            </nav>
+          </div>
+
+          <div className="navbar-right">
             <Button
               variant="ghost"
               size="sm"
-              onClick={toggleLanguageMenu}
-              title={t('language.switch')}
-              aria-label={t('language.switch')}
-              aria-haspopup="menu"
-              aria-expanded={languageMenuOpen}
+              onClick={handleRefreshAll}
+              title={t('header.refresh_all')}
+              aria-label={t('header.refresh_all')}
             >
-              {headerIcons.language}
+              {headerIcons.refresh}
             </Button>
-            {languageMenuOpen && (
-              <div
-                className="notification entering language-menu-popover"
-                role="menu"
+
+            <a
+              className="btn btn-ghost btn-sm"
+              href={GITHUB_REPOSITORY_URL}
+              target="_blank"
+              rel="noreferrer"
+              title={t('header.open_github')}
+              aria-label={t('header.open_github')}
+            >
+              <span>
+                <IconGithub size={16} />
+              </span>
+            </a>
+
+            <div
+              className={`language-menu ${languageMenuOpen ? 'open' : ''}`}
+              ref={languageMenuRef}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleLanguageMenu}
+                title={t('language.switch')}
                 aria-label={t('language.switch')}
+                aria-haspopup="menu"
+                aria-expanded={languageMenuOpen}
               >
-                {LANGUAGE_ORDER.map((lang) => (
-                  <button
-                    key={lang}
-                    type="button"
-                    className={`language-menu-option ${language === lang ? 'active' : ''}`}
-                    onClick={() => handleLanguageSelect(lang)}
-                    role="menuitemradio"
-                    aria-checked={language === lang}
-                  >
-                    <span>{t(LANGUAGE_LABEL_KEYS[lang])}</span>
-                    {language === lang ? <span className="language-menu-check">✓</span> : null}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className={`theme-menu ${themeMenuOpen ? 'open' : ''}`} ref={themeMenuRef}>
+                {headerIcons.language}
+              </Button>
+              {languageMenuOpen && (
+                <div
+                  className="notification entering language-menu-popover"
+                  role="menu"
+                  aria-label={t('language.switch')}
+                >
+                  {LANGUAGE_ORDER.map((lang) => (
+                    <button
+                      key={lang}
+                      type="button"
+                      className={`language-menu-option ${language === lang ? 'active' : ''}`}
+                      onClick={() => handleLanguageSelect(lang)}
+                      role="menuitemradio"
+                      aria-checked={language === lang}
+                    >
+                      <span>{t(LANGUAGE_LABEL_KEYS[lang])}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className={`theme-menu ${themeMenuOpen ? 'open' : ''}`} ref={themeMenuRef}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleThemeMenu}
+                title={t('theme.switch')}
+                aria-label={t('theme.switch')}
+                aria-haspopup="menu"
+                aria-expanded={themeMenuOpen}
+              >
+                {theme === 'auto'
+                  ? headerIcons.autoTheme
+                  : theme === 'dark'
+                    ? headerIcons.moon
+                    : headerIcons.sun}
+              </Button>
+              {themeMenuOpen && (
+                <div
+                  className="notification entering theme-menu-popover"
+                  role="menu"
+                  aria-label={t('theme.switch')}
+                >
+                  {THEME_OPTIONS.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={`theme-option ${theme === option.key ? 'active' : ''}`}
+                      onClick={() => handleThemeSelect(option.key)}
+                      role="menuitemradio"
+                      aria-checked={theme === option.key}
+                      title={t(option.labelKey)}
+                      aria-label={t(option.labelKey)}
+                    >
+                      <span className="theme-option-icon">{option.icon}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div
+              className={`visual-effects-menu ${visualEffectsMenuOpen ? 'open' : ''}`}
+              ref={visualEffectsMenuRef}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleVisualEffectsMenu}
+                title={t('visual_effects.switch')}
+                aria-label={t('visual_effects.switch')}
+                aria-haspopup="menu"
+                aria-expanded={visualEffectsMenuOpen}
+              >
+                {visualEffectsMode === 'full'
+                  ? headerIcons.visualEffectsFull
+                  : headerIcons.visualEffectsReduced}
+              </Button>
+              {visualEffectsMenuOpen && (
+                <div
+                  className="notification entering visual-effects-menu-popover"
+                  role="menu"
+                  aria-label={t('visual_effects.switch')}
+                >
+                  {VISUAL_EFFECTS_OPTIONS.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={`visual-effects-option ${
+                        visualEffectsMode === option.key ? 'active' : ''
+                      }`}
+                      onClick={() => handleVisualEffectsSelect(option.key)}
+                      role="menuitemradio"
+                      aria-checked={visualEffectsMode === option.key}
+                      title={t(option.labelKey)}
+                      aria-label={t(option.labelKey)}
+                    >
+                      <span className="visual-effects-option-icon">{option.icon}</span>
+                      <span className="visual-effects-option-label">{t(option.labelKey)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <Button
               variant="ghost"
               size="sm"
-              onClick={toggleThemeMenu}
-              title={t('theme.switch')}
-              aria-label={t('theme.switch')}
-              aria-haspopup="menu"
-              aria-expanded={themeMenuOpen}
+              onClick={handleLogout}
+              title={t('header.logout')}
+              aria-label={t('header.logout')}
             >
-              {theme === 'auto'
-                ? headerIcons.autoTheme
-                : theme === 'dark'
-                  ? headerIcons.moon
-                  : theme === 'white'
-                    ? headerIcons.whiteTheme
-                    : headerIcons.sun}
+              {headerIcons.logout}
             </Button>
-            {themeMenuOpen && (
-              <div
-                className="notification entering theme-menu-popover"
-                role="menu"
-                aria-label={t('theme.switch')}
-              >
-                {THEME_CARDS.map((tc) => (
-                  <button
-                    key={tc.key}
-                    type="button"
-                    className={`theme-card ${theme === tc.key ? 'active' : ''}`}
-                    onClick={() => handleThemeSelect(tc.key)}
-                    role="menuitemradio"
-                    aria-checked={theme === tc.key}
-                  >
-                    <div
-                      className="theme-card-preview"
-                      style={{
-                        background: tc.colors.bg,
-                        border: `1px solid ${tc.colors.border}`,
-                      }}
-                    >
-                      <div
-                        className="theme-card-header"
-                        style={{
-                          background: tc.colors.card,
-                          borderBottom: `1px solid ${tc.colors.border}`,
-                        }}
-                      />
-                      <div className="theme-card-body">
-                        <div
-                          className="theme-card-sidebar"
-                          style={{
-                            background: tc.colors.card,
-                            borderRight: `1px solid ${tc.colors.border}`,
-                          }}
-                        />
-                        <div className="theme-card-content" style={{ background: tc.colors.bg }}>
-                          <div
-                            className="theme-card-line"
-                            style={{ background: tc.colors.textMuted }}
-                          />
-                          <div
-                            className="theme-card-line short"
-                            style={{ background: tc.colors.textMuted }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <span className="theme-card-label">{t(tc.labelKey)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
-          <Button variant="ghost" size="sm" onClick={logout} title={t('header.logout')}>
-            {headerIcons.logout}
-          </Button>
         </div>
       </header>
 
@@ -642,47 +943,64 @@ export function MainLayout() {
               <img src={INLINE_LOGO_JPEG} alt="CPAMC logo" className="sidebar-brand-logo" />
               {showSidebarLabels && <span className="sidebar-brand-title">{abbrBrandName}</span>}
             </div>
-            <button
-              type="button"
-              className="sidebar-collapse-inline"
-              onClick={() => setSidebarCollapsed((prev) => !prev)}
-              title={
-                sidebarCollapsed
-                  ? t('sidebar.expand', { defaultValue: '展开' })
-                  : t('sidebar.collapse', { defaultValue: '收起' })
-              }
-              aria-label={
-                sidebarCollapsed
-                  ? t('sidebar.expand', { defaultValue: '展开' })
-                  : t('sidebar.collapse', { defaultValue: '收起' })
-              }
-            >
-              {sidebarCollapsed ? headerIcons.chevronRight : headerIcons.chevronLeft}
-            </button>
+            {!showSidebarLabels && (
+              <span className="sidebar-brand-short">{abbrBrandName.charAt(0) || 'C'}</span>
+            )}
           </div>
 
           <div className="nav-section">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-                onClick={() => setSidebarOpen(false)}
-                title={showSidebarLabels ? undefined : item.label}
-              >
-                <span className="nav-icon">{item.icon}</span>
-                {showSidebarLabels && <span className="nav-label">{item.label}</span>}
-              </NavLink>
+            {navSections.map((section, sectionIndex) => (
+              <div className="nav-menu-section" key={`nav-section-${sectionIndex}`}>
+                {sectionIndex > 0 && <div className="nav-menu-divider" aria-hidden="true" />}
+                {section.map((item) => (
+                  <NavLink
+                    key={item.path}
+                    to={prefixRouteBase(item.path, routeBase)}
+                    end={item.path === '/' || item.exact}
+                    className={({ isActive }) =>
+                      `nav-item ${isActive || matchesNavPath(item, currentPath) ? 'active' : ''}`
+                    }
+                    onClick={() => setSidebarOpen(false)}
+                    title={item.label}
+                  >
+                    <span className="nav-icon">{item.icon}</span>
+                    {showSidebarLabels && <span className="nav-label">{item.label}</span>}
+                  </NavLink>
+                ))}
+              </div>
             ))}
           </div>
         </aside>
 
-        <div className={`content${isLogsPage ? ' content-logs' : ''}`} ref={contentRef}>
-          <main className={`main-content${isLogsPage ? ' main-content-logs' : ''}`}>
+        <div
+          className={[
+            'content',
+            isLogsPage ? 'content-logs' : '',
+            isPluginResourcePage ? 'content-plugin-resource' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          ref={contentRef}
+        >
+          <main
+            className={[
+              'main-content',
+              isLogsPage ? 'main-content-logs' : '',
+              isPluginResourcePage ? 'main-content-plugin-resource' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          >
             <PageTransition
-              render={(location) => <MainRoutes location={location} />}
-              getRouteOrder={getRouteOrder}
-              getTransitionVariant={getTransitionVariant}
+              key={routeBase || 'main'}
+              render={(location) => <MainRoutes location={location} routeBase={routeBase} />}
+              getRouteOrder={(pathname) => getRouteOrder(stripRouteBase(pathname, routeBase))}
+              getTransitionVariant={(fromPathname, toPathname) =>
+                getTransitionVariant(
+                  stripRouteBase(fromPathname, routeBase),
+                  stripRouteBase(toPathname, routeBase)
+                )
+              }
               scrollContainerRef={contentRef}
             />
           </main>

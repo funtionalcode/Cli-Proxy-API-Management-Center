@@ -50,8 +50,8 @@
   width: 30px;
   height: 30px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-subtle) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 80%, transparent);
   color: var(--text-secondary);
   flex: 0 0 auto;
 

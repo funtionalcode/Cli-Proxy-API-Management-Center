@@ -1,0 +1,165 @@
+@use '@/styles/variables.scss' as *;
+@use '@/styles/mixins.scss' as *;
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: $z-modal;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.4);
+
+  @include mobile {
+    align-items: flex-end;
+    justify-content: stretch;
+  }
+}
+
+.overlayEntering {
+  animation: drawer-overlay-in 0.28s ease forwards;
+}
+
+.overlayClosing {
+  animation: drawer-overlay-out 0.28s ease forwards;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 100%;
+  background: var(--bg-primary);
+  box-shadow: $shadow-lg;
+  outline: none;
+
+  @include mobile {
+    width: 100% !important;
+    height: auto;
+    max-height: calc(100dvh - 48px);
+    border-radius: $radius-lg $radius-lg 0 0;
+  }
+}
+
+.panelEntering {
+  animation: drawer-panel-in 0.28s ease forwards;
+
+  @include mobile {
+    animation-name: drawer-panel-in-mobile;
+  }
+}
+
+.panelClosing {
+  animation: drawer-panel-out 0.28s ease forwards;
+
+  @include mobile {
+    animation-name: drawer-panel-out-mobile;
+  }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+  padding: $spacing-md $spacing-lg;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.closeButton {
+  @include button-reset;
+  @include flex-center;
+  width: 32px;
+  height: 32px;
+  border-radius: $radius-md;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--surface-subtle-hover);
+    color: var(--text-primary);
+  }
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: $spacing-md $spacing-lg;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: $spacing-sm;
+  padding: $spacing-md $spacing-lg;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+  padding-bottom: calc(#{$spacing-md} + env(safe-area-inset-bottom));
+}
+
+@keyframes drawer-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drawer-overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes drawer-panel-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes drawer-panel-out {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes drawer-panel-in-mobile {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes drawer-panel-out-mobile {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}

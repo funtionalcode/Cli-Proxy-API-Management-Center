@@ -1,6 +1,6 @@
 import type { PropsWithChildren, ReactNode } from 'react';
 import { Card } from '@/components/ui/Card';
-import styles from '@/pages/MonitoringCenterPage.module.scss';
+import styles from '@/features/monitoring/MonitoringCenterPage.module.scss';
 
 type MonitoringPanelProps = {
   title?: ReactNode;

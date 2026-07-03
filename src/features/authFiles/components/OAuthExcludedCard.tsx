@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
-import styles from '@/pages/AuthFilesPage.module.scss';
+import styles from '@/features/authFiles/AuthFilesPage.module.scss';
 
 type UnsupportedError = 'unsupported' | null;
 
@@ -48,10 +48,10 @@ export function OAuthExcludedCard(props: OAuthExcludedCardProps) {
                 </div>
               </div>
               <div className={styles.excludedActions}>
-                <Button variant="secondary" size="sm" onClick={() => onEdit(provider)}>
+                <Button variant="secondary" size="xs" onClick={() => onEdit(provider)}>
                   {t('common.edit')}
                 </Button>
-                <Button variant="danger" size="sm" onClick={() => onDelete(provider)}>
+                <Button variant="danger" size="xs" onClick={() => onDelete(provider)}>
                   {t('oauth_excluded.delete')}
                 </Button>
               </div>
@@ -62,4 +62,3 @@ export function OAuthExcludedCard(props: OAuthExcludedCardProps) {
     </Card>
   );
 }
-

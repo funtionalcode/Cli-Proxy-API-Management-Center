@@ -4,31 +4,22 @@ import type { HeaderEntry } from '@/utils/headers';
 export interface ModelEntry {
   name: string;
   alias: string;
+  priority?: number;
+  testModel?: string;
+  image?: boolean;
+  thinking?: Record<string, unknown>;
 }
 
 export interface OpenAIFormState {
   name: string;
   priority?: number;
-  weight?: number;
   prefix: string;
   baseUrl: string;
   headers: HeaderEntry[];
   testModel?: string;
   modelEntries: ModelEntry[];
   apiKeyEntries: ApiKeyEntry[];
-}
-
-export interface AmpcodeUpstreamApiKeyEntry {
-  upstreamApiKey: string;
-  clientApiKeysText: string;
-}
-
-export interface AmpcodeFormState {
-  upstreamUrl: string;
-  upstreamApiKey: string;
-  forceModelMappings: boolean;
-  mappingEntries: ModelEntry[];
-  upstreamApiKeyEntries: AmpcodeUpstreamApiKeyEntry[];
+  disableCooling?: boolean;
 }
 
 export type GeminiFormState = Omit<GeminiKeyConfig, 'headers' | 'models'> & {

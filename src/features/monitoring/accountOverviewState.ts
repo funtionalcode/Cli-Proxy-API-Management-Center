@@ -1,67 +1,15 @@
 import type { AuthFileItem } from '@/types';
+import type { SourceProviderEnabledState } from '@/types/sourceInfo';
+import { isDisabledAuthFile } from '@/utils/quota';
 import { normalizeRecentRequestAuthIndex, type StatusBarData } from '@/utils/recentRequests';
 import type {
   MonitoringAccountRow,
-  MonitoringApiKeyRow,
   MonitoringEventRow,
   MonitoringTimeRange,
 } from './hooks/useMonitoringData';
 
 export type MonitoringAccountOverviewMode = 'table' | 'card';
-
-export type MonitoringStatusFilter = 'all' | 'success' | 'failed';
-
-export type MonitoringFilters = {
-  account: string;
-  provider: string;
-  model: string;
-  channel: string;
-  apiKeyHash: string;
-  status: MonitoringStatusFilter;
-};
-
-export const MONITORING_AUTO_REFRESH_VALUES = [
-  '0',
-  '5000',
-  '10000',
-  '30000',
-  '60000',
-  '300000',
-] as const;
-export type MonitoringAutoRefreshValue = (typeof MONITORING_AUTO_REFRESH_VALUES)[number];
-const MONITORING_AUTO_REFRESH_SET = new Set<string>(MONITORING_AUTO_REFRESH_VALUES);
-
-export const MONITORING_API_KEY_PAGE_SIZE_OPTIONS = [12, 20, 50, 100] as const;
-export const MONITORING_REALTIME_PAGE_SIZE_OPTIONS = [10, 50, 100, 150, 300] as const;
-
-export type MonitoringPageSizes = {
-  tableAccount: number;
-  apiKey: number;
-  realtime: number;
-};
-
-const MONITORING_TIME_RANGE_VALUES: readonly MonitoringTimeRange[] = [
-  'today',
-  'yesterday',
-  '7d',
-  '14d',
-  '30d',
-  'all',
-  'custom',
-];
-const MONITORING_TIME_RANGE_SET = new Set<MonitoringTimeRange>(MONITORING_TIME_RANGE_VALUES);
-
-export const DEFAULT_MONITORING_FILTERS: MonitoringFilters = {
-  account: 'all',
-  provider: 'all',
-  model: 'all',
-  channel: 'all',
-  apiKeyHash: 'all',
-  status: 'all',
-};
-
-export const DEFAULT_MONITORING_AUTO_REFRESH_MS: MonitoringAutoRefreshValue = '5000';
-export const DEFAULT_MONITORING_TIME_RANGE: MonitoringTimeRange = 'today';
+export type AccountDisplayMode = 'masked' | 'full';
 
 export type AccountSortKey =
   | 'totalCalls'
@@ -82,40 +30,18 @@ export type AccountSortState = {
   direction: AccountSortDirection;
 };
 
-export type ApiKeySortKey =
-  | 'totalCalls'
-  | 'successCalls'
-  | 'failureCalls'
-  | 'successRate'
-  | 'totalTokens'
-  | 'inputTokens'
-  | 'outputTokens'
-  | 'cachedTokens'
-  | 'totalCost'
-  | 'lastSeenAt';
-
-export type ApiKeySortState = {
-  key: ApiKeySortKey;
-  direction: AccountSortDirection;
-};
-
 export const ACCOUNT_OVERVIEW_MODE_STORAGE_KEY = 'monitoring.accountOverviewMode';
 export const ACCOUNT_OVERVIEW_UI_STATE_STORAGE_KEY = 'monitoring.accountOverviewUiState';
-export const MONITORING_TRANSIENT_STATE_STORAGE_KEY = 'monitoring.transientUiState';
 export const ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS = [12, 20, 50, 100] as const;
 export const ACCOUNT_OVERVIEW_CARD_PAGE_SIZE_OPTIONS = [12, 18, 24, 36] as const;
-
-export const DEFAULT_MONITORING_PAGE_SIZES: MonitoringPageSizes = {
-  tableAccount: ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS[0],
-  apiKey: MONITORING_API_KEY_PAGE_SIZE_OPTIONS[0],
-  realtime: MONITORING_REALTIME_PAGE_SIZE_OPTIONS[0],
-};
 
 export const ACCOUNT_OVERVIEW_CARD_METRIC_KEYS = [
   'total-tokens',
   'input-tokens',
   'output-tokens',
   'cached-tokens',
+  'cache-creation-tokens',
+  'cache-read-tokens',
 ] as const;
 const DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION = {
   page: 1,
@@ -124,11 +50,6 @@ const DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION = {
 
 export const DEFAULT_ACCOUNT_SORT: AccountSortState = {
   key: 'lastSeenAt',
-  direction: 'desc',
-};
-
-export const DEFAULT_API_KEY_SORT: ApiKeySortState = {
-  key: 'totalCalls',
   direction: 'desc',
 };
 
@@ -144,6 +65,7 @@ export type AccountOverviewPageResetState = {
   selectedAccount: string;
   selectedApiKeyHash: string;
   selectedChannel: string;
+  selectedHeaderTraceId: string;
   selectedModel: string;
   selectedProvider: string;
   selectedStatus: string;
@@ -151,30 +73,13 @@ export type AccountOverviewPageResetState = {
 };
 export type MonitoringAccountOverviewUiState = {
   mode: MonitoringAccountOverviewMode;
+  accountDisplayMode: AccountDisplayMode;
   sort: AccountSortState;
-  apiKeySort: ApiKeySortState;
   cardPagination: MonitoringAccountOverviewCardPaginationState;
-  timeRange: MonitoringTimeRange;
-  filters: MonitoringFilters;
-  autoRefreshMs: MonitoringAutoRefreshValue;
-  pageSizes: MonitoringPageSizes;
-};
-
-export type MonitoringTransientUiState = {
-  searchInput: string;
-  customStartInput: string;
-  customEndInput: string;
-};
-
-export const DEFAULT_MONITORING_TRANSIENT_STATE: MonitoringTransientUiState = {
-  searchInput: '',
-  customStartInput: '',
-  customEndInput: '',
 };
 
 export type MonitoringAccountAuthState = {
   files: AuthFileItem[];
-  toggleableFileNames: string[];
   enabledState: MonitoringAccountEnabledState;
 };
 
@@ -196,32 +101,20 @@ const ACCOUNT_SORT_KEYS = [
   'lastSeenAt',
 ] as const;
 const ACCOUNT_SORT_KEY_SET = new Set<AccountSortKey>(ACCOUNT_SORT_KEYS);
-const API_KEY_SORT_KEYS = [
-  'totalCalls',
-  'successCalls',
-  'failureCalls',
-  'successRate',
-  'totalTokens',
-  'inputTokens',
-  'outputTokens',
-  'cachedTokens',
-  'totalCost',
-  'lastSeenAt',
-] as const;
-const API_KEY_SORT_KEY_SET = new Set<ApiKeySortKey>(API_KEY_SORT_KEYS);
 const ACCOUNT_SORT_DIRECTION_SET = new Set<AccountSortDirection>(['asc', 'desc']);
+const ACCOUNT_DISPLAY_MODE_SET = new Set<AccountDisplayMode>(['masked', 'full']);
 
 export const normalizeAccountOverviewMode = (value: unknown): MonitoringAccountOverviewMode =>
   value === 'card' ? 'card' : 'table';
 
+export const normalizeAccountDisplayMode = (value: unknown): AccountDisplayMode =>
+  typeof value === 'string' && ACCOUNT_DISPLAY_MODE_SET.has(value as AccountDisplayMode)
+    ? (value as AccountDisplayMode)
+    : 'masked';
+
 export const normalizeAccountSortKey = (value: unknown): AccountSortKey | null =>
   typeof value === 'string' && ACCOUNT_SORT_KEY_SET.has(value as AccountSortKey)
     ? (value as AccountSortKey)
-    : null;
-
-export const normalizeApiKeySortKey = (value: unknown): ApiKeySortKey | null =>
-  typeof value === 'string' && API_KEY_SORT_KEY_SET.has(value as ApiKeySortKey)
-    ? (value as ApiKeySortKey)
     : null;
 
 export const normalizeAccountSortDirection = (value: unknown): AccountSortDirection | null =>
@@ -240,25 +133,6 @@ export const normalizeAccountSortState = (value: unknown): AccountSortState => {
 
   if (!key || !direction) {
     return DEFAULT_ACCOUNT_SORT;
-  }
-
-  return {
-    key,
-    direction,
-  };
-};
-
-export const normalizeApiKeySortState = (value: unknown): ApiKeySortState => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return DEFAULT_API_KEY_SORT;
-  }
-
-  const record = value as Record<string, unknown>;
-  const key = normalizeApiKeySortKey(record.key);
-  const direction = normalizeAccountSortDirection(record.direction);
-
-  if (!key || !direction) {
-    return DEFAULT_API_KEY_SORT;
   }
 
   return {
@@ -307,113 +181,73 @@ export const normalizeAccountOverviewCardPaginationState = (
   };
 };
 
-const normalizeFilterValue = (value: unknown): string => {
-  if (typeof value !== 'string') return 'all';
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : 'all';
-};
-
-const normalizeStatusFilter = (value: unknown): MonitoringStatusFilter =>
-  value === 'success' || value === 'failed' ? value : 'all';
-
-export const normalizeMonitoringFilters = (value: unknown): MonitoringFilters => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ...DEFAULT_MONITORING_FILTERS };
-  }
-
-  const record = value as Record<string, unknown>;
-  return {
-    account: normalizeFilterValue(record.account),
-    provider: normalizeFilterValue(record.provider),
-    model: normalizeFilterValue(record.model),
-    channel: normalizeFilterValue(record.channel),
-    apiKeyHash: normalizeFilterValue(record.apiKeyHash),
-    status: normalizeStatusFilter(record.status),
-  };
-};
-
-export const normalizeMonitoringTimeRange = (value: unknown): MonitoringTimeRange =>
-  typeof value === 'string' && MONITORING_TIME_RANGE_SET.has(value as MonitoringTimeRange)
-    ? (value as MonitoringTimeRange)
-    : DEFAULT_MONITORING_TIME_RANGE;
-
-export const normalizeMonitoringAutoRefreshMs = (value: unknown): MonitoringAutoRefreshValue => {
-  const raw =
-    typeof value === 'string'
-      ? value
-      : typeof value === 'number' && Number.isFinite(value)
-        ? String(value)
-        : '';
-  return MONITORING_AUTO_REFRESH_SET.has(raw)
-    ? (raw as MonitoringAutoRefreshValue)
-    : DEFAULT_MONITORING_AUTO_REFRESH_MS;
-};
-
-const normalizeNumberInOptions = (
-  value: unknown,
-  options: readonly number[],
-  fallback: number
-): number => {
-  const num =
-    typeof value === 'number' && Number.isFinite(value)
-      ? value
-      : typeof value === 'string'
-        ? Number.parseInt(value, 10)
-        : NaN;
-  return Number.isFinite(num) && options.includes(num) ? num : fallback;
-};
-
-export const normalizeMonitoringPageSizes = (value: unknown): MonitoringPageSizes => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ...DEFAULT_MONITORING_PAGE_SIZES };
-  }
-
-  const record = value as Record<string, unknown>;
-  return {
-    tableAccount: normalizeNumberInOptions(
-      record.tableAccount,
-      ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS,
-      DEFAULT_MONITORING_PAGE_SIZES.tableAccount
-    ),
-    apiKey: normalizeNumberInOptions(
-      record.apiKey,
-      MONITORING_API_KEY_PAGE_SIZE_OPTIONS,
-      DEFAULT_MONITORING_PAGE_SIZES.apiKey
-    ),
-    realtime: normalizeNumberInOptions(
-      record.realtime,
-      MONITORING_REALTIME_PAGE_SIZE_OPTIONS,
-      DEFAULT_MONITORING_PAGE_SIZES.realtime
-    ),
-  };
-};
-
 export const normalizeAccountOverviewUiState = (
   value: unknown
 ): MonitoringAccountOverviewUiState => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {
       mode: 'table',
+      accountDisplayMode: 'masked',
       sort: DEFAULT_ACCOUNT_SORT,
-      apiKeySort: DEFAULT_API_KEY_SORT,
       cardPagination: { ...DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION },
-      timeRange: DEFAULT_MONITORING_TIME_RANGE,
-      filters: { ...DEFAULT_MONITORING_FILTERS },
-      autoRefreshMs: DEFAULT_MONITORING_AUTO_REFRESH_MS,
-      pageSizes: { ...DEFAULT_MONITORING_PAGE_SIZES },
     };
   }
 
   const record = value as Record<string, unknown>;
   return {
     mode: normalizeAccountOverviewMode(record.mode),
+    accountDisplayMode: normalizeAccountDisplayMode(record.accountDisplayMode),
     sort: normalizeAccountSortState(record.sort),
-    apiKeySort: normalizeApiKeySortState(record.apiKeySort),
     cardPagination: normalizeAccountOverviewCardPaginationState(record.cardPagination),
-    timeRange: normalizeMonitoringTimeRange(record.timeRange),
-    filters: normalizeMonitoringFilters(record.filters),
-    autoRefreshMs: normalizeMonitoringAutoRefreshMs(record.autoRefreshMs),
-    pageSizes: normalizeMonitoringPageSizes(record.pageSizes),
+  };
+};
+
+const hasReadableAccountValue = (value: string | null | undefined) => {
+  const trimmed = String(value || '').trim();
+  return Boolean(trimmed) && trimmed !== '-';
+};
+
+const firstReadableAccountValue = (...values: Array<string | null | undefined>) =>
+  values.find(hasReadableAccountValue)?.trim() || '';
+
+export const resolveAccountDisplayText = (
+  row: Pick<
+    MonitoringAccountRow,
+    'account' | 'accountMasked' | 'displayAccount' | 'authLabels' | 'channels'
+  >,
+  displayMode: AccountDisplayMode
+) => {
+  const fullAccount = firstReadableAccountValue(row.account, row.displayAccount);
+  const maskedAccount =
+    displayMode === 'masked'
+      ? firstReadableAccountValue(row.accountMasked, row.account, row.displayAccount)
+      : fullAccount;
+  const configuredPrimary = firstReadableAccountValue(row.displayAccount, row.account);
+  const primaryIsAccount =
+    !configuredPrimary ||
+    configuredPrimary === row.account ||
+    configuredPrimary === row.accountMasked ||
+    configuredPrimary === fullAccount;
+  const primary = primaryIsAccount
+    ? firstReadableAccountValue(maskedAccount, fullAccount, configuredPrimary, '-')
+    : configuredPrimary;
+  const secondaryCandidates = primaryIsAccount
+    ? [
+        ...row.authLabels.filter((label) => label && label !== primary && label !== fullAccount),
+        ...row.channels.filter((label) => label && label !== '-' && label !== primary),
+      ]
+    : [maskedAccount, fullAccount];
+  const secondary =
+    secondaryCandidates.find((value) => hasReadableAccountValue(value) && value !== primary) || '';
+  const titleParts = Array.from(
+    new Set([primary, fullAccount, maskedAccount, secondary].filter(hasReadableAccountValue))
+  );
+
+  return {
+    primary,
+    secondary,
+    fullAccount: fullAccount || primary,
+    title: titleParts.join(' / ') || primary,
   };
 };
 
@@ -432,6 +266,7 @@ export const shouldResetAccountOverviewPage = (
     previous.selectedAccount !== next.selectedAccount ||
     previous.selectedApiKeyHash !== next.selectedApiKeyHash ||
     previous.selectedChannel !== next.selectedChannel ||
+    previous.selectedHeaderTraceId !== next.selectedHeaderTraceId ||
     previous.selectedModel !== next.selectedModel ||
     previous.selectedProvider !== next.selectedProvider ||
     previous.selectedStatus !== next.selectedStatus ||
@@ -442,28 +277,8 @@ export const shouldResetAccountOverviewPage = (
 export const shouldClampAccountOverviewPage = (
   loading: boolean,
   currentPage: number,
-  nextPage: number,
-  response?: {
-    requestedPage: number;
-    responsePage: number;
-    requestedPageSize: number;
-    responsePageSize: number;
-  }
-) => {
-  if (loading || currentPage === nextPage) {
-    return false;
-  }
-
-  if (
-    response &&
-    (response.requestedPage !== response.responsePage ||
-      response.requestedPageSize !== response.responsePageSize)
-  ) {
-    return false;
-  }
-
-  return true;
-};
+  nextPage: number
+) => !loading && currentPage !== nextPage;
 
 const getAccountSortValue = (row: MonitoringAccountRow, key: AccountSortKey) => {
   switch (key) {
@@ -517,56 +332,6 @@ export const sortAccountRows = (
   });
 };
 
-const getApiKeySortValue = (row: MonitoringApiKeyRow, key: ApiKeySortKey) => {
-  switch (key) {
-    case 'totalCalls':
-      return row.totalCalls;
-    case 'successCalls':
-      return row.successCalls;
-    case 'failureCalls':
-      return row.failureCalls;
-    case 'successRate':
-      return row.successRate;
-    case 'totalTokens':
-      return row.totalTokens;
-    case 'inputTokens':
-      return row.inputTokens;
-    case 'outputTokens':
-      return row.outputTokens;
-    case 'cachedTokens':
-      return row.cachedTokens;
-    case 'totalCost':
-      return row.totalCost;
-    case 'lastSeenAt':
-    default:
-      return row.lastSeenAt;
-  }
-};
-
-export const compareApiKeyRowsByDefault = (left: MonitoringApiKeyRow, right: MonitoringApiKeyRow) =>
-  right.totalCalls - left.totalCalls ||
-  right.lastSeenAt - left.lastSeenAt ||
-  right.totalCost - left.totalCost ||
-  left.apiKeyLabel.localeCompare(right.apiKeyLabel) ||
-  left.id.localeCompare(right.id);
-
-export const sortApiKeyRows = (
-  rows: MonitoringApiKeyRow[],
-  sortState: ApiKeySortState = DEFAULT_API_KEY_SORT
-) => {
-  const directionFactor = sortState.direction === 'desc' ? -1 : 1;
-
-  return [...rows].sort((left, right) => {
-    const valueDiff =
-      getApiKeySortValue(left, sortState.key) - getApiKeySortValue(right, sortState.key);
-    if (valueDiff !== 0) {
-      return valueDiff * directionFactor;
-    }
-
-    return compareApiKeyRowsByDefault(left, right);
-  });
-};
-
 const readStoredModeValue = () => {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return null;
@@ -590,21 +355,12 @@ export const readAccountOverviewMode = (): MonitoringAccountOverviewMode =>
   normalizeAccountOverviewMode(readStoredModeValue());
 
 export const readAccountOverviewUiState = (): MonitoringAccountOverviewUiState => {
-  const fallback = (): MonitoringAccountOverviewUiState => ({
-    mode: readAccountOverviewMode(),
-    sort: DEFAULT_ACCOUNT_SORT,
-    apiKeySort: DEFAULT_API_KEY_SORT,
-    cardPagination: { ...DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION },
-    timeRange: DEFAULT_MONITORING_TIME_RANGE,
-    filters: { ...DEFAULT_MONITORING_FILTERS },
-    autoRefreshMs: DEFAULT_MONITORING_AUTO_REFRESH_MS,
-    pageSizes: { ...DEFAULT_MONITORING_PAGE_SIZES },
-  });
-
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return {
-      ...fallback(),
       mode: 'table',
+      accountDisplayMode: 'masked',
+      sort: DEFAULT_ACCOUNT_SORT,
+      cardPagination: { ...DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION },
     };
   }
 
@@ -617,7 +373,12 @@ export const readAccountOverviewUiState = (): MonitoringAccountOverviewUiState =
     // Ignore storage failures and fall back to legacy mode key.
   }
 
-  return fallback();
+  return {
+    mode: readAccountOverviewMode(),
+    accountDisplayMode: 'masked',
+    sort: DEFAULT_ACCOUNT_SORT,
+    cardPagination: { ...DEFAULT_ACCOUNT_OVERVIEW_CARD_PAGINATION },
+  };
 };
 
 export const writeAccountOverviewMode = (mode: MonitoringAccountOverviewMode) => {
@@ -652,54 +413,6 @@ export const writeAccountOverviewUiState = (state: MonitoringAccountOverviewUiSt
   }
 
   writeAccountOverviewMode(normalizedState.mode);
-};
-
-const normalizeTransientString = (value: unknown): string =>
-  typeof value === 'string' ? value : '';
-
-export const normalizeMonitoringTransientUiState = (value: unknown): MonitoringTransientUiState => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ...DEFAULT_MONITORING_TRANSIENT_STATE };
-  }
-
-  const record = value as Record<string, unknown>;
-  return {
-    searchInput: normalizeTransientString(record.searchInput),
-    customStartInput: normalizeTransientString(record.customStartInput),
-    customEndInput: normalizeTransientString(record.customEndInput),
-  };
-};
-
-export const readMonitoringTransientUiState = (): MonitoringTransientUiState => {
-  if (typeof window === 'undefined' || typeof window.sessionStorage === 'undefined') {
-    return { ...DEFAULT_MONITORING_TRANSIENT_STATE };
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(MONITORING_TRANSIENT_STATE_STORAGE_KEY);
-    if (raw) {
-      return normalizeMonitoringTransientUiState(JSON.parse(raw));
-    }
-  } catch {
-    // Ignore storage failures and fall back to defaults.
-  }
-
-  return { ...DEFAULT_MONITORING_TRANSIENT_STATE };
-};
-
-export const writeMonitoringTransientUiState = (state: MonitoringTransientUiState) => {
-  if (typeof window === 'undefined' || typeof window.sessionStorage === 'undefined') {
-    return;
-  }
-
-  try {
-    window.sessionStorage.setItem(
-      MONITORING_TRANSIENT_STATE_STORAGE_KEY,
-      JSON.stringify(normalizeMonitoringTransientUiState(state))
-    );
-  } catch {
-    // Ignore storage failures and keep the runtime state in memory only.
-  }
 };
 
 const isRuntimeOnlyAuthFile = (file: AuthFileItem) => {
@@ -844,92 +557,31 @@ export const buildMonitoringAccountStatusDataMap = (
   );
 };
 
-const normalizeAccountIdentityValue = (value: unknown) =>
-  (typeof value === 'string' ? value : value === null || value === undefined ? '' : String(value))
-    .trim()
-    .toLowerCase();
-
-const collectAccountIdentityCandidates = (values: unknown[]) =>
-  Array.from(new Set(values.map((value) => normalizeAccountIdentityValue(value)).filter(Boolean)));
-
-const readRecordField = (value: unknown, key: string): unknown =>
-  value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
-
-const collectMonitoringAuthFileIdentities = (file: AuthFileItem) => {
-  const normalizedAuthIndex = normalizeRecentRequestAuthIndex(file.authIndex ?? file['auth_index']);
-  const idToken = file.id_token;
-
-  const strongIdentities = collectAccountIdentityCandidates([
-    file.account,
-    file.email,
-    file.account_id,
-    file.accountId,
-    file.chatgpt_account_id,
-    file.chatgptAccountId,
-    readRecordField(idToken, 'email'),
-    readRecordField(idToken, 'account_id'),
-    readRecordField(idToken, 'accountId'),
-    readRecordField(idToken, 'chatgpt_account_id'),
-    readRecordField(idToken, 'chatgptAccountId'),
-  ]);
-
-  if (strongIdentities.length > 0) {
-    return collectAccountIdentityCandidates([...strongIdentities, normalizedAuthIndex]);
-  }
-
-  return collectAccountIdentityCandidates([file.label, file.name, normalizedAuthIndex]);
-};
-
-const buildAccountAuthIndicesByIdentity = (authFilesByAuthIndex: Map<string, AuthFileItem>) => {
-  const indicesByIdentity = new Map<string, Set<string>>();
-
-  authFilesByAuthIndex.forEach((file) => {
-    const normalizedAuthIndex = normalizeRecentRequestAuthIndex(
-      file.authIndex ?? file['auth_index']
-    );
-    if (!normalizedAuthIndex) return;
-
-    collectMonitoringAuthFileIdentities(file).forEach((identity) => {
-      const existing = indicesByIdentity.get(identity) ?? new Set<string>();
-      existing.add(normalizedAuthIndex);
-      indicesByIdentity.set(identity, existing);
-    });
-  });
-
-  return indicesByIdentity;
-};
-
 export const buildMonitoringAccountAuthStateMap = (
   rows: MonitoringAccountRow[],
-  authFilesByAuthIndex: Map<string, AuthFileItem>
-) => {
-  const authIndicesByIdentity = buildAccountAuthIndicesByIdentity(authFilesByAuthIndex);
-
-  return new Map(
-    rows.map((row) => {
-      const resolvedAuthIndices = collectAccountIdentityCandidates([
-        row.account,
-        row.displayAccount,
-        row.id,
-      ]).reduce<Set<string>>((set, candidate) => {
-        const authIndices = authIndicesByIdentity.get(candidate);
-        authIndices?.forEach((authIndex) => set.add(authIndex));
-        return set;
-      }, new Set<string>());
-
-      const authIndices =
-        resolvedAuthIndices.size > 0 ? Array.from(resolvedAuthIndices).sort() : row.authIndices;
-
-      return [row.id, buildMonitoringAccountAuthState(authIndices, authFilesByAuthIndex)] as const;
-    })
+  authFilesByAuthIndex: Map<string, AuthFileItem>,
+  sourceProviderStateBySourceKey: Map<string, SourceProviderEnabledState> = new Map()
+) =>
+  new Map(
+    rows.map(
+      (row) =>
+        [
+          row.id,
+          buildMonitoringAccountAuthState(
+            row.authIndices,
+            authFilesByAuthIndex,
+            row.sourceKeys ?? [],
+            sourceProviderStateBySourceKey
+          ),
+        ] as const
+    )
   );
-};
 
 export const buildMonitoringAccountAuthState = (
   authIndices: string[],
-  authFilesByAuthIndex: Map<string, AuthFileItem>
+  authFilesByAuthIndex: Map<string, AuthFileItem>,
+  sourceKeys: string[] = [],
+  sourceProviderStateBySourceKey: Map<string, SourceProviderEnabledState> = new Map()
 ): MonitoringAccountAuthState => {
   const files = Array.from(
     authIndices.reduce<Map<string, AuthFileItem>>((map, authIndex) => {
@@ -947,19 +599,24 @@ export const buildMonitoringAccountAuthState = (
     .sort((left, right) => left.name.localeCompare(right.name));
 
   const toggleableFiles = files.filter((file) => !isRuntimeOnlyAuthFile(file));
-  const disabledCount = toggleableFiles.filter((file) => file.disabled === true).length;
+  const enabledStates: SourceProviderEnabledState[] = [
+    ...toggleableFiles.map((file) => (isDisabledAuthFile(file) ? 'disabled' : 'enabled')),
+    ...sourceKeys.flatMap((sourceKey) => {
+      const providerState = sourceProviderStateBySourceKey.get(sourceKey);
+      return providerState ? [providerState] : [];
+    }),
+  ];
   const enabledState: MonitoringAccountEnabledState =
-    toggleableFiles.length === 0
+    enabledStates.length === 0
       ? 'unavailable'
-      : disabledCount === toggleableFiles.length
-        ? 'disabled'
-        : disabledCount === 0
-          ? 'enabled'
+      : enabledStates.every((state) => state === 'enabled')
+        ? 'enabled'
+        : enabledStates.every((state) => state === 'disabled')
+          ? 'disabled'
           : 'mixed';
 
   return {
     files,
-    toggleableFileNames: toggleableFiles.map((file) => file.name),
     enabledState,
   };
 };

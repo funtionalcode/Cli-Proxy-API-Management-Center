@@ -4,7 +4,6 @@
 
 import { apiClient } from './client';
 import type { AuthFilesResponse } from '@/types/authFile';
-import { compareAuthFilePlan } from '@/features/authFiles/constants';
 import type { OAuthModelAliasEntry } from '@/types';
 import { parseTimestampMs } from '@/utils/timestamp';
 
@@ -12,15 +11,16 @@ type StatusError = { status?: number };
 type AuthFileStatusResponse = { status: string; disabled: boolean };
 type AuthFilePatchPayload = { name: string; disabled?: boolean; [key: string]: unknown };
 type AuthFileEntry = AuthFilesResponse['files'][number];
+type AuthFileJsonValue = Record<string, unknown> | Record<string, unknown>[];
 export type AuthFileFieldsPatch = {
   prefix?: string;
   proxy_url?: string;
   websockets?: boolean;
   headers?: Record<string, string>;
   priority?: number;
-  weight?: number;
   note?: string;
 };
+export type AuthFilePatchAuthIndex = string | number;
 type AuthFileBatchFailure = { name: string; error: string };
 type AuthFileBatchUploadResponse = {
   status?: string;
@@ -143,6 +143,44 @@ const normalizeBatchUploadResponse = (
   };
 };
 
+const readUploadErrorMessage = (err: unknown): string => {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === 'string' && err.trim()) return err.trim();
+  return 'Upload failed';
+};
+
+const uploadSingleAuthFile = async (file: File): Promise<AuthFileBatchUploadResult> => {
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
+  return normalizeBatchUploadResponse(payload, [file.name]);
+};
+
+const mergeBatchUploadResults = (
+  results: AuthFileBatchUploadResult[],
+  requestedNames: string[]
+): AuthFileBatchUploadResult => {
+  const uploaded = results.reduce((total, result) => total + Math.max(0, result.uploaded), 0);
+  const files = results.flatMap((result) => result.files);
+  const failed = results.flatMap((result) => result.failed);
+  const hasFailureStatus = results.some((result) => {
+    const status = result.status.trim().toLowerCase();
+    return status === 'error' || status === 'failed' || status === 'partial';
+  });
+
+  return {
+    status:
+      failed.length > 0 || hasFailureStatus || uploaded < requestedNames.length
+        ? uploaded > 0
+          ? 'partial'
+          : 'error'
+        : 'ok',
+    uploaded,
+    files,
+    failed,
+  };
+};
+
 const normalizeBatchDeleteResponse = (
   payload: AuthFileBatchDeleteResponse | undefined,
   requestedNames: string[]
@@ -182,6 +220,20 @@ const normalizeBatchDeleteResponse = (
 const readTextField = (entry: AuthFileEntry, key: string): string => {
   const value = entry[key];
   return typeof value === 'string' ? value.trim() : '';
+};
+
+const readAuthIndexField = (entry: AuthFileEntry): string => {
+  const value = entry.authIndex ?? entry['auth_index'] ?? entry['auth-index'];
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'string') return value.trim();
+  return '';
+};
+
+const getAuthFileDedupeKey = (entry: AuthFileEntry): string => {
+  const name = readTextField(entry, 'name');
+  const authIndex = readAuthIndexField(entry);
+  if (name && authIndex) return `${name}\u0000${authIndex}`;
+  return name || JSON.stringify(entry);
 };
 
 const readDateField = (entry: AuthFileEntry): number => {
@@ -271,8 +323,7 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
   const grouped = new Map<string, AuthFileEntry[]>();
 
   files.forEach((entry) => {
-    const name = readTextField(entry, 'name');
-    const key = name || JSON.stringify(entry);
+    const key = getAuthFileDedupeKey(entry);
     const bucket = grouped.get(key);
     if (bucket) {
       bucket.push(entry);
@@ -283,9 +334,17 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
 
   const normalizedFiles = Array.from(grouped.values()).map(mergeAuthFileEntries);
   normalizedFiles.sort((left, right) => {
-    const planCompare = compareAuthFilePlan(left, right);
-    if (planCompare !== 0) return planCompare;
-    return readTextField(left, 'name').localeCompare(readTextField(right, 'name'), undefined, {
+    const nameDiff = readTextField(left, 'name').localeCompare(
+      readTextField(right, 'name'),
+      undefined,
+      {
+        sensitivity: 'accent',
+      }
+    );
+    if (nameDiff !== 0) return nameDiff;
+
+    return readAuthIndexField(left).localeCompare(readAuthIndexField(right), undefined, {
+      numeric: true,
       sensitivity: 'accent',
     });
   });
@@ -312,6 +371,149 @@ const parseAuthFileJsonObject = (rawText: string): Record<string, unknown> => {
   }
 
   return { ...(parsed as Record<string, unknown>) };
+};
+
+const parseAuthFileJsonValue = (rawText: string): AuthFileJsonValue => {
+  const trimmed = rawText.trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new Error(AUTH_FILE_INVALID_JSON_OBJECT_ERROR);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(AUTH_FILE_INVALID_JSON_OBJECT_ERROR);
+  }
+
+  if (Array.isArray(parsed)) {
+    if (!parsed.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
+      throw new Error(AUTH_FILE_INVALID_JSON_OBJECT_ERROR);
+    }
+    return parsed.map((item) => ({ ...(item as Record<string, unknown>) }));
+  }
+
+  return { ...(parsed as Record<string, unknown>) };
+};
+
+const normalizePatchAuthIndex = (value: unknown): string => {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+};
+
+const readPatchRecordAuthIndex = (record: Record<string, unknown>): string =>
+  normalizePatchAuthIndex(record.authIndex ?? record['auth_index'] ?? record['auth-index']);
+
+const applyFieldsPatchToAuthRecord = (
+  record: Record<string, unknown>,
+  fields: AuthFileFieldsPatch
+): Record<string, unknown> => {
+  const next = { ...record };
+
+  if (fields.prefix !== undefined) {
+    const value = fields.prefix.trim();
+    if (value) {
+      next.prefix = value;
+    } else {
+      delete next.prefix;
+    }
+  }
+
+  if (fields.proxy_url !== undefined) {
+    const value = fields.proxy_url.trim();
+    if (value) {
+      next.proxy_url = value;
+    } else {
+      delete next.proxy_url;
+    }
+  }
+
+  if (fields.priority !== undefined) {
+    if (fields.priority === 0) {
+      delete next.priority;
+    } else {
+      next.priority = fields.priority;
+    }
+  }
+
+  if (fields.note !== undefined) {
+    const value = fields.note.trim();
+    if (value) {
+      next.note = value;
+    } else {
+      delete next.note;
+    }
+  }
+
+  if (fields.headers !== undefined) {
+    const currentHeaders =
+      next.headers && typeof next.headers === 'object' && !Array.isArray(next.headers)
+        ? { ...(next.headers as Record<string, unknown>) }
+        : {};
+    Object.entries(fields.headers).forEach(([name, rawValue]) => {
+      const headerName = name.trim();
+      if (!headerName) return;
+      const value = rawValue.trim();
+      if (value) {
+        currentHeaders[headerName] = value;
+      } else {
+        delete currentHeaders[headerName];
+      }
+    });
+    if (Object.keys(currentHeaders).length > 0) {
+      next.headers = currentHeaders;
+    } else {
+      delete next.headers;
+    }
+  }
+
+  if (fields.websockets !== undefined) {
+    delete next.websocket;
+    next.websockets = fields.websockets;
+  }
+
+  return next;
+};
+
+const patchAuthFileJsonValueByAuthIndexes = (
+  value: AuthFileJsonValue,
+  authIndexes: AuthFilePatchAuthIndex[],
+  fields: AuthFileFieldsPatch
+): AuthFileJsonValue => {
+  const targetIndexes = new Set(
+    authIndexes.map(normalizePatchAuthIndex).filter((authIndex) => authIndex)
+  );
+
+  if (targetIndexes.size === 0) {
+    return Array.isArray(value)
+      ? value.map((record) => applyFieldsPatchToAuthRecord(record, fields))
+      : applyFieldsPatchToAuthRecord(value, fields);
+  }
+
+  if (!Array.isArray(value)) {
+    const recordAuthIndex = readPatchRecordAuthIndex(value);
+    if (recordAuthIndex && !targetIndexes.has(recordAuthIndex)) {
+      throw new Error('Auth index not found');
+    }
+    return applyFieldsPatchToAuthRecord(value, fields);
+  }
+
+  const matchedIndexes = new Set<string>();
+  const nextValue = value.map((record) => {
+    const recordAuthIndex = readPatchRecordAuthIndex(record);
+    if (!recordAuthIndex || !targetIndexes.has(recordAuthIndex)) {
+      return record;
+    }
+    matchedIndexes.add(recordAuthIndex);
+    return applyFieldsPatchToAuthRecord(record, fields);
+  });
+
+  if (matchedIndexes.size !== targetIndexes.size) {
+    throw new Error('Auth index not found');
+  }
+
+  return nextValue;
 };
 
 const saveAuthFileText = async (name: string, text: string) => {
@@ -433,18 +635,41 @@ export const authFilesApi = {
   patchFields: (name: string, fields: AuthFileFieldsPatch) =>
     apiClient.patch('/auth-files/fields', { name, ...fields }),
 
+  patchFieldsForAuthIndexes: async (
+    name: string,
+    authIndexes: AuthFilePatchAuthIndex[],
+    fields: AuthFileFieldsPatch
+  ) => {
+    const rawText = await authFilesApi.downloadText(name);
+    const value = parseAuthFileJsonValue(rawText);
+    const nextValue = patchAuthFileJsonValueByAuthIndexes(value, authIndexes, fields);
+    await authFilesApi.saveJsonObject(name, nextValue);
+  },
+
   uploadFiles: async (files: File[]): Promise<AuthFileBatchUploadResult> => {
     const requestedNames = files.map((file) => file.name);
     if (requestedNames.length === 0) {
       return { status: 'ok', uploaded: 0, files: [], failed: [] };
     }
 
-    const formData = new FormData();
-    files.forEach((file) => {
-      formData.append('file', file, file.name);
-    });
-    const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
-    return normalizeBatchUploadResponse(payload, requestedNames);
+    if (files.length === 1) {
+      return uploadSingleAuthFile(files[0]);
+    }
+
+    const results: AuthFileBatchUploadResult[] = [];
+    for (const file of files) {
+      try {
+        results.push(await uploadSingleAuthFile(file));
+      } catch (err) {
+        results.push({
+          status: 'error',
+          uploaded: 0,
+          files: [],
+          failed: [{ name: file.name, error: readUploadErrorMessage(err) }],
+        });
+      }
+    }
+    return mergeBatchUploadResults(results, requestedNames);
   },
 
   upload: (file: File) => authFilesApi.uploadFiles([file]),
@@ -495,7 +720,7 @@ export const authFilesApi = {
 
   saveText: (name: string, text: string) => saveAuthFileText(name, text),
 
-  saveJsonObject: (name: string, json: Record<string, unknown>) =>
+  saveJsonObject: (name: string, json: AuthFileJsonValue) =>
     saveAuthFileText(name, JSON.stringify(json)),
 
   // OAuth 排除模型
@@ -579,17 +804,4 @@ export const authFilesApi = {
       ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
       : [];
   },
-
-  // OpenAI 兼容余额刷新
-  refreshOpenAICompatBalance: (
-    params: Record<string, unknown>
-  ): Promise<Record<string, unknown>> =>
-    apiClient.post<Record<string, unknown>>('/openai-compat/balance/refresh', params),
-
-  // 小米邮箱验证码验证
-  verifyXiaomiCode: (sessionId: string, code: string): Promise<Record<string, unknown>> =>
-    apiClient.post<Record<string, unknown>>('/openai-compat/balance/verify', {
-      session_id: sessionId,
-      code,
-    }),
 };

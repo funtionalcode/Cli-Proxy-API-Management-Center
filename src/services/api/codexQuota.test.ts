@@ -1,5 +1,25 @@
-import { describe, expect, it } from 'vitest';
-import { buildCodexUsageRequestHeaders } from './codexQuota';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mocks } = vi.hoisted(() => ({
+  mocks: {
+    request: vi.fn(),
+  },
+}));
+
+vi.mock('./apiCall', () => ({
+  apiCallApi: {
+    request: mocks.request,
+  },
+  getApiCallErrorMessage: (result: { statusCode: number; bodyText?: string }) =>
+    `${result.statusCode} ${result.bodyText ?? ''}`.trim(),
+}));
+
+import { CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_URL } from '@/utils/quota/constants';
+import { buildCodexUsageRequestHeaders, consumeCodexRateLimitResetCredit } from './codexQuota';
+
+beforeEach(() => {
+  mocks.request.mockReset();
+});
 
 describe('buildCodexUsageRequestHeaders', () => {
   it('does not include Chatgpt-Account-Id when account id is missing', () => {
@@ -21,5 +41,39 @@ describe('buildCodexUsageRequestHeaders', () => {
     });
 
     expect(headers['User-Agent']).toBe('codex-test-agent');
+  });
+});
+
+describe('consumeCodexRateLimitResetCredit', () => {
+  it('posts a redeem request through api-call with the Codex auth index', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '{}',
+      body: {},
+    });
+
+    await consumeCodexRateLimitResetCredit({
+      name: 'codex-auth.json',
+      type: 'codex',
+      authIndex: ' auth-1 ',
+      id_token: { account_id: 'acct-1' },
+    });
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    const payload = mocks.request.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      authIndex: 'auth-1',
+      method: 'POST',
+      url: CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_URL,
+      header: expect.objectContaining({
+        Authorization: 'Bearer $TOKEN$',
+        'Chatgpt-Account-Id': 'acct-1',
+      }),
+    });
+    expect(JSON.parse(payload.data)).toEqual({
+      redeem_request_id: expect.any(String),
+    });
   });
 });

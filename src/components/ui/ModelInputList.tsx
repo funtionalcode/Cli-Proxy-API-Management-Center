@@ -81,7 +81,8 @@ export function ModelInputList({
             />
             <Button
               variant="ghost"
-              size="sm"
+              size="xs"
+              iconOnly
               onClick={() => removeEntry(index)}
               disabled={disabled || currentEntries.length <= 1}
               className={removeButtonClassName}
@@ -94,7 +95,7 @@ export function ModelInputList({
         </Fragment>
       ))}
       {!hideAddButton && addLabel && (
-        <Button variant="secondary" size="sm" onClick={addEntry} disabled={disabled} className="align-start">
+        <Button variant="secondary" size="xs" onClick={addEntry} disabled={disabled} className="align-start">
           {addLabel}
         </Button>
       )}

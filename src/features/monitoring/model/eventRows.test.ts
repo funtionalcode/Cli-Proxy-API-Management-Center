@@ -1,0 +1,202 @@
+import { describe, expect, it } from 'vitest';
+import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
+import type { UsageDetailWithEndpoint } from '@/utils/usage';
+import { buildSourceInfoMap } from '@/utils/sourceResolver';
+import { buildEventRows } from './eventRows';
+
+const buildRows = (overrides: Partial<UsageDetailWithEndpoint> = {}) =>
+  buildEventRows(
+    [
+      {
+        timestamp: '2026-05-19T10:00:00Z',
+        source: 'alice@example.com',
+        auth_index: 'auth-1',
+        latency_ms: 1500,
+        ttft_ms: 500,
+        tokens: {
+          input_tokens: 10,
+          output_tokens: 20,
+          total_tokens: 30,
+        },
+        failed: false,
+        __modelName: 'gpt-5.4',
+        __endpoint: 'POST /v1/chat/completions',
+        __endpointMethod: 'POST',
+        __endpointPath: '/v1/chat/completions',
+        __timestampMs: Date.parse('2026-05-19T10:00:00Z'),
+        ...overrides,
+      },
+    ],
+    new Map(),
+    new Map(),
+    { byAuthIndex: new Map(), bySource: new Map(), byIdentityKey: new Map() },
+    new Map(),
+    {},
+    new Map()
+  );
+
+describe('buildEventRows', () => {
+  it('calculates output tokens per second from total latency', () => {
+    const [row] = buildRows();
+
+    expect(row.latencyMs).toBe(1500);
+    expect(row.ttftMs).toBe(500);
+    expect(row.tokensPerSecond).toBeCloseTo(20 / 1.5);
+  });
+
+  it('does not let TTFT change output tokens per second', () => {
+    const [withoutTTFT] = buildRows({ ttft_ms: undefined });
+    const [smallTTFT] = buildRows({ ttft_ms: 100 });
+    const [invalidTTFT] = buildRows({ ttft_ms: 2000 });
+
+    expect(withoutTTFT.tokensPerSecond).toBeCloseTo(20 / 1.5);
+    expect(smallTTFT.tokensPerSecond).toBeCloseTo(20 / 1.5);
+    expect(invalidTTFT.tokensPerSecond).toBeCloseTo(20 / 1.5);
+  });
+
+  it('does not calculate tokens per second without output tokens or total latency', () => {
+    const [noOutput] = buildRows({ tokens: { output_tokens: 0 } });
+    const [noLatency] = buildRows({ latency_ms: undefined });
+    const [zeroLatency] = buildRows({ latency_ms: 0 });
+
+    expect(noOutput.tokensPerSecond).toBeNull();
+    expect(noLatency.tokensPerSecond).toBeNull();
+    expect(zeroLatency.tokensPerSecond).toBeNull();
+  });
+
+  it('keeps CPA executor and service tier metadata searchable', () => {
+    const [row] = buildRows({
+      executor_type: 'codex',
+      service_tier: 'priority',
+      reasoning_effort: 'medium',
+    });
+
+    expect(row.executorType).toBe('codex');
+    expect(row.serviceTier).toBe('priority');
+    expect(row.searchText).toContain('codex');
+    expect(row.searchText).toContain('priority');
+    expect(row.searchText).toContain('medium');
+  });
+
+  it('keeps response header diagnostics searchable', () => {
+    const [row] = buildRows({
+      failed: true,
+      fail_status_code: 429,
+      response_metadata: {
+        quota: {
+          plan_type: 'plus',
+          used_percent: 87,
+          recover_at_ms: 1780000060000,
+        },
+        errors: {
+          kind: 'rate_limit',
+          code: 'retry_after',
+        },
+        trace: {
+          primary_trace_id: 'req-header',
+        },
+      },
+      header_quota_recover_at_ms: 1780000060000,
+      header_quota_used_percent: 87,
+      header_quota_plan_type: 'plus',
+      header_error_kind: 'rate_limit',
+      header_error_code: 'retry_after',
+      header_trace_id: 'req-header',
+    });
+
+    expect(row.responseMetadata?.quota?.plan_type).toBe('plus');
+    expect(row.headerQuotaUsedPercent).toBe(87);
+    expect(row.headerTraceId).toBe('req-header');
+    expect(row.searchText).toContain('rate_limit');
+    expect(row.searchText).toContain('retry_after');
+    expect(row.searchText).toContain('req-header');
+    expect(row.searchText).toContain('plus');
+  });
+
+  it('derives response header diagnostics from metadata-only usage details', () => {
+    const [row] = buildRows({
+      failed: true,
+      fail_status_code: 429,
+      response_metadata: {
+        quota: {
+          active_limit: 'premium',
+          used_percent: 92,
+          recover_at_ms: 1780000120000,
+        },
+        errors: {
+          kind: 'rate_limit',
+          ide_error_code: 'usage_limit_reached',
+        },
+        trace: {
+          primary_trace_id: 'req-metadata-only',
+        },
+      },
+    });
+
+    expect(row.headerQuotaPlanType).toBe('premium');
+    expect(row.headerQuotaUsedPercent).toBe(92);
+    expect(row.headerQuotaRecoverAtMs).toBe(1780000120000);
+    expect(row.headerErrorKind).toBe('rate_limit');
+    expect(row.headerErrorCode).toBe('usage_limit_reached');
+    expect(row.headerTraceId).toBe('req-metadata-only');
+    expect(row.searchText).toContain('usage_limit_reached');
+    expect(row.searchText).toContain('req-metadata-only');
+    expect(row.searchText).toContain('premium');
+  });
+
+  it('keeps shared provider display names available to realtime source cells', () => {
+    const sharedKey = 'sk-shared1234567890abcdef';
+    const sourceInfoMap = buildSourceInfoMap({
+      codexApiKeys: [
+        {
+          apiKey: sharedKey,
+          prefix: 'Shared Relay',
+          baseUrl: 'https://api.shared.example/v1',
+        },
+      ],
+      claudeApiKeys: [
+        {
+          apiKey: sharedKey,
+          prefix: 'Shared Relay',
+          baseUrl: 'https://api.shared.example/v1',
+        },
+      ],
+    });
+    const [row] = buildEventRows(
+      [
+        {
+          timestamp: '2026-05-19T10:00:00Z',
+          source: 'm:sk-s...cdef',
+          auth_index: null,
+          auth_provider_snapshot: 'codex',
+          latency_ms: 1500,
+          tokens: {
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+          },
+          failed: false,
+          __modelName: 'gpt-5.4',
+          __endpoint: 'POST /v1/chat/completions',
+          __endpointMethod: 'POST',
+          __endpointPath: '/v1/chat/completions',
+          __timestampMs: Date.parse('2026-05-19T10:00:00Z'),
+        },
+      ],
+      new Map(),
+      new Map(),
+      sourceInfoMap,
+      new Map(),
+      {},
+      new Map()
+    );
+
+    const t = ((key: string) => key) as Parameters<typeof buildRealtimeSourceDisplay>[1];
+    const display = buildRealtimeSourceDisplay(row, t);
+
+    expect(row.source).toBe('Shared Relay');
+    expect(row.sourceKey).toBe('shared:m:sk-s...cdef');
+    expect(row.provider).toBe('codex');
+    expect(display.primary).toBe('Shared Relay');
+  });
+});

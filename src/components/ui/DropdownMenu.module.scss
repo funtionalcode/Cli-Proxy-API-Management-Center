@@ -25,14 +25,20 @@
 .trigger:hover,
 .triggerOpen {
   transform: translateY(-1px);
-  border-color: var(--border-primary, #d1d5db);
-  background: var(--bg-tertiary, #f3f4f6);
+  border-color: var(--border-subtle, #d8e5f2);
+  background: var(--surface-subtle-hover, #f1f7fe);
 }
 
-.trigger:focus,
+.trigger:focus {
+  outline: none;
+}
+
 .trigger:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color, #2563eb) 28%, transparent);
+  border-color: var(--focus-border, color-mix(in srgb, var(--primary-color, #409eff) 28%, transparent));
+  background: var(--focus-bg, var(--surface-subtle-hover, #f1f7fe));
+  color: var(--focus-text, var(--primary-color, #409eff));
+  box-shadow: inset 0 0 0 1px var(--focus-inset, color-mix(in srgb, var(--primary-color, #409eff) 22%, transparent));
 }
 
 .trigger:disabled {
@@ -47,13 +53,27 @@
   min-width: 168px;
   max-width: 280px;
   padding: 4px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  border: 1px solid
+    color-mix(in srgb, var(--primary-color, #409eff) 22%, var(--border-primary, #d1d5db));
   border-radius: 12px;
   background: var(--bg-primary, #fff);
-  box-shadow: var(--shadow-lg, 0 16px 32px rgba(15, 23, 42, 0.12));
+  box-shadow:
+    0 16px 32px rgba(15, 23, 42, 0.14),
+    0 0 0 1px color-mix(in srgb, var(--primary-color, #409eff) 8%, transparent);
   color: var(--text-primary, #111827);
   font-size: 13px;
   line-height: 1.4;
+}
+
+:global([data-theme='dark']) .menu {
+  border-color: color-mix(
+    in srgb,
+    var(--primary-color, #409eff) 30%,
+    var(--border-primary, rgba(255, 255, 255, 0.12))
+  );
+  box-shadow:
+    0 16px 32px rgba(0, 0, 0, 0.42),
+    0 0 0 1px color-mix(in srgb, var(--primary-color, #409eff) 14%, transparent);
 }
 
 .item {
@@ -78,7 +98,7 @@
 .item:hover,
 .item:focus,
 .itemActive {
-  background: var(--bg-tertiary, #f3f4f6);
+  background: var(--surface-subtle-hover, #f1f7fe);
 }
 
 .item:focus,
@@ -117,5 +137,5 @@
 .divider {
   height: 1px;
   margin: 4px 4px;
-  background: var(--border-color, #e5e7eb);
+  background: var(--border-subtle, #d8e5f2);
 }

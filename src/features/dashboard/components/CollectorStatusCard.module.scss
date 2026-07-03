@@ -1,0 +1,96 @@
+.dataCard {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-backdrop-filter);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+
+  .cardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    h3 { font-size: 16px; font-weight: 600; margin: 0; }
+    .moreBtn {
+      color: var(--color-primary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      &:hover { text-decoration: underline; }
+    }
+  }
+
+  .statusList {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .statusItem {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+
+    .label { color: var(--text-tertiary); }
+    .value {
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .statusText { color: var(--text-primary); }
+    .statusOk { color: #10b981; }
+    .statusWarn { color: #f59e0b; }
+    .statusDot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      display: inline-block;
+    }
+
+    .statusWarn .statusDot {
+      background: #f59e0b;
+    }
+  }
+}
+
+@media (max-width: 560px) {
+  .dataCard {
+    padding: 12px;
+  }
+}
+
+.errorLine {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: var(--app-radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 12px;
+
+  span {
+    color: var(--text-tertiary);
+  }
+
+  strong {
+    color: #f59e0b;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+}

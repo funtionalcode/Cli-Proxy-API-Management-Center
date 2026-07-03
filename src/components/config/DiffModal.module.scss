@@ -29,9 +29,9 @@ $diff-hunk-color: #388bfd;
 
 .emptyState {
   flex: 1;
-  border: 1px dashed var(--border-color);
+  border: 1px dashed var(--border-subtle-dashed);
   border-radius: $radius-md;
-  background: var(--bg-secondary);
+  background: var(--surface-subtle);
   color: var(--text-secondary);
   font-size: 14px;
   display: grid;
@@ -56,8 +56,8 @@ $diff-hunk-color: #388bfd;
   align-items: center;
   gap: $spacing-sm;
   padding: 10px $spacing-md;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  background: var(--surface-subtle-strong);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 

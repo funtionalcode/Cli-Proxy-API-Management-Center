@@ -1,3 +1,8 @@
+import type {
+  AuthFilesCodexPlanFilter,
+  AuthFilesCodexStatusFilter,
+} from './model/authFilesPageModel';
+
 export const AUTH_FILES_SORT_MODES = [
   'default',
   'name-asc',
@@ -10,19 +15,15 @@ export const AUTH_FILES_SORT_MODES = [
 ] as const;
 
 export type AuthFilesSortMode = (typeof AUTH_FILES_SORT_MODES)[number];
-
-export const AUTH_FILES_VIEW_MODES = ['diagram', 'list'] as const;
-export type AuthFilesViewMode = (typeof AUTH_FILES_VIEW_MODES)[number];
-const AUTH_FILES_VIEW_MODE_SET = new Set<AuthFilesViewMode>(AUTH_FILES_VIEW_MODES);
-
-export const isAuthFilesViewMode = (value: unknown): value is AuthFilesViewMode =>
-  typeof value === 'string' && AUTH_FILES_VIEW_MODE_SET.has(value as AuthFilesViewMode);
+export type AuthFilesViewMode = 'diagram' | 'list';
 
 export type AuthFilesUiState = {
   filter?: string;
   problemOnly?: boolean;
   disabledOnly?: boolean;
   healthyOnly?: boolean;
+  codexStatusFilter?: AuthFilesCodexStatusFilter;
+  codexPlanFilter?: AuthFilesCodexPlanFilter;
   compactMode?: boolean;
   search?: string;
   page?: number;
@@ -49,6 +50,9 @@ export const normalizeAuthFilesSortMode = (value: unknown): AuthFilesSortMode | 
   if (typeof value !== 'string') return null;
   return LEGACY_AUTH_FILES_SORT_MODE_MAP[value] ?? null;
 };
+
+export const normalizeAuthFilesViewMode = (value: unknown): AuthFilesViewMode | null =>
+  value === 'diagram' || value === 'list' ? value : null;
 
 const readAuthFilesUiStateFromStorage = (
   storage: Pick<Storage, 'getItem'> | null | undefined

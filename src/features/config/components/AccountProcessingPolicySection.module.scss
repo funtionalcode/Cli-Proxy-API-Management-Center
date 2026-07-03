@@ -1,0 +1,261 @@
+.section {
+  display: grid;
+  gap: 12px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sectionHeaderText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.sectionHint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.groups {
+  display: grid;
+  gap: 12px;
+}
+
+.group {
+  display: grid;
+  gap: 8px;
+}
+
+.groupHeader {
+  display: grid;
+  gap: 3px;
+}
+
+.groupHeader h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--surface-subtle) 42%, var(--bg-primary));
+}
+
+.nestedCard {
+  border-left: 3px solid color-mix(in srgb, var(--primary-color) 34%, var(--border-color));
+}
+
+.statusOn {
+  border-color: color-mix(in srgb, var(--success-color, #16a34a) 34%, var(--border-color));
+}
+
+.statusBlocked {
+  border-color: color-mix(in srgb, var(--warning-color) 46%, var(--border-color));
+}
+
+.statusLocked {
+  border-color: color-mix(in srgb, var(--text-secondary) 28%, var(--border-color));
+}
+
+.statusOff {
+  border-color: var(--border-color);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cardTitle {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.cardDescription {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.envLockedReason,
+.dependencyNote {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning-color) 40%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 10%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.envLockedReason code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.advancedInfo {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--surface-subtle) 44%, transparent);
+}
+
+.advancedSummary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  list-style: none;
+}
+
+.advancedSummary::-webkit-details-marker {
+  display: none;
+}
+
+.advancedBody {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.behaviorList {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.metaRow {
+  display: grid;
+  grid-template-columns: minmax(0, 112px) 1fr;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.metaLabel {
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metaValue {
+  min-width: 0;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.metaValue code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.cardActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.errorState,
+.saveErrorBanner {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--error-color) 40%, transparent);
+  background: color-mix(in srgb, var(--error-color) 8%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.saveErrorBanner {
+  grid-template-columns: minmax(0, max-content) 1fr;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.errorState strong,
+.saveErrorBanner strong {
+  color: var(--error-color);
+}
+
+.saveErrorBanner strong {
+  white-space: nowrap;
+}
+
+.confirmBody {
+  display: grid;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.confirmBody p,
+.confirmBody ul {
+  margin: 0;
+}
+
+.confirmBody ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+}
+
+.confirmFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .sectionHeader {
+    display: grid;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .saveErrorBanner {
+    grid-template-columns: 1fr;
+  }
+}

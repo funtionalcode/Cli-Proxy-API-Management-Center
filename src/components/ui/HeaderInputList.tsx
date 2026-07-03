@@ -62,7 +62,8 @@ export function HeaderInputList({
             />
             <Button
               variant="ghost"
-              size="sm"
+              size="xs"
+              iconOnly
               onClick={() => removeEntry(index)}
               disabled={disabled || currentEntries.length <= 1}
               title={removeButtonTitle}
@@ -73,7 +74,7 @@ export function HeaderInputList({
           </div>
         </Fragment>
       ))}
-      <Button variant="secondary" size="sm" onClick={addEntry} disabled={disabled} className="align-start">
+      <Button variant="secondary" size="xs" onClick={addEntry} disabled={disabled} className="align-start">
         {addLabel}
       </Button>
     </div>

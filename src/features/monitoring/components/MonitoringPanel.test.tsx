@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import styles from '@/pages/MonitoringCenterPage.module.scss';
+import styles from '@/features/monitoring/MonitoringCenterPage.module.scss';
 import { MonitoringPanel } from './MonitoringPanel';
 
 describe('MonitoringPanel', () => {

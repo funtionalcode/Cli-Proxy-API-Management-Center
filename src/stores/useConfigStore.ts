@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import type { Config } from '@/types';
 import type { RawConfigSection } from '@/types/config';
+import { CONFIG_SECTION_KEYS, extractConfigSectionValue } from '@/entities/config/sections';
 import { configApi } from '@/services/api/config';
 import { CACHE_EXPIRY_MS } from '@/utils/constants';
 
@@ -33,72 +34,6 @@ interface ConfigState {
 let configRequestToken = 0;
 let inFlightConfigRequest: { id: number; promise: Promise<Config> } | null = null;
 
-const SECTION_KEYS: RawConfigSection[] = [
-  'debug',
-  'proxy-url',
-  'request-retry',
-  'quota-exceeded',
-  'request-log',
-  'logging-to-file',
-  'logs-max-total-size-mb',
-  'ws-auth',
-  'force-model-prefix',
-  'routing/strategy',
-  'api-keys',
-  'ampcode',
-  'gemini-api-key',
-  'codex-api-key',
-  'claude-api-key',
-  'vertex-api-key',
-  'openai-compatibility',
-  'oauth-excluded-models'
-];
-
-const extractSectionValue = (config: Config | null, section?: RawConfigSection) => {
-  if (!config) return undefined;
-  switch (section) {
-    case 'debug':
-      return config.debug;
-    case 'proxy-url':
-      return config.proxyUrl;
-    case 'request-retry':
-      return config.requestRetry;
-    case 'quota-exceeded':
-      return config.quotaExceeded;
-    case 'request-log':
-      return config.requestLog;
-    case 'logging-to-file':
-      return config.loggingToFile;
-    case 'logs-max-total-size-mb':
-      return config.logsMaxTotalSizeMb;
-    case 'ws-auth':
-      return config.wsAuth;
-    case 'force-model-prefix':
-      return config.forceModelPrefix;
-    case 'routing/strategy':
-      return config.routingStrategy;
-    case 'api-keys':
-      return config.apiKeys;
-    case 'ampcode':
-      return config.ampcode;
-    case 'gemini-api-key':
-      return config.geminiApiKeys;
-    case 'codex-api-key':
-      return config.codexApiKeys;
-    case 'claude-api-key':
-      return config.claudeApiKeys;
-    case 'vertex-api-key':
-      return config.vertexApiKeys;
-    case 'openai-compatibility':
-      return config.openaiCompatibility;
-    case 'oauth-excluded-models':
-      return config.oauthExcludedModels;
-    default:
-      if (!section) return undefined;
-      return config.raw?.[section];
-  }
-};
-
 export const useConfigStore = create<ConfigState>((set, get) => ({
   config: null,
   cache: new Map(),
@@ -121,14 +56,14 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     if (!forceRefresh && section && isCacheValid()) {
       const fullCached = cache.get('__full__');
       if (fullCached?.data) {
-        return extractSectionValue(fullCached.data as Config, section);
+        return extractConfigSectionValue(fullCached.data as Config, section);
       }
     }
 
     // 同一时刻合并多个 /config 请求（如 StrictMode 或多个页面同时触发）
     if (inFlightConfigRequest) {
       const data = await inFlightConfigRequest.promise;
-      return section ? extractSectionValue(data, section) : data;
+      return section ? extractConfigSectionValue(data, section) : data;
     }
 
     // 获取新数据
@@ -143,14 +78,14 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 
       // 如果在请求过程中连接已被切换/登出，则忽略旧请求的结果，避免覆盖新会话的状态
       if (requestId !== configRequestToken) {
-        return section ? extractSectionValue(data, section) : data;
+        return section ? extractConfigSectionValue(data, section) : data;
       }
 
       // 更新缓存
       const newCache = new Map(cache);
       newCache.set('__full__', { data, timestamp: now });
-      SECTION_KEYS.forEach((key) => {
-        const value = extractSectionValue(data, key);
+      CONFIG_SECTION_KEYS.forEach((key) => {
+        const value = extractConfigSectionValue(data, key);
         if (value !== undefined) {
           newCache.set(key, { data: value, timestamp: now });
         }
@@ -162,7 +97,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         loading: false
       });
 
-      return section ? extractSectionValue(data, section) : data;
+      return section ? extractConfigSectionValue(data, section) : data;
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : typeof error === 'string' ? error : 'Failed to fetch config';
@@ -205,6 +140,13 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         case 'logging-to-file':
           nextConfig.loggingToFile = value as Config['loggingToFile'];
           break;
+        case 'plugins':
+          nextConfig.pluginsEnabled =
+            value !== null &&
+            typeof value === 'object' &&
+            !Array.isArray(value) &&
+            (value as { enabled?: unknown }).enabled === true;
+          break;
         case 'logs-max-total-size-mb':
           nextConfig.logsMaxTotalSizeMb = value as Config['logsMaxTotalSizeMb'];
           break;
@@ -219,9 +161,6 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           break;
         case 'api-keys':
           nextConfig.apiKeys = value as Config['apiKeys'];
-          break;
-        case 'ampcode':
-          nextConfig.ampcode = value as Config['ampcode'];
           break;
         case 'gemini-api-key':
           nextConfig.geminiApiKeys = value as Config['geminiApiKeys'];

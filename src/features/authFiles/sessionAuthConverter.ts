@@ -1,6 +1,7 @@
-export type AuthJsonInputType = 'cpa' | 'session';
+export type AuthJsonInputType = 'cpa' | 'session' | 'sub2api';
 
 type JsonRecord = Record<string, unknown>;
+export type AuthJsonConversionResult = JsonRecord | JsonRecord[];
 type TraversalState = {
   visited: WeakSet<object>;
   visitedRecords: number;
@@ -125,22 +126,8 @@ const WINDOWS_RESERVED_BASE_NAMES = new Set([
 ]);
 
 const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
-  0x200b,
-  0x200c,
-  0x200d,
-  0x200e,
-  0x200f,
-  0x202a,
-  0x202b,
-  0x202c,
-  0x202d,
-  0x202e,
-  0x2060,
-  0x2066,
-  0x2067,
-  0x2068,
-  0x2069,
-  0xfeff,
+  0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066,
+  0x2067, 0x2068, 0x2069, 0xfeff,
 ]);
 
 const CREDENTIAL_CONTAINER_KEYS = ['credentials', 'auth', 'cookies'] as const;
@@ -365,14 +352,12 @@ const buildAggregatedSessionObject = (record: JsonRecord): JsonRecord | undefine
     hasAccessTokenFields(record) ? record : undefined,
     isRecord(record.token) && hasAccessTokenFields(record.token) ? record.token : undefined,
     isRecord(record.tokens) && hasAccessTokenFields(record.tokens) ? record.tokens : undefined,
-      isRecord(record.credentials) && hasAccessTokenFields(record.credentials)
-        ? record.credentials
-        : undefined,
-      session && hasAccessTokenFields(session) ? session : undefined,
-      isRecord(session?.token) && hasAccessTokenFields(session.token) ? session.token : undefined,
-      isRecord(session?.tokens) && hasAccessTokenFields(session.tokens)
-        ? session.tokens
-        : undefined,
+    isRecord(record.credentials) && hasAccessTokenFields(record.credentials)
+      ? record.credentials
+      : undefined,
+    session && hasAccessTokenFields(session) ? session : undefined,
+    isRecord(session?.token) && hasAccessTokenFields(session.token) ? session.token : undefined,
+    isRecord(session?.tokens) && hasAccessTokenFields(session.tokens) ? session.tokens : undefined,
     ...records.filter(hasAccessTokenFields),
   ].filter((candidate): candidate is JsonRecord => Boolean(candidate));
   const uniqueTokenCandidates = tokenCandidates.filter(
@@ -408,21 +393,21 @@ const buildAggregatedSessionObject = (record: JsonRecord): JsonRecord | undefine
   const hasIdentity = Boolean(userLike || accountLike || firstNonEmpty(record.email, record.name));
   if (!accessToken || !hasIdentity) return undefined;
 
-    return stripUnavailable({
-      ...record,
-      accessToken,
-      access_token: tokenLike?.access_token,
-      expires: firstNonEmpty(session?.expires, record.expires, tokenLike?.expires),
-      expired: firstNonEmpty(session?.expired, record.expired, tokenLike?.expired),
-      expires_at: firstNonEmpty(session?.expires_at, record.expires_at, tokenLike?.expires_at),
-      sessionToken: firstNonEmptyString(
-        tokenLike?.sessionToken,
-        tokenLike?.session_token,
-        record.sessionToken,
-        record.session_token,
-        session?.sessionToken,
-        session?.session_token
-      ),
+  return stripUnavailable({
+    ...record,
+    accessToken,
+    access_token: tokenLike?.access_token,
+    expires: firstNonEmpty(session?.expires, record.expires, tokenLike?.expires),
+    expired: firstNonEmpty(session?.expired, record.expired, tokenLike?.expired),
+    expires_at: firstNonEmpty(session?.expires_at, record.expires_at, tokenLike?.expires_at),
+    sessionToken: firstNonEmptyString(
+      tokenLike?.sessionToken,
+      tokenLike?.session_token,
+      record.sessionToken,
+      record.session_token,
+      session?.sessionToken,
+      session?.session_token
+    ),
     refreshToken: firstNonEmptyString(tokenLike?.refreshToken, tokenLike?.refresh_token),
     idToken: firstNonEmptyString(tokenLike?.idToken, tokenLike?.id_token),
     user: userLike,
@@ -606,9 +591,10 @@ const hasForbiddenInvisibleCharacter = (
   if (!isRecord(value)) return false;
   if (!markTraversalRecord(value, state)) return false;
 
-  return Object.entries(value).some(([key, item]) =>
-    hasForbiddenInvisibleCharacter(key, depth + 1, state) ||
-    hasForbiddenInvisibleCharacter(item, depth + 1, state)
+  return Object.entries(value).some(
+    ([key, item]) =>
+      hasForbiddenInvisibleCharacter(key, depth + 1, state) ||
+      hasForbiddenInvisibleCharacter(item, depth + 1, state)
   );
 };
 
@@ -684,11 +670,7 @@ const convertSessionToCpaAuthJson = (record: JsonRecord, now: Date): JsonRecord 
     normalizeTimestamp(record.expires_at),
     normalizeTimestamp(accessTokenPayload?.exp)
   );
-  const email = firstNonEmpty(
-    user?.email,
-    record.email,
-    credentials?.email
-  );
+  const email = firstNonEmpty(user?.email, record.email, credentials?.email);
   const accountId = firstNonEmpty(
     account?.id,
     account?.account_id,
@@ -712,8 +694,7 @@ const convertSessionToCpaAuthJson = (record: JsonRecord, now: Date): JsonRecord 
     credentials?.plan_type,
     credentials?.chatgpt_plan_type
   );
-  const idToken =
-    isUnsafeIdToken(inputIdToken) ? undefined : firstNonEmptyString(inputIdToken);
+  const idToken = isUnsafeIdToken(inputIdToken) ? undefined : firstNonEmptyString(inputIdToken);
   const name = firstNonEmpty(email, record.name, 'ChatGPT Account');
 
   return stripUnavailable({
@@ -734,12 +715,184 @@ const convertSessionToCpaAuthJson = (record: JsonRecord, now: Date): JsonRecord 
   }) as JsonRecord;
 };
 
+const getSub2ApiAccountLabel = (account: JsonRecord, index: number) => {
+  const name = firstNonEmptyString(account.name);
+  return name ? `"${name}"` : `#${index + 1}`;
+};
+
+const isSub2ApiOpenAIOAuthAccount = (account: JsonRecord) =>
+  firstNonEmptyString(account.platform)?.toLowerCase() === 'openai' &&
+  firstNonEmptyString(account.type)?.toLowerCase() === 'oauth';
+
+const collectSub2ApiAccounts = (
+  value: unknown
+): { accounts: JsonRecord[]; exportedAt?: unknown } => {
+  if (Array.isArray(value)) {
+    return {
+      accounts: value.filter((item): item is JsonRecord => isRecord(item)),
+    };
+  }
+
+  if (!isRecord(value)) return { accounts: [] };
+
+  if (Array.isArray(value.accounts)) {
+    return {
+      accounts: value.accounts.filter((item): item is JsonRecord => isRecord(item)),
+      exportedAt: value.exported_at,
+    };
+  }
+
+  if (isRecord(value.data) && Array.isArray(value.data.accounts)) {
+    return {
+      accounts: value.data.accounts.filter((item): item is JsonRecord => isRecord(item)),
+      exportedAt: value.data.exported_at,
+    };
+  }
+
+  if (isRecord(value.credentials) && firstNonEmptyString(value.platform, value.type)) {
+    return {
+      accounts: [value],
+      exportedAt: value.exported_at,
+    };
+  }
+
+  return { accounts: [] };
+};
+
+const readSub2ApiCredentialString = (
+  credentials: JsonRecord,
+  extra: JsonRecord | undefined,
+  ...keys: string[]
+) => {
+  const values = keys.flatMap((key) => [credentials[key], extra?.[key]]);
+  return firstNonEmptyString(...values);
+};
+
+const convertSub2ApiAccountToCpaAuthJson = (
+  account: JsonRecord,
+  exportedAt: unknown,
+  now: Date,
+  index: number
+): JsonRecord => {
+  const credentials = isRecord(account.credentials) ? account.credentials : undefined;
+  if (!credentials) {
+    throw new AuthJsonConversionError(
+      `sub2api OpenAI OAuth account ${getSub2ApiAccountLabel(account, index)} is missing credentials`
+    );
+  }
+
+  const extra = isRecord(account.extra) ? account.extra : undefined;
+  const accessToken = firstNonEmptyString(credentials.access_token, credentials.accessToken);
+  if (!accessToken) {
+    throw new AuthJsonConversionError(
+      `sub2api OpenAI OAuth account ${getSub2ApiAccountLabel(account, index)} is missing credentials.access_token`
+    );
+  }
+
+  const inputIdToken = firstNonEmptyString(credentials.id_token, credentials.idToken);
+  const idToken = isUnsafeIdToken(inputIdToken) ? undefined : firstNonEmptyString(inputIdToken);
+  const email = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'email',
+    'email_address',
+    'emailAddress'
+  );
+  const accountId = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'chatgpt_account_id',
+    'chatgptAccountId',
+    'account_id',
+    'accountId'
+  );
+  const userId = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'chatgpt_user_id',
+    'chatgptUserId',
+    'user_id',
+    'userId'
+  );
+  const planType = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'plan_type',
+    'planType',
+    'chatgpt_plan_type',
+    'chatgptPlanType'
+  );
+  const organizationId = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'organization_id',
+    'organizationId',
+    'org_id',
+    'orgId',
+    'poid'
+  );
+  const expiresAt = firstNonEmpty(
+    normalizeTimestamp(credentials.expires_at),
+    normalizeTimestamp(credentials.expiresAt),
+    normalizeTimestamp(account.expires_at),
+    normalizeTimestamp(account.expiresAt)
+  );
+  const lastRefresh = firstNonEmpty(
+    normalizeTimestamp(exportedAt),
+    normalizeTimestamp(account.exported_at),
+    normalizeTimestamp(now)
+  );
+  const status = firstNonEmptyString(account.status);
+  const disabled =
+    typeof account.disabled === 'boolean'
+      ? account.disabled || undefined
+      : status && status.toLowerCase() !== 'active'
+        ? true
+        : undefined;
+  const name = firstNonEmpty(account.name, email, accountId, 'OpenAI OAuth Account');
+
+  return stripUnavailable({
+    type: 'codex',
+    account_id: accountId,
+    chatgpt_account_id: accountId,
+    chatgpt_user_id: userId,
+    organization_id: organizationId,
+    email,
+    name,
+    plan_type: planType,
+    chatgpt_plan_type: planType,
+    id_token: idToken,
+    access_token: accessToken,
+    refresh_token: firstNonEmptyString(credentials.refresh_token, credentials.refreshToken),
+    client_id: firstNonEmptyString(credentials.client_id, credentials.clientId),
+    last_refresh: lastRefresh,
+    expired: expiresAt,
+    disabled,
+  }) as JsonRecord;
+};
+
+const convertSub2ApiToCpaAuthJson = (value: unknown, now: Date): AuthJsonConversionResult => {
+  const { accounts, exportedAt } = collectSub2ApiAccounts(value);
+  const openAiOauthAccounts = accounts.filter(isSub2ApiOpenAIOAuthAccount);
+  if (openAiOauthAccounts.length === 0) {
+    throw new AuthJsonConversionError(
+      'No sub2api OpenAI OAuth account with credentials.access_token was found'
+    );
+  }
+
+  const converted = openAiOauthAccounts.map((account, index) =>
+    convertSub2ApiAccountToCpaAuthJson(account, exportedAt, now, index)
+  );
+
+  return converted.length === 1 ? converted[0] : converted;
+};
+
 export const convertAuthJsonInput = (
   text: string,
   type: AuthJsonInputType,
   now = new Date()
-): JsonRecord => {
-  const parsed = parseJsonObject(text, type === 'session');
+): AuthJsonConversionResult => {
+  const parsed = parseJsonObject(text, type === 'session' || type === 'sub2api');
   if (hasForbiddenInvisibleCharacter(parsed)) {
     throw new AuthJsonConversionError('Auth JSON contains unsupported invisible characters');
   }
@@ -751,6 +904,10 @@ export const convertAuthJsonInput = (
       throw new AuthJsonConversionError('CPA auth JSON is missing required auth fields');
     }
     return parsed;
+  }
+
+  if (type === 'sub2api') {
+    return convertSub2ApiToCpaAuthJson(parsed, now);
   }
 
   const sessions = collectSessionLikeObjects(parsed);
@@ -766,22 +923,89 @@ export const convertAuthJsonInput = (
   return convertSessionToCpaAuthJson(sessions[0].value, now);
 };
 
-export const getDefaultSessionAuthFileName = (authJson: JsonRecord) => {
-  const rawName = firstNonEmpty(
-    authJson.email,
-    authJson.name,
-    authJson.account_id,
-    'codex-account'
-  );
-  const safeName = String(rawName)
-    .replace(/\.json$/iu, '')
-    .replace(/[\\/:*?"<>|]+/g, '-')
-    .replace(/[^a-z0-9]+/gi, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase()
-    .slice(0, 80);
-  const safeBaseName = WINDOWS_RESERVED_BASE_NAMES.has(safeName) ? `${safeName}-account` : safeName;
+const stableStringifyForFingerprint = (value: unknown): string => {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringifyForFingerprint).join(',')}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => !GENERIC_CREDENTIAL_KEYS.has(key.toLowerCase()))
+      .map((key) => `${JSON.stringify(key)}:${stableStringifyForFingerprint(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? String(value);
+};
 
-  return `${safeBaseName || 'codex-account'}.codex.json`;
+const buildAuthFileFingerprint = (value: unknown) => {
+  const text = stableStringifyForFingerprint(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const buildSafeFileNameSegment = (
+  value: unknown,
+  {
+    fallback = '',
+    maxLength = 80,
+    preserveEmailSymbols = false,
+  }: { fallback?: string; maxLength?: number; preserveEmailSymbols?: boolean } = {}
+) => {
+  const raw = String(value ?? '')
+    .trim()
+    .replace(/\.json$/iu, '')
+    .toLowerCase();
+  const unsupportedPattern = preserveEmailSymbols ? /[^a-z0-9@._+-]+/g : /[^a-z0-9]+/g;
+  const safeName = raw
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(unsupportedPattern, '-')
+    .replace(/-+/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    .slice(0, maxLength)
+    .replace(/[.-]+$/g, '');
+  const safeBaseName = WINDOWS_RESERVED_BASE_NAMES.has(safeName) ? `${safeName}-account` : safeName;
+  return safeBaseName || fallback;
+};
+
+const getDefaultAuthFileIdSegment = (authJson: JsonRecord) => {
+  const rawId = firstNonEmpty(
+    authJson.account_id,
+    authJson.chatgpt_account_id,
+    authJson.organization_id
+  );
+  return buildSafeFileNameSegment(rawId, { maxLength: 8 }) || buildAuthFileFingerprint(authJson);
+};
+
+export const getDefaultSessionAuthFileName = (authJson: JsonRecord) => {
+  const provider = buildSafeFileNameSegment(firstNonEmpty(authJson.type, authJson.provider), {
+    fallback: 'codex',
+    maxLength: 24,
+  });
+  const id = getDefaultAuthFileIdSegment(authJson);
+  const identity = buildSafeFileNameSegment(
+    firstNonEmpty(authJson.email, authJson.name, authJson.account_id, 'account'),
+    {
+      fallback: 'account',
+      maxLength: 96,
+      preserveEmailSymbols: true,
+    }
+  );
+  const plan = buildSafeFileNameSegment(firstNonEmpty(authJson.plan_type, authJson.chatgpt_plan_type), {
+    maxLength: 32,
+  });
+  const baseName = [provider, id, identity, plan].filter(Boolean).join('-');
+
+  return `${baseName}.json`;
+};
+
+export const getDefaultSub2ApiAuthFileName = (authJson: AuthJsonConversionResult) => {
+  if (!Array.isArray(authJson)) return getDefaultSessionAuthFileName(authJson);
+  if (authJson.length === 1) return getDefaultSessionAuthFileName(authJson[0]);
+  return 'sub2api-codex-accounts.codex.json';
 };

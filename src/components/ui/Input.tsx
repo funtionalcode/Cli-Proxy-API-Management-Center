@@ -13,23 +13,26 @@ export function Input({ label, hint, error, rightElement, className = '', id, ..
   const hintId = hint ? `${inputId}-hint` : undefined;
   const errorId = error ? `${inputId}-error` : undefined;
   const describedBy = [rest['aria-describedby'], errorId, hintId].filter(Boolean).join(' ') || undefined;
+  const inputClassName = [
+    'input',
+    rightElement ? 'input-with-right-element' : '',
+    className,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className="form-group">
       {label && <label htmlFor={inputId}>{label}</label>}
-      <div style={{ position: 'relative' }}>
+      <div className="input-wrapper">
         <input
           id={inputId}
-          className={`input ${className}`.trim()}
+          className={inputClassName}
           aria-invalid={Boolean(error) || rest['aria-invalid']}
           aria-describedby={describedBy}
           {...rest}
         />
-        {rightElement && (
-          <div style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)' }}>
-            {rightElement}
-          </div>
-        )}
+        {rightElement && <div className="input-right-element">{rightElement}</div>}
       </div>
       {hint && (
         <div id={hintId} className="hint">

@@ -1,13 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  MonitoringAccountRow,
-  MonitoringApiKeyRow,
-  MonitoringEventRow,
-} from './hooks/useMonitoringData';
+import type { MonitoringAccountRow, MonitoringEventRow } from './hooks/useMonitoringData';
 import {
   ACCOUNT_OVERVIEW_CARD_PAGE_SIZE_OPTIONS,
   ACCOUNT_OVERVIEW_CARD_METRIC_KEYS,
-  DEFAULT_API_KEY_SORT,
   DEFAULT_ACCOUNT_SORT,
   buildEmptyMonitoringStatusData,
   buildMonitoringAccountAuthState,
@@ -16,11 +11,11 @@ import {
   shouldClampAccountOverviewPage,
   shouldResetAccountOverviewPage,
   normalizeAccountOverviewPageSize,
+  normalizeAccountDisplayMode,
   normalizeAccountOverviewMode,
   normalizeAccountOverviewUiState,
-  normalizeApiKeySortState,
   normalizeAccountSortState,
-  sortApiKeyRows,
+  resolveAccountDisplayText,
   sortAccountRows,
 } from './accountOverviewState';
 import type { AuthFileItem } from '@/types';
@@ -32,6 +27,7 @@ const createAccountRow = (overrides: Partial<MonitoringAccountRow> = {}): Monito
   accountMasked: overrides.accountMasked ?? 'acc***@example.com',
   authLabels: overrides.authLabels ?? [],
   authIndices: overrides.authIndices ?? [],
+  sourceKeys: overrides.sourceKeys ?? [],
   channels: overrides.channels ?? [],
   totalCalls: overrides.totalCalls ?? 0,
   successCalls: overrides.successCalls ?? 0,
@@ -40,34 +36,13 @@ const createAccountRow = (overrides: Partial<MonitoringAccountRow> = {}): Monito
   inputTokens: overrides.inputTokens ?? 0,
   outputTokens: overrides.outputTokens ?? 0,
   cachedTokens: overrides.cachedTokens ?? 0,
+  cacheReadTokens: overrides.cacheReadTokens ?? 0,
+  cacheCreationTokens: overrides.cacheCreationTokens ?? 0,
   totalTokens: overrides.totalTokens ?? 0,
   totalCost: overrides.totalCost ?? 0,
   averageLatencyMs: overrides.averageLatencyMs ?? null,
   lastSeenAt: overrides.lastSeenAt ?? 0,
   recentPattern: overrides.recentPattern ?? [],
-  models: overrides.models ?? [],
-});
-
-const createApiKeyRow = (overrides: Partial<MonitoringApiKeyRow> = {}): MonitoringApiKeyRow => ({
-  id: overrides.id ?? 'api-key',
-  apiKeyHash: overrides.apiKeyHash ?? 'api-key-hash',
-  apiKeyLabel: overrides.apiKeyLabel ?? 'ak-1',
-  apiKeyMasked: overrides.apiKeyMasked ?? 'ak**********-1',
-  isUnknown: overrides.isUnknown ?? false,
-  authLabels: overrides.authLabels ?? [],
-  sourceLabels: overrides.sourceLabels ?? [],
-  channels: overrides.channels ?? [],
-  totalCalls: overrides.totalCalls ?? 0,
-  successCalls: overrides.successCalls ?? 0,
-  failureCalls: overrides.failureCalls ?? 0,
-  successRate: overrides.successRate ?? 1,
-  inputTokens: overrides.inputTokens ?? 0,
-  outputTokens: overrides.outputTokens ?? 0,
-  cachedTokens: overrides.cachedTokens ?? 0,
-  totalTokens: overrides.totalTokens ?? 0,
-  totalCost: overrides.totalCost ?? 0,
-  averageLatencyMs: overrides.averageLatencyMs ?? null,
-  lastSeenAt: overrides.lastSeenAt ?? 0,
   models: overrides.models ?? [],
 });
 
@@ -89,27 +64,26 @@ const createEventRow = (overrides: Partial<MonitoringEventRow> = {}): Monitoring
   authIndex: overrides.authIndex ?? '1',
   authIndexMasked: overrides.authIndexMasked ?? '1',
   authLabel: overrides.authLabel ?? 'account@example.com',
+  projectId: overrides.projectId ?? 'project-1',
   apiKeyHash: overrides.apiKeyHash ?? 'api-key-hash',
   apiKeyLabel: overrides.apiKeyLabel ?? 'ak********sh',
   apiKeyMasked: overrides.apiKeyMasked ?? 'ak********sh',
   provider: overrides.provider ?? 'codex',
-  projectId: overrides.projectId ?? '',
   planType: overrides.planType ?? 'plus',
   channel: overrides.channel ?? 'default',
   channelHost: overrides.channelHost ?? 'localhost',
   channelDisabled: overrides.channelDisabled ?? false,
   failed: overrides.failed ?? false,
-  requestCount: overrides.requestCount ?? 1,
-  successCalls: overrides.successCalls ?? (overrides.failed ? 0 : 1),
-  failureCalls: overrides.failureCalls ?? (overrides.failed ? 1 : 0),
   statsIncluded: overrides.statsIncluded ?? true,
   latencyMs: overrides.latencyMs ?? 120,
-  latencySumMs: overrides.latencySumMs ?? overrides.latencyMs ?? 120,
-  latencyCount: overrides.latencyCount ?? 1,
+  ttftMs: overrides.ttftMs ?? 40,
+  tokensPerSecond: overrides.tokensPerSecond ?? 62.5,
   inputTokens: overrides.inputTokens ?? 10,
   outputTokens: overrides.outputTokens ?? 5,
   reasoningTokens: overrides.reasoningTokens ?? 0,
   cachedTokens: overrides.cachedTokens ?? 0,
+  cacheReadTokens: overrides.cacheReadTokens ?? 0,
+  cacheCreationTokens: overrides.cacheCreationTokens ?? 0,
   totalTokens: overrides.totalTokens ?? 15,
   totalCost: overrides.totalCost ?? 0.1,
   taskKey: overrides.taskKey ?? 'task-1',
@@ -123,74 +97,81 @@ describe('accountOverviewState', () => {
     expect(normalizeAccountOverviewMode('card')).toBe('card');
   });
 
+  it('defaults invalid account display modes to masked', () => {
+    expect(normalizeAccountDisplayMode(undefined)).toBe('masked');
+    expect(normalizeAccountDisplayMode('visible')).toBe('masked');
+    expect(normalizeAccountDisplayMode('full')).toBe('full');
+  });
+
   it('normalizes persisted overview ui state', () => {
     expect(
       normalizeAccountOverviewUiState({
         mode: 'card',
+        accountDisplayMode: 'full',
         sort: { key: 'totalCost', direction: 'asc' },
-        apiKeySort: { key: 'totalTokens', direction: 'asc' },
         cardPagination: { page: 3, pageSize: 18 },
       })
     ).toEqual({
       mode: 'card',
+      accountDisplayMode: 'full',
       sort: { key: 'totalCost', direction: 'asc' },
-      apiKeySort: { key: 'totalTokens', direction: 'asc' },
       cardPagination: { page: 3, pageSize: 18 },
-      timeRange: 'today',
-      filters: {
-        account: 'all',
-        provider: 'all',
-        model: 'all',
-        channel: 'all',
-        apiKeyHash: 'all',
-        status: 'all',
-      },
-      autoRefreshMs: '5000',
-      pageSizes: {
-        tableAccount: 12,
-        apiKey: 12,
-        realtime: 10,
-      },
     });
 
     expect(
       normalizeAccountOverviewUiState({
         mode: 'grid',
         sort: { key: 'bad' },
-        apiKeySort: { key: 'bad' },
         cardPagination: { page: 0, pageSize: 11 },
       })
     ).toEqual({
       mode: 'table',
+      accountDisplayMode: 'masked',
       sort: DEFAULT_ACCOUNT_SORT,
-      apiKeySort: DEFAULT_API_KEY_SORT,
       cardPagination: { page: 1, pageSize: 12 },
-      timeRange: 'today',
-      filters: {
-        account: 'all',
-        provider: 'all',
-        model: 'all',
-        channel: 'all',
-        apiKeyHash: 'all',
-        status: 'all',
-      },
-      autoRefreshMs: '5000',
-      pageSizes: {
-        tableAccount: 12,
-        apiKey: 12,
-        realtime: 10,
-      },
+    });
+  });
+
+  it('resolves masked and full account labels with full account tooltip text', () => {
+    const row = createAccountRow({
+      account: 'very-long-account-name@example.com',
+      displayAccount: 'very-long-account-name@example.com',
+      accountMasked: 'ver***@example.com',
+    });
+
+    expect(resolveAccountDisplayText(row, 'masked')).toMatchObject({
+      primary: 'ver***@example.com',
+      fullAccount: 'very-long-account-name@example.com',
+    });
+    expect(resolveAccountDisplayText(row, 'masked').title).toContain(
+      'very-long-account-name@example.com'
+    );
+    expect(resolveAccountDisplayText(row, 'full')).toMatchObject({
+      primary: 'very-long-account-name@example.com',
+      fullAccount: 'very-long-account-name@example.com',
+    });
+  });
+
+  it('keeps channel labels primary while switching account secondary text', () => {
+    const row = createAccountRow({
+      account: 'account@example.com',
+      displayAccount: 'Primary Channel',
+      accountMasked: 'acc***@example.com',
+    });
+
+    expect(resolveAccountDisplayText(row, 'masked')).toMatchObject({
+      primary: 'Primary Channel',
+      secondary: 'acc***@example.com',
+    });
+    expect(resolveAccountDisplayText(row, 'full')).toMatchObject({
+      primary: 'Primary Channel',
+      secondary: 'account@example.com',
     });
   });
 
   it('keeps the existing default account sort contract', () => {
     expect(DEFAULT_ACCOUNT_SORT).toEqual({ key: 'lastSeenAt', direction: 'desc' });
     expect(normalizeAccountSortState(undefined)).toEqual(DEFAULT_ACCOUNT_SORT);
-  });
-
-  it('defaults api key summary sort to total calls descending', () => {
-    expect(DEFAULT_API_KEY_SORT).toEqual({ key: 'totalCalls', direction: 'desc' });
-    expect(normalizeApiKeySortState(undefined)).toEqual(DEFAULT_API_KEY_SORT);
   });
 
   it('sorts rows by the shared account sort state', () => {
@@ -232,45 +213,14 @@ describe('accountOverviewState', () => {
     ).toEqual(['strong', 'weak']);
   });
 
-  it('sorts api key rows by the shared api key sort state', () => {
-    const recentKey = createApiKeyRow({
-      id: 'recent',
-      apiKeyLabel: 'recent',
-      totalCalls: 4,
-      totalTokens: 100,
-      totalCost: 2,
-      lastSeenAt: 50,
-    });
-    const busyKey = createApiKeyRow({
-      id: 'busy',
-      apiKeyLabel: 'busy',
-      totalCalls: 25,
-      totalTokens: 80,
-      totalCost: 1,
-      lastSeenAt: 10,
-    });
-
-    expect(sortApiKeyRows([recentKey, busyKey]).map((row) => row.id)).toEqual(['busy', 'recent']);
-
-    expect(
-      sortApiKeyRows([recentKey, busyKey], { key: 'lastSeenAt', direction: 'desc' }).map(
-        (row) => row.id
-      )
-    ).toEqual(['recent', 'busy']);
-
-    expect(
-      sortApiKeyRows([recentKey, busyKey], { key: 'totalTokens', direction: 'asc' }).map(
-        (row) => row.id
-      )
-    ).toEqual(['busy', 'recent']);
-  });
-
   it('exposes the requested metric keys for card mode', () => {
     expect(ACCOUNT_OVERVIEW_CARD_METRIC_KEYS).toEqual([
       'total-tokens',
       'input-tokens',
       'output-tokens',
       'cached-tokens',
+      'cache-creation-tokens',
+      'cache-read-tokens',
     ]);
   });
 
@@ -291,6 +241,7 @@ describe('accountOverviewState', () => {
       selectedAccount: 'all',
       selectedApiKeyHash: 'all',
       selectedChannel: 'all',
+      selectedHeaderTraceId: 'all',
       selectedModel: 'all',
       selectedProvider: 'all',
       selectedStatus: 'all',
@@ -313,6 +264,7 @@ describe('accountOverviewState', () => {
       selectedAccount: 'all',
       selectedApiKeyHash: 'all',
       selectedChannel: 'all',
+      selectedHeaderTraceId: 'all',
       selectedModel: 'all',
       selectedProvider: 'all',
       selectedStatus: 'all',
@@ -328,6 +280,12 @@ describe('accountOverviewState', () => {
     expect(
       shouldResetAccountOverviewPage(previous, {
         ...previous,
+        selectedApiKeyHash: 'hash-a',
+      })
+    ).toBe(true);
+    expect(
+      shouldResetAccountOverviewPage(previous, {
+        ...previous,
         selectedStatus: 'failed',
       })
     ).toBe(true);
@@ -337,30 +295,6 @@ describe('accountOverviewState', () => {
     expect(shouldClampAccountOverviewPage(true, 3, 1)).toBe(false);
     expect(shouldClampAccountOverviewPage(false, 3, 1)).toBe(true);
     expect(shouldClampAccountOverviewPage(false, 3, 3)).toBe(false);
-    expect(
-      shouldClampAccountOverviewPage(false, 2, 1, {
-        requestedPage: 2,
-        responsePage: 1,
-        requestedPageSize: 12,
-        responsePageSize: 12,
-      })
-    ).toBe(false);
-    expect(
-      shouldClampAccountOverviewPage(false, 2, 1, {
-        requestedPage: 2,
-        responsePage: 2,
-        requestedPageSize: 12,
-        responsePageSize: 20,
-      })
-    ).toBe(false);
-    expect(
-      shouldClampAccountOverviewPage(false, 2, 1, {
-        requestedPage: 2,
-        responsePage: 2,
-        requestedPageSize: 12,
-        responsePageSize: 12,
-      })
-    ).toBe(true);
   });
 
   it('builds merged auth state for an account card', () => {
@@ -389,10 +323,94 @@ describe('accountOverviewState', () => {
 
     expect(result.enabledState).toBe('mixed');
     expect(result.files.map((file) => file.name)).toEqual(['alpha.json', 'beta.json']);
-    expect(result.toggleableFileNames).toEqual(['alpha.json', 'beta.json']);
   });
 
-  it('builds account auth state from all auth files that belong to the same account', () => {
+  it('uses normalized auth file disabled state when building account auth state', () => {
+    const authFilesByIndex = new Map<string, AuthFileItem>([
+      [
+        '1',
+        {
+          name: 'alpha.json',
+          authIndex: '1',
+          status: 'inactive',
+        },
+      ],
+    ]);
+
+    const result = buildMonitoringAccountAuthState(['1'], authFilesByIndex);
+
+    expect(result.enabledState).toBe('disabled');
+  });
+
+  it('uses enabled OpenAI provider state for provider-only account rows', () => {
+    const result = buildMonitoringAccountAuthState(
+      [],
+      new Map(),
+      ['openai:0'],
+      new Map([['openai:0', 'enabled']])
+    );
+
+    expect(result.files).toHaveLength(0);
+    expect(result.enabledState).toBe('enabled');
+  });
+
+  it('uses disabled OpenAI provider state for provider-only account rows', () => {
+    const result = buildMonitoringAccountAuthState(
+      [],
+      new Map(),
+      ['openai:0'],
+      new Map([['openai:0', 'disabled']])
+    );
+
+    expect(result.enabledState).toBe('disabled');
+  });
+
+  it('uses disabled non-OpenAI provider state for provider-only account rows', () => {
+    const result = buildMonitoringAccountAuthState(
+      [],
+      new Map(),
+      ['codex:0'],
+      new Map([['codex:0', 'disabled']])
+    );
+
+    expect(result.enabledState).toBe('disabled');
+  });
+
+  it('merges auth-file and provider states as mixed when they differ', () => {
+    const authFilesByIndex = new Map<string, AuthFileItem>([
+      [
+        '1',
+        {
+          name: 'alpha.json',
+          authIndex: '1',
+          disabled: false,
+        },
+      ],
+    ]);
+
+    const result = buildMonitoringAccountAuthState(
+      ['1'],
+      authFilesByIndex,
+      ['openai:0'],
+      new Map([['openai:0', 'disabled']])
+    );
+
+    expect(result.files.map((file) => file.name)).toEqual(['alpha.json']);
+    expect(result.enabledState).toBe('mixed');
+  });
+
+  it('keeps account auth state unavailable when no source can be toggled', () => {
+    const result = buildMonitoringAccountAuthState(
+      [],
+      new Map(),
+      ['source:unknown'],
+      new Map([['openai:0', 'enabled']])
+    );
+
+    expect(result.enabledState).toBe('unavailable');
+  });
+
+  it('only includes auth files matching the row auth indices', () => {
     const authFilesByIndex = new Map<string, AuthFileItem>([
       [
         '1',
@@ -431,7 +449,7 @@ describe('accountOverviewState', () => {
         id: 'account@example.com',
         account: 'account@example.com',
         authLabels: ['Alpha'],
-        authIndices: ['1'],
+        authIndices: ['1', '2'],
       }),
     ];
 
@@ -439,8 +457,37 @@ describe('accountOverviewState', () => {
     const accountState = result.get('account@example.com');
 
     expect(accountState?.files.map((file) => file.name)).toEqual(['alpha.json', 'beta.json']);
-    expect(accountState?.toggleableFileNames).toEqual(['alpha.json', 'beta.json']);
     expect(accountState?.enabledState).toBe('mixed');
+  });
+
+  it('does not include auth files via identity matching when row auth indices differ', () => {
+    const authFilesByIndex = new Map<string, AuthFileItem>([
+      [
+        'auth-file-1',
+        {
+          name: 'alpha.json',
+          authIndex: 'auth-file-1',
+          account: 'account@example.com',
+          label: 'Alpha',
+          disabled: false,
+        },
+      ],
+    ]);
+
+    const rows = [
+      createAccountRow({
+        id: 'account@example.com',
+        account: 'account@example.com',
+        authLabels: ['Alpha'],
+        authIndices: ['provider-auth'],
+      }),
+    ];
+
+    const result = buildMonitoringAccountAuthStateMap(rows, authFilesByIndex);
+    const accountState = result.get('account@example.com');
+
+    expect(accountState?.files).toHaveLength(0);
+    expect(accountState?.enabledState).toBe('unavailable');
   });
 
   it('does not merge auth files from a different account just because labels match', () => {
@@ -480,71 +527,6 @@ describe('accountOverviewState', () => {
     const accountState = result.get('primary@example.com');
 
     expect(accountState?.files.map((file) => file.name)).toEqual(['alpha.json']);
-    expect(accountState?.toggleableFileNames).toEqual(['alpha.json']);
-    expect(accountState?.enabledState).toBe('enabled');
-  });
-
-  it('builds account auth state for paged account rows without auth indices', () => {
-    const authFilesByIndex = new Map<string, AuthFileItem>([
-      [
-        'current-auth-index',
-        {
-          name: 'oauth-refreshed.json',
-          authIndex: 'current-auth-index',
-          email: 'account@example.com',
-          account_id: 'chatgpt-account-id',
-          disabled: false,
-        },
-      ],
-    ]);
-
-    const rows = [
-      createAccountRow({
-        id: 'account@example.com',
-        account: 'account@example.com',
-        displayAccount: 'account@example.com',
-        authLabels: [],
-        authIndices: [],
-      }),
-    ];
-
-    const result = buildMonitoringAccountAuthStateMap(rows, authFilesByIndex);
-    const accountState = result.get('account@example.com');
-
-    expect(accountState?.files.map((file) => file.name)).toEqual(['oauth-refreshed.json']);
-    expect(accountState?.toggleableFileNames).toEqual(['oauth-refreshed.json']);
-    expect(accountState?.enabledState).toBe('enabled');
-  });
-
-  it('uses current auth file state when oauth refresh changes the auth index', () => {
-    const authFilesByIndex = new Map<string, AuthFileItem>([
-      [
-        'new-auth-index',
-        {
-          name: 'account.codex.json',
-          authIndex: 'new-auth-index',
-          email: 'account@example.com',
-          chatgpt_account_id: 'chatgpt-account-id',
-          disabled: false,
-        },
-      ],
-    ]);
-
-    const rows = [
-      createAccountRow({
-        id: 'account@example.com',
-        account: 'account@example.com',
-        displayAccount: 'account@example.com',
-        authLabels: ['account.codex.json'],
-        authIndices: ['old-auth-index'],
-      }),
-    ];
-
-    const result = buildMonitoringAccountAuthStateMap(rows, authFilesByIndex);
-    const accountState = result.get('account@example.com');
-
-    expect(accountState?.files.map((file) => file.name)).toEqual(['account.codex.json']);
-    expect(accountState?.toggleableFileNames).toEqual(['account.codex.json']);
     expect(accountState?.enabledState).toBe('enabled');
   });
 

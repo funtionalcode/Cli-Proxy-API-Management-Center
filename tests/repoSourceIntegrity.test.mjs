@@ -23,7 +23,7 @@ const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
   0xfeff,
 ]);
 
-const DEFAULT_CHANGED_FILES_BASE = 'origin/main...HEAD';
+const DEFAULT_CHANGED_FILES_BASE = 'origin/master...HEAD';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const toLineColumn = (text, index) => {
@@ -112,7 +112,7 @@ const listChangedTextFiles = (changedFilesOutput, diffBase = getChangedFilesBase
 
 describe('repo source integrity', () => {
   it('uses the merge-base PR diff range for changed-file scanning', () => {
-    expect(DEFAULT_CHANGED_FILES_BASE).toBe('origin/main...HEAD');
+    expect(DEFAULT_CHANGED_FILES_BASE).toBe('origin/master...HEAD');
   });
 
   it('detects bidi override and zero-width characters', () => {

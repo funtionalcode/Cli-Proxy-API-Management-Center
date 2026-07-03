@@ -34,6 +34,10 @@ const normalizeResolvedTheme = (theme: AppliedTheme): ResolvedTheme => {
   return theme === 'dark' ? 'dark' : 'light';
 };
 
+const isTheme = (theme: unknown): theme is Theme => {
+  return theme === 'auto' || theme === 'white' || theme === 'dark';
+};
+
 const resolveTheme = (theme: Theme): AppliedTheme => {
   if (theme === 'auto') {
     return resolveAutoTheme();
@@ -75,7 +79,7 @@ export const useThemeStore = create<ThemeState>()(
 
       cycleTheme: () => {
         const { theme, setTheme } = get();
-        const order: Theme[] = ['light', 'white', 'dark', 'auto'];
+        const order: Theme[] = ['auto', 'white', 'dark'];
         const currentIndex = order.indexOf(theme);
         const nextTheme = order[(currentIndex + 1) % order.length];
         setTheme(nextTheme);
@@ -85,7 +89,7 @@ export const useThemeStore = create<ThemeState>()(
         const { theme, setTheme } = get();
 
         // 应用已保存的主题
-        setTheme(theme);
+        setTheme(isTheme(theme) ? theme : 'auto');
 
         // 监听系统主题变化（仅在 auto 模式下生效）
         if (!window.matchMedia) {

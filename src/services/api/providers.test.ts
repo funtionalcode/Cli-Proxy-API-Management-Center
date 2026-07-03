@@ -15,477 +15,466 @@ vi.mock('./client', () => ({
 }));
 
 import { providersApi } from './providers';
-import { normalizeOpenAIProvider } from './transformers';
-import type { ProviderKeyConfig, OpenAIProviderConfig } from '@/types';
 
-type WeightedProviderKeyConfig = ProviderKeyConfig & { weight?: number };
-type WeightedOpenAIProviderConfig = OpenAIProviderConfig & { weight?: number };
-type WeightedApiKeyEntry = OpenAIProviderConfig['apiKeyEntries'][number] & { weight?: number };
-
-const claudeConfig = (
-  overrides: Partial<WeightedProviderKeyConfig> = {}
-): WeightedProviderKeyConfig => ({
-  apiKey: overrides.apiKey ?? 'sk-current',
-  priority: overrides.priority,
-  weight: overrides.weight,
-  prefix: overrides.prefix ?? '',
-  baseUrl: overrides.baseUrl ?? 'https://api.anthropic.com',
-  proxyUrl: overrides.proxyUrl,
-  headers: overrides.headers,
-  models: overrides.models,
-  excludedModels: overrides.excludedModels,
-  cloak: overrides.cloak,
-  websockets: overrides.websockets,
-  authIndex: overrides.authIndex,
+beforeEach(() => {
+  mocks.get.mockReset();
+  mocks.put.mockReset();
 });
 
-const lastPutBody = () => {
-  expect(mocks.put).toHaveBeenCalledTimes(1);
-  return mocks.put.mock.calls[0]?.[1];
-};
-
-describe('providersApi.saveClaudeConfigs raw-field preservation', () => {
-  beforeEach(() => {
-    mocks.get.mockReset();
-    mocks.put.mockReset();
-    mocks.put.mockResolvedValue(undefined);
-  });
-
-  it('preserves unknown server-side fields when identity (apiKey + baseUrl) matches', async () => {
+describe('providersApi auth-index preservation', () => {
+  it('serializes auth-index-only provider keys and preserves unknown raw fields', async () => {
     mocks.get.mockResolvedValue({
-      'claude-api-key': [
+      'codex-api-key': [
         {
-          'api-key': 'sk-current',
-          'base-url': 'https://api.anthropic.com',
-          priority: 5,
-          'custom-experiment-flag': 'beta',
-          metadata: { team: 'platform' },
+          'auth-index': 'auth-1',
+          'api-key': 'old-key',
+          'base-url': 'https://old.example.com/v1',
+          'raw-field': 'keep',
+          models: [{ name: 'old-model', 'raw-model-field': true }],
         },
       ],
     });
+    mocks.put.mockResolvedValue({});
 
-    await providersApi.saveClaudeConfigs([claudeConfig({ priority: 10 })]);
-
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-current',
-        'base-url': 'https://api.anthropic.com',
-        priority: 10,
-        'custom-experiment-flag': 'beta',
-        metadata: { team: 'platform' },
-      }),
-    ]);
-  });
-
-  it('falls back to index match when identity differs, carrying unknown fields onto the new key', async () => {
-    mocks.get.mockResolvedValue({
-      'claude-api-key': [
-        {
-          'api-key': 'sk-old',
-          'base-url': 'https://api.anthropic.com',
-          'custom-experiment-flag': 'beta',
-        },
-      ],
-    });
-
-    await providersApi.saveClaudeConfigs([claudeConfig({ apiKey: 'sk-new' })]);
-
-    const body = lastPutBody();
-    // M3 documented behavior: index fallback keeps unknown fields with the new apiKey.
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-new',
-        'custom-experiment-flag': 'beta',
-      }),
-    ]);
-  });
-
-  it('strips known fields from raw before applying payload so cleared values are honored', async () => {
-    mocks.get.mockResolvedValue({
-      'claude-api-key': [
-        {
-          'api-key': 'sk-current',
-          'base-url': 'https://api.anthropic.com',
-          prefix: 'legacy-prefix',
-          headers: { 'X-Old': 'true' },
-        },
-      ],
-    });
-
-    // Form has no prefix and no headers -> serializeProviderKey omits them entirely.
-    await providersApi.saveClaudeConfigs([claudeConfig()]);
-
-    const body = lastPutBody();
-    expect(body[0]).not.toHaveProperty('prefix');
-    expect(body[0]).not.toHaveProperty('headers');
-  });
-
-  it('merges cloak sub-fields with CLOAK_FIELDS-aware semantics', async () => {
-    mocks.get.mockResolvedValue({
-      'claude-api-key': [
-        {
-          'api-key': 'sk-current',
-          'base-url': 'https://api.anthropic.com',
-          cloak: {
-            mode: 'strict',
-            'strict-mode': true,
-            'sensitive-words': ['legacy'],
-            'unknown-cloak-extension': 'preserved',
-          },
-        },
-      ],
-    });
-
-    await providersApi.saveClaudeConfigs([
-      claudeConfig({
-        cloak: { mode: 'lenient', strictMode: false, sensitiveWords: ['fresh'] },
-      }),
+    await providersApi.saveCodexConfigs([
+      {
+        apiKey: '',
+        authIndex: 'auth-1',
+        baseUrl: 'https://new.example.com/v1',
+        models: [{ name: 'new-model', alias: 'alias' }],
+      },
     ]);
 
-    const body = lastPutBody();
-    expect(body[0].cloak).toEqual(
-      expect.objectContaining({
-        mode: 'lenient',
-        'strict-mode': false,
-        'sensitive-words': ['fresh'],
-        'unknown-cloak-extension': 'preserved',
-      })
-    );
-  });
-
-  it('falls back to payload-only save when GET /config rejects (auth/network failure)', async () => {
-    mocks.get.mockRejectedValue(new Error('Request failed with status code 401'));
-
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await providersApi.saveClaudeConfigs([claudeConfig({ priority: 7 })]);
-    } finally {
-      warnSpy.mockRestore();
-    }
-
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-current',
-        'base-url': 'https://api.anthropic.com',
-        priority: 7,
-      }),
-    ]);
-    // No raw-preservation fields leak through when fallback is taken.
-    expect(body[0]).not.toHaveProperty('custom-experiment-flag');
-  });
-
-  it('treats missing section in raw config the same as an empty list', async () => {
-    mocks.get.mockResolvedValue({ 'unrelated-section': [] });
-
-    await providersApi.saveClaudeConfigs([claudeConfig()]);
-
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-current',
-      }),
-    ]);
-  });
-
-  it('serializes authIndex as auth-index and matches raw records by auth-index', async () => {
-    mocks.get.mockResolvedValue({
-      'claude-api-key': [
-        {
-          'api-key': 'sk-old',
-          'base-url': 'https://api.anthropic.com',
-          auth_index: '42',
-          'custom-experiment-flag': 'beta',
-        },
-      ],
-    });
-
-    await providersApi.saveClaudeConfigs([
-      claudeConfig({ apiKey: 'sk-new', authIndex: '42' }),
-    ]);
-
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-new',
-        'auth-index': '42',
-        'custom-experiment-flag': 'beta',
-      }),
-    ]);
-    expect(body[0]).not.toHaveProperty('auth_index');
-  });
-
-  it('serializes weight for provider keys', async () => {
-    mocks.get.mockResolvedValue({ 'claude-api-key': [] });
-
-    await providersApi.saveClaudeConfigs([claudeConfig({ weight: 3 })]);
-
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-current',
-        weight: 3,
-      }),
-    ]);
-  });
-});
-
-describe('providersApi.saveOpenAIProviders raw-field preservation', () => {
-  beforeEach(() => {
-    mocks.get.mockReset();
-    mocks.put.mockReset();
-    mocks.put.mockResolvedValue(undefined);
-  });
-
-  const openAIConfig = (
-    overrides: Partial<WeightedOpenAIProviderConfig> = {}
-  ): WeightedOpenAIProviderConfig => ({
-    name: overrides.name ?? 'router-1',
-    baseUrl: overrides.baseUrl ?? 'https://openai.example.com/v1',
-    apiKeyEntries: overrides.apiKeyEntries ?? [
-      { apiKey: 'sk-1', proxyUrl: '', authIndex: '', headers: {} },
-    ],
-    prefix: overrides.prefix,
-    disabled: overrides.disabled,
-    headers: overrides.headers,
-    models: overrides.models,
-    priority: overrides.priority,
-    weight: overrides.weight,
-    testModel: overrides.testModel,
-  });
-
-  it('preserves apiKeyEntries unknown fields when their api-key identity matches', async () => {
-    mocks.get.mockResolvedValue({
-      'openai-compatibility': [
-        {
-          name: 'router-1',
-          'base-url': 'https://openai.example.com/v1',
-          'api-key-entries': [
-            {
-              'api-key': 'sk-1',
-              'proxy-url': 'http://internal-proxy:8080',
-              'custom-entry-meta': 'keep',
-            },
-          ],
-        },
-      ],
-    });
-
-    await providersApi.saveOpenAIProviders([
-      openAIConfig({
-        apiKeyEntries: [
-          { apiKey: 'sk-1', proxyUrl: 'http://internal-proxy:8080', authIndex: '', headers: {} },
-        ],
-      }),
-    ]);
-
-    const body = lastPutBody();
-    expect(body[0]['api-key-entries']).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-1',
-        'proxy-url': 'http://internal-proxy:8080',
-        'custom-entry-meta': 'keep',
-      }),
-    ]);
-  });
-
-  it('preserves provider-level extensions while overwriting known fields', async () => {
-    mocks.get.mockResolvedValue({
-      'openai-compatibility': [
-        {
-          name: 'router-1',
-          'base-url': 'https://old.example.com',
-          'unknown-provider-flag': true,
-        },
-      ],
-    });
-
-    await providersApi.saveOpenAIProviders([
-      openAIConfig({ baseUrl: 'https://new.example.com/v1' }),
-    ]);
-
-    const body = lastPutBody();
-    expect(body[0]).toEqual(
-      expect.objectContaining({
-        name: 'router-1',
+    expect(mocks.put).toHaveBeenCalledWith('/codex-api-key', [
+      {
+        'raw-field': 'keep',
+        'auth-index': 'auth-1',
         'base-url': 'https://new.example.com/v1',
-        'unknown-provider-flag': true,
-      })
-    );
+        models: [{ name: 'new-model', alias: 'alias', 'raw-model-field': true }],
+      },
+    ]);
   });
 
-  it('falls back to payload-only when GET /config fails', async () => {
-    mocks.get.mockRejectedValue(new Error('network'));
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await providersApi.saveOpenAIProviders([openAIConfig()]);
-    } finally {
-      warnSpy.mockRestore();
-    }
-
-    const body = lastPutBody();
-    expect(body[0]).toEqual(
-      expect.objectContaining({ name: 'router-1', 'base-url': 'https://openai.example.com/v1' })
-    );
-  });
-
-  it('serializes authIndex-only apiKeyEntries and preserves raw fields by auth-index identity', async () => {
+  it('serializes OpenAI auth-index entries and preserves raw provider fields', async () => {
     mocks.get.mockResolvedValue({
       'openai-compatibility': [
         {
-          name: 'router-1',
-          'base-url': 'https://openai.example.com/v1',
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
           'api-key-entries': [
             {
-              'api-key': 'sk-old',
-              'auth_index': '7',
-              'custom-entry-meta': 'keep',
+              'auth-index': 'auth-2',
+              'api-key': 'old-key',
+              'raw-entry-field': 'keep-entry',
+            },
+          ],
+          'raw-provider-field': 'keep-provider',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [{ apiKey: '', authIndex: 'auth-2' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        'raw-provider-field': 'keep-provider',
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [{ 'raw-entry-field': 'keep-entry', 'auth-index': 'auth-2' }],
+      },
+    ]);
+  });
+
+  it('falls back to serialized payload when raw config loading fails', async () => {
+    mocks.get.mockRejectedValue(new Error('forbidden'));
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveGeminiKeys([{ apiKey: '', authIndex: 'auth-3' }]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [{ 'auth-index': 'auth-3' }]);
+  });
+});
+
+describe('providersApi v1.16 provider fields', () => {
+  it('normalizes OpenAI model image/thinking and provider disable-cooling fields', async () => {
+    mocks.get.mockResolvedValue({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'disable-cooling': true,
+          models: [
+            {
+              name: 'gpt-image',
+              image: true,
+              thinking: { effort: 'high' },
             },
           ],
         },
       ],
     });
 
-    await providersApi.saveOpenAIProviders([
-      openAIConfig({
-        apiKeyEntries: [{ apiKey: '', authIndex: '7', proxyUrl: '', headers: {} }],
-      }),
-    ]);
+    const providers = await providersApi.getOpenAIProviders();
 
-    const body = lastPutBody();
-    expect(body[0]['api-key-entries']).toEqual([
-      expect.objectContaining({
-        'auth-index': '7',
-        'custom-entry-meta': 'keep',
-      }),
-    ]);
-    expect(body[0]['api-key-entries'][0]).not.toHaveProperty('api-key');
-    expect(body[0]['api-key-entries'][0]).not.toHaveProperty('auth_index');
+    expect(providers[0]).toMatchObject({
+      name: 'openai-compatible',
+      disableCooling: true,
+      models: [{ name: 'gpt-image', image: true, thinking: { effort: 'high' } }],
+    });
   });
 
-  it('normalizes OpenAI authIndex-only apiKeyEntries instead of dropping them', () => {
-    const provider = normalizeOpenAIProvider({
-      name: 'router-1',
-      'base-url': 'https://openai.example.com/v1',
-      'api-key-entries': [{ 'auth-index': '7' }],
+  it('fills missing OpenAI provider disable-cooling from /config fallback', async () => {
+    mocks.get.mockImplementation(async (url: string) => {
+      if (url === '/openai-compatibility') {
+        return {
+          'openai-compatibility': [
+            {
+              name: 'openai-compatible',
+              'base-url': 'https://api.example.com/v1',
+              'api-key-entries': [],
+            },
+          ],
+        };
+      }
+      if (url === '/config') {
+        return {
+          'openai-compatibility': [
+            {
+              name: 'openai-compatible',
+              'base-url': 'https://api.example.com/v1',
+              'api-key-entries': [],
+              'disable-cooling': true,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected url: ${url}`);
     });
 
-    expect(provider?.apiKeyEntries).toEqual([{ apiKey: '', authIndex: '7', headers: undefined }]);
+    const providers = await providersApi.getOpenAIProviders();
+
+    expect(providers[0]).toMatchObject({
+      name: 'openai-compatible',
+      disableCooling: true,
+    });
+    expect(mocks.get).toHaveBeenNthCalledWith(1, '/openai-compatibility');
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/config');
   });
 
-  it('serializes provider and apiKeyEntries weights', async () => {
-    mocks.get.mockResolvedValue({ 'openai-compatibility': [] });
+  it('serializes Claude disable-cooling, cch signing, cloak cache, and model metadata', async () => {
+    mocks.get.mockResolvedValue({
+      'claude-api-key': [
+        {
+          'auth-index': 'auth-4',
+          'raw-field': 'keep',
+          cloak: { 'raw-cloak-field': 'keep-cloak' },
+          models: [{ name: 'claude-sonnet', 'raw-model-field': true }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveClaudeConfigs([
+      {
+        apiKey: '',
+        authIndex: 'auth-4',
+        disableCooling: true,
+        experimentalCchSigning: true,
+        cloak: { mode: 'auto', cacheUserId: true },
+        models: [
+          {
+            name: 'claude-sonnet',
+            alias: 'sonnet',
+            image: true,
+            thinking: { budget_tokens: 1024 },
+          },
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/claude-api-key', [
+      {
+        'raw-field': 'keep',
+        'auth-index': 'auth-4',
+        'disable-cooling': true,
+        'experimental-cch-signing': true,
+        cloak: {
+          'raw-cloak-field': 'keep-cloak',
+          mode: 'auto',
+          'cache-user-id': true,
+        },
+        models: [
+          {
+            'raw-model-field': true,
+            name: 'claude-sonnet',
+            alias: 'sonnet',
+            image: true,
+            thinking: { budget_tokens: 1024 },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('serializes Gemini key disable-cooling and OpenAI provider model metadata', async () => {
+    mocks.get.mockResolvedValueOnce({ 'gemini-api-key': [] });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveGeminiKeys([{ apiKey: 'gemini-key', disableCooling: true }]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/gemini-api-key', [
+      { 'api-key': 'gemini-key', 'disable-cooling': true },
+    ]);
+
+    mocks.get.mockResolvedValueOnce({ 'openai-compatibility': [] });
 
     await providersApi.saveOpenAIProviders([
-      openAIConfig({
-        weight: 4,
-        apiKeyEntries: [
-          { apiKey: 'sk-1', proxyUrl: '', authIndex: '', headers: {}, weight: 2 } as WeightedApiKeyEntry,
-        ],
-      }),
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        disableCooling: true,
+        apiKeyEntries: [],
+        models: [{ name: 'gpt-image', image: true, thinking: { mode: 'auto' } }],
+      },
     ]);
 
-    const body = lastPutBody();
-    expect(body[0]).toEqual(
-      expect.objectContaining({
-        name: 'router-1',
-        weight: 4,
-      })
-    );
-    expect(body[0]['api-key-entries']).toEqual([
-      expect.objectContaining({
-        'api-key': 'sk-1',
-        weight: 2,
-      }),
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        'disable-cooling': true,
+        models: [{ name: 'gpt-image', image: true, thinking: { mode: 'auto' } }],
+      },
     ]);
   });
 
-  it('normalizes provider and apiKeyEntries weights', () => {
-    const provider = normalizeOpenAIProvider({
-      name: 'router-1',
-      'base-url': 'https://openai.example.com/v1',
-      weight: 5,
-      'api-key-entries': [{ 'api-key': 'sk-1', weight: 3 }],
-    }) as WeightedOpenAIProviderConfig | null;
+  it('preserves raw provider fields when section payloads omit them', async () => {
+    mocks.put.mockResolvedValue({});
 
-    expect(provider?.weight).toBe(5);
-    expect((provider?.apiKeyEntries[0] as WeightedApiKeyEntry | undefined)?.weight).toBe(3);
-  });
-});
-
-describe('providersApi.saveGeminiKeys uses GEMINI_KEY_FIELDS (no websockets/cloak)', () => {
-  beforeEach(() => {
-    mocks.get.mockReset();
-    mocks.put.mockReset();
-    mocks.put.mockResolvedValue(undefined);
-  });
-
-  it('keeps a server-side cloak block on gemini sections because GEMINI_KEY_FIELDS excludes cloak', async () => {
-    mocks.get.mockResolvedValue({
+    mocks.get.mockResolvedValueOnce({
       'gemini-api-key': [
         {
-          'api-key': 'g-key',
-          'base-url': 'https://generativelanguage.googleapis.com',
-          cloak: { mode: 'strict' },
+          'api-key': 'gemini-key',
+          'disable-cooling': true,
+          models: [{ name: 'gemini-model', image: true, thinking: { mode: 'auto' } }],
         },
       ],
     });
 
     await providersApi.saveGeminiKeys([
       {
-        apiKey: 'g-key',
-        baseUrl: 'https://generativelanguage.googleapis.com',
-      } as never,
-    ]);
-
-    const body = lastPutBody();
-    // cloak is not in GEMINI_KEY_FIELDS, so cloneWithoutKnownFields keeps the server-side value.
-    expect(body[0]).toEqual(
-      expect.objectContaining({
-        'api-key': 'g-key',
-        cloak: { mode: 'strict' },
-      })
-    );
-  });
-
-  it('serializes authIndex as auth-index for Gemini keys', async () => {
-    mocks.get.mockResolvedValue({ 'gemini-api-key': [] });
-
-    await providersApi.saveGeminiKeys([
-      {
-        apiKey: 'g-key',
-        baseUrl: 'https://generativelanguage.googleapis.com',
-        authIndex: '9',
+        apiKey: 'gemini-key',
+        models: [{ name: 'gemini-model', alias: 'gemini-alias' }],
       },
     ]);
 
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'g-key',
-        'auth-index': '9',
-      }),
-    ]);
-  });
-
-  it('serializes weight for Gemini keys', async () => {
-    mocks.get.mockResolvedValue({ 'gemini-api-key': [] });
-
-    await providersApi.saveGeminiKeys([
+    expect(mocks.put).toHaveBeenLastCalledWith('/gemini-api-key', [
       {
-        apiKey: 'g-key',
-        baseUrl: 'https://generativelanguage.googleapis.com',
-        weight: 4,
+        'api-key': 'gemini-key',
+        'disable-cooling': true,
+        models: [
+          {
+            name: 'gemini-model',
+            alias: 'gemini-alias',
+            image: true,
+            thinking: { mode: 'auto' },
+          },
+        ],
       },
     ]);
 
-    const body = lastPutBody();
-    expect(body).toEqual([
-      expect.objectContaining({
-        'api-key': 'g-key',
-        weight: 4,
-      }),
+    mocks.get.mockResolvedValueOnce({
+      'codex-api-key': [
+        {
+          'auth-index': 'codex-auth',
+          'disable-cooling': true,
+          models: [{ name: 'codex-model', image: true, thinking: { budget_tokens: 2048 } }],
+        },
+      ],
+    });
+
+    await providersApi.saveCodexConfigs([
+      {
+        apiKey: '',
+        authIndex: 'codex-auth',
+        models: [{ name: 'codex-model', alias: 'codex-alias' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/codex-api-key', [
+      {
+        'auth-index': 'codex-auth',
+        'disable-cooling': true,
+        models: [
+          {
+            name: 'codex-model',
+            alias: 'codex-alias',
+            image: true,
+            thinking: { budget_tokens: 2048 },
+          },
+        ],
+      },
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'claude-api-key': [
+        {
+          'auth-index': 'claude-auth',
+          'disable-cooling': true,
+          'experimental-cch-signing': true,
+          cloak: { mode: 'auto', 'cache-user-id': true },
+          models: [{ name: 'claude-model', image: true, thinking: { enabled: true } }],
+        },
+      ],
+    });
+
+    await providersApi.saveClaudeConfigs([
+      {
+        apiKey: '',
+        authIndex: 'claude-auth',
+        cloak: { mode: 'always' },
+        models: [{ name: 'claude-model', alias: 'claude-alias' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/claude-api-key', [
+      {
+        'auth-index': 'claude-auth',
+        'disable-cooling': true,
+        'experimental-cch-signing': true,
+        cloak: { mode: 'always', 'cache-user-id': true },
+        models: [
+          {
+            name: 'claude-model',
+            alias: 'claude-alias',
+            image: true,
+            thinking: { enabled: true },
+          },
+        ],
+      },
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          'disable-cooling': true,
+          models: [{ name: 'openai-model', image: true, thinking: { effort: 'medium' } }],
+        },
+      ],
+    });
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [{ name: 'openai-model', alias: 'openai-alias' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        'disable-cooling': true,
+        models: [
+          {
+            name: 'openai-model',
+            alias: 'openai-alias',
+            image: true,
+            thinking: { effort: 'medium' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('lets explicit false values override preserved raw booleans', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          'disable-cooling': true,
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        disableCooling: false,
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        'disable-cooling': false,
+      },
+    ]);
+  });
+
+  it('preserves model metadata by index when model names change', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [
+            {
+              name: 'old-model',
+              image: true,
+              thinking: { effort: 'high' },
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [{ name: 'new-model', alias: 'new-alias' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'new-model',
+            alias: 'new-alias',
+            image: true,
+            thinking: { effort: 'high' },
+          },
+        ],
+      },
     ]);
   });
 });

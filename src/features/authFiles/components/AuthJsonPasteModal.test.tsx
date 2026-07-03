@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { AuthJsonPasteModal } from './AuthJsonPasteModal';
+import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -26,26 +27,26 @@ type ModalHarness = {
   clickSave: () => Promise<void>;
   setFileName: (value: string) => void;
   setJsonText: (value: string) => void;
-  setType: (value: 'session' | 'cpa') => void;
+  setType: (value: AuthJsonInputType) => void;
   getText: () => string;
 };
 
-  const mountModal = (
-    onSave: (type: 'session' | 'cpa', fileName: string, jsonText: string) => Promise<void>,
-    saving = false,
-    disabled = false
-  ): ModalHarness => {
-    let renderer: ReactTestRenderer;
-    act(() => {
-      renderer = create(
-        <AuthJsonPasteModal
-          open
-          saving={saving}
-          disabled={disabled}
-          onClose={() => {}}
-          onSave={onSave}
-        />
-      );
+const mountModal = (
+  onSave: (type: AuthJsonInputType, fileName: string, jsonText: string) => Promise<void>,
+  saving = false,
+  disabled = false
+): ModalHarness => {
+  let renderer: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      <AuthJsonPasteModal
+        open
+        saving={saving}
+        disabled={disabled}
+        onClose={() => {}}
+        onSave={onSave}
+      />
+    );
   });
 
   const setFileName = (value: string) => {
@@ -62,7 +63,7 @@ type ModalHarness = {
     });
   };
 
-  const setType = (value: 'session' | 'cpa') => {
+  const setType = (value: AuthJsonInputType) => {
     const select = renderer!.root.findByType(Select);
     act(() => {
       select.props.onChange(value);
@@ -122,8 +123,22 @@ describe('AuthJsonPasteModal', () => {
     'LPT1.backup.json',
     'name .json',
     'name..json',
-  ])(
-    'rejects Windows-unsafe file name %s without calling save',
+  ])('rejects Windows-unsafe file name %s without calling save', async (fileName) => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const modal = mountModal(onSave);
+
+    modal.setFileName(fileName);
+    modal.setJsonText('{"type":"codex"}');
+
+    await modal.clickSave();
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(modal.getText()).toContain('auth_files.paste_error_file_name_invalid');
+    modal.renderer.unmount();
+  });
+
+  it.each(['codex-\u202Egpj.json', 'codex-\u2066account.json', 'codex-\u200Baccount.json'])(
+    'rejects visually misleading file name %s without calling save',
     async (fileName) => {
       const onSave = vi.fn().mockResolvedValue(undefined);
       const modal = mountModal(onSave);
@@ -138,24 +153,6 @@ describe('AuthJsonPasteModal', () => {
       modal.renderer.unmount();
     }
   );
-
-  it.each([
-    'codex-\u202Egpj.json',
-    'codex-\u2066account.json',
-    'codex-\u200Baccount.json',
-  ])('rejects visually misleading file name %s without calling save', async (fileName) => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    const modal = mountModal(onSave);
-
-    modal.setFileName(fileName);
-    modal.setJsonText('{"type":"codex"}');
-
-    await modal.clickSave();
-
-    expect(onSave).not.toHaveBeenCalled();
-    expect(modal.getText()).toContain('auth_files.paste_error_file_name_invalid');
-    modal.renderer.unmount();
-  });
 
   it('rejects empty json text without calling save', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
@@ -187,6 +184,23 @@ describe('AuthJsonPasteModal', () => {
       'custom-auth.json',
       '{"type":"codex","email":"user@example.com"}'
     );
+    modal.renderer.unmount();
+  });
+
+  it('passes selected sub2api type to save', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const modal = mountModal(onSave);
+
+    modal.setType('sub2api');
+    modal.setFileName('sub2api-auth.json');
+    modal.setJsonText('{"accounts":[]}');
+
+    expect(modal.getText()).toContain('auth_files.paste_sub2api_hint');
+
+    await modal.clickSave();
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith('sub2api', 'sub2api-auth.json', '{"accounts":[]}');
     modal.renderer.unmount();
   });
 

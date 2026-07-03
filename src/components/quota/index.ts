@@ -9,10 +9,10 @@ export {
   ANTIGRAVITY_CONFIG,
   CLAUDE_CONFIG,
   CODEX_CONFIG,
-  DEEPSEEK_CONFIG,
-  GEMINI_CLI_CONFIG,
   KIMI_CONFIG,
-  OLLAMA_CONFIG,
   XAI_CONFIG,
+  buildObservedCodexQuotaState,
+  getQuotaStoreKey,
+  resolveQuotaDisplayState,
 } from './quotaConfigs';
-export type { QuotaConfig, QuotaSortMode, QuotaType } from './quotaConfigs';
+export type { QuotaConfig } from './quotaConfigs';

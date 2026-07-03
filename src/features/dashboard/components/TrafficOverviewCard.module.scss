@@ -1,0 +1,538 @@
+.chartsGrid {
+  --dashboard-chart-card-min-height: clamp(280px, 20vw, 300px);
+
+  display: grid;
+  grid-template-columns: minmax(380px, 1.24fr) minmax(460px, 1.34fr) minmax(240px, 0.62fr);
+  gap: var(--app-gap);
+  align-items: stretch;
+  min-width: 0;
+
+  @media (max-width: 1280px) {
+    --dashboard-chart-card-min-height: auto;
+
+    grid-template-columns: 1fr;
+  }
+}
+
+.chartCard {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-backdrop-filter);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+
+  .cardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    h3 { font-size: 16px; font-weight: 600; margin: 0; }
+  }
+}
+
+.activityCard,
+.healthTimelineCard,
+.tokenCard {
+  height: 100%;
+  min-height: var(--dashboard-chart-card-min-height);
+}
+
+.activityCard {
+  .trafficChart {
+    flex: 1 1 auto;
+  }
+}
+
+// 1. Bar Chart
+.legend {
+  display: flex;
+  gap: 16px;
+  .legendItem {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+  }
+}
+
+.trafficChart {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  min-height: clamp(178px, 15vw, 208px);
+  padding: 4px 4px 0;
+}
+
+.chartViewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 164px;
+  overflow: hidden;
+}
+
+.echartsCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 164px;
+}
+
+.echartsTooltipWrapper {
+  overflow: hidden;
+}
+
+.echartsTooltip {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+  padding: 12px;
+
+  b {
+    color: #0f172a;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+}
+
+.echartsTooltipRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  color: #64748b;
+  font-size: 12px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  strong {
+    color: #0f172a;
+    font-weight: 800;
+  }
+}
+
+.empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+// 2. Request Health Timeline
+.healthTimelineCard {
+  gap: 12px;
+}
+
+.healthHeader {
+  align-items: flex-start !important;
+}
+
+.healthTitle {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+
+  h3 {
+    margin-top: 0 !important;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}
+
+.healthSummary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  flex: 0 0 auto;
+  text-align: right;
+
+  strong {
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(16, 185, 129, 0.12);
+    color: #34d399;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1;
+  }
+}
+
+.healthCounts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+}
+
+.healthMatrix {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  gap: 3px;
+  min-height: 112px;
+  max-width: 100%;
+}
+
+.healthHourAxis {
+  display: grid;
+  grid-template-columns: 38px repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  align-items: center;
+  min-height: 12px;
+
+  span {
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1;
+    text-align: center;
+  }
+}
+
+.healthDayRow {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+
+.healthDayLabel {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.healthDayCells {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  min-width: 0;
+}
+
+.healthCell {
+  width: 100%;
+  aspect-ratio: 1;
+  min-height: 6px;
+  border-radius: 2px;
+  background: var(--app-surface-muted);
+}
+
+.healthEmpty,
+.healthBad,
+.healthWarn,
+.healthGood,
+.healthFuture {
+  display: inline-block;
+}
+
+.healthEmpty {
+  background: color-mix(in srgb, var(--app-surface-muted), #111827 12%);
+}
+
+.healthGood {
+  background: #22c55e;
+}
+
+.healthWarn {
+  background: #a3e635;
+}
+
+.healthBad {
+  background: #ef4444;
+}
+
+.healthFuture {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--app-surface-muted), transparent 30%) 0,
+      color-mix(in srgb, var(--app-surface-muted), transparent 30%) 2px,
+      transparent 2px,
+      transparent 5px
+    ),
+    color-mix(in srgb, var(--app-surface-muted), transparent 65%);
+  border: 1px solid color-mix(in srgb, var(--app-border), var(--text-muted) 38%);
+  opacity: 0.9;
+}
+
+.healthEmptyState {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.healthLegend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+
+  div {
+    display: inline-flex;
+    gap: 4px;
+  }
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  i {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+  }
+}
+
+// 3. Token rank
+.tokenRankSection {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  min-height: 0;
+}
+
+.tokenSummary {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border), transparent 30%);
+
+  span {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  strong {
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.tokenRankList {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tokenRankRow {
+  appearance: none;
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  outline: none;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--app-border);
+    background: color-mix(in srgb, var(--app-surface-muted), transparent 35%);
+  }
+}
+
+.tokenRankRowActive {
+  border-color: var(--app-border);
+  background: color-mix(in srgb, var(--app-surface-muted), transparent 35%);
+}
+
+.tokenRankHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tokenRankIdentity {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.tokenRankSwatch {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.tokenRankMeta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  strong {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 750;
+  }
+}
+
+.tokenRankTrack {
+  display: block;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-surface-muted), transparent 18%);
+}
+
+.tokenRankBar {
+  display: block;
+  width: calc(var(--rank-share) * 100%);
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--rank-color);
+  transition: width 0.2s ease;
+}
+
+.tokenEmptyState {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+@media (max-width: 1280px) and (min-width: 561px) {
+  .healthCell {
+    height: clamp(8px, 0.9vw, 12px);
+    aspect-ratio: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .chartCard {
+    padding: 12px;
+  }
+
+  .legend {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .trafficChart {
+    gap: 8px;
+    min-height: 158px;
+  }
+
+  .chartViewport,
+  .echartsCanvas {
+    min-height: 146px;
+  }
+
+  .healthHeader {
+    flex-direction: column;
+  }
+
+  .healthSummary {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .healthHourAxis {
+    grid-template-columns: 34px repeat(24, minmax(0, 1fr));
+    gap: 2px;
+  }
+
+  .healthDayRow {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .healthDayCells {
+    gap: 2px;
+  }
+
+  .healthDayLabel,
+  .healthHourAxis span {
+    font-size: 9px;
+  }
+}

@@ -1,5 +1,7 @@
 export type PayloadParamValueType = 'string' | 'number' | 'boolean' | 'json';
 export type DisableImageGenerationMode = 'false' | 'true' | 'chat';
+export type PluginStoreAuthType = 'none' | 'bearer' | 'basic' | 'header' | 'github-token';
+export type PluginStoreAuthApplyTo = 'registry' | 'metadata' | 'artifact';
 export type PayloadParamValidationErrorCode =
   | 'payload_invalid_number'
   | 'payload_invalid_boolean'
@@ -70,6 +72,19 @@ export interface StreamingConfig {
   nonstreamKeepaliveInterval: string;
 }
 
+export type PluginStoreAuthRule = {
+  id: string;
+  match: string;
+  applyTo: PluginStoreAuthApplyTo[];
+  type: PluginStoreAuthType;
+  tokenEnv: string;
+  usernameEnv: string;
+  passwordEnv: string;
+  headerName: string;
+  headerValueEnv: string;
+  allowInsecure: boolean;
+};
+
 export type VisualConfigValues = {
   host: string;
   port: string;
@@ -83,6 +98,10 @@ export type VisualConfigValues = {
   rmPanelRepo: string;
   authDir: string;
   apiKeysText: string;
+  pluginsEnabled: boolean;
+  pluginsDir: string;
+  pluginStoreSourcesText: string;
+  pluginStoreAuth: PluginStoreAuthRule[];
   debug: boolean;
   commercialMode: boolean;
   usageStatisticsEnabled: boolean;
@@ -106,7 +125,6 @@ export type VisualConfigValues = {
   routingSessionAffinity: boolean;
   routingSessionAffinityTTL: string;
   wsAuth: boolean;
-  enableGeminiCliEndpoint: boolean;
   antigravitySignatureCacheEnabled: boolean;
   antigravitySignatureBypassStrict: boolean;
   claudeHeaderUserAgent: string;
@@ -118,6 +136,7 @@ export type VisualConfigValues = {
   claudeHeaderStabilizeDeviceProfile: boolean;
   codexHeaderUserAgent: string;
   codexHeaderBetaFeatures: string;
+  codexIdentityConfuse: boolean;
   payloadDefaultRules: PayloadRule[];
   payloadDefaultRawRules: PayloadRule[];
   payloadOverrideRules: PayloadRule[];
@@ -144,6 +163,10 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   rmPanelRepo: '',
   authDir: '',
   apiKeysText: '',
+  pluginsEnabled: false,
+  pluginsDir: '',
+  pluginStoreSourcesText: '',
+  pluginStoreAuth: [],
   debug: false,
   commercialMode: false,
   usageStatisticsEnabled: false,
@@ -167,7 +190,6 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   routingSessionAffinity: false,
   routingSessionAffinityTTL: '',
   wsAuth: false,
-  enableGeminiCliEndpoint: false,
   antigravitySignatureCacheEnabled: true,
   antigravitySignatureBypassStrict: false,
   claudeHeaderUserAgent: '',
@@ -179,6 +201,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   claudeHeaderStabilizeDeviceProfile: false,
   codexHeaderUserAgent: '',
   codexHeaderBetaFeatures: '',
+  codexIdentityConfuse: false,
   payloadDefaultRules: [],
   payloadDefaultRawRules: [],
   payloadOverrideRules: [],

@@ -1,8 +1,6 @@
 import {
   memo,
   useCallback,
-  useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -10,18 +8,8 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
-import {
-  isUsageServiceId,
-  normalizeUsageServiceBase,
-  usageServiceApi,
-  type ApiKeyAlias,
-} from '@/services/api/usageService';
-import { useAuthStore, useNotificationStore, useUsageServiceStore } from '@/stores';
 import styles from './VisualConfigEditor.module.scss';
-import { copyToClipboard } from '@/utils/clipboard';
-import { detectApiBaseFromLocation } from '@/utils/connection';
 import type {
   PayloadFilterRule,
   PayloadHeaderEntry,
@@ -30,6 +18,9 @@ import type {
   PayloadParamValidationErrorCode,
   PayloadParamValueType,
   PayloadRule,
+  PluginStoreAuthApplyTo,
+  PluginStoreAuthRule,
+  PluginStoreAuthType,
 } from '@/types/visualConfig';
 import { makeClientId } from '@/types/visualConfig';
 import {
@@ -37,9 +28,8 @@ import {
   VISUAL_CONFIG_PAYLOAD_VALUE_TYPE_OPTIONS,
   VISUAL_CONFIG_PROTOCOL_OPTIONS,
 } from '@/hooks/useVisualConfig';
-import { maskApiKey } from '@/utils/format';
-import { sha256Hex } from '@/utils/apiKeyHash';
-import { isValidApiKeyCharset } from '@/utils/validation';
+
+export { ApiKeysCardEditor } from './ApiKeysCardEditor';
 
 /** Minimum character count before the expand/collapse toggle appears. */
 const EXPAND_THRESHOLD = 30;
@@ -166,647 +156,16 @@ function buildProtocolOptions(
 
   for (const rule of rules) {
     for (const model of rule.models) {
-      const protocol = model.protocol;
-      if (!protocol || !protocol.trim() || seen.has(protocol)) continue;
-      seen.add(protocol);
-      options.push({ value: protocol, label: protocol });
+      [model.protocol, model.fromProtocol].forEach((protocol) => {
+        if (!protocol || !protocol.trim() || seen.has(protocol)) return;
+        seen.add(protocol);
+        options.push({ value: protocol, label: protocol });
+      });
     }
   }
 
   return options;
 }
-
-export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  disabled?: boolean;
-  onChange: (nextValue: string) => void;
-}) {
-  const { t } = useTranslation();
-  const showNotification = useNotificationStore((state) => state.showNotification);
-  const showConfirmation = useNotificationStore((state) => state.showConfirmation);
-  const apiBase = useAuthStore((state) => state.apiBase);
-  const managementKey = useAuthStore((state) => state.managementKey);
-  const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
-  const usageServiceBase = useUsageServiceStore((state) => state.serviceBase);
-  const apiKeys = useMemo(
-    () =>
-      value
-        .split('\n')
-        .map((key) => key.trim())
-        .filter(Boolean),
-    [value]
-  );
-  const [apiKeyIds, setApiKeyIds] = useState(() => apiKeys.map(() => makeClientId()));
-  const renderApiKeyIds = useMemo(() => {
-    if (apiKeyIds.length === apiKeys.length) return apiKeyIds;
-    if (apiKeyIds.length > apiKeys.length) return apiKeyIds.slice(0, apiKeys.length);
-    return [
-      ...apiKeyIds,
-      ...Array.from({ length: apiKeys.length - apiKeyIds.length }, () => makeClientId()),
-    ];
-  }, [apiKeyIds, apiKeys.length]);
-
-  const apiKeyInputId = useId();
-  const apiKeyHintId = `${apiKeyInputId}-hint`;
-  const apiKeyErrorId = `${apiKeyInputId}-error`;
-  const keyAliasInputId = `${apiKeyInputId}-alias`;
-  const aliasModalInputId = useId();
-  const aliasModalErrorId = `${aliasModalInputId}-error`;
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingApiKeyId, setEditingApiKeyId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState('');
-  const [inputAliasValue, setInputAliasValue] = useState('');
-  const [formError, setFormError] = useState('');
-  const [apiKeyAliases, setApiKeyAliases] = useState<ApiKeyAlias[]>([]);
-  const [aliasesLoading, setAliasesLoading] = useState(false);
-  const [aliasesAvailable, setAliasesAvailable] = useState(false);
-  const [aliasModalOpen, setAliasModalOpen] = useState(false);
-  const [aliasEditingApiKeyId, setAliasEditingApiKeyId] = useState<string | null>(null);
-  const [aliasInputValue, setAliasInputValue] = useState('');
-  const [aliasFormError, setAliasFormError] = useState('');
-  const [aliasSaving, setAliasSaving] = useState(false);
-
-  const aliasByHash = useMemo(() => {
-    const map = new Map<string, ApiKeyAlias>();
-    apiKeyAliases.forEach((item) => {
-      const hash = String(item.apiKeyHash || '')
-        .trim()
-        .toLowerCase();
-      const alias = String(item.alias || '').trim();
-      if (!hash || !alias) return;
-      map.set(hash, { ...item, apiKeyHash: hash, alias });
-    });
-    return map;
-  }, [apiKeyAliases]);
-
-  const resolveAliasServiceBase = useCallback(async (): Promise<string> => {
-    if (usageServiceEnabled && usageServiceBase) {
-      return usageServiceBase;
-    }
-
-    const candidates = Array.from(
-      new Set(
-        [apiBase, detectApiBaseFromLocation()]
-          .map((candidate) => normalizeUsageServiceBase(candidate || ''))
-          .filter(Boolean)
-      )
-    );
-
-    for (const candidate of candidates) {
-      try {
-        const info = await usageServiceApi.getInfo(candidate);
-        if (isUsageServiceId(info.service)) {
-          return candidate;
-        }
-      } catch {
-        // The regular CPA management API does not expose Usage Service metadata.
-      }
-    }
-
-    return '';
-  }, [apiBase, usageServiceBase, usageServiceEnabled]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadAliases = async () => {
-      setAliasesLoading(true);
-      try {
-        const serviceBase = await resolveAliasServiceBase();
-        if (cancelled) return;
-        if (!serviceBase) {
-          setAliasesAvailable(false);
-          setApiKeyAliases([]);
-          return;
-        }
-        const response = await usageServiceApi.getApiKeyAliases(serviceBase, managementKey);
-        if (cancelled) return;
-        setAliasesAvailable(true);
-        setApiKeyAliases(Array.isArray(response.items) ? response.items : []);
-      } catch {
-        if (cancelled) return;
-        setAliasesAvailable(false);
-        setApiKeyAliases([]);
-      } finally {
-        if (!cancelled) {
-          setAliasesLoading(false);
-        }
-      }
-    };
-
-    void loadAliases();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [managementKey, resolveAliasServiceBase]);
-
-  function generateSecureApiKey(): string {
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const array = new Uint8Array(64);
-    crypto.getRandomValues(array);
-    return 'sk-' + Array.from(array, (b) => charset[b % charset.length]).join('');
-  }
-
-  const getApiKeyHash = (apiKey: string) => sha256Hex(apiKey).toLowerCase();
-
-  const collectActiveApiKeyHashes = (keys: string[]): string[] => {
-    const set = new Set<string>();
-    keys.forEach((key) => {
-      const hash = getApiKeyHash(key);
-      if (hash) set.add(hash);
-    });
-    return Array.from(set);
-  };
-
-  const getAliasForApiKey = (apiKey: string) => {
-    const hash = getApiKeyHash(apiKey);
-    return hash ? (aliasByHash.get(hash)?.alias ?? '') : '';
-  };
-
-  const normalizeAliasKey = (alias: string) => alias.trim().toLowerCase();
-
-  const isDuplicateAlias = (
-    alias: string,
-    currentApiKeyHash: string,
-    activeHashesSet?: Set<string>
-  ) => {
-    const aliasKey = normalizeAliasKey(alias);
-    const currentHash = currentApiKeyHash.trim().toLowerCase();
-    if (!aliasKey) return false;
-    return apiKeyAliases.some((item) => {
-      const itemHash = String(item.apiKeyHash || '')
-        .trim()
-        .toLowerCase();
-      if (itemHash === currentHash) return false;
-      if (normalizeAliasKey(String(item.alias || '')) !== aliasKey) return false;
-      // 仅在活跃 hash 集合内做冲突判断：孤儿 hash（已被删除/编辑后残留的别名映射）不应拦截
-      if (activeHashesSet && !activeHashesSet.has(itemHash)) return false;
-      return true;
-    });
-  };
-
-  const validateAlias = (
-    alias: string,
-    currentApiKeyHash: string = '',
-    activeHashesSet?: Set<string>
-  ) => {
-    const trimmed = alias.trim();
-    if (!trimmed) {
-      return t('config_management.visual.api_keys.alias_error_empty');
-    }
-    if (Array.from(trimmed).length > 120) {
-      return t('config_management.visual.api_keys.alias_error_too_long');
-    }
-    if (isDuplicateAlias(trimmed, currentApiKeyHash, activeHashesSet)) {
-      return t('config_management.visual.api_keys.alias_error_duplicate');
-    }
-    return '';
-  };
-
-  const saveAliasForKey = async (
-    apiKey: string,
-    alias: string,
-    activeApiKeyHashes?: string[]
-  ) => {
-    const apiKeyHash = getApiKeyHash(apiKey);
-    const trimmedAlias = alias.trim();
-    if (!apiKeyHash) {
-      throw new Error(t('config_management.visual.api_keys.error_empty'));
-    }
-    const activeHashesSet =
-      activeApiKeyHashes && activeApiKeyHashes.length > 0
-        ? new Set(activeApiKeyHashes.map((hash) => hash.toLowerCase()))
-        : undefined;
-    const validationError = validateAlias(trimmedAlias, apiKeyHash, activeHashesSet);
-    if (validationError) {
-      throw new Error(validationError);
-    }
-
-    const serviceBase = await resolveAliasServiceBase();
-    if (!serviceBase) {
-      throw new Error(t('config_management.visual.api_keys.alias_unavailable'));
-    }
-
-    const response = await usageServiceApi.saveApiKeyAliases(
-      serviceBase,
-      [{ apiKeyHash, alias: trimmedAlias }],
-      managementKey,
-      activeApiKeyHashes
-    );
-    setAliasesAvailable(true);
-    setApiKeyAliases(Array.isArray(response.items) ? response.items : []);
-  };
-
-  const deleteAliasForHash = async (apiKeyHash: string) => {
-    const serviceBase = await resolveAliasServiceBase();
-    if (!serviceBase) {
-      throw new Error(t('config_management.visual.api_keys.alias_unavailable'));
-    }
-
-    await usageServiceApi.deleteApiKeyAlias(serviceBase, apiKeyHash, managementKey);
-    setApiKeyAliases((previous) =>
-      previous.filter((item) => item.apiKeyHash.toLowerCase() !== apiKeyHash.toLowerCase())
-    );
-  };
-
-  const getAliasErrorMessage = (error: unknown) => {
-    if (
-      error &&
-      typeof error === 'object' &&
-      (error as { code?: unknown }).code === 'api_key_alias_duplicate'
-    ) {
-      return t('config_management.visual.api_keys.alias_error_duplicate');
-    }
-    return error instanceof Error ? error.message : String(error);
-  };
-
-  const openAddModal = () => {
-    setEditingApiKeyId(null);
-    setInputValue('');
-    setInputAliasValue('');
-    setFormError('');
-    setModalOpen(true);
-  };
-
-  const openEditModal = (apiKeyId: string) => {
-    const editingIndex = renderApiKeyIds.findIndex((id) => id === apiKeyId);
-    const editingKey = apiKeys[editingIndex] ?? '';
-    setEditingApiKeyId(apiKeyId);
-    setInputValue(editingKey);
-    setInputAliasValue(getAliasForApiKey(editingKey));
-    setFormError('');
-    setModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setModalOpen(false);
-    setInputValue('');
-    setInputAliasValue('');
-    setEditingApiKeyId(null);
-    setFormError('');
-  };
-
-  const openAliasModal = (apiKeyId: string) => {
-    const editingIndex = renderApiKeyIds.findIndex((id) => id === apiKeyId);
-    const editingKey = apiKeys[editingIndex] ?? '';
-    setAliasEditingApiKeyId(apiKeyId);
-    setAliasInputValue(getAliasForApiKey(editingKey));
-    setAliasFormError('');
-    setAliasModalOpen(true);
-  };
-
-  const closeAliasModal = () => {
-    setAliasModalOpen(false);
-    setAliasEditingApiKeyId(null);
-    setAliasInputValue('');
-    setAliasFormError('');
-  };
-
-  const updateApiKeys = (nextKeys: string[]) => {
-    onChange(nextKeys.join('\n'));
-  };
-
-  const handleDelete = (apiKeyId: string) => {
-    const index = renderApiKeyIds.findIndex((id) => id === apiKeyId);
-    if (index < 0) return;
-    setApiKeyIds(renderApiKeyIds.filter((id) => id !== apiKeyId));
-    updateApiKeys(apiKeys.filter((_, i) => i !== index));
-  };
-
-  const handleSave = async () => {
-    const trimmed = inputValue.trim();
-    const trimmedAlias = inputAliasValue.trim();
-    if (!trimmed) {
-      setFormError(t('config_management.visual.api_keys.error_empty'));
-      return;
-    }
-    if (!isValidApiKeyCharset(trimmed)) {
-      setFormError(t('config_management.visual.api_keys.error_invalid'));
-      return;
-    }
-
-    const editingIndex = editingApiKeyId
-      ? renderApiKeyIds.findIndex((id) => id === editingApiKeyId)
-      : -1;
-    const nextKeys =
-      editingApiKeyId === null
-        ? [...apiKeys, trimmed]
-        : apiKeys.map((key, idx) => (idx === editingIndex ? trimmed : key));
-    const nextActiveHashes = collectActiveApiKeyHashes(nextKeys);
-
-    if (trimmedAlias) {
-      const aliasError = validateAlias(
-        trimmedAlias,
-        getApiKeyHash(trimmed),
-        new Set(nextActiveHashes)
-      );
-      if (aliasError) {
-        setFormError(aliasError);
-        return;
-      }
-      if (!aliasesAvailable) {
-        setFormError(t('config_management.visual.api_keys.alias_unavailable'));
-        return;
-      }
-    }
-
-    if (trimmedAlias) {
-      try {
-        setAliasSaving(true);
-        await saveAliasForKey(trimmed, trimmedAlias, nextActiveHashes);
-        showNotification(t('config_management.visual.api_keys.alias_saved'), 'success');
-      } catch (error) {
-        setFormError(getAliasErrorMessage(error));
-        setAliasSaving(false);
-        return;
-      }
-      setAliasSaving(false);
-    }
-
-    if (editingApiKeyId === null) {
-      setApiKeyIds([...renderApiKeyIds, makeClientId()]);
-    }
-    updateApiKeys(nextKeys);
-    closeModal();
-  };
-
-  const handleAliasSave = async () => {
-    const editingIndex = aliasEditingApiKeyId
-      ? renderApiKeyIds.findIndex((id) => id === aliasEditingApiKeyId)
-      : -1;
-    const editingKey = apiKeys[editingIndex] ?? '';
-    const currentActiveHashes = collectActiveApiKeyHashes(apiKeys);
-    const aliasError = validateAlias(
-      aliasInputValue,
-      getApiKeyHash(editingKey),
-      new Set(currentActiveHashes)
-    );
-    if (aliasError) {
-      setAliasFormError(aliasError);
-      return;
-    }
-
-    setAliasSaving(true);
-    try {
-      await saveAliasForKey(editingKey, aliasInputValue, currentActiveHashes);
-      showNotification(t('config_management.visual.api_keys.alias_saved'), 'success');
-      closeAliasModal();
-    } catch (error) {
-      setAliasFormError(getAliasErrorMessage(error));
-    } finally {
-      setAliasSaving(false);
-    }
-  };
-
-  const handleAliasDelete = () => {
-    const editingIndex = aliasEditingApiKeyId
-      ? renderApiKeyIds.findIndex((id) => id === aliasEditingApiKeyId)
-      : -1;
-    const editingKey = apiKeys[editingIndex] ?? '';
-    const apiKeyHash = getApiKeyHash(editingKey);
-    if (!apiKeyHash || !aliasByHash.has(apiKeyHash)) return;
-
-    showConfirmation({
-      title: t('config_management.visual.api_keys.alias_delete_title'),
-      message: t('config_management.visual.api_keys.alias_delete_confirm'),
-      confirmText: t('config_management.visual.api_keys.alias_delete'),
-      variant: 'danger',
-      onConfirm: async () => {
-        setAliasSaving(true);
-        try {
-          await deleteAliasForHash(apiKeyHash);
-          showNotification(t('config_management.visual.api_keys.alias_deleted'), 'success');
-          closeAliasModal();
-        } catch (error) {
-          setAliasFormError(getAliasErrorMessage(error));
-        } finally {
-          setAliasSaving(false);
-        }
-      },
-    });
-  };
-
-  const handleCopy = async (apiKey: string) => {
-    const copied = await copyToClipboard(apiKey);
-    showNotification(
-      t(copied ? 'notification.link_copied' : 'notification.copy_failed'),
-      copied ? 'success' : 'error'
-    );
-  };
-
-  const handleGenerate = () => {
-    setInputValue(generateSecureApiKey());
-    setFormError('');
-  };
-
-  return (
-    <div className="form-group" style={{ marginBottom: 0 }}>
-      <div className={styles.blockHeaderRow}>
-        <label style={{ margin: 0 }}>{t('config_management.visual.api_keys.label')}</label>
-        <Button size="sm" onClick={openAddModal} disabled={disabled}>
-          {t('config_management.visual.api_keys.add')}
-        </Button>
-      </div>
-
-      {apiKeys.length === 0 ? (
-        <div className={styles.emptyState}>{t('config_management.visual.api_keys.empty')}</div>
-      ) : (
-        <div className="item-list" style={{ marginTop: 4 }}>
-          {apiKeys.map((key, index) => {
-            const apiKeyHash = getApiKeyHash(key);
-            const alias = apiKeyHash ? (aliasByHash.get(apiKeyHash)?.alias ?? '') : '';
-            return (
-              <div key={renderApiKeyIds[index] ?? `${key}-${index}`} className="item-row">
-                <div className="item-meta">
-                  <div className="item-title">
-                    {alias || t('config_management.visual.api_keys.input_label')}
-                  </div>
-                  <div className="item-subtitle">{maskApiKey(String(key || ''))}</div>
-                </div>
-                <div className="item-actions">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => openAliasModal(renderApiKeyIds[index] ?? '')}
-                    disabled={disabled || aliasesLoading || !aliasesAvailable}
-                  >
-                    {t('config_management.visual.api_keys.alias_action')}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => handleCopy(key)}
-                    disabled={disabled}
-                  >
-                    {t('common.copy')}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => openEditModal(renderApiKeyIds[index] ?? '')}
-                    disabled={disabled}
-                  >
-                    {t('config_management.visual.common.edit')}
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => handleDelete(renderApiKeyIds[index] ?? '')}
-                    disabled={disabled}
-                  >
-                    {t('config_management.visual.common.delete')}
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="hint">{t('config_management.visual.api_keys.hint')}</div>
-      {!aliasesAvailable && !aliasesLoading ? (
-        <div className="hint">{t('config_management.visual.api_keys.alias_unavailable')}</div>
-      ) : null}
-
-      <Modal
-        open={modalOpen}
-        onClose={closeModal}
-        title={
-          editingApiKeyId !== null
-            ? t('config_management.visual.api_keys.edit_title')
-            : t('config_management.visual.api_keys.add_title')
-        }
-        footer={
-          <>
-            <Button variant="secondary" onClick={closeModal} disabled={disabled || aliasSaving}>
-              {t('config_management.visual.common.cancel')}
-            </Button>
-            <Button onClick={handleSave} disabled={disabled || aliasSaving}>
-              {editingApiKeyId !== null
-                ? t('config_management.visual.common.update')
-                : t('config_management.visual.common.add')}
-            </Button>
-          </>
-        }
-      >
-        <div className="form-group">
-          <label htmlFor={apiKeyInputId}>
-            {t('config_management.visual.api_keys.input_label')}
-          </label>
-          <div className={styles.apiKeyModalInputRow}>
-            <input
-              id={apiKeyInputId}
-              className="input"
-              placeholder={t('config_management.visual.api_keys.input_placeholder')}
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              disabled={disabled}
-              aria-describedby={formError ? `${apiKeyErrorId} ${apiKeyHintId}` : apiKeyHintId}
-              aria-invalid={Boolean(formError)}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handleGenerate}
-              disabled={disabled}
-            >
-              {t('config_management.visual.api_keys.generate')}
-            </Button>
-          </div>
-          <div id={apiKeyHintId} className="hint">
-            {t('config_management.visual.api_keys.input_hint')}
-          </div>
-          <div className="form-group">
-            <label htmlFor={keyAliasInputId}>
-              {t('config_management.visual.api_keys.alias_label')}
-            </label>
-            <input
-              id={keyAliasInputId}
-              className="input"
-              placeholder={t('config_management.visual.api_keys.alias_placeholder')}
-              value={inputAliasValue}
-              onChange={(e) => setInputAliasValue(e.target.value)}
-              disabled={disabled || aliasesLoading || !aliasesAvailable}
-              maxLength={120}
-            />
-            <div className="hint">{t('config_management.visual.api_keys.alias_hint')}</div>
-          </div>
-          {formError && (
-            <div id={apiKeyErrorId} className="error-box">
-              {formError}
-            </div>
-          )}
-        </div>
-      </Modal>
-
-      <Modal
-        open={aliasModalOpen}
-        onClose={closeAliasModal}
-        title={t('config_management.visual.api_keys.alias_title')}
-        footer={
-          <>
-            {aliasEditingApiKeyId &&
-            aliasByHash.has(
-              getApiKeyHash(
-                apiKeys[renderApiKeyIds.findIndex((id) => id === aliasEditingApiKeyId)] ?? ''
-              )
-            ) ? (
-              <Button
-                variant="danger"
-                onClick={handleAliasDelete}
-                disabled={disabled || aliasSaving}
-              >
-                {t('config_management.visual.api_keys.alias_delete')}
-              </Button>
-            ) : null}
-            <Button
-              variant="secondary"
-              onClick={closeAliasModal}
-              disabled={disabled || aliasSaving}
-            >
-              {t('config_management.visual.common.cancel')}
-            </Button>
-            <Button onClick={handleAliasSave} disabled={disabled || aliasSaving}>
-              {t('config_management.visual.common.update')}
-            </Button>
-          </>
-        }
-      >
-        <div className="form-group">
-          <label htmlFor={aliasModalInputId}>
-            {t('config_management.visual.api_keys.alias_label')}
-          </label>
-          <input
-            id={aliasModalInputId}
-            className="input"
-            placeholder={t('config_management.visual.api_keys.alias_placeholder')}
-            value={aliasInputValue}
-            onChange={(e) => {
-              setAliasInputValue(e.target.value);
-              setAliasFormError('');
-            }}
-            disabled={disabled || aliasSaving}
-            maxLength={120}
-            aria-describedby={aliasFormError ? aliasModalErrorId : undefined}
-            aria-invalid={Boolean(aliasFormError)}
-          />
-          <div className="hint">{t('config_management.visual.api_keys.alias_hint')}</div>
-          {aliasFormError && (
-            <div id={aliasModalErrorId} className="error-box">
-              {aliasFormError}
-            </div>
-          )}
-        </div>
-      </Modal>
-    </div>
-  );
-});
 
 const StringListEditor = memo(function StringListEditor({
   value,
@@ -855,13 +214,13 @@ const StringListEditor = memo(function StringListEditor({
             onChange={(nextValue) => updateItem(index, nextValue)}
             disabled={disabled}
           />
-          <Button variant="ghost" size="sm" onClick={() => removeItem(index)} disabled={disabled}>
+          <Button variant="ghost" size="xs" onClick={() => removeItem(index)} disabled={disabled}>
             {t('config_management.visual.common.delete')}
           </Button>
         </div>
       ))}
       <div className={styles.actionRow}>
-        <Button variant="secondary" size="sm" onClick={addItem} disabled={disabled}>
+        <Button variant="secondary" size="xs" onClick={addItem} disabled={disabled}>
           {t('config_management.visual.common.add')}
         </Button>
       </div>
@@ -869,16 +228,447 @@ const StringListEditor = memo(function StringListEditor({
   );
 });
 
-function hasPayloadModelAdvancedSettings(model: PayloadModelEntry) {
-  return Boolean(
-    model.fromProtocol ||
-    (model.headers?.length ?? 0) > 0 ||
-    (model.match?.length ?? 0) > 0 ||
-    (model.notMatch?.length ?? 0) > 0 ||
-    (model.exist?.length ?? 0) > 0 ||
-    (model.notExist?.length ?? 0) > 0
+const PLUGIN_STORE_AUTH_TYPE_OPTIONS: Array<{ value: PluginStoreAuthType; labelKey: string }> = [
+  { value: 'bearer', labelKey: 'config_management.visual.sections.system.store_auth_type_bearer' },
+  {
+    value: 'github-token',
+    labelKey: 'config_management.visual.sections.system.store_auth_type_github_token',
+  },
+  { value: 'basic', labelKey: 'config_management.visual.sections.system.store_auth_type_basic' },
+  { value: 'header', labelKey: 'config_management.visual.sections.system.store_auth_type_header' },
+  { value: 'none', labelKey: 'config_management.visual.sections.system.store_auth_type_none' },
+];
+
+const PLUGIN_STORE_AUTH_APPLY_TO_OPTIONS: Array<{
+  value: PluginStoreAuthApplyTo;
+  labelKey: string;
+}> = [
+  {
+    value: 'registry',
+    labelKey: 'config_management.visual.sections.system.store_auth_apply_registry',
+  },
+  {
+    value: 'metadata',
+    labelKey: 'config_management.visual.sections.system.store_auth_apply_metadata',
+  },
+  {
+    value: 'artifact',
+    labelKey: 'config_management.visual.sections.system.store_auth_apply_artifact',
+  },
+];
+
+const createPluginStoreAuthRule = (): PluginStoreAuthRule => ({
+  id: makeClientId(),
+  match: '',
+  applyTo: [],
+  type: 'bearer',
+  tokenEnv: '',
+  usernameEnv: '',
+  passwordEnv: '',
+  headerName: '',
+  headerValueEnv: '',
+  allowInsecure: false,
+});
+
+export const PluginStoreAuthEditor = memo(function PluginStoreAuthEditor({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: PluginStoreAuthRule[];
+  disabled?: boolean;
+  onChange: (next: PluginStoreAuthRule[]) => void;
+}) {
+  const { t } = useTranslation();
+
+  const updateRule = (id: string, patch: Partial<PluginStoreAuthRule>) => {
+    onChange(value.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)));
+  };
+  const addRule = () => onChange([...value, createPluginStoreAuthRule()]);
+  const removeRule = (id: string) => onChange(value.filter((rule) => rule.id !== id));
+  const toggleApplyTo = (rule: PluginStoreAuthRule, kind: PluginStoreAuthApplyTo) => {
+    const nextApplyTo = rule.applyTo.includes(kind)
+      ? rule.applyTo.filter((item) => item !== kind)
+      : [...rule.applyTo, kind];
+    updateRule(rule.id, { applyTo: nextApplyTo });
+  };
+
+  return (
+    <div className={styles.storeAuthEditor}>
+      {value.length === 0 ? (
+        <div className={styles.storeAuthEmpty}>
+          <div className={styles.storeAuthEmptyCopy}>
+            <strong>{t('config_management.visual.sections.system.store_auth_empty')}</strong>
+            <span>{t('config_management.visual.sections.system.plugin_store_auth_hint')}</span>
+          </div>
+          <Button variant="secondary" size="xs" onClick={addRule} disabled={disabled}>
+            {t('config_management.visual.sections.system.store_auth_add')}
+          </Button>
+        </div>
+      ) : null}
+      {value.map((rule) => {
+        const usesToken = rule.type === 'bearer' || rule.type === 'github-token';
+        const usesBasic = rule.type === 'basic';
+        const usesHeader = rule.type === 'header';
+        return (
+          <div key={rule.id} className={styles.storeAuthRule}>
+            <div className={styles.storeAuthRuleHeader}>
+              <strong>{rule.match || t('config_management.visual.sections.system.store_auth_rule')}</strong>
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => removeRule(rule.id)}
+                disabled={disabled}
+              >
+                {t('config_management.visual.common.delete')}
+              </Button>
+            </div>
+
+            <div className={styles.storeAuthGrid}>
+              <label className={styles.storeAuthField}>
+                <span>{t('config_management.visual.sections.system.store_auth_match')}</span>
+                <ExpandableInput
+                  value={rule.match}
+                  placeholder="https://api.github.com/repos/owner/repo/releases/"
+                  disabled={disabled}
+                  onChange={(match) => updateRule(rule.id, { match })}
+                />
+              </label>
+              <label className={styles.storeAuthField}>
+                <span>{t('config_management.visual.sections.system.store_auth_type')}</span>
+                <Select
+                  value={rule.type}
+                  options={PLUGIN_STORE_AUTH_TYPE_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: t(option.labelKey),
+                  }))}
+                  disabled={disabled}
+                  onChange={(type) => updateRule(rule.id, { type: type as PluginStoreAuthType })}
+                />
+              </label>
+            </div>
+
+            <div className={styles.storeAuthApplyTo}>
+              <span>{t('config_management.visual.sections.system.store_auth_apply_to')}</span>
+              <div className={styles.storeAuthCheckboxes}>
+                {PLUGIN_STORE_AUTH_APPLY_TO_OPTIONS.map((option) => (
+                  <label key={option.value} className={styles.storeAuthCheckbox}>
+                    <input
+                      type="checkbox"
+                      checked={rule.applyTo.includes(option.value)}
+                      disabled={disabled}
+                      onChange={() => toggleApplyTo(rule, option.value)}
+                    />
+                    <span>{t(option.labelKey)}</span>
+                  </label>
+                ))}
+              </div>
+              <small>{t('config_management.visual.sections.system.store_auth_apply_to_hint')}</small>
+            </div>
+
+            {usesToken ? (
+              <label className={styles.storeAuthField}>
+                <span>{t('config_management.visual.sections.system.store_auth_token_env')}</span>
+                <input
+                  className="input"
+                  value={rule.tokenEnv}
+                  placeholder="CLIPROXY_PLUGIN_STORE_TOKEN"
+                  disabled={disabled}
+                  onChange={(event) => updateRule(rule.id, { tokenEnv: event.target.value })}
+                />
+              </label>
+            ) : null}
+
+            {usesBasic ? (
+              <div className={styles.storeAuthGrid}>
+                <label className={styles.storeAuthField}>
+                  <span>
+                    {t('config_management.visual.sections.system.store_auth_username_env')}
+                  </span>
+                  <input
+                    className="input"
+                    value={rule.usernameEnv}
+                    disabled={disabled}
+                    onChange={(event) => updateRule(rule.id, { usernameEnv: event.target.value })}
+                  />
+                </label>
+                <label className={styles.storeAuthField}>
+                  <span>
+                    {t('config_management.visual.sections.system.store_auth_password_env')}
+                  </span>
+                  <input
+                    className="input"
+                    value={rule.passwordEnv}
+                    disabled={disabled}
+                    onChange={(event) => updateRule(rule.id, { passwordEnv: event.target.value })}
+                  />
+                </label>
+              </div>
+            ) : null}
+
+            {usesHeader ? (
+              <div className={styles.storeAuthGrid}>
+                <label className={styles.storeAuthField}>
+                  <span>{t('config_management.visual.sections.system.store_auth_header_name')}</span>
+                  <input
+                    className="input"
+                    value={rule.headerName}
+                    placeholder="X-Plugin-Token"
+                    disabled={disabled}
+                    onChange={(event) => updateRule(rule.id, { headerName: event.target.value })}
+                  />
+                </label>
+                <label className={styles.storeAuthField}>
+                  <span>
+                    {t('config_management.visual.sections.system.store_auth_header_value_env')}
+                  </span>
+                  <input
+                    className="input"
+                    value={rule.headerValueEnv}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      updateRule(rule.id, { headerValueEnv: event.target.value })
+                    }
+                  />
+                </label>
+              </div>
+            ) : null}
+
+            <label className={styles.storeAuthCheckbox}>
+              <input
+                type="checkbox"
+                checked={rule.allowInsecure}
+                disabled={disabled}
+                onChange={(event) => updateRule(rule.id, { allowInsecure: event.target.checked })}
+              />
+              <span>{t('config_management.visual.sections.system.store_auth_allow_insecure')}</span>
+            </label>
+          </div>
+        );
+      })}
+      {value.length > 0 ? (
+        <div className={styles.actionRow}>
+          <Button variant="secondary" size="xs" onClick={addRule} disabled={disabled}>
+            {t('config_management.visual.sections.system.store_auth_add')}
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
-}
+});
+
+const PayloadHeadersEditor = memo(function PayloadHeadersEditor({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: PayloadHeaderEntry[];
+  disabled?: boolean;
+  onChange: (next: PayloadHeaderEntry[]) => void;
+}) {
+  const { t } = useTranslation();
+  const headers = value ?? [];
+
+  const addHeader = () => onChange([...headers, { id: makeClientId(), name: '', value: '' }]);
+  const removeHeader = (index: number) => onChange(headers.filter((_, i) => i !== index));
+  const updateHeader = (index: number, patch: Partial<PayloadHeaderEntry>) =>
+    onChange(headers.map((header, i) => (i === index ? { ...header, ...patch } : header)));
+
+  return (
+    <div className={styles.payloadAdvancedList}>
+      {headers.map((header, index) => (
+        <div key={header.id} className={styles.payloadHeaderRow}>
+          <ExpandableInput
+            placeholder={t('config_management.visual.payload_rules.header_name')}
+            ariaLabel={t('config_management.visual.payload_rules.header_name')}
+            value={header.name}
+            onChange={(name) => updateHeader(index, { name })}
+            disabled={disabled}
+          />
+          <ExpandableInput
+            placeholder={t('config_management.visual.payload_rules.header_value')}
+            ariaLabel={t('config_management.visual.payload_rules.header_value')}
+            value={header.value}
+            onChange={(nextValue) => updateHeader(index, { value: nextValue })}
+            disabled={disabled}
+          />
+          <Button variant="ghost" size="xs" onClick={() => removeHeader(index)} disabled={disabled}>
+            {t('config_management.visual.common.delete')}
+          </Button>
+        </div>
+      ))}
+      <div className={styles.actionRow}>
+        <Button variant="secondary" size="xs" onClick={addHeader} disabled={disabled}>
+          {t('config_management.visual.payload_rules.add_header')}
+        </Button>
+      </div>
+    </div>
+  );
+});
+
+const PayloadConditionsEditor = memo(function PayloadConditionsEditor({
+  value,
+  disabled,
+  labelKey,
+  onChange,
+}: {
+  value: PayloadParamEntry[];
+  disabled?: boolean;
+  labelKey: string;
+  onChange: (next: PayloadParamEntry[]) => void;
+}) {
+  const { t } = useTranslation();
+  const conditions = value ?? [];
+  const payloadValueTypeOptions = useMemo(
+    () =>
+      VISUAL_CONFIG_PAYLOAD_VALUE_TYPE_OPTIONS.map((option) => ({
+        value: option.value,
+        label: t(option.labelKey, { defaultValue: option.defaultLabel }),
+      })),
+    [t]
+  );
+  const booleanValueOptions = useMemo(
+    () => [
+      { value: 'true', label: t('config_management.visual.payload_rules.boolean_true') },
+      { value: 'false', label: t('config_management.visual.payload_rules.boolean_false') },
+    ],
+    [t]
+  );
+
+  const addCondition = () =>
+    onChange([...conditions, { id: makeClientId(), path: '', valueType: 'string', value: '' }]);
+  const removeCondition = (index: number) => onChange(conditions.filter((_, i) => i !== index));
+  const updateCondition = (index: number, patch: Partial<PayloadParamEntry>) =>
+    onChange(
+      conditions.map((condition, i) => (i === index ? { ...condition, ...patch } : condition))
+    );
+
+  const getValuePlaceholder = (valueType: PayloadParamValueType) => {
+    switch (valueType) {
+      case 'string':
+        return t('config_management.visual.payload_rules.value_string');
+      case 'number':
+        return t('config_management.visual.payload_rules.value_number');
+      case 'boolean':
+        return t('config_management.visual.payload_rules.value_boolean');
+      case 'json':
+        return t('config_management.visual.payload_rules.value_json');
+      default:
+        return t('config_management.visual.payload_rules.value_default');
+    }
+  };
+
+  const renderValueEditor = (condition: PayloadParamEntry, index: number) => {
+    if (condition.valueType === 'boolean') {
+      return (
+        <Select
+          value={
+            condition.value.toLowerCase() === 'true' ||
+            condition.value.toLowerCase() === 'false'
+              ? condition.value.toLowerCase()
+              : ''
+          }
+          options={booleanValueOptions}
+          placeholder={t('config_management.visual.payload_rules.value_boolean')}
+          disabled={disabled}
+          ariaLabel={t('config_management.visual.payload_rules.condition_value')}
+          onChange={(nextValue) => updateCondition(index, { value: nextValue })}
+        />
+      );
+    }
+
+    if (condition.valueType === 'json') {
+      return (
+        <textarea
+          className={`input ${styles.payloadJsonInput}`}
+          placeholder={getValuePlaceholder(condition.valueType)}
+          aria-label={t('config_management.visual.payload_rules.condition_value')}
+          value={condition.value}
+          onChange={(event) => updateCondition(index, { value: event.target.value })}
+          disabled={disabled}
+        />
+      );
+    }
+
+    return (
+      <ExpandableInput
+        placeholder={getValuePlaceholder(condition.valueType)}
+        ariaLabel={t('config_management.visual.payload_rules.condition_value')}
+        value={condition.value}
+        onChange={(nextValue) => updateCondition(index, { value: nextValue })}
+        disabled={disabled}
+      />
+    );
+  };
+
+  return (
+    <div className={styles.payloadAdvancedList}>
+      <div className={styles.blockLabel}>{t(labelKey)}</div>
+      {conditions.map((condition, index) => {
+        const paramError = getValidationMessage(t, getPayloadParamValidationError(condition));
+
+        return (
+          <div key={condition.id} className={styles.payloadRuleParamGroup}>
+            <div className={styles.payloadRuleParamRow}>
+              <ExpandableInput
+                placeholder={t('config_management.visual.payload_rules.condition_path')}
+                ariaLabel={t('config_management.visual.payload_rules.condition_path')}
+                value={condition.path}
+                onChange={(path) => updateCondition(index, { path })}
+                disabled={disabled}
+              />
+              <Select
+                value={condition.valueType}
+                options={payloadValueTypeOptions}
+                disabled={disabled}
+                ariaLabel={t('config_management.visual.payload_rules.param_type')}
+                onChange={(nextValue) =>
+                  updateCondition(index, {
+                    valueType: nextValue as PayloadParamValueType,
+                    value:
+                      nextValue === 'boolean'
+                        ? 'true'
+                        : nextValue === 'json' && condition.value.trim() === ''
+                          ? '{}'
+                          : condition.value,
+                  })
+                }
+              />
+              {renderValueEditor(condition, index)}
+              <Button
+                variant="ghost"
+                size="xs"
+                className={styles.payloadRowActionButton}
+                onClick={() => removeCondition(index)}
+                disabled={disabled}
+              >
+                {t('config_management.visual.common.delete')}
+              </Button>
+            </div>
+            {paramError && (
+              <div className={`error-box ${styles.payloadParamError}`}>{paramError}</div>
+            )}
+          </div>
+        );
+      })}
+      <div className={styles.actionRow}>
+        <Button variant="secondary" size="xs" onClick={addCondition} disabled={disabled}>
+          {t('config_management.visual.payload_rules.add_condition')}
+        </Button>
+      </div>
+    </div>
+  );
+});
+
+const hasModelAdvancedFields = (model: PayloadModelEntry) =>
+  Boolean(
+    model.fromProtocol ||
+      (model.headers && model.headers.length > 0) ||
+      (model.match && model.match.length > 0) ||
+      (model.notMatch && model.notMatch.length > 0) ||
+      (model.exist && model.exist.length > 0) ||
+      (model.notExist && model.notExist.length > 0)
+  );
 
 export const PayloadRulesEditor = memo(function PayloadRulesEditor({
   value,
@@ -895,32 +685,13 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
 }) {
   const { t } = useTranslation();
   const rules = value;
-  const protocolOptions = useMemo(() => buildProtocolOptions(t, rules), [rules, t]);
-  const fromProtocolOptions = useMemo(
-    () => [
-      {
-        value: '',
-        label: t('config_management.visual.payload_rules.provider_default'),
-      },
-      {
-        value: 'openai',
-        label: t('config_management.visual.payload_rules.provider_openai'),
-      },
-      {
-        value: 'responses',
-        label: t('config_management.visual.payload_rules.provider_responses'),
-      },
-      {
-        value: 'gemini',
-        label: t('config_management.visual.payload_rules.provider_gemini'),
-      },
-      {
-        value: 'claude',
-        label: t('config_management.visual.payload_rules.provider_claude'),
-      },
-    ],
-    [t]
+  const [manualExpandedModelIds, setManualExpandedModelIds] = useState<Set<string>>(
+    () => new Set()
   );
+  const [collapsedAdvancedModelIds, setCollapsedAdvancedModelIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const protocolOptions = useMemo(() => buildProtocolOptions(t, rules), [rules, t]);
   const payloadValueTypeOptions = useMemo(
     () =>
       VISUAL_CONFIG_PAYLOAD_VALUE_TYPE_OPTIONS.map((option) => ({
@@ -936,7 +707,6 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
     ],
     [t]
   );
-  const [modelAdvancedOverrides, setModelAdvancedOverrides] = useState<Record<string, boolean>>({});
 
   const addRule = () => onChange([...rules, { id: makeClientId(), models: [], params: [] }]);
   const removeRule = (ruleIndex: number) => onChange(rules.filter((_, i) => i !== ruleIndex));
@@ -966,76 +736,28 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
     });
   };
 
-  const toggleModelAdvanced = (modelId: string, defaultExpanded: boolean) => {
-    setModelAdvancedOverrides((current) => ({
-      ...current,
-      [modelId]: !(current[modelId] ?? defaultExpanded),
-    }));
-  };
+  const toggleModelAdvanced = (model: PayloadModelEntry) => {
+    if (hasModelAdvancedFields(model)) {
+      setCollapsedAdvancedModelIds((current) => {
+        const next = new Set(current);
+        if (next.has(model.id)) {
+          next.delete(model.id);
+        } else {
+          next.add(model.id);
+        }
+        return next;
+      });
+      return;
+    }
 
-  const addHeader = (ruleIndex: number, modelIndex: number) => {
-    const rule = rules[ruleIndex];
-    const model = rule.models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      headers: [...(model.headers ?? []), { id: makeClientId(), name: '', value: '' }],
-    });
-  };
-
-  const updateHeader = (
-    ruleIndex: number,
-    modelIndex: number,
-    headerIndex: number,
-    patch: Partial<PayloadHeaderEntry>
-  ) => {
-    const model = rules[ruleIndex].models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      headers: (model.headers ?? []).map((header, i) =>
-        i === headerIndex ? { ...header, ...patch } : header
-      ),
-    });
-  };
-
-  const removeHeader = (ruleIndex: number, modelIndex: number, headerIndex: number) => {
-    const model = rules[ruleIndex].models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      headers: (model.headers ?? []).filter((_, i) => i !== headerIndex),
-    });
-  };
-
-  const addCondition = (ruleIndex: number, modelIndex: number, key: 'match' | 'notMatch') => {
-    const model = rules[ruleIndex].models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      [key]: [
-        ...(model[key] ?? []),
-        { id: makeClientId(), path: '', valueType: 'string', value: '' },
-      ],
-    });
-  };
-
-  const updateCondition = (
-    ruleIndex: number,
-    modelIndex: number,
-    key: 'match' | 'notMatch',
-    conditionIndex: number,
-    patch: Partial<PayloadParamEntry>
-  ) => {
-    const model = rules[ruleIndex].models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      [key]: (model[key] ?? []).map((condition, i) =>
-        i === conditionIndex ? { ...condition, ...patch } : condition
-      ),
-    });
-  };
-
-  const removeCondition = (
-    ruleIndex: number,
-    modelIndex: number,
-    key: 'match' | 'notMatch',
-    conditionIndex: number
-  ) => {
-    const model = rules[ruleIndex].models[modelIndex];
-    updateModel(ruleIndex, modelIndex, {
-      [key]: (model[key] ?? []).filter((_, i) => i !== conditionIndex),
+    setManualExpandedModelIds((current) => {
+      const next = new Set(current);
+      if (next.has(model.id)) {
+        next.delete(model.id);
+      } else {
+        next.add(model.id);
+      }
+      return next;
     });
   };
 
@@ -1086,62 +808,6 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
       rawJsonValues ? { ...param, valueType: 'json' } : param
     );
     return getValidationMessage(t, errorCode);
-  };
-
-  const renderConditionValueEditor = (
-    ruleIndex: number,
-    modelIndex: number,
-    key: 'match' | 'notMatch',
-    conditionIndex: number,
-    condition: PayloadParamEntry
-  ) => {
-    if (condition.valueType === 'boolean') {
-      return (
-        <Select
-          value={
-            condition.value.toLowerCase() === 'true' || condition.value.toLowerCase() === 'false'
-              ? condition.value.toLowerCase()
-              : ''
-          }
-          options={booleanValueOptions}
-          placeholder={t('config_management.visual.payload_rules.value_boolean')}
-          disabled={disabled}
-          ariaLabel={t('config_management.visual.payload_rules.condition_value')}
-          onChange={(nextValue) =>
-            updateCondition(ruleIndex, modelIndex, key, conditionIndex, { value: nextValue })
-          }
-        />
-      );
-    }
-
-    if (condition.valueType === 'json') {
-      return (
-        <textarea
-          className={`input ${styles.payloadJsonInput}`}
-          placeholder={getValuePlaceholder(condition.valueType)}
-          aria-label={t('config_management.visual.payload_rules.condition_value')}
-          value={condition.value}
-          onChange={(e) =>
-            updateCondition(ruleIndex, modelIndex, key, conditionIndex, {
-              value: e.target.value,
-            })
-          }
-          disabled={disabled}
-        />
-      );
-    }
-
-    return (
-      <ExpandableInput
-        placeholder={getValuePlaceholder(condition.valueType)}
-        ariaLabel={t('config_management.visual.payload_rules.condition_value')}
-        value={condition.value}
-        onChange={(nextValue) =>
-          updateCondition(ruleIndex, modelIndex, key, conditionIndex, { value: nextValue })
-        }
-        disabled={disabled}
-      />
-    );
   };
 
   const renderParamValueEditor = (
@@ -1215,7 +881,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
             </div>
             <Button
               variant="ghost"
-              size="sm"
+              size="xs"
               onClick={() => removeRule(ruleIndex)}
               disabled={disabled}
             >
@@ -1228,11 +894,13 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
               {t('config_management.visual.payload_rules.models')}
             </div>
             {(rule.models.length ? rule.models : []).map((model, modelIndex) => {
-              const hasAdvancedSettings = hasPayloadModelAdvancedSettings(model);
-              const advancedExpanded = modelAdvancedOverrides[model.id] ?? hasAdvancedSettings;
+              const modelHasAdvanced = hasModelAdvancedFields(model);
+              const advancedExpanded =
+                (modelHasAdvanced && !collapsedAdvancedModelIds.has(model.id)) ||
+                manualExpandedModelIds.has(model.id);
 
               return (
-                <div key={model.id} className={styles.payloadModelGroup}>
+                <div key={model.id} className={styles.payloadModelBlock}>
                   <div
                     className={[
                       styles.payloadRuleModelRow,
@@ -1289,10 +957,10 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                       </>
                     )}
                     <Button
-                      variant="secondary"
-                      size="sm"
+                      variant="ghost"
+                      size="xs"
                       className={styles.payloadRowActionButton}
-                      onClick={() => toggleModelAdvanced(model.id, hasAdvancedSettings)}
+                      onClick={() => toggleModelAdvanced(model)}
                       disabled={disabled}
                     >
                       {advancedExpanded
@@ -1301,7 +969,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                     </Button>
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="xs"
                       className={styles.payloadRowActionButton}
                       onClick={() => removeModel(ruleIndex, modelIndex)}
                       disabled={disabled}
@@ -1313,13 +981,13 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                   {advancedExpanded ? (
                     <div className={styles.payloadModelAdvanced}>
                       <div className={styles.payloadAdvancedGrid}>
-                        <div className={styles.fieldShell}>
-                          <label className={styles.fieldLabel}>
+                        <div className={styles.payloadAdvancedField}>
+                          <div className={styles.blockLabel}>
                             {t('config_management.visual.payload_rules.from_protocol')}
-                          </label>
+                          </div>
                           <Select
                             value={model.fromProtocol ?? ''}
-                            options={fromProtocolOptions}
+                            options={protocolOptions}
                             disabled={disabled}
                             ariaLabel={t('config_management.visual.payload_rules.from_protocol')}
                             onChange={(nextValue) =>
@@ -1331,164 +999,30 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                           />
                         </div>
                       </div>
-
-                      <div className={styles.blockStack}>
+                      <div className={styles.payloadAdvancedField}>
                         <div className={styles.blockLabel}>
                           {t('config_management.visual.payload_rules.headers')}
                         </div>
-                        {(model.headers ?? []).map((header, headerIndex) => (
-                          <div key={header.id} className={styles.payloadHeaderRow}>
-                            <ExpandableInput
-                              placeholder={t('config_management.visual.payload_rules.header_name')}
-                              ariaLabel={t('config_management.visual.payload_rules.header_name')}
-                              value={header.name}
-                              onChange={(nextValue) =>
-                                updateHeader(ruleIndex, modelIndex, headerIndex, {
-                                  name: nextValue,
-                                })
-                              }
-                              disabled={disabled}
-                            />
-                            <ExpandableInput
-                              placeholder={t('config_management.visual.payload_rules.header_value')}
-                              ariaLabel={t('config_management.visual.payload_rules.header_value')}
-                              value={header.value}
-                              onChange={(nextValue) =>
-                                updateHeader(ruleIndex, modelIndex, headerIndex, {
-                                  value: nextValue,
-                                })
-                              }
-                              disabled={disabled}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className={styles.payloadRowActionButton}
-                              onClick={() => removeHeader(ruleIndex, modelIndex, headerIndex)}
-                              disabled={disabled}
-                            >
-                              {t('config_management.visual.common.delete')}
-                            </Button>
-                          </div>
-                        ))}
-                        <div className={styles.actionRow}>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => addHeader(ruleIndex, modelIndex)}
-                            disabled={disabled}
-                          >
-                            {t('config_management.visual.payload_rules.add_header')}
-                          </Button>
-                        </div>
+                        <PayloadHeadersEditor
+                          value={model.headers ?? []}
+                          disabled={disabled}
+                          onChange={(headers) => updateModel(ruleIndex, modelIndex, { headers })}
+                        />
                       </div>
-
-                      {(['match', 'notMatch'] as const).map((conditionKey) => (
-                        <div key={conditionKey} className={styles.blockStack}>
-                          <div className={styles.blockLabel}>
-                            {t(`config_management.visual.payload_rules.${conditionKey}`)}
-                          </div>
-                          {(model[conditionKey] ?? []).map((condition, conditionIndex) => {
-                            const conditionError = getValidationMessage(
-                              t,
-                              getPayloadParamValidationError(condition)
-                            );
-
-                            return (
-                              <div key={condition.id} className={styles.payloadRuleParamGroup}>
-                                <div className={styles.payloadRuleParamRow}>
-                                  <ExpandableInput
-                                    placeholder={t(
-                                      'config_management.visual.payload_rules.condition_path'
-                                    )}
-                                    ariaLabel={t(
-                                      'config_management.visual.payload_rules.condition_path'
-                                    )}
-                                    value={condition.path}
-                                    onChange={(nextValue) =>
-                                      updateCondition(
-                                        ruleIndex,
-                                        modelIndex,
-                                        conditionKey,
-                                        conditionIndex,
-                                        { path: nextValue }
-                                      )
-                                    }
-                                    disabled={disabled}
-                                  />
-                                  <Select
-                                    value={condition.valueType}
-                                    options={payloadValueTypeOptions}
-                                    disabled={disabled}
-                                    ariaLabel={t(
-                                      'config_management.visual.payload_rules.param_type'
-                                    )}
-                                    onChange={(nextValue) =>
-                                      updateCondition(
-                                        ruleIndex,
-                                        modelIndex,
-                                        conditionKey,
-                                        conditionIndex,
-                                        {
-                                          valueType: nextValue as PayloadParamValueType,
-                                          value:
-                                            nextValue === 'boolean'
-                                              ? 'true'
-                                              : nextValue === 'json' &&
-                                                  condition.value.trim() === ''
-                                                ? '{}'
-                                                : condition.value,
-                                        }
-                                      )
-                                    }
-                                  />
-                                  {renderConditionValueEditor(
-                                    ruleIndex,
-                                    modelIndex,
-                                    conditionKey,
-                                    conditionIndex,
-                                    condition
-                                  )}
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className={styles.payloadRowActionButton}
-                                    onClick={() =>
-                                      removeCondition(
-                                        ruleIndex,
-                                        modelIndex,
-                                        conditionKey,
-                                        conditionIndex
-                                      )
-                                    }
-                                    disabled={disabled}
-                                  >
-                                    {t('config_management.visual.common.delete')}
-                                  </Button>
-                                </div>
-                                {conditionError ? (
-                                  <div className={`error-box ${styles.payloadParamError}`}>
-                                    {conditionError}
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                          <div className={styles.actionRow}>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => addCondition(ruleIndex, modelIndex, conditionKey)}
-                              disabled={disabled}
-                            >
-                              {t('config_management.visual.payload_rules.add_condition')}
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-
+                      <PayloadConditionsEditor
+                        value={model.match ?? []}
+                        disabled={disabled}
+                        labelKey="config_management.visual.payload_rules.match"
+                        onChange={(match) => updateModel(ruleIndex, modelIndex, { match })}
+                      />
+                      <PayloadConditionsEditor
+                        value={model.notMatch ?? []}
+                        disabled={disabled}
+                        labelKey="config_management.visual.payload_rules.notMatch"
+                        onChange={(notMatch) => updateModel(ruleIndex, modelIndex, { notMatch })}
+                      />
                       <div className={styles.payloadAdvancedGrid}>
-                        <div className={styles.blockStack}>
+                        <div className={styles.payloadAdvancedField}>
                           <div className={styles.blockLabel}>
                             {t('config_management.visual.payload_rules.exist')}
                           </div>
@@ -1502,7 +1036,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                             onChange={(exist) => updateModel(ruleIndex, modelIndex, { exist })}
                           />
                         </div>
-                        <div className={styles.blockStack}>
+                        <div className={styles.payloadAdvancedField}>
                           <div className={styles.blockLabel}>
                             {t('config_management.visual.payload_rules.notExist')}
                           </div>
@@ -1527,7 +1061,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
             <div className={styles.actionRow}>
               <Button
                 variant="secondary"
-                size="sm"
+                size="xs"
                 onClick={() => addModel(ruleIndex)}
                 disabled={disabled}
               >
@@ -1545,7 +1079,14 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
 
               return (
                 <div key={param.id} className={styles.payloadRuleParamGroup}>
-                  <div className={styles.payloadRuleParamRow}>
+                  <div
+                    className={[
+                      styles.payloadRuleParamRow,
+                      rawJsonValues ? styles.payloadRuleRawParamRow : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
                     <ExpandableInput
                       placeholder={t('config_management.visual.payload_rules.json_path')}
                       ariaLabel={t('config_management.visual.payload_rules.json_path')}
@@ -1577,7 +1118,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                     {renderParamValueEditor(ruleIndex, paramIndex, param)}
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="xs"
                       className={styles.payloadRowActionButton}
                       onClick={() => removeParam(ruleIndex, paramIndex)}
                       disabled={disabled}
@@ -1594,7 +1135,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
             <div className={styles.actionRow}>
               <Button
                 variant="secondary"
-                size="sm"
+                size="xs"
                 onClick={() => addParam(ruleIndex)}
                 disabled={disabled}
               >
@@ -1612,7 +1153,7 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
       )}
 
       <div className={styles.actionRow}>
-        <Button variant="secondary" size="sm" onClick={addRule} disabled={disabled}>
+        <Button variant="secondary" size="xs" onClick={addRule} disabled={disabled}>
           {t('config_management.visual.payload_rules.add_rule')}
         </Button>
       </div>
@@ -1671,7 +1212,7 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
             </div>
             <Button
               variant="ghost"
-              size="sm"
+              size="xs"
               onClick={() => removeRule(ruleIndex)}
               disabled={disabled}
             >
@@ -1705,7 +1246,7 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
                 />
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="xs"
                   className={styles.payloadRowActionButton}
                   onClick={() => removeModel(ruleIndex, modelIndex)}
                   disabled={disabled}
@@ -1717,7 +1258,7 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
             <div className={styles.actionRow}>
               <Button
                 variant="secondary"
-                size="sm"
+                size="xs"
                 onClick={() => addModel(ruleIndex)}
                 disabled={disabled}
               >
@@ -1748,7 +1289,7 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
       )}
 
       <div className={styles.actionRow}>
-        <Button variant="secondary" size="sm" onClick={addRule} disabled={disabled}>
+        <Button variant="secondary" size="xs" onClick={addRule} disabled={disabled}>
           {t('config_management.visual.payload_rules.add_rule')}
         </Button>
       </div>

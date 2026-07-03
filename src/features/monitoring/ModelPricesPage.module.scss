@@ -1,0 +1,431 @@
+.page {
+  --pricing-surface: var(--bg-primary);
+  --pricing-surface-elevated: color-mix(in srgb, var(--bg-primary) 84%, var(--surface-subtle));
+  --pricing-surface-muted: var(--surface-subtle);
+  --pricing-surface-hover: color-mix(in srgb, var(--surface-subtle-hover) 74%, var(--bg-primary));
+  --pricing-line: var(--border-color);
+  --pricing-line-strong: var(--border-primary);
+  --pricing-ink: var(--text-primary);
+  --pricing-muted: var(--text-secondary);
+  --pricing-accent: var(--primary-color);
+  --pricing-accent-strong: var(--primary-active);
+  --pricing-accent-soft: var(--color-primary-light-9);
+  --pricing-red: var(--error-color);
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  color: var(--pricing-ink);
+}
+
+.actionBar,
+.pricePanel {
+  min-width: 0;
+  border: 1px solid var(--pricing-line);
+  background: var(--pricing-surface);
+  box-shadow: var(--shadow);
+}
+
+.actionBar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 16px;
+}
+
+.titleGroup,
+.actionGroup,
+.filterGroup,
+.rowActions,
+.sourceResults,
+.compactEditorActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.titleGroup {
+  flex-wrap: nowrap;
+}
+
+.backLink,
+.metaPill,
+.filterButton,
+.iconAction,
+.confirmButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--pricing-line);
+  border-radius: 12px;
+  background: var(--pricing-surface-elevated);
+  color: var(--pricing-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.backLink,
+.metaPill,
+.filterButton,
+.confirmButton {
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+.backLink {
+  color: var(--pricing-muted);
+}
+
+.backLink:hover,
+.filterButton:hover,
+.iconAction:hover,
+.confirmButton:hover {
+  border-color: color-mix(in srgb, var(--pricing-accent) 35%, var(--pricing-line-strong));
+  background: var(--pricing-surface-hover);
+  color: var(--pricing-ink);
+}
+
+.actionGroup {
+  justify-content: flex-end;
+}
+
+.metaPill {
+  max-width: 520px;
+  overflow: hidden;
+  color: var(--pricing-muted);
+  text-overflow: ellipsis;
+}
+
+.toolbarButton :global(span),
+.actionGroup :global(.btn > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pricePanel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+}
+
+.panelToolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.86fr) auto minmax(160px, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.searchWrap {
+  min-width: 0;
+}
+
+.searchWrap :global(.form-group),
+.compactEditor :global(.form-group) {
+  margin-bottom: 0;
+}
+
+.searchWrap :global(.input),
+.compactInput {
+  min-height: 32px;
+  padding: 6px 30px 6px 9px;
+  border-radius: 11px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.filterGroup {
+  flex-wrap: nowrap;
+  gap: 0;
+  border: 1px solid color-mix(in srgb, var(--pricing-line) 86%, transparent);
+  border-radius: 12px;
+  background: var(--pricing-surface-elevated);
+  overflow: hidden;
+}
+
+.filterButton {
+  gap: 7px;
+  min-height: 32px;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--pricing-line) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--pricing-muted) 84%, var(--pricing-ink));
+}
+
+.filterButton:first-child {
+  border-left: 0;
+}
+
+.filterButton strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pricing-muted) 14%, var(--pricing-surface));
+  color: var(--pricing-ink);
+  font-size: 11px;
+}
+
+.filterButtonActive,
+.filterButtonActive:hover {
+  border-left-color: transparent;
+  background: color-mix(in srgb, var(--pricing-accent) 12%, var(--pricing-surface));
+  color: var(--pricing-accent-strong);
+}
+
+.filterButtonActive strong {
+  background: color-mix(in srgb, var(--pricing-accent) 22%, var(--pricing-surface));
+  color: var(--pricing-accent-strong);
+}
+
+.sourceResults {
+  gap: 6px;
+}
+
+.sourceResults span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--pricing-line);
+  border-radius: 999px;
+  background: var(--pricing-surface-muted);
+  color: var(--pricing-muted);
+  font-size: 11px;
+}
+
+.sourceResults strong {
+  color: var(--pricing-ink);
+}
+
+.sourceResults .sourceResultError {
+  border-color: color-mix(in srgb, var(--pricing-red) 35%, var(--pricing-line));
+  color: var(--pricing-red);
+}
+
+.compactEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) repeat(3, minmax(110px, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--pricing-accent) 22%, var(--pricing-line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pricing-accent) 5%, var(--pricing-surface));
+}
+
+.compactEditor :global(label) {
+  color: var(--pricing-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.compactEditor .compactInput {
+  padding-right: 9px;
+}
+
+.compactEditorActions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  padding-bottom: 1px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--pricing-line);
+  border-radius: 12px;
+}
+
+.priceTable {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.priceTable th,
+.priceTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--pricing-line);
+  text-align: left;
+  vertical-align: middle;
+  font-size: 12px;
+}
+
+.priceTable th {
+  background: var(--pricing-surface-muted);
+  color: var(--pricing-muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.priceTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.modelCell {
+  min-width: 220px;
+}
+
+.modelContent {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.modelContent strong,
+.sourceCell {
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
+.modelContent span {
+  color: var(--pricing-muted);
+  font-size: 11px;
+}
+
+.sourceCell {
+  max-width: 260px;
+  color: var(--pricing-muted);
+  font-size: 11px;
+}
+
+.sourceContent {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sourceBadge {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--pricing-surface-muted);
+  color: var(--pricing-ink);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.sourceContent small,
+.sourcePlaceholder {
+  font: inherit;
+}
+
+.actionsCell {
+  width: 88px;
+  min-width: 88px;
+}
+
+.candidateActionsCell {
+  width: 300px;
+  min-width: 300px;
+}
+
+.rowActions {
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
+.iconAction {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+.candidateControl {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  gap: 7px;
+  min-width: 0;
+}
+
+.candidateControl select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--pricing-line);
+  border-radius: 10px;
+  background: var(--pricing-surface);
+  color: var(--pricing-ink);
+  font-size: 12px;
+}
+
+.confirmButton {
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--pricing-accent) 45%, var(--pricing-line));
+  background: color-mix(in srgb, var(--pricing-accent) 10%, var(--pricing-surface));
+  color: var(--pricing-accent-strong);
+}
+
+.emptyState,
+.unmatchedBlock {
+  padding: 12px;
+  border: 1px dashed var(--pricing-line);
+  border-radius: 12px;
+  background: var(--pricing-surface-muted);
+  color: var(--pricing-muted);
+  font-size: 12px;
+}
+
+.unmatchedBlock {
+  display: grid;
+  gap: 4px;
+}
+
+.unmatchedBlock strong {
+  color: var(--pricing-ink);
+}
+
+@media (max-width: 1080px) {
+  .actionBar,
+  .panelToolbar,
+  .compactEditor {
+    grid-template-columns: 1fr;
+  }
+
+  .actionGroup {
+    justify-content: flex-start;
+  }
+
+  .filterGroup {
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 620px) {
+  .titleGroup {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .filterGroup {
+    width: 100%;
+  }
+
+  .filterButton {
+    flex: 1 1 0;
+  }
+
+  .candidateControl {
+    grid-template-columns: 1fr;
+  }
+}

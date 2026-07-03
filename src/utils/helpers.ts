@@ -12,6 +12,25 @@ export function normalizeArrayResponse<T>(data: T | T[] | null | undefined): T[]
   return [data];
 }
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function getErrorMessage(error: unknown, fallback = 'Unknown error'): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (isRecord(error)) {
+    const message = error.message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+    const errorValue = error.error;
+    if (typeof errorValue === 'string' && errorValue.trim()) return errorValue.trim();
+    if (isRecord(errorValue) && typeof errorValue.message === 'string' && errorValue.message.trim()) {
+      return errorValue.message.trim();
+    }
+  }
+  return fallback;
+}
+
 /**
  * 防抖函数
  */

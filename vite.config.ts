@@ -35,7 +35,9 @@ function getVersion(): string {
   return 'dev';
 }
 
-// 自定义插件：重命名 index.html 为 management.html
+const isDemoSiteBuild = (mode: string) =>
+  mode === 'demo' || process.env.DEMO_SITE === 'true' || process.env.VITE_DEMO_SITE === 'true';
+
 function renameOutputPlugin() {
   return {
     name: 'rename-output',
@@ -52,43 +54,61 @@ function renameOutputPlugin() {
 }
 
 // https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [
-    react(),
-    viteSingleFile({
-      removeViteModuleLoader: true
-    }),
-    renameOutputPlugin()
-  ],
-  define: {
-    __APP_VERSION__: JSON.stringify(getVersion())
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src')
-    }
-  },
-  css: {
-    modules: {
-      localsConvention: 'camelCase',
-      generateScopedName: '[name]__[local]___[hash:base64:5]'
+export default defineConfig(({ mode }) => {
+  const demoSite = isDemoSiteBuild(mode);
+  const useRealDemoFixtures = demoSite || mode === 'test';
+
+  return {
+    plugins: [
+      react(),
+      viteSingleFile({
+        removeViteModuleLoader: true
+      }),
+      !demoSite && renameOutputPlugin()
+    ],
+    define: {
+      __APP_VERSION__: JSON.stringify(getVersion()),
+      __DEMO_SITE__: JSON.stringify(demoSite || mode === 'test')
     },
-    preprocessorOptions: {
-      scss: {
-        additionalData: `@use "@/styles/variables.scss" as *;`
+    resolve: {
+      alias: [
+        {
+          find: /^@\/features\/demo\/demoFixtures$/,
+          replacement: path.resolve(
+            __dirname,
+            useRealDemoFixtures
+              ? './src/features/demo/demoFixtures.ts'
+              : './src/features/demo/demoFixtures.empty.ts'
+          )
+        },
+        {
+          find: '@',
+          replacement: path.resolve(__dirname, './src')
+        }
+      ]
+    },
+    css: {
+      modules: {
+        localsConvention: 'camelCase',
+        generateScopedName: '[name]__[local]___[hash:base64:5]'
+      },
+      preprocessorOptions: {
+        scss: {
+          additionalData: `@use "@/styles/variables.scss" as *;`
+        }
+      }
+    },
+    build: {
+      target: 'es2020',
+      outDir: demoSite ? 'dist-demo' : 'dist',
+      assetsInlineLimit: 100000000,
+      chunkSizeWarningLimit: 100000000,
+      cssCodeSplit: false,
+      rolldownOptions: {
+        output: {
+          codeSplitting: false
+        }
       }
     }
-  },
-  build: {
-    target: 'es2020',
-    outDir: 'dist',
-    assetsInlineLimit: 100000000,
-    chunkSizeWarningLimit: 100000000,
-    cssCodeSplit: false,
-    rolldownOptions: {
-      output: {
-        codeSplitting: false
-      }
-    }
-  }
+  };
 });
