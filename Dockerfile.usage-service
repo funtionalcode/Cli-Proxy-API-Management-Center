@@ -3,9 +3,11 @@ ARG VERSION=dev
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG ALL_PROXY
+ARG NO_PROXY
 ARG http_proxy
 ARG https_proxy
 ARG all_proxy
+ARG no_proxy
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -18,9 +20,11 @@ ARG TARGETARCH
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG ALL_PROXY
+ARG NO_PROXY
 ARG http_proxy
 ARG https_proxy
 ARG all_proxy
+ARG no_proxy
 ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /src
 COPY usage-service ./usage-service
@@ -33,9 +37,11 @@ FROM alpine:3.21
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG ALL_PROXY
+ARG NO_PROXY
 ARG http_proxy
 ARG https_proxy
 ARG all_proxy
+ARG no_proxy
 RUN apk add --no-cache ca-certificates wget
 WORKDIR /app
 COPY --from=service-build /out/cpa-manager /usr/local/bin/cpa-manager
