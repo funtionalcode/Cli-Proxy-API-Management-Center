@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagerConfig } from '@/services/api/usageService';
 import {
+  resolveManagerServiceBase,
   resolveManagerCPAConnection,
   resolveManagerBindingStatus,
   resolveManagerFormDirty,
   resolveManagerRequestAuthKey,
   resolveManagerSaveState,
+  shouldShowManagerTab,
 } from './ConfigPage';
 
 const buildManagerConfig = (overrides: Partial<ManagerConfig> = {}): ManagerConfig => ({
@@ -27,6 +29,44 @@ const buildManagerConfig = (overrides: Partial<ManagerConfig> = {}): ManagerConf
     serviceBase: '',
   },
   ...overrides,
+});
+
+describe('shouldShowManagerTab', () => {
+  it('shows Manager config for external CPA panels even before a Manager address is stored', () => {
+    expect(
+      shouldShowManagerTab({
+        panelHostedByUsageService: false,
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toBe(true);
+  });
+});
+
+describe('resolveManagerServiceBase', () => {
+  it('uses the editable external Manager address for CPA-hosted panels', () => {
+    expect(
+      resolveManagerServiceBase({
+        panelHostedByUsageService: false,
+        detectedPanelBase: 'http://cpa.local:8317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+        externalServiceBaseInput: ' http://manager.local:18317/ ',
+      })
+    ).toBe('http://manager.local:18317');
+  });
+
+  it('keeps using the same-origin panel base for Manager-hosted panels', () => {
+    expect(
+      resolveManagerServiceBase({
+        panelHostedByUsageService: true,
+        detectedPanelBase: 'http://manager.local:18317/',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+        externalServiceBaseInput: 'http://ignored.local:18317',
+      })
+    ).toBe('http://manager.local:18317');
+  });
 });
 
 describe('resolveManagerRequestAuthKey', () => {

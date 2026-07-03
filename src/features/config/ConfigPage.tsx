@@ -102,6 +102,45 @@ export function resolveManagerSaveState({
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
+export function shouldShowManagerTab({
+  panelHostedByUsageService,
+  usageServiceEnabled,
+  usageServiceBase,
+}: {
+  panelHostedByUsageService: boolean | null;
+  usageServiceEnabled: boolean;
+  usageServiceBase: string;
+}): boolean {
+  return (
+    panelHostedByUsageService === true ||
+    panelHostedByUsageService === false ||
+    Boolean(usageServiceEnabled && normalizeUsageServiceBase(usageServiceBase))
+  );
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function resolveManagerServiceBase({
+  panelHostedByUsageService,
+  detectedPanelBase,
+  usageServiceEnabled,
+  usageServiceBase,
+  externalServiceBaseInput,
+}: {
+  panelHostedByUsageService: boolean | null;
+  detectedPanelBase: string;
+  usageServiceEnabled: boolean;
+  usageServiceBase: string;
+  externalServiceBaseInput: string;
+}): string {
+  if (panelHostedByUsageService) {
+    return normalizeUsageServiceBase(detectedPanelBase);
+  }
+  const externalInput = normalizeUsageServiceBase(externalServiceBaseInput);
+  if (externalInput) return externalInput;
+  return usageServiceEnabled ? normalizeUsageServiceBase(usageServiceBase) : '';
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
 export function resolveManagerCPAConnection({
   panelHostedByUsageService,
   managerConfig,
@@ -282,6 +321,9 @@ export function ConfigPage() {
   const [managerLoading, setManagerLoading] = useState(false);
   const [managerSaving, setManagerSaving] = useState(false);
   const [managerError, setManagerError] = useState('');
+  const [externalManagerServiceBaseInput, setExternalManagerServiceBaseInput] = useState(
+    usageServiceBase
+  );
   const [managerRequestMonitoringEnabled, setManagerRequestMonitoringEnabled] = useState(true);
   const [managerCPABaseInput, setManagerCPABaseInput] = useState('');
   const [managerCPAManagementKeyInput, setManagerCPAManagementKeyInput] = useState('');
@@ -311,8 +353,11 @@ export function ConfigPage() {
   const floatingActionsRef = useRef<HTMLDivElement>(null);
 
   const disableControls = connectionStatus !== 'connected';
-  const hasConfiguredExternalManager = Boolean(usageServiceEnabled && usageServiceBase);
-  const showManagerTab = panelHostedByUsageService === true || hasConfiguredExternalManager;
+  const showManagerTab = shouldShowManagerTab({
+    panelHostedByUsageService,
+    usageServiceEnabled,
+    usageServiceBase,
+  });
   const isManagerTab = activeTab === 'manager' && showManagerTab;
   const sourceDirty = dirty || visualDirty;
   const shouldRenderFloatingActions = isCurrentLayer;
@@ -413,28 +458,45 @@ export function ConfigPage() {
   }, [detectedPanelBase]);
 
   useEffect(() => {
-    if (
-      panelHostedByUsageService !== false ||
-      activeTab !== 'manager' ||
-      hasConfiguredExternalManager
-    ) {
+    if (activeTab !== 'manager' || showManagerTab) {
       return;
     }
     setActiveTab('visual');
     localStorage.setItem(CONFIG_TAB_STORAGE_KEY, 'visual');
-  }, [activeTab, hasConfiguredExternalManager, panelHostedByUsageService]);
+  }, [activeTab, showManagerTab]);
 
-  const resolveManagerServiceBase = useCallback(() => {
-    if (panelHostedByUsageService) {
-      return normalizeUsageServiceBase(detectedPanelBase);
-    }
-    return usageServiceEnabled ? normalizeUsageServiceBase(usageServiceBase) : '';
-  }, [detectedPanelBase, panelHostedByUsageService, usageServiceBase, usageServiceEnabled]);
+  useEffect(() => {
+    if (externalManagerServiceBaseInput || !usageServiceBase) return;
+    setExternalManagerServiceBaseInput(usageServiceBase);
+  }, [externalManagerServiceBaseInput, usageServiceBase]);
 
-  const managerServiceTarget = resolveManagerServiceBase();
-  const managerDirty = useMemo(
+  const resolveCurrentManagerServiceBase = useCallback(
     () =>
-      resolveManagerFormDirty({
+      resolveManagerServiceBase({
+        panelHostedByUsageService,
+        detectedPanelBase,
+        usageServiceEnabled,
+        usageServiceBase,
+        externalServiceBaseInput: externalManagerServiceBaseInput,
+      }),
+    [
+      detectedPanelBase,
+      externalManagerServiceBaseInput,
+      panelHostedByUsageService,
+      usageServiceBase,
+      usageServiceEnabled,
+    ]
+  );
+
+  const managerServiceTarget = resolveCurrentManagerServiceBase();
+  const managerEffectiveCPABase = managerCPABaseInput.trim() || apiBase;
+  const managerEffectiveCPAManagementKey =
+    managerCPAManagementKeyInput.trim() ||
+    managerConfig?.cpaConnection?.managementKey ||
+    managementKey;
+  const managerDirty = useMemo(
+    () => {
+      const formDirty = resolveManagerFormDirty({
         managerConfig,
         cpaBaseUrlInput: managerCPABaseInput,
         managementKeyInput: managerCPAManagementKeyInput,
@@ -443,16 +505,30 @@ export function ConfigPage() {
         pollIntervalMs: managerPollIntervalMs,
         batchSize: managerBatchSize,
         queryLimit: managerQueryLimit,
-      }),
+      });
+      if (formDirty) return true;
+      if (panelHostedByUsageService === false && !managerConfig) {
+        return Boolean(
+          managerServiceTarget &&
+            managerEffectiveCPABase &&
+            managerEffectiveCPAManagementKey
+        );
+      }
+      return false;
+    },
     [
       managerBatchSize,
       managerCPABaseInput,
       managerCPAManagementKeyInput,
       managerCollectorMode,
       managerConfig,
+      managerEffectiveCPABase,
+      managerEffectiveCPAManagementKey,
       managerPollIntervalMs,
       managerQueryLimit,
       managerRequestMonitoringEnabled,
+      managerServiceTarget,
+      panelHostedByUsageService,
     ]
   );
   const managerSaveState = resolveManagerSaveState({
@@ -497,7 +573,7 @@ export function ConfigPage() {
   );
 
   const loadManagerConfig = useCallback(async () => {
-    const serviceBase = resolveManagerServiceBase();
+    const serviceBase = resolveCurrentManagerServiceBase();
     const requestAuthKey = resolveManagerRequestAuthKey({
       panelHostedByUsageService,
       managementKey,
@@ -507,7 +583,7 @@ export function ConfigPage() {
       setManagerConfig(null);
       setManagerCPAUsage(null);
       setManagerConfigSource('');
-      setManagerCPABaseInput('');
+      setManagerCPABaseInput(apiBase);
       return;
     }
     if (!requestAuthKey) {
@@ -537,7 +613,8 @@ export function ConfigPage() {
     getUsageServiceDisplayError,
     managementKey,
     panelHostedByUsageService,
-    resolveManagerServiceBase,
+    apiBase,
+    resolveCurrentManagerServiceBase,
     syncEmbeddedManagerBootstrap,
     t,
   ]);
@@ -658,7 +735,7 @@ export function ConfigPage() {
 
   const handleManagerSave = async () => {
     if (disableControls) return;
-    const serviceBase = resolveManagerServiceBase();
+    const serviceBase = resolveCurrentManagerServiceBase();
     if (!serviceBase) {
       showNotification(t('config_management.manager.service_base_required'), 'warning');
       return;
@@ -1191,8 +1268,8 @@ export function ConfigPage() {
   const canConfigureRequestMonitoring =
     Boolean(
       managerServiceTarget &&
-        managerCPABaseInput.trim() &&
-        (managerCPAManagementKeyInput.trim() || managerConfig?.cpaConnection?.managementKey)
+        managerEffectiveCPABase &&
+        managerEffectiveCPAManagementKey
     );
   const managerRuntimeModeLabel =
     panelHostedByUsageService === true
@@ -1253,6 +1330,7 @@ export function ConfigPage() {
               managerSaving={managerSaving}
               panelHostedByUsageService={panelHostedByUsageService}
               detectedPanelBase={managerServiceTarget || detectedPanelBase}
+              managerServiceBaseInput={externalManagerServiceBaseInput}
               managerRuntimeModeLabel={managerRuntimeModeLabel}
               managerHasBoundCPAManagementKey={Boolean(
                 managerConfig?.cpaConnection?.managementKey
@@ -1273,6 +1351,9 @@ export function ConfigPage() {
               managerConfigSourceLabel={managerConfigSourceLabel}
               managerUsageStatisticsEnabled={Boolean(managerCPAUsage?.usageStatisticsEnabled)}
               onRefresh={() => void loadManagerConfig()}
+              onManagerServiceBaseInputChange={(value) => {
+                setExternalManagerServiceBaseInput(value);
+              }}
               onRequestMonitoringChange={(value) => {
                 setManagerRequestMonitoringEnabled(value);
               }}

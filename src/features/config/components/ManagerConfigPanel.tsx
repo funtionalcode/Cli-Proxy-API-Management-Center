@@ -12,6 +12,7 @@ type ManagerConfigPanelProps = {
   managerSaving: boolean;
   panelHostedByUsageService: boolean | null;
   detectedPanelBase: string;
+  managerServiceBaseInput: string;
   managerRuntimeModeLabel: string;
   managerHasBoundCPAManagementKey: boolean;
   managerCPABaseInput: string;
@@ -30,6 +31,7 @@ type ManagerConfigPanelProps = {
   managerConfigSourceLabel: string;
   managerUsageStatisticsEnabled: boolean;
   onRefresh: () => void;
+  onManagerServiceBaseInputChange: (value: string) => void;
   onRequestMonitoringChange: (value: boolean) => void;
   onCPABaseInputChange: (value: string) => void;
   onCPAManagementKeyInputChange: (value: string) => void;
@@ -46,6 +48,7 @@ export function ManagerConfigPanel({
   managerSaving,
   panelHostedByUsageService,
   detectedPanelBase,
+  managerServiceBaseInput,
   managerRuntimeModeLabel,
   managerHasBoundCPAManagementKey,
   managerCPABaseInput,
@@ -64,6 +67,7 @@ export function ManagerConfigPanel({
   managerConfigSourceLabel,
   managerUsageStatisticsEnabled,
   onRefresh,
+  onManagerServiceBaseInputChange,
   onRequestMonitoringChange,
   onCPABaseInputChange,
   onCPAManagementKeyInputChange,
@@ -109,12 +113,25 @@ export function ManagerConfigPanel({
           <span className={styles.managerRuntimeBadge}>{managerRuntimeModeLabel}</span>
         </div>
 
-        <div className={styles.managerReadonlyGrid}>
-          <div>
-            <span>{t('config_management.manager.service_base')}</span>
-            <strong>{detectedPanelBase}</strong>
+        {panelHostedByUsageService === true ? (
+          <div className={styles.managerReadonlyGrid}>
+            <div>
+              <span>{t('config_management.manager.service_base')}</span>
+              <strong>{detectedPanelBase}</strong>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className={styles.managerConfigGrid}>
+            <Input
+              label={t('config_management.manager.external_service_base')}
+              value={managerServiceBaseInput}
+              placeholder="http://127.0.0.1:18317"
+              onChange={(event) => onManagerServiceBaseInputChange(event.target.value)}
+              disabled={connectionInputDisabled}
+              hint={t('config_management.manager.external_service_hint')}
+            />
+          </div>
+        )}
       </section>
 
       <section className={styles.managerSection}>
