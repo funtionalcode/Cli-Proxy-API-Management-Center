@@ -2585,7 +2585,7 @@
         "alias_cleanup_risk": "风险：旧哈希 {{hash}}... 的历史请求数据仍会保留，但可能不再显示这个友好别名，而是回退为哈希标签。",
         "alias_cleanup_confirm_action": "删除旧映射并保存",
         "alias_cleanup_cancelled": "已保留旧别名映射，请换一个唯一别名，或确认删除旧映射后再保存。",
-        "alias_unavailable": "API Key 别名需要从 Manager Server 托管面板使用。",
+        "alias_unavailable": "API Key 别名依赖 Manager Server。请在「CPA Manager Plus 配置」填写并保存 Manager Server 地址，或直接打开 Manager Server 托管面板。",
         "alias_error_empty": "请输入别名",
         "alias_error_too_long": "别名不能超过 120 个字符",
         "alias_error_duplicate": "别名已存在，请换一个唯一别名",

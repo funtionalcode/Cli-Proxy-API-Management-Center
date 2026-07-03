@@ -67,7 +67,25 @@ describe('panel feature availability', () => {
         usageServiceEnabled: true,
         usageServiceBase: 'http://manager.local:18317',
       })
-    ).toEqual(['http://manager.local:18317', 'http://cpa.local:8317', 'http://panel.local:5174']);
+    ).toEqual([
+      'http://manager.local:18317',
+      'http://cpa.local:18317',
+      'http://panel.local:18317',
+      'http://cpa.local:8317',
+      'http://panel.local:5174',
+    ]);
+  });
+
+  it('tries the default same-host Manager Server port for external CPA panels', () => {
+    expect(
+      buildPanelManagerServiceCandidates({
+        panelHostedByUsageService: false,
+        panelBase: 'http://192.168.2.5:8317',
+        apiBase: 'http://192.168.2.5:8317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toEqual(['http://192.168.2.5:18317', 'http://192.168.2.5:8317']);
   });
 
   it('only accepts Manager config for same-origin Manager Server panels', () => {
@@ -106,6 +124,26 @@ describe('panel feature availability', () => {
         }),
       })
     ).toBe(false);
+  });
+
+  it('accepts loopback Manager bindings for same-host external CPA panels', () => {
+    expect(
+      managerConfigMatchesPanel({
+        panelHostedByUsageService: false,
+        apiBase: 'http://192.168.2.5:8317',
+        managerServiceBase: 'http://192.168.2.5:18317',
+        config: buildManagerConfig({
+          cpaConnection: {
+            cpaBaseUrl: 'http://127.0.0.1:8317',
+            managementKey: 'management-key',
+          },
+          externalUsageService: {
+            enabled: true,
+            serviceBase: 'http://127.0.0.1:18317',
+          },
+        }),
+      })
+    ).toBe(true);
   });
 
   it('marks Manager-only features available while separately gating request monitoring', () => {

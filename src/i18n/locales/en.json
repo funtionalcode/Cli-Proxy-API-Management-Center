@@ -2585,7 +2585,7 @@
         "alias_cleanup_risk": "Risk: historical request data for old hash {{hash}}... remains, but it may no longer show this friendly alias and may fall back to a hash label.",
         "alias_cleanup_confirm_action": "Delete Old Mapping and Save",
         "alias_cleanup_cancelled": "The old alias mapping was kept. Use a unique alias, or confirm deleting the old mapping before saving.",
-        "alias_unavailable": "API key aliases require the Manager Server-hosted panel.",
+        "alias_unavailable": "API key aliases require Manager Server. Configure and save the Manager Server address in “CPA Manager Plus Config”, or open the Manager Server-hosted panel.",
         "alias_error_empty": "Please enter an alias",
         "alias_error_too_long": "Alias must be 120 characters or less",
         "alias_error_duplicate": "Alias already exists. Use a unique alias.",

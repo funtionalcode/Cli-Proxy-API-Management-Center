@@ -2585,7 +2585,7 @@
         "alias_cleanup_risk": "風險：舊雜湊 {{hash}}... 的歷史請求資料仍會保留，但可能不再顯示這個友好別名，而是回退為雜湊標籤。",
         "alias_cleanup_confirm_action": "刪除舊映射並保存",
         "alias_cleanup_cancelled": "已保留舊別名映射，請換一個唯一別名，或確認刪除舊映射後再保存。",
-        "alias_unavailable": "API Key 別名需要從 Manager Server 託管面板使用。",
+        "alias_unavailable": "API Key 別名依賴 Manager Server。請在「CPA Manager Plus 設定」填寫並保存 Manager Server 地址，或直接打開 Manager Server 託管面板。",
         "alias_error_empty": "請輸入別名",
         "alias_error_too_long": "別名不能超過 120 個字元",
         "alias_error_duplicate": "別名已存在，請換一個唯一別名",

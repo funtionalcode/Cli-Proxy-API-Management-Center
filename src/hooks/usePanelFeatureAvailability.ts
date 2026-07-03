@@ -7,7 +7,7 @@ import {
 } from '@/services/api/usageService';
 import { DEMO_API_BASE, isDemoMode } from '@/features/demo/demoMode';
 import { useAuthStore, useUsageServiceStore } from '@/stores';
-import { detectApiBaseFromLocation } from '@/utils/connection';
+import { detectApiBaseFromLocation, isLocalhost } from '@/utils/connection';
 
 export type PanelHostMode = 'manager_embedded' | 'external_panel';
 
@@ -42,6 +42,90 @@ export interface ResolvePanelFeatureAvailabilityInput {
 }
 
 const normalizeBase = (value?: string) => normalizeUsageServiceBase(value || '');
+const DEFAULT_MANAGER_SERVICE_PORT = '18317';
+
+const buildDefaultManagerServiceCandidate = (base?: string): string => {
+  const normalizedBase = normalizeBase(base);
+  if (!normalizedBase) return '';
+
+  try {
+    const url = new URL(normalizedBase);
+    url.port = DEFAULT_MANAGER_SERVICE_PORT;
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return normalizeBase(url.toString());
+  } catch {
+    return '';
+  }
+};
+
+type BaseParts = {
+  hostname: string;
+  port: string;
+};
+
+const readBaseParts = (base?: string): BaseParts | null => {
+  const normalizedBase = normalizeBase(base);
+  if (!normalizedBase) return null;
+
+  try {
+    const url = new URL(normalizedBase);
+    return {
+      hostname: url.hostname.toLowerCase(),
+      port: url.port,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const samePort = (left: BaseParts | null, right: BaseParts | null): boolean =>
+  Boolean(left && right && left.port === right.port);
+
+const managerBaseMatchesCandidate = (
+  configuredManagerBase: string,
+  managerServiceBase: string
+): boolean => {
+  const normalizedConfigured = normalizeBase(configuredManagerBase);
+  const normalizedCandidate = normalizeBase(managerServiceBase);
+  if (!normalizedConfigured || !normalizedCandidate) return true;
+  if (normalizedConfigured === normalizedCandidate) return true;
+
+  const configured = readBaseParts(normalizedConfigured);
+  const candidate = readBaseParts(normalizedCandidate);
+  return Boolean(
+    configured &&
+      candidate &&
+      isLocalhost(configured.hostname) &&
+      samePort(configured, candidate)
+  );
+};
+
+const cpaBaseMatchesPanel = ({
+  configuredCpaBase,
+  apiBase,
+  managerServiceBase,
+}: {
+  configuredCpaBase: string;
+  apiBase: string;
+  managerServiceBase: string;
+}): boolean => {
+  const normalizedConfigured = normalizeBase(configuredCpaBase);
+  const normalizedApiBase = normalizeBase(apiBase);
+  if (!normalizedConfigured || !normalizedApiBase) return true;
+  if (normalizedConfigured === normalizedApiBase) return true;
+
+  const configured = readBaseParts(normalizedConfigured);
+  const api = readBaseParts(normalizedApiBase);
+  const manager = readBaseParts(managerServiceBase);
+  if (!configured || !api || !manager || !samePort(configured, api)) return false;
+
+  return (
+    (isLocalhost(configured.hostname) && api.hostname === manager.hostname) ||
+    (isLocalhost(api.hostname) && configured.hostname === manager.hostname)
+  );
+};
 
 const buildUnavailableState = (
   input: ResolvePanelFeatureAvailabilityInput,
@@ -125,6 +209,8 @@ export function buildPanelManagerServiceCandidates({
     new Set(
       [
         usageServiceEnabled && usageServiceBase ? usageServiceBase : '',
+        buildDefaultManagerServiceCandidate(apiBase),
+        buildDefaultManagerServiceCandidate(normalizedPanelBase),
         apiBase,
         normalizedPanelBase,
       ]
@@ -149,7 +235,16 @@ export function managerConfigMatchesPanel({
 
   const normalizedApiBase = normalizeBase(apiBase);
   const configuredCpaBase = normalizeBase(config.cpaConnection?.cpaBaseUrl || '');
-  if (configuredCpaBase && normalizedApiBase && configuredCpaBase !== normalizedApiBase) {
+  const normalizedManagerBase = normalizeBase(managerServiceBase || '');
+  if (
+    configuredCpaBase &&
+    normalizedApiBase &&
+    !cpaBaseMatchesPanel({
+      configuredCpaBase,
+      apiBase: normalizedApiBase,
+      managerServiceBase: normalizedManagerBase,
+    })
+  ) {
     return false;
   }
 
@@ -157,8 +252,7 @@ export function managerConfigMatchesPanel({
   if (externalConfig?.enabled === false) return false;
 
   const configuredManagerBase = normalizeBase(externalConfig?.serviceBase || '');
-  const normalizedManagerBase = normalizeBase(managerServiceBase || '');
-  return !configuredManagerBase || !normalizedManagerBase || configuredManagerBase === normalizedManagerBase;
+  return managerBaseMatchesCandidate(configuredManagerBase, normalizedManagerBase);
 }
 
 type PanelFeatureAvailabilityRequestInput = {
