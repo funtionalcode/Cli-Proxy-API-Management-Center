@@ -7,13 +7,14 @@ import { IconPencil, IconSearch, IconTrash2, IconX } from '@/components/ui/icons
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import type { ModelPriceSyncCandidate, ModelPriceSyncResponse } from '@/services/api/usageService';
 import { useNotificationStore } from '@/stores';
+import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import {
   applyCandidatePrice,
-  buildModelPriceRows,
+  buildModelPriceRowsFromModelStats,
   buildModelPriceSummary,
   buildPriceFromDraft,
-  buildSyncPriceModelsFromUsage,
+  buildSyncPriceModelsFromModelStats,
   createEmptyPriceDraft,
   createPriceDraft,
   filterModelPriceRows,
@@ -40,8 +41,16 @@ export function ModelPricesPage() {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
   const featureAvailability = usePanelFeatureAvailability();
-  const { usage, loading, modelPrices, setModelPrices, syncModelPrices, usageServiceAvailable } =
-    useUsageData();
+  const { loading, modelPrices, setModelPrices, syncModelPrices, usageServiceAvailable } =
+    useUsageData({ loadUsageEvents: false });
+  const analyticsToMsRef = useRef(Date.now() + 60_000);
+  const modelStatsAnalytics = useMonitoringAnalytics({
+    fromMs: 1,
+    toMs: analyticsToMsRef.current,
+    dataScopeKey: 'model-prices',
+    include: { model_stats: true },
+    throttleMs: 60_000,
+  });
   const initialUiState = useRef(readModelPricesPageUiState());
   const [search, setSearch] = useState(() => initialUiState.current.search);
   const [filter, setFilter] = useState<ModelPriceFilter>(() => initialUiState.current.filter);
@@ -51,15 +60,19 @@ export function ModelPricesPage() {
   const [draft, setDraft] = useState<PriceDraft>(() => createEmptyPriceDraft());
   const [manualEditorOpen, setManualEditorOpen] = useState(false);
 
+  const modelStats = useMemo(
+    () => modelStatsAnalytics.data?.model_stats ?? [],
+    [modelStatsAnalytics.data?.model_stats]
+  );
   const syncModels = useMemo(
-    () => buildSyncPriceModelsFromUsage(usage, modelPrices),
-    [modelPrices, usage]
+    () => buildSyncPriceModelsFromModelStats(modelStats, modelPrices),
+    [modelPrices, modelStats]
   );
 
   const candidateSets = useMemo(() => syncResult?.candidates ?? [], [syncResult?.candidates]);
   const rows = useMemo(
-    () => buildModelPriceRows(usage, modelPrices, candidateSets),
-    [candidateSets, modelPrices, usage]
+    () => buildModelPriceRowsFromModelStats(modelStats, modelPrices, candidateSets),
+    [candidateSets, modelPrices, modelStats]
   );
   const summary = useMemo(() => buildModelPriceSummary(rows), [rows]);
   const visibleRows = useMemo(
@@ -303,7 +316,7 @@ export function ModelPricesPage() {
           </div>
         ) : null}
 
-        {loading ? (
+        {loading || modelStatsAnalytics.loading ? (
           <div className={styles.emptyState}>{t('common.loading')}</div>
         ) : visibleRows.length === 0 ? (
           <div className={styles.emptyState}>{t('model_prices.empty')}</div>

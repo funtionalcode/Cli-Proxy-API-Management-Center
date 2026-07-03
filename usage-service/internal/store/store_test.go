@@ -15,6 +15,14 @@ func ptrInt64(value int64) *int64 {
 	return &value
 }
 
+func closeEnough(left, right float64) bool {
+	diff := left - right
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < 0.0000001
+}
+
 func TestStorePersistsAccountSnapshot(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
@@ -587,6 +595,59 @@ func TestStoreUsageBreakdownPageSortsAccountGroupsByTotalCost(t *testing.T) {
 	items, ok := page.Items.([]UsageBreakdownPageItem)
 	if !ok || len(items) != 1 || items[0].Account != "high-cost@example.com" {
 		t.Fatalf("cost sorted items = %#v, want high-cost account first", page.Items)
+	}
+}
+
+func TestMonitoringAnalyticsAppliesModelPrices(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.SaveModelPrices(context.Background(), map[string]ModelPrice{
+		"priced-model": {Prompt: 10, Completion: 20, Cache: 1},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+	_, err = db.InsertEvents(context.Background(), []usage.Event{
+		{
+			EventHash:    "analytics-cost-1",
+			TimestampMS:  1_778_000_001_000,
+			Timestamp:    "2026-05-06T00:00:01Z",
+			Model:        "priced-model",
+			Endpoint:     "POST /v1/chat/completions",
+			InputTokens:  1_000_000,
+			OutputTokens: 500_000,
+			CachedTokens: 100_000,
+			TotalTokens:  1_500_000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	response, err := db.MonitoringAnalytics(context.Background(), MonitoringAnalyticsRequest{
+		FromMS: 1_778_000_000_000,
+		ToMS:   1_778_000_002_000,
+		Include: MonitoringAnalyticsInclude{
+			Summary:    true,
+			ModelStats: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("monitoring analytics: %v", err)
+	}
+	if response.Summary == nil {
+		t.Fatal("summary is nil")
+	}
+	if !closeEnough(response.Summary.TotalCost, 19.1) {
+		t.Fatalf("summary cost = %v, want 19.1", response.Summary.TotalCost)
+	}
+	if len(response.ModelStats) != 1 || !closeEnough(response.ModelStats[0].Cost, 19.1) {
+		t.Fatalf("model stats = %#v, want cost 19.1", response.ModelStats)
 	}
 }
 

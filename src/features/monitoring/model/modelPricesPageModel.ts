@@ -1,5 +1,6 @@
 import { collectUsageDetailsWithEndpoint, type ModelPrice } from '@/utils/usage';
 import type {
+  MonitoringAnalyticsModelStat,
   ModelPriceSyncCandidate,
   ModelPriceSyncCandidateSet,
 } from '@/services/api/usageService';
@@ -86,6 +87,22 @@ export const buildSyncPriceModelsFromUsage = (
     .sort((left, right) => left.localeCompare(right));
 };
 
+export const buildSyncPriceModelsFromModelStats = (
+  modelStats: Array<
+    Pick<MonitoringAnalyticsModelStat, 'model'> &
+      Partial<Pick<MonitoringAnalyticsModelStat, 'calls'>>
+  > = [],
+  prices: Record<string, ModelPrice>
+) =>
+  Array.from(
+    new Set([
+      ...modelStats.map((row) => row.model),
+      ...Object.keys(prices),
+    ])
+  )
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
 export const buildCandidateMap = (candidateSets: ModelPriceSyncCandidateSet[] = []) => {
   const map = new Map<string, ModelPriceSyncCandidate[]>();
   candidateSets.forEach((set) => {
@@ -134,6 +151,50 @@ export const buildModelPriceRows = (
       row.calls += 1;
       row.resolvedCalls += 1;
     }
+  });
+
+  return Array.from(rowMap.values()).sort(
+    (left, right) =>
+      Number(left.hasPrice) - Number(right.hasPrice) ||
+      right.candidateCount - left.candidateCount ||
+      right.calls - left.calls ||
+      left.model.localeCompare(right.model)
+  );
+};
+
+export const buildModelPriceRowsFromModelStats = (
+  modelStats: Array<Pick<MonitoringAnalyticsModelStat, 'model' | 'calls'>> = [],
+  prices: Record<string, ModelPrice>,
+  candidateSets: ModelPriceSyncCandidateSet[] = []
+): ModelPriceRow[] => {
+  const rowMap = new Map<string, ModelPriceRow>();
+  const candidateMap = buildCandidateMap(candidateSets);
+
+  const ensureRow = (model: string): ModelPriceRow => {
+    const existing = rowMap.get(model);
+    if (existing) return existing;
+    const price = prices[model];
+    const row: ModelPriceRow = {
+      model,
+      calls: 0,
+      requestedCalls: 0,
+      resolvedCalls: 0,
+      hasPrice: Boolean(price),
+      price,
+      candidateCount: candidateMap.get(model)?.length ?? 0,
+    };
+    rowMap.set(model, row);
+    return row;
+  };
+
+  Object.keys(prices).forEach(ensureRow);
+  candidateMap.forEach((_candidates, model) => ensureRow(model));
+
+  modelStats.forEach((stat) => {
+    if (!stat.model) return;
+    const row = ensureRow(stat.model);
+    row.calls += stat.calls;
+    row.requestedCalls += stat.calls;
   });
 
   return Array.from(rowMap.values()).sort(

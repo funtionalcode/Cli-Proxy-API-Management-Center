@@ -3,7 +3,9 @@ import {
   applyCandidatePrice,
   buildPriceFromDraft,
   buildModelPriceRows,
+  buildModelPriceRowsFromModelStats,
   buildModelPriceSummary,
+  buildSyncPriceModelsFromModelStats,
   buildSyncPriceModelsFromUsage,
   filterModelPriceRows,
 } from './modelPricesPageModel';
@@ -34,6 +36,20 @@ describe('modelPricesPageModel', () => {
         'manual-model': { prompt: 1, completion: 2, cache: 0.5 },
       })
     ).toEqual(['alias-fast', 'gpt-5.5', 'manual-model']);
+  });
+
+  it('builds sync models from lightweight analytics model stats', () => {
+    expect(
+      buildSyncPriceModelsFromModelStats(
+        [
+          { model: 'gpt-5.5', calls: 12 },
+          { model: 'glm-5.2', calls: 3 },
+        ],
+        {
+          'manual-model': { prompt: 1, completion: 2, cache: 0.5 },
+        }
+      )
+    ).toEqual(['glm-5.2', 'gpt-5.5', 'manual-model']);
   });
 
   it('marks missing models with candidates before saved rows', () => {
@@ -70,6 +86,45 @@ describe('modelPricesPageModel', () => {
       candidates: 1,
     });
     expect(filterModelPriceRows(rows, 'candidates', '')).toHaveLength(1);
+  });
+
+  it('uses analytics model stats for price rows without expanding usage details', () => {
+    const rows = buildModelPriceRowsFromModelStats(
+      [
+        { model: 'gpt-5.5', calls: 1877 },
+        { model: 'glm-5.2', calls: 4 },
+      ],
+      {
+        'gpt-5.5': { prompt: 5, completion: 30, cache: 0.5 },
+      },
+      [
+        {
+          model: 'glm-5.2',
+          candidates: [
+            {
+              sourceModelId: 'openrouter/glm-5.2',
+              score: 0.9,
+              reason: 'exact',
+              price: { prompt: 1.4, completion: 4.4, cache: 0.26 },
+            },
+          ],
+        },
+      ]
+    );
+
+    expect(rows[0]).toMatchObject({
+      model: 'glm-5.2',
+      calls: 4,
+      requestedCalls: 4,
+      candidateCount: 1,
+      hasPrice: false,
+    });
+    expect(rows[1]).toMatchObject({
+      model: 'gpt-5.5',
+      calls: 1877,
+      requestedCalls: 1877,
+      hasPrice: true,
+    });
   });
 
   it('applies a candidate under the local model name', () => {

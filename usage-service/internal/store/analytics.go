@@ -425,6 +425,7 @@ type analyticsAggregate struct {
 	CacheCreationTokens int64
 	ReasoningTokens     int64
 	TotalTokens         int64
+	Cost                float64
 	LatencySumMS        int64
 	LatencyCount        int64
 	Latencies           []int64
@@ -458,6 +459,54 @@ func (a *analyticsAggregate) add(event usage.Event) {
 	}
 }
 
+type monitoringAnalyticsCostContext struct {
+	prices map[string]ModelPrice
+	index  *usageModelPriceIndex
+}
+
+func newMonitoringAnalyticsCostContext(prices map[string]ModelPrice) monitoringAnalyticsCostContext {
+	if len(prices) == 0 {
+		return monitoringAnalyticsCostContext{}
+	}
+	return monitoringAnalyticsCostContext{
+		prices: prices,
+		index:  buildUsageModelPriceIndex(prices),
+	}
+}
+
+func addMonitoringAnalyticsEvent(aggregate *analyticsAggregate, event usage.Event, costs monitoringAnalyticsCostContext) {
+	aggregate.add(event)
+	aggregate.Cost += monitoringAnalyticsEventCost(event, costs)
+}
+
+func monitoringAnalyticsEventCost(event usage.Event, costs monitoringAnalyticsCostContext) float64 {
+	if len(costs.prices) == 0 || costs.index == nil {
+		return 0
+	}
+	price, ok := lookupUsageModelPrice(costs.index, costs.prices, event.ResolvedModel)
+	if !ok {
+		price, ok = lookupUsageModelPrice(costs.index, costs.prices, event.Model)
+	}
+	if !ok {
+		price, ok = lookupUsageModelPrice(costs.index, costs.prices, event.RequestedModel)
+	}
+	if !ok {
+		return 0
+	}
+	inputTokens := maxInt64(event.InputTokens, 0)
+	cachedTokens := maxInt64(event.CachedTokens, event.CacheTokens)
+	cachedTokens = maxInt64(cachedTokens, 0)
+	promptTokens := maxInt64(inputTokens-cachedTokens, 0)
+	outputTokens := maxInt64(event.OutputTokens, 0)
+	total := (float64(promptTokens) / usageTokensPerPriceUnit * price.Prompt) +
+		(float64(cachedTokens) / usageTokensPerPriceUnit * price.Cache) +
+		(float64(outputTokens) / usageTokensPerPriceUnit * price.Completion)
+	if math.IsNaN(total) || math.IsInf(total, 0) || total <= 0 {
+		return 0
+	}
+	return total
+}
+
 func (a analyticsAggregate) successRate() float64 {
 	if a.Calls == 0 {
 		return 0
@@ -470,6 +519,13 @@ func (a analyticsAggregate) failureRate() float64 {
 		return 0
 	}
 	return float64(a.FailureCalls) / float64(a.Calls)
+}
+
+func safeAverageFloat(total float64, count int64) float64 {
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
 }
 
 func (a analyticsAggregate) averageLatency() *int64 {
@@ -507,12 +563,17 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 	if err != nil {
 		return MonitoringAnalyticsResponse{}, err
 	}
+	prices, err := s.LoadModelPrices(ctx)
+	if err != nil {
+		return MonitoringAnalyticsResponse{}, err
+	}
+	costs := newMonitoringAnalyticsCostContext(prices)
 
 	response := MonitoringAnalyticsResponse{
 		GeneratedAtMS: time.Now().UnixMilli(),
 		Granularity:   granularity,
 	}
-	summary := buildMonitoringAnalyticsSummary(events, request)
+	summary := buildMonitoringAnalyticsSummary(events, request, costs)
 	if request.Include.Summary || request.Include.SummaryComparison || allMonitoringAnalyticsIncludesEmpty(request.Include) {
 		response.Summary = &summary
 	}
@@ -520,16 +581,16 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 		response.SummaryComparison = buildMonitoringAnalyticsComparison(ctx, s, request)
 	}
 	if request.Include.Timeline {
-		response.Timeline = buildMonitoringAnalyticsTimeline(events, granularity)
+		response.Timeline = buildMonitoringAnalyticsTimeline(events, granularity, costs)
 	}
 	if request.Include.HourlyDistribution {
 		response.HourlyDistribution = buildMonitoringAnalyticsHourlyDistribution(events)
 	}
-	modelStats := buildMonitoringAnalyticsModelStats(events)
-	channelShare := buildMonitoringAnalyticsChannelShare(events)
-	accountStats := buildMonitoringAnalyticsAccountStats(events)
-	credentialStats := buildMonitoringAnalyticsCredentialStats(events)
-	apiKeyStats := buildMonitoringAnalyticsAPIKeyStats(events)
+	modelStats := buildMonitoringAnalyticsModelStats(events, costs)
+	channelShare := buildMonitoringAnalyticsChannelShare(events, costs)
+	accountStats := buildMonitoringAnalyticsAccountStats(events, costs)
+	credentialStats := buildMonitoringAnalyticsCredentialStats(events, costs)
+	apiKeyStats := buildMonitoringAnalyticsAPIKeyStats(events, costs)
 	if request.Include.ModelStats {
 		response.ModelStats = modelStats
 	}
@@ -546,7 +607,7 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 		response.CredentialStats = credentialStats
 	}
 	if request.Include.CredentialTimeline {
-		response.CredentialTimeline = buildMonitoringAnalyticsCredentialTimeline(events, granularity)
+		response.CredentialTimeline = buildMonitoringAnalyticsCredentialTimeline(events, granularity, costs)
 	}
 	if request.Include.APIKeyStats {
 		response.APIKeyStats = apiKeyStats
@@ -564,7 +625,7 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 		}
 	}
 	if request.Include.Heatmap {
-		response.Heatmap = buildMonitoringAnalyticsHeatmap(events)
+		response.Heatmap = buildMonitoringAnalyticsHeatmap(events, costs)
 	}
 	if request.Include.AnomalyPoints {
 		response.AnomalyPoints = []any{}
@@ -720,7 +781,7 @@ func repeatValues(values []string, times int) []any {
 	return result
 }
 
-func buildMonitoringAnalyticsSummary(events []usage.Event, request MonitoringAnalyticsRequest) MonitoringAnalyticsSummary {
+func buildMonitoringAnalyticsSummary(events []usage.Event, request MonitoringAnalyticsRequest, costs monitoringAnalyticsCostContext) MonitoringAnalyticsSummary {
 	var aggregate analyticsAggregate
 	zeroTokenModels := map[string]struct{}{}
 	nowMS := request.NowMS
@@ -730,7 +791,7 @@ func buildMonitoringAnalyticsSummary(events []usage.Event, request MonitoringAna
 	cutoff30m := nowMS - 30*60*1000
 	var calls30m, tokens30m int64
 	for _, event := range events {
-		aggregate.add(event)
+		addMonitoringAnalyticsEvent(&aggregate, event, costs)
 		if event.TotalTokens == 0 {
 			zeroTokenModels[analyticsModel(event)] = struct{}{}
 		}
@@ -761,6 +822,8 @@ func buildMonitoringAnalyticsSummary(events []usage.Event, request MonitoringAna
 		CacheCreationTokens:   aggregate.CacheCreationTokens,
 		ReasoningTokens:       aggregate.ReasoningTokens,
 		TotalTokens:           aggregate.TotalTokens,
+		TotalCost:             aggregate.Cost,
+		AverageCostPerCall:    safeAverageFloat(aggregate.Cost, aggregate.Calls),
 		AverageLatencyMS:      aggregate.averageLatency(),
 		P95LatencyMS:          aggregate.p95Latency(),
 		ZeroTokenCalls:        aggregate.ZeroTokenCalls,
@@ -788,7 +851,11 @@ func buildMonitoringAnalyticsComparison(ctx context.Context, s *Store, request M
 	if err != nil {
 		return nil
 	}
-	summary := buildMonitoringAnalyticsSummary(events, previous)
+	prices, err := s.LoadModelPrices(ctx)
+	if err != nil {
+		return nil
+	}
+	summary := buildMonitoringAnalyticsSummary(events, previous, newMonitoringAnalyticsCostContext(prices))
 	return &MonitoringAnalyticsSummaryComparison{
 		FromMS:       previous.FromMS,
 		ToMS:         previous.ToMS,
@@ -801,7 +868,7 @@ func buildMonitoringAnalyticsComparison(ctx context.Context, s *Store, request M
 	}
 }
 
-func buildMonitoringAnalyticsTimeline(events []usage.Event, granularity string) []MonitoringAnalyticsTimelinePoint {
+func buildMonitoringAnalyticsTimeline(events []usage.Event, granularity string, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsTimelinePoint {
 	bucketSize := int64(time.Hour / time.Millisecond)
 	if granularity == "day" {
 		bucketSize = int64(24 * time.Hour / time.Millisecond)
@@ -814,7 +881,7 @@ func buildMonitoringAnalyticsTimeline(events []usage.Event, granularity string) 
 			aggregate = &analyticsAggregate{}
 			byBucket[bucket] = aggregate
 		}
-		aggregate.add(event)
+		addMonitoringAnalyticsEvent(aggregate, event, costs)
 	}
 	buckets := make([]int64, 0, len(byBucket))
 	for bucket := range byBucket {
@@ -839,6 +906,7 @@ func buildMonitoringAnalyticsTimeline(events []usage.Event, granularity string) 
 			CacheCreationTokens: aggregate.CacheCreationTokens,
 			ReasoningTokens:     aggregate.ReasoningTokens,
 			TotalTokens:         aggregate.TotalTokens,
+			Cost:                aggregate.Cost,
 			AverageLatencyMS:    aggregate.averageLatency(),
 			P95LatencyMS:        aggregate.p95Latency(),
 			SuccessRate:         aggregate.successRate(),
@@ -861,14 +929,14 @@ func buildMonitoringAnalyticsHourlyDistribution(events []usage.Event) []Monitori
 	return points
 }
 
-func buildMonitoringAnalyticsModelStats(events []usage.Event) []MonitoringAnalyticsModelStat {
+func buildMonitoringAnalyticsModelStats(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsModelStat {
 	byModel := map[string]*analyticsAggregate{}
 	for _, event := range events {
 		model := analyticsModel(event)
 		if byModel[model] == nil {
 			byModel[model] = &analyticsAggregate{}
 		}
-		byModel[model].add(event)
+		addMonitoringAnalyticsEvent(byModel[model], event, costs)
 	}
 	models := make([]string, 0, len(byModel))
 	for model := range byModel {
@@ -896,6 +964,7 @@ func buildMonitoringAnalyticsModelStats(events []usage.Event) []MonitoringAnalyt
 			CacheReadTokens:     aggregate.CachedTokens,
 			CacheCreationTokens: aggregate.CacheCreationTokens,
 			TotalTokens:         aggregate.TotalTokens,
+			Cost:                aggregate.Cost,
 		})
 	}
 	return result
@@ -914,7 +983,7 @@ func buildMonitoringAnalyticsModelShare(stats []MonitoringAnalyticsModelStat) []
 	return result
 }
 
-func buildMonitoringAnalyticsChannelShare(events []usage.Event) []MonitoringAnalyticsChannelShareRow {
+func buildMonitoringAnalyticsChannelShare(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsChannelShareRow {
 	type channelInfo struct {
 		aggregate analyticsAggregate
 		sample    usage.Event
@@ -927,7 +996,7 @@ func buildMonitoringAnalyticsChannelShare(events []usage.Event) []MonitoringAnal
 			entry = &channelInfo{sample: event}
 			byKey[key] = entry
 		}
-		entry.aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.aggregate, event, costs)
 	}
 	keys := sortedAggregateKeys(byKey, func(info *channelInfo) analyticsAggregate { return info.aggregate })
 	result := make([]MonitoringAnalyticsChannelShareRow, 0, len(keys))
@@ -943,13 +1012,14 @@ func buildMonitoringAnalyticsChannelShare(events []usage.Event) []MonitoringAnal
 			Success:              entry.aggregate.SuccessCalls,
 			Failure:              entry.aggregate.FailureCalls,
 			Tokens:               entry.aggregate.TotalTokens,
+			Cost:                 entry.aggregate.Cost,
 			AverageLatencyMS:     entry.aggregate.averageLatency(),
 		})
 	}
 	return result
 }
 
-func buildMonitoringAnalyticsAccountStats(events []usage.Event) []MonitoringAnalyticsAccountStatRow {
+func buildMonitoringAnalyticsAccountStats(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsAccountStatRow {
 	type accountInfo struct {
 		aggregate analyticsAggregate
 		sample    usage.Event
@@ -972,7 +1042,7 @@ func buildMonitoringAnalyticsAccountStats(events []usage.Event) []MonitoringAnal
 			}
 			byKey[key] = entry
 		}
-		entry.aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.aggregate, event, costs)
 		addSetValue(entry.auths, event.AuthIndex)
 		addSetValue(entry.sources, event.Source)
 		addSetValue(entry.hashes, event.SourceHash)
@@ -980,7 +1050,7 @@ func buildMonitoringAnalyticsAccountStats(events []usage.Event) []MonitoringAnal
 		if entry.models[model] == nil {
 			entry.models[model] = &analyticsAggregate{}
 		}
-		entry.models[model].add(event)
+		addMonitoringAnalyticsEvent(entry.models[model], event, costs)
 	}
 	keys := sortedAggregateKeys(byKey, func(info *accountInfo) analyticsAggregate { return info.aggregate })
 	result := make([]MonitoringAnalyticsAccountStatRow, 0, len(keys))
@@ -1004,6 +1074,7 @@ func buildMonitoringAnalyticsAccountStats(events []usage.Event) []MonitoringAnal
 			CacheReadTokens:      entry.aggregate.CachedTokens,
 			CacheCreationTokens:  entry.aggregate.CacheCreationTokens,
 			TotalTokens:          entry.aggregate.TotalTokens,
+			Cost:                 entry.aggregate.Cost,
 			AverageLatencyMS:     entry.aggregate.averageLatency(),
 			LastSeenMS:           entry.aggregate.LastSeenMS,
 			Models:               buildMonitoringAnalyticsModelBreakdown(entry.models),
@@ -1012,7 +1083,7 @@ func buildMonitoringAnalyticsAccountStats(events []usage.Event) []MonitoringAnal
 	return result
 }
 
-func buildMonitoringAnalyticsCredentialStats(events []usage.Event) []MonitoringAnalyticsCredentialStatRow {
+func buildMonitoringAnalyticsCredentialStats(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsCredentialStatRow {
 	type credentialInfo struct {
 		aggregate analyticsAggregate
 		sample    usage.Event
@@ -1026,12 +1097,12 @@ func buildMonitoringAnalyticsCredentialStats(events []usage.Event) []MonitoringA
 			entry = &credentialInfo{sample: event, models: map[string]*analyticsAggregate{}}
 			byKey[key] = entry
 		}
-		entry.aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.aggregate, event, costs)
 		model := analyticsModel(event)
 		if entry.models[model] == nil {
 			entry.models[model] = &analyticsAggregate{}
 		}
-		entry.models[model].add(event)
+		addMonitoringAnalyticsEvent(entry.models[model], event, costs)
 	}
 	keys := sortedAggregateKeys(byKey, func(info *credentialInfo) analyticsAggregate { return info.aggregate })
 	result := make([]MonitoringAnalyticsCredentialStatRow, 0, len(keys))
@@ -1057,6 +1128,7 @@ func buildMonitoringAnalyticsCredentialStats(events []usage.Event) []MonitoringA
 			CacheReadTokens:       entry.aggregate.CachedTokens,
 			CacheCreationTokens:   entry.aggregate.CacheCreationTokens,
 			TotalTokens:           entry.aggregate.TotalTokens,
+			Cost:                  entry.aggregate.Cost,
 			AverageLatencyMS:      entry.aggregate.averageLatency(),
 			LastSeenMS:            entry.aggregate.LastSeenMS,
 			Models:                buildMonitoringAnalyticsModelBreakdown(entry.models),
@@ -1065,7 +1137,7 @@ func buildMonitoringAnalyticsCredentialStats(events []usage.Event) []MonitoringA
 	return result
 }
 
-func buildMonitoringAnalyticsAPIKeyStats(events []usage.Event) []MonitoringAnalyticsAPIKeyStatRow {
+func buildMonitoringAnalyticsAPIKeyStats(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsAPIKeyStatRow {
 	type keyInfo struct {
 		aggregate analyticsAggregate
 		sample    usage.Event
@@ -1093,7 +1165,7 @@ func buildMonitoringAnalyticsAPIKeyStats(events []usage.Event) []MonitoringAnaly
 			}
 			byKey[key] = entry
 		}
-		entry.aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.aggregate, event, costs)
 		addSetValue(entry.auths, event.AuthIndex)
 		addSetValue(entry.sources, event.Source)
 		addSetValue(entry.hashes, event.SourceHash)
@@ -1101,12 +1173,12 @@ func buildMonitoringAnalyticsAPIKeyStats(events []usage.Event) []MonitoringAnaly
 		if entry.models[model] == nil {
 			entry.models[model] = &analyticsAggregate{}
 		}
-		entry.models[model].add(event)
+		addMonitoringAnalyticsEvent(entry.models[model], event, costs)
 		contextKey := firstNonEmpty(event.AccountSnapshot, event.AuthLabelSnapshot, event.AuthIndex, event.SourceHash, event.Source, "-")
 		if entry.contexts[contextKey] == nil {
 			entry.contexts[contextKey] = &analyticsContextInfo{sample: event}
 		}
-		entry.contexts[contextKey].aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.contexts[contextKey].aggregate, event, costs)
 	}
 	keys := sortedAggregateKeys(byKey, func(info *keyInfo) analyticsAggregate { return info.aggregate })
 	result := make([]MonitoringAnalyticsAPIKeyStatRow, 0, len(keys))
@@ -1131,6 +1203,7 @@ func buildMonitoringAnalyticsAPIKeyStats(events []usage.Event) []MonitoringAnaly
 			CacheReadTokens:      entry.aggregate.CachedTokens,
 			CacheCreationTokens:  entry.aggregate.CacheCreationTokens,
 			TotalTokens:          entry.aggregate.TotalTokens,
+			Cost:                 entry.aggregate.Cost,
 			AverageLatencyMS:     entry.aggregate.averageLatency(),
 			LastSeenMS:           entry.aggregate.LastSeenMS,
 			Models:               buildMonitoringAnalyticsModelBreakdown(entry.models),
@@ -1164,6 +1237,7 @@ func buildMonitoringAnalyticsAPIKeyContexts(contexts map[string]*analyticsContex
 			SuccessRate:          entry.aggregate.successRate(),
 			FailureRate:          entry.aggregate.failureRate(),
 			TotalTokens:          entry.aggregate.TotalTokens,
+			Cost:                 entry.aggregate.Cost,
 			AverageLatencyMS:     entry.aggregate.averageLatency(),
 			LastSeenMS:           entry.aggregate.LastSeenMS,
 		})
@@ -1198,13 +1272,14 @@ func buildMonitoringAnalyticsModelBreakdown(models map[string]*analyticsAggregat
 			CacheReadTokens:     aggregate.CachedTokens,
 			CacheCreationTokens: aggregate.CacheCreationTokens,
 			TotalTokens:         aggregate.TotalTokens,
+			Cost:                aggregate.Cost,
 			LastSeenMS:          aggregate.LastSeenMS,
 		})
 	}
 	return result
 }
 
-func buildMonitoringAnalyticsCredentialTimeline(events []usage.Event, granularity string) []MonitoringAnalyticsCredentialTimelinePoint {
+func buildMonitoringAnalyticsCredentialTimeline(events []usage.Event, granularity string, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsCredentialTimelinePoint {
 	bucketSize := int64(time.Hour / time.Millisecond)
 	if granularity == "day" {
 		bucketSize = int64(24 * time.Hour / time.Millisecond)
@@ -1227,7 +1302,7 @@ func buildMonitoringAnalyticsCredentialTimeline(events []usage.Event, granularit
 			entry = &item{sample: event}
 			byKey[k] = entry
 		}
-		entry.aggregate.add(event)
+		addMonitoringAnalyticsEvent(&entry.aggregate, event, costs)
 	}
 	keys := make([]key, 0, len(byKey))
 	for k := range byKey {
@@ -1265,6 +1340,7 @@ func buildMonitoringAnalyticsCredentialTimeline(events []usage.Event, granularit
 			CacheCreationTokens:  entry.aggregate.CacheCreationTokens,
 			ReasoningTokens:      entry.aggregate.ReasoningTokens,
 			TotalTokens:          entry.aggregate.TotalTokens,
+			Cost:                 entry.aggregate.Cost,
 			AverageLatencyMS:     entry.aggregate.averageLatency(),
 			SuccessRate:          entry.aggregate.successRate(),
 			FailureRate:          entry.aggregate.failureRate(),
@@ -1273,7 +1349,7 @@ func buildMonitoringAnalyticsCredentialTimeline(events []usage.Event, granularit
 	return result
 }
 
-func buildMonitoringAnalyticsHeatmap(events []usage.Event) []MonitoringAnalyticsHeatmapPoint {
+func buildMonitoringAnalyticsHeatmap(events []usage.Event, costs monitoringAnalyticsCostContext) []MonitoringAnalyticsHeatmapPoint {
 	type key struct {
 		weekday int
 		hour    int
@@ -1285,7 +1361,7 @@ func buildMonitoringAnalyticsHeatmap(events []usage.Event) []MonitoringAnalytics
 		if byKey[k] == nil {
 			byKey[k] = &analyticsAggregate{}
 		}
-		byKey[k].add(event)
+		addMonitoringAnalyticsEvent(byKey[k], event, costs)
 	}
 	keys := make([]key, 0, len(byKey))
 	for k := range byKey {
@@ -1307,6 +1383,7 @@ func buildMonitoringAnalyticsHeatmap(events []usage.Event) []MonitoringAnalytics
 			Success:     aggregate.SuccessCalls,
 			Failure:     aggregate.FailureCalls,
 			Tokens:      aggregate.TotalTokens,
+			Cost:        aggregate.Cost,
 			FailureRate: aggregate.failureRate(),
 		})
 	}
