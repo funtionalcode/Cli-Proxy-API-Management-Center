@@ -404,6 +404,159 @@ func TestMonitoringAnalyticsReturnsUsageAggregates(t *testing.T) {
 	}
 }
 
+func TestDashboardSummaryServesLocalUsageAggregates(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler := newTestHandler(t, upstream.URL, true)
+	payload := `[
+	  {
+	    "request_id":"req-1",
+	    "event_hash":"event-1",
+	    "timestamp_ms":1782270000000,
+	    "timestamp":"2026-06-24T00:20:00Z",
+	    "provider":"codex",
+	    "model":"gpt-4o",
+	    "endpoint":"POST /v1/chat/completions",
+	    "method":"POST",
+	    "path":"/v1/chat/completions",
+	    "auth_index":"auth-1",
+	    "source":"alice@example.com",
+	    "api_key_hash":"hash-test-key",
+	    "account_snapshot":"alice@example.com",
+	    "auth_label_snapshot":"Alice",
+	    "auth_provider_snapshot":"codex",
+	    "input_tokens":10,
+	    "output_tokens":20,
+	    "cached_tokens":3,
+	    "total_tokens":30,
+	    "latency_ms":120,
+	    "failed":false
+	  },
+	  {
+	    "request_id":"req-2",
+	    "event_hash":"event-2",
+	    "timestamp_ms":1782273600000,
+	    "timestamp":"2026-06-24T01:20:00Z",
+	    "provider":"codex",
+	    "model":"gpt-4o",
+	    "endpoint":"POST /v1/chat/completions",
+	    "method":"POST",
+	    "path":"/v1/chat/completions",
+	    "auth_index":"auth-1",
+	    "source":"alice@example.com",
+	    "api_key_hash":"hash-test-key",
+	    "account_snapshot":"alice@example.com",
+	    "auth_label_snapshot":"Alice",
+	    "auth_provider_snapshot":"codex",
+	    "input_tokens":5,
+	    "output_tokens":7,
+	    "total_tokens":12,
+	    "latency_ms":300,
+	    "failed":true,
+	    "raw_json":"{\"fail_status_code\":429}"
+	  }
+	]`
+	postUsageImport(t, handler, payload)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v0/management/dashboard/summary?today_start_ms=1782266400000&now_ms=1782274200000&top_models=5&recent_failures=5",
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if upstreamCalled {
+		t.Fatal("dashboard summary should be served locally, but upstream was called")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("dashboard summary status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Today struct {
+			TotalCalls    int64 `json:"total_calls"`
+			SuccessCalls  int64 `json:"success_calls"`
+			FailureCalls  int64 `json:"failure_calls"`
+			InputTokens   int64 `json:"input_tokens"`
+			OutputTokens  int64 `json:"output_tokens"`
+			CachedTokens  int64 `json:"cached_tokens"`
+			TotalTokens   int64 `json:"total_tokens"`
+			ZeroTokenCall int64 `json:"zero_token_calls"`
+		} `json:"today"`
+		Rolling30M struct {
+			TotalCalls  int64 `json:"total_calls"`
+			TotalTokens int64 `json:"total_tokens"`
+		} `json:"rolling_30m"`
+		TopModelsToday []struct {
+			Model string `json:"model"`
+			Calls int64  `json:"calls"`
+		} `json:"top_models_today"`
+		RecentFailures []struct {
+			Model          string `json:"model"`
+			AuthIndex      string `json:"auth_index"`
+			FailStatusCode *int64 `json:"fail_status_code"`
+		} `json:"recent_failures"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode dashboard summary response: %v", err)
+	}
+	if response.Today.TotalCalls != 2 || response.Today.SuccessCalls != 1 || response.Today.FailureCalls != 1 {
+		t.Fatalf("today counts = %#v", response.Today)
+	}
+	if response.Today.InputTokens != 15 || response.Today.OutputTokens != 27 || response.Today.CachedTokens != 3 || response.Today.TotalTokens != 42 {
+		t.Fatalf("today tokens = %#v", response.Today)
+	}
+	if response.Rolling30M.TotalCalls != 1 || response.Rolling30M.TotalTokens != 12 {
+		t.Fatalf("rolling_30m = %#v", response.Rolling30M)
+	}
+	if len(response.TopModelsToday) != 1 || response.TopModelsToday[0].Model != "gpt-4o" || response.TopModelsToday[0].Calls != 2 {
+		t.Fatalf("top models = %#v", response.TopModelsToday)
+	}
+	if len(response.RecentFailures) != 1 || response.RecentFailures[0].Model != "gpt-4o" || response.RecentFailures[0].AuthIndex != "auth-1" {
+		t.Fatalf("recent failures = %#v", response.RecentFailures)
+	}
+	if response.RecentFailures[0].FailStatusCode == nil || *response.RecentFailures[0].FailStatusCode != 429 {
+		t.Fatalf("recent failure status = %#v", response.RecentFailures[0].FailStatusCode)
+	}
+}
+
+func TestLatestVersionServesLocalFallback(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler := newTestHandler(t, upstream.URL, true)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/latest-version", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if upstreamCalled {
+		t.Fatal("latest-version should be served locally, but upstream was called")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("latest-version status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode latest-version response: %v", err)
+	}
+	if response["latest_version"] == nil || response["latest-version"] == nil {
+		t.Fatalf("latest-version response = %#v", response)
+	}
+}
+
 func TestUsageBreakdownPageEndpointsReturnPagination(t *testing.T) {
 	handler := newTestHandler(t, "http://example.test", true)
 	payload := `{

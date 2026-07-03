@@ -235,6 +235,49 @@ describe('analytics aggregate row adapters', () => {
       totalTokens: 43,
     });
   });
+
+  it('uses provider snapshots as api key labels when aliases do not match historical hashes', () => {
+    const rows = buildApiKeyRowsFromAnalytics(
+      [
+        {
+          id: 'historical-client-key-hash',
+          api_key_hash: 'historical-client-key-hash',
+          account_snapshot: '',
+          auth_label_snapshot: '',
+          auth_provider_snapshot: 'claude',
+          auth_indices: [],
+          sources: ['m:1897...alM6'],
+          source_hashes: ['source-hash'],
+          calls: 3,
+          success_calls: 2,
+          failure_calls: 1,
+          success_rate: 2 / 3,
+          input_tokens: 31,
+          output_tokens: 12,
+          cached_tokens: 0,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          total_tokens: 43,
+          cost: 0.42,
+          average_latency_ms: 1200,
+          last_seen_ms: 1_768_759_000_000,
+          models: [],
+        },
+      ],
+      authMetaMap,
+      authFileMap,
+      sourceInfoMap,
+      channelByAuthIndex,
+      new Map()
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      apiKeyHash: 'historical-client-key-hash',
+      apiKeyLabel: 'claude',
+      apiKeyMasked: 'sha256:historical-c',
+    });
+  });
 });
 
 describe('buildAccountRows', () => {

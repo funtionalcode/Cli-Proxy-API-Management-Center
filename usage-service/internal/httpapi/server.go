@@ -91,6 +91,168 @@ type apiKeyAliasesRequest struct {
 	ActiveAPIKeyHashes []string            `json:"activeApiKeyHashes,omitempty"`
 }
 
+type dashboardSummaryResponse struct {
+	GeneratedAtMS              int64                           `json:"generated_at_ms"`
+	Window                     dashboardSummaryWindow          `json:"window"`
+	Today                      dashboardTodaySummary           `json:"today"`
+	Rolling30M                 dashboardRollingSummary         `json:"rolling_30m"`
+	TopModelsToday             []dashboardTopModel             `json:"top_models_today"`
+	ModelCostRank              []dashboardModelCostRank        `json:"model_cost_rank,omitempty"`
+	TrafficTimeline            []dashboardTrafficPoint         `json:"traffic_timeline,omitempty"`
+	HourlyActivity             []dashboardHourlyActivityPoint  `json:"hourly_activity,omitempty"`
+	TodayRequestHealthTimeline *dashboardRequestHealthTimeline `json:"today_request_health_timeline,omitempty"`
+	TokenMix                   []dashboardTokenMixSegment      `json:"token_mix,omitempty"`
+	ChannelHealth              []dashboardChannelHealth        `json:"channel_health,omitempty"`
+	FailureSources             []dashboardFailureSource        `json:"failure_sources,omitempty"`
+	RecentFailures             []dashboardRecentFailure        `json:"recent_failures"`
+}
+
+type dashboardSummaryWindow struct {
+	TodayStartMS      int64 `json:"today_start_ms"`
+	NowMS             int64 `json:"now_ms"`
+	Rolling30MStartMS int64 `json:"rolling_30m_start_ms"`
+}
+
+type dashboardTodaySummary struct {
+	TotalCalls          int64   `json:"total_calls"`
+	SuccessCalls        int64   `json:"success_calls"`
+	FailureCalls        int64   `json:"failure_calls"`
+	SuccessRate         float64 `json:"success_rate"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CachedTokens        int64   `json:"cached_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	ReasoningTokens     int64   `json:"reasoning_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	TotalCost           float64 `json:"total_cost"`
+	AverageLatencyMS    *int64  `json:"average_latency_ms"`
+	ZeroTokenCalls      int64   `json:"zero_token_calls"`
+}
+
+type dashboardRollingSummary struct {
+	RPM         float64 `json:"rpm"`
+	TPM         float64 `json:"tpm"`
+	TotalCalls  int64   `json:"total_calls"`
+	TotalTokens int64   `json:"total_tokens"`
+}
+
+type dashboardTopModel struct {
+	Model       string  `json:"model"`
+	Calls       int64   `json:"calls"`
+	Tokens      int64   `json:"tokens"`
+	Cost        float64 `json:"cost"`
+	SuccessRate float64 `json:"success_rate"`
+}
+
+type dashboardModelCostRank struct {
+	Model       string  `json:"model"`
+	Calls       int64   `json:"calls"`
+	Tokens      int64   `json:"tokens"`
+	Cost        float64 `json:"cost"`
+	SuccessRate float64 `json:"success_rate"`
+	CostShare   float64 `json:"cost_share"`
+}
+
+type dashboardTrafficPoint struct {
+	BucketMS    int64   `json:"bucket_ms"`
+	Calls       int64   `json:"calls"`
+	Tokens      int64   `json:"tokens"`
+	Success     int64   `json:"success"`
+	Failure     int64   `json:"failure"`
+	CallsShare  float64 `json:"calls_share"`
+	TokensShare float64 `json:"tokens_share"`
+	FailureRate float64 `json:"failure_rate"`
+}
+
+type dashboardHourlyActivityPoint struct {
+	HourIndex int     `json:"hour_index"`
+	BucketMS  int64   `json:"bucket_ms"`
+	Calls     int64   `json:"calls"`
+	Tokens    int64   `json:"tokens"`
+	Intensity float64 `json:"intensity"`
+}
+
+type dashboardRequestHealthTimeline struct {
+	FromMS       int64                         `json:"from_ms"`
+	ToMS         int64                         `json:"to_ms"`
+	BucketMS     int64                         `json:"bucket_ms"`
+	SuccessCalls int64                         `json:"success_calls"`
+	FailureCalls int64                         `json:"failure_calls"`
+	TotalCalls   int64                         `json:"total_calls"`
+	SuccessRate  float64                       `json:"success_rate"`
+	Points       []dashboardRequestHealthPoint `json:"points"`
+}
+
+type dashboardRequestHealthPoint struct {
+	BucketMS    int64   `json:"bucket_ms"`
+	Calls       int64   `json:"calls"`
+	Tokens      int64   `json:"tokens"`
+	Success     int64   `json:"success"`
+	Failure     int64   `json:"failure"`
+	SuccessRate float64 `json:"success_rate"`
+	FailureRate float64 `json:"failure_rate"`
+	Tone        string  `json:"tone"`
+	Intensity   float64 `json:"intensity"`
+	Future      bool    `json:"future"`
+}
+
+type dashboardTokenMixSegment struct {
+	Key    string  `json:"key"`
+	Tokens int64   `json:"tokens"`
+	Share  float64 `json:"share"`
+}
+
+type dashboardChannelHealth struct {
+	AuthIndex            string  `json:"auth_index"`
+	Channel              string  `json:"channel,omitempty"`
+	Source               string  `json:"source,omitempty"`
+	AccountSnapshot      string  `json:"account_snapshot,omitempty"`
+	AuthLabelSnapshot    string  `json:"auth_label_snapshot,omitempty"`
+	AuthProviderSnapshot string  `json:"auth_provider_snapshot,omitempty"`
+	Calls                int64   `json:"calls"`
+	Failures             int64   `json:"failures"`
+	FailureRate          float64 `json:"failure_rate"`
+	SuccessRate          float64 `json:"success_rate"`
+	Tokens               int64   `json:"tokens"`
+	Cost                 float64 `json:"cost"`
+	AverageLatencyMS     *int64  `json:"average_latency_ms"`
+	Tone                 string  `json:"tone"`
+}
+
+type dashboardFailureSource struct {
+	SourceHash           string  `json:"source_hash"`
+	AuthIndex            string  `json:"auth_index"`
+	Channel              string  `json:"channel,omitempty"`
+	Source               string  `json:"source,omitempty"`
+	AccountSnapshot      string  `json:"account_snapshot,omitempty"`
+	AuthLabelSnapshot    string  `json:"auth_label_snapshot,omitempty"`
+	AuthProviderSnapshot string  `json:"auth_provider_snapshot,omitempty"`
+	Calls                int64   `json:"calls"`
+	Failures             int64   `json:"failures"`
+	FailureRate          float64 `json:"failure_rate"`
+	LastSeenMS           int64   `json:"last_seen_ms"`
+	AverageLatencyMS     *int64  `json:"average_latency_ms"`
+	Tone                 string  `json:"tone"`
+}
+
+type dashboardRecentFailure struct {
+	TimestampMS           int64  `json:"timestamp_ms"`
+	Model                 string `json:"model"`
+	APIKeyHash            string `json:"api_key_hash"`
+	SourceHash            string `json:"source_hash"`
+	AuthIndex             string `json:"auth_index"`
+	Source                string `json:"source,omitempty"`
+	AccountSnapshot       string `json:"account_snapshot,omitempty"`
+	AuthLabelSnapshot     string `json:"auth_label_snapshot,omitempty"`
+	AuthProviderSnapshot  string `json:"auth_provider_snapshot,omitempty"`
+	AuthProjectIDSnapshot string `json:"auth_project_id_snapshot,omitempty"`
+	Endpoint              string `json:"endpoint"`
+	DurationMS            *int64 `json:"duration_ms"`
+	FailStatusCode        *int64 `json:"fail_status_code,omitempty"`
+	FailSummary           string `json:"fail_summary,omitempty"`
+}
+
 func New(cfg config.Config, store *store.Store, collector *collector.Manager) *Server {
 	return &Server{
 		cfg:       cfg,
@@ -126,11 +288,20 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.withCORS(s.handleAPIKeyAliases)(w, r)
 		return
 	}
+	cleanManagementPath := strings.TrimRight(r.URL.Path, "/")
+	if cleanManagementPath == "/v0/management/dashboard/summary" {
+		s.withCORS(s.handleDashboardSummary)(w, r)
+		return
+	}
+	if cleanManagementPath == "/v0/management/latest-version" {
+		s.withCORS(s.handleLatestVersion)(w, r)
+		return
+	}
 	if strings.TrimRight(r.URL.Path, "/") == "/v0/management/monitoring/analytics" {
 		s.withCORS(s.handleMonitoringAnalytics)(w, r)
 		return
 	}
-	cleanUsagePath := strings.TrimRight(r.URL.Path, "/")
+	cleanUsagePath := cleanManagementPath
 	if cleanUsagePath == "/v0/management/usage" || strings.HasPrefix(cleanUsagePath, "/v0/management/usage/") {
 		s.withCORS(s.handleUsage)(w, r)
 		return
@@ -561,6 +732,401 @@ func (s *Server) handleMonitoringAnalytics(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	query := r.URL.Query()
+	todayStartMS, err := parseQueryInt64(query.Get("today_start_ms"), 0)
+	if err != nil || todayStartMS <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("today_start_ms is required"))
+		return
+	}
+	nowMS, err := parseQueryInt64(query.Get("now_ms"), time.Now().UnixMilli())
+	if err != nil || nowMS <= todayStartMS {
+		writeError(w, http.StatusBadRequest, errors.New("now_ms must be greater than today_start_ms"))
+		return
+	}
+	topModelsLimit, err := parseQueryInt(query.Get("top_models"), 5)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("top_models must be a number"))
+		return
+	}
+	recentFailuresLimit, err := parseQueryInt(query.Get("recent_failures"), 5)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("recent_failures must be a number"))
+		return
+	}
+	topModelsLimit = clampInt(topModelsLimit, 1, 20)
+	recentFailuresLimit = clampInt(recentFailuresLimit, 0, 20)
+
+	analytics, err := s.store.MonitoringAnalytics(r.Context(), store.MonitoringAnalyticsRequest{
+		FromMS: todayStartMS,
+		ToMS:   nowMS,
+		NowMS:  nowMS,
+		Include: store.MonitoringAnalyticsInclude{
+			Summary:            true,
+			Timeline:           true,
+			HourlyDistribution: true,
+			ModelStats:         true,
+			ChannelShare:       true,
+			RecentFailures:     recentFailuresLimit,
+			Granularity:        "hour",
+		},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildDashboardSummaryResponse(todayStartMS, nowMS, topModelsLimit, analytics))
+}
+
+func (s *Server) handleLatestVersion(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	version := strings.TrimSpace(os.Getenv("VERSION"))
+	if version == "" {
+		version = "local"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"latest-version": version,
+		"latest_version": version,
+		"latest":         version,
+		"tag_name":       version,
+		"name":           version,
+	})
+}
+
+func buildDashboardSummaryResponse(todayStartMS, nowMS int64, topModelsLimit int, analytics store.MonitoringAnalyticsResponse) dashboardSummaryResponse {
+	summary := analytics.Summary
+	if summary == nil {
+		summary = &store.MonitoringAnalyticsSummary{}
+	}
+	rollingCalls := int64(summary.RPM30M*30 + 0.5)
+	rollingTokens := int64(summary.TPM30M*30 + 0.5)
+	response := dashboardSummaryResponse{
+		GeneratedAtMS: analytics.GeneratedAtMS,
+		Window: dashboardSummaryWindow{
+			TodayStartMS:      todayStartMS,
+			NowMS:             nowMS,
+			Rolling30MStartMS: nowMS - int64(30*time.Minute/time.Millisecond),
+		},
+		Today: dashboardTodaySummary{
+			TotalCalls:          summary.TotalCalls,
+			SuccessCalls:        summary.SuccessCalls,
+			FailureCalls:        summary.FailureCalls,
+			SuccessRate:         summary.SuccessRate,
+			InputTokens:         summary.InputTokens,
+			OutputTokens:        summary.OutputTokens,
+			CachedTokens:        summary.CachedTokens,
+			CacheReadTokens:     summary.CacheReadTokens,
+			CacheCreationTokens: summary.CacheCreationTokens,
+			ReasoningTokens:     summary.ReasoningTokens,
+			TotalTokens:         summary.TotalTokens,
+			TotalCost:           summary.TotalCost,
+			AverageLatencyMS:    summary.AverageLatencyMS,
+			ZeroTokenCalls:      summary.ZeroTokenCalls,
+		},
+		Rolling30M: dashboardRollingSummary{
+			RPM:         summary.RPM30M,
+			TPM:         summary.TPM30M,
+			TotalCalls:  rollingCalls,
+			TotalTokens: rollingTokens,
+		},
+		TopModelsToday:             buildDashboardTopModels(analytics.ModelStats, topModelsLimit),
+		ModelCostRank:              buildDashboardModelCostRank(analytics.ModelStats, topModelsLimit, summary.TotalCost),
+		TrafficTimeline:            buildDashboardTrafficTimeline(analytics.Timeline, summary.TotalCalls, summary.TotalTokens),
+		HourlyActivity:             buildDashboardHourlyActivity(todayStartMS, analytics.HourlyDistribution),
+		TodayRequestHealthTimeline: buildDashboardHealthTimeline(todayStartMS, nowMS, analytics.Timeline, summary),
+		TokenMix:                   buildDashboardTokenMix(summary),
+		ChannelHealth:              buildDashboardChannelHealth(analytics.ChannelShare),
+		FailureSources:             buildDashboardFailureSources(analytics.ChannelShare),
+		RecentFailures:             buildDashboardRecentFailures(analytics.RecentFailures),
+	}
+	return response
+}
+
+func buildDashboardTopModels(rows []store.MonitoringAnalyticsModelStat, limit int) []dashboardTopModel {
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	result := make([]dashboardTopModel, 0, limit)
+	for _, row := range rows[:limit] {
+		result = append(result, dashboardTopModel{
+			Model:       row.Model,
+			Calls:       row.Calls,
+			Tokens:      row.TotalTokens,
+			Cost:        row.Cost,
+			SuccessRate: row.SuccessRate,
+		})
+	}
+	return result
+}
+
+func buildDashboardModelCostRank(rows []store.MonitoringAnalyticsModelStat, limit int, totalCost float64) []dashboardModelCostRank {
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	result := make([]dashboardModelCostRank, 0, limit)
+	for _, row := range rows[:limit] {
+		result = append(result, dashboardModelCostRank{
+			Model:       row.Model,
+			Calls:       row.Calls,
+			Tokens:      row.TotalTokens,
+			Cost:        row.Cost,
+			SuccessRate: row.SuccessRate,
+			CostShare:   safeFloatRate(row.Cost, totalCost),
+		})
+	}
+	return result
+}
+
+func buildDashboardTrafficTimeline(rows []store.MonitoringAnalyticsTimelinePoint, totalCalls, totalTokens int64) []dashboardTrafficPoint {
+	result := make([]dashboardTrafficPoint, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, dashboardTrafficPoint{
+			BucketMS:    row.BucketMS,
+			Calls:       row.Calls,
+			Tokens:      row.Tokens,
+			Success:     row.Success,
+			Failure:     row.Failure,
+			CallsShare:  safeIntRate(row.Calls, totalCalls),
+			TokensShare: safeIntRate(row.Tokens, totalTokens),
+			FailureRate: safeIntRate(row.Failure, row.Calls),
+		})
+	}
+	return result
+}
+
+func buildDashboardHourlyActivity(todayStartMS int64, rows []store.MonitoringAnalyticsHourlyPoint) []dashboardHourlyActivityPoint {
+	maxCalls := int64(0)
+	for _, row := range rows {
+		if row.Calls > maxCalls {
+			maxCalls = row.Calls
+		}
+	}
+	result := make([]dashboardHourlyActivityPoint, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, dashboardHourlyActivityPoint{
+			HourIndex: row.Hour,
+			BucketMS:  todayStartMS + int64(row.Hour)*int64(time.Hour/time.Millisecond),
+			Calls:     row.Calls,
+			Tokens:    row.Tokens,
+			Intensity: safeIntRate(row.Calls, maxCalls),
+		})
+	}
+	return result
+}
+
+func buildDashboardHealthTimeline(todayStartMS, nowMS int64, rows []store.MonitoringAnalyticsTimelinePoint, summary *store.MonitoringAnalyticsSummary) *dashboardRequestHealthTimeline {
+	const bucketMS = int64(time.Hour / time.Millisecond)
+	byBucket := map[int64]store.MonitoringAnalyticsTimelinePoint{}
+	for _, row := range rows {
+		byBucket[row.BucketMS] = row
+	}
+	points := make([]dashboardRequestHealthPoint, 0, 24)
+	for hour := int64(0); hour < 24; hour++ {
+		bucket := todayStartMS + hour*bucketMS
+		row := byBucket[bucket]
+		future := bucket > nowMS
+		failureRate := safeIntRate(row.Failure, row.Calls)
+		intensity := safeIntRate(row.Calls, summary.TotalCalls)
+		tone := "empty"
+		if future {
+			tone = "future"
+		} else if row.Calls > 0 {
+			tone = dashboardToneForFailureRate(failureRate)
+		}
+		points = append(points, dashboardRequestHealthPoint{
+			BucketMS:    bucket,
+			Calls:       row.Calls,
+			Tokens:      row.Tokens,
+			Success:     row.Success,
+			Failure:     row.Failure,
+			SuccessRate: safeIntRate(row.Success, row.Calls),
+			FailureRate: failureRate,
+			Tone:        tone,
+			Intensity:   intensity,
+			Future:      future,
+		})
+	}
+	return &dashboardRequestHealthTimeline{
+		FromMS:       todayStartMS,
+		ToMS:         todayStartMS + int64(24*time.Hour/time.Millisecond),
+		BucketMS:     bucketMS,
+		SuccessCalls: summary.SuccessCalls,
+		FailureCalls: summary.FailureCalls,
+		TotalCalls:   summary.TotalCalls,
+		SuccessRate:  summary.SuccessRate,
+		Points:       points,
+	}
+}
+
+func buildDashboardTokenMix(summary *store.MonitoringAnalyticsSummary) []dashboardTokenMixSegment {
+	total := summary.TotalTokens
+	segments := []dashboardTokenMixSegment{
+		{Key: "input", Tokens: summary.InputTokens},
+		{Key: "output", Tokens: summary.OutputTokens},
+		{Key: "cached", Tokens: summary.CachedTokens},
+		{Key: "cache_read", Tokens: summary.CacheReadTokens},
+		{Key: "cache_creation", Tokens: summary.CacheCreationTokens},
+		{Key: "reasoning", Tokens: summary.ReasoningTokens},
+	}
+	for i := range segments {
+		segments[i].Share = safeIntRate(segments[i].Tokens, total)
+	}
+	return segments
+}
+
+func buildDashboardChannelHealth(rows []store.MonitoringAnalyticsChannelShareRow) []dashboardChannelHealth {
+	result := make([]dashboardChannelHealth, 0, len(rows))
+	for _, row := range rows {
+		failureRate := safeIntRate(row.Failure, row.Calls)
+		result = append(result, dashboardChannelHealth{
+			AuthIndex:            row.AuthIndex,
+			Channel:              row.AuthProviderSnapshot,
+			Source:               row.Source,
+			AccountSnapshot:      row.AccountSnapshot,
+			AuthLabelSnapshot:    row.AuthLabelSnapshot,
+			AuthProviderSnapshot: row.AuthProviderSnapshot,
+			Calls:                row.Calls,
+			Failures:             row.Failure,
+			FailureRate:          failureRate,
+			SuccessRate:          safeIntRate(row.Success, row.Calls),
+			Tokens:               row.Tokens,
+			Cost:                 row.Cost,
+			AverageLatencyMS:     row.AverageLatencyMS,
+			Tone:                 dashboardToneForFailureRate(failureRate),
+		})
+	}
+	return result
+}
+
+func buildDashboardFailureSources(rows []store.MonitoringAnalyticsChannelShareRow) []dashboardFailureSource {
+	result := []dashboardFailureSource{}
+	for _, row := range rows {
+		if row.Failure == 0 {
+			continue
+		}
+		failureRate := safeIntRate(row.Failure, row.Calls)
+		result = append(result, dashboardFailureSource{
+			SourceHash:           firstNonEmptyText(row.Source, row.AuthIndex, "-"),
+			AuthIndex:            row.AuthIndex,
+			Channel:              row.AuthProviderSnapshot,
+			Source:               row.Source,
+			AccountSnapshot:      row.AccountSnapshot,
+			AuthLabelSnapshot:    row.AuthLabelSnapshot,
+			AuthProviderSnapshot: row.AuthProviderSnapshot,
+			Calls:                row.Calls,
+			Failures:             row.Failure,
+			FailureRate:          failureRate,
+			AverageLatencyMS:     row.AverageLatencyMS,
+			Tone:                 dashboardToneForFailureRate(failureRate),
+		})
+	}
+	return result
+}
+
+func buildDashboardRecentFailures(rows []store.MonitoringAnalyticsEventRow) []dashboardRecentFailure {
+	result := make([]dashboardRecentFailure, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, dashboardRecentFailure{
+			TimestampMS:           row.TimestampMS,
+			Model:                 row.Model,
+			APIKeyHash:            row.APIKeyHash,
+			SourceHash:            row.SourceHash,
+			AuthIndex:             row.AuthIndex,
+			Source:                row.Source,
+			AccountSnapshot:       row.AccountSnapshot,
+			AuthLabelSnapshot:     row.AuthLabelSnapshot,
+			AuthProviderSnapshot:  row.AuthProviderSnapshot,
+			AuthProjectIDSnapshot: row.AuthProjectIDSnapshot,
+			Endpoint:              firstNonEmptyText(row.Endpoint, row.Path),
+			DurationMS:            row.LatencyMS,
+			FailStatusCode:        row.FailStatusCode,
+			FailSummary:           row.FailSummary,
+		})
+	}
+	return result
+}
+
+func parseQueryInt64(value string, fallback int64) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
+func parseQueryInt(value string, fallback int) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func clampInt(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func safeIntRate(numerator, denominator int64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
+}
+
+func safeFloatRate(numerator, denominator float64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return numerator / denominator
+}
+
+func dashboardToneForFailureRate(rate float64) string {
+	switch {
+	case rate >= 0.1:
+		return "bad"
+	case rate >= 0.05:
+		return "warn"
+	default:
+		return "good"
+	}
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // resolveCPAProxyURL 解析 CPA 全局代理 URL；任何步骤失败都返回空字符串，

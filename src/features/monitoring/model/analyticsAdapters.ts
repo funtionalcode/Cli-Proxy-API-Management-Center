@@ -64,6 +64,19 @@ const uniqueReadableValues = (values: Array<string | null | undefined> = []) =>
 const firstReadableValue = (...values: Array<string | null | undefined>) =>
   values.map(readString).find((value) => value && value !== '-') || '';
 
+const isOpaqueUsageSourceLabel = (value: string) => /^(m|t):/i.test(value.trim());
+
+const buildApiKeyFallbackDisplayLabel = (
+  row: MonitoringAnalyticsApiKeyStatRow,
+  displayPrimary: string
+) =>
+  firstReadableValue(
+    row.auth_provider_snapshot,
+    displayPrimary && !isOpaqueUsageSourceLabel(displayPrimary) ? displayPrimary : '',
+    row.auth_label_snapshot,
+    row.account_snapshot
+  );
+
 const buildSourceKeysFromAnalyticsIdentity = (
   authIndices: Array<string | null | undefined> | undefined,
   sources: Array<string | null | undefined> | undefined,
@@ -687,12 +700,15 @@ export const buildApiKeyRowsFromAnalytics = (
       );
       const apiKeyDisplay = apiKeyDisplayMap.get(apiKeyHash);
       const fallbackApiKeyLabel = formatApiKeyHashLabel(apiKeyHash);
+      const fallbackDisplayLabel = !apiKeyDisplay
+        ? buildApiKeyFallbackDisplayLabel(row, display.primary)
+        : '';
       const apiKeyLabel = sanitizeApiKeyDisplayText(
-        apiKeyDisplay?.label || fallbackApiKeyLabel,
+        apiKeyDisplay?.label || fallbackDisplayLabel || fallbackApiKeyLabel,
         fallbackApiKeyLabel
       );
       const apiKeyMasked = sanitizeApiKeyDisplayText(
-        apiKeyDisplay?.masked || apiKeyLabel,
+        apiKeyDisplay?.masked || (fallbackDisplayLabel ? fallbackApiKeyLabel : apiKeyLabel),
         apiKeyLabel
       );
       const isUnknown = !apiKeyHash;
