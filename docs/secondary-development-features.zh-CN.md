@@ -4,11 +4,19 @@
 
 本文记录当前 `master` 中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
+## 维护约定
+
+- 每次同步上游、恢复二开能力、发现遗漏的二开入口，或新增二开功能后，都必须同步更新本文。
+- 记录时优先写清楚用户能感知的功能、关键数据兼容行为、主要代码位置和必要回归测试。
+- 提交说明中需要明确本次是否更新了二开功能保留清单；如果没有更新，需要说明原因。
+- 后续排查“功能不见了”时，先对照本文检查，不要只凭当前页面表现判断功能是否已丢失。
+
 主要依据：
 
 - 当前 `master` 相对 `upstream/main` 的业务差异。
 - 历史二开提交：`d97e2bb`、`8a53a52`、`6aa9e9b`、`f7690f2`、`831fd03`、`def26b4`、`b1f494e`、`b18c579`、`6278782`、`fc8ea44`。
 - 2026-07-03 已恢复并验证的提交：`fc8ea44 fix(frontend): 恢复同步后隐藏的二开功能`。
+- 2026-07-03 已补充并验证的提交：`da3e5a0 fix(frontend): 恢复认证文件权重展示`。
 
 ## 当前应保留的二开功能
 
@@ -89,10 +97,11 @@
 ### 5. AuthFiles 认证文件增强
 
 - 认证文件页支持列表、筛选、套餐排序、状态展示、批量刷新认证文件和额度。
-- 认证文件卡片显示最近请求状态、额度状态、冷却恢复信息、项目 ID 等。
+- 认证文件卡片显示最近请求状态、额度状态、冷却恢复信息、项目 ID、优先级 `priority`、权重 `weight` 等。
 - Codex 额度冷却恢复后可触发对应账号额度刷新，避免继续展示过期 Header 快照。
 - 支持 Auth JSON 粘贴导入，包含 ChatGPT session/sub2api 到 CPA Codex 登录文件的转换。
-- Prefix/Proxy 编辑器支持编辑 `prefix`、`proxy`、`weight`、`headers`。
+- Prefix/Proxy 编辑器支持编辑 `prefix`、`proxy`、`priority`、`weight`、`headers`。
+- `priority` 仅接受整数；留空会清理该字段；认证文件页支持按优先级高低排序和批量设置优先级。
 - `weight` 仅接受正整数；留空会清理该字段。
 - `headers` 按 JSON 对象编辑，支持写入、更新和清空。
 - `authFilesApi.patchFieldsForAuthIndexes` 支持写入/清空 `weight` 和 `headers`。
@@ -208,6 +217,7 @@
 - 日志页能否切换成功请求日志，能否下载格式化错误/成功日志，耗时筛选是否有效。
 - Provider 保存后是否保留 `headers`、`weight`、`balanceToken`，keyless OpenAI custom entry 是否不会被丢弃。
 - AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `weight`、`headers`。
+- AuthFiles 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级是否仍可用。
 - Claude `one_day` 日额度窗口是否正常展示。
 - Codex 额度 Header 快照、手动刷新、冷却恢复刷新是否不会相互覆盖错误状态。
 - API Key 别名是否能创建、删除、复用历史别名，并在监控/用量分析中显示。
@@ -235,5 +245,7 @@ pnpm test \
   src/services/api/providers.test.ts \
   src/features/authFiles/constants.test.ts \
   src/services/api/authFiles.test.ts \
-  src/features/authFiles/hooks/useAuthFilesData.test.ts
+  src/features/authFiles/hooks/useAuthFilesData.test.ts \
+  src/features/authFiles/components/AuthFileCard.test.tsx \
+  src/components/quota/QuotaSection.test.tsx
 ```
