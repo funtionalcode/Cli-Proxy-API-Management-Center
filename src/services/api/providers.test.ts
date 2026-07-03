@@ -103,6 +103,77 @@ describe('providersApi auth-index preservation', () => {
 });
 
 describe('providersApi v1.16 provider fields', () => {
+  it('normalizes OpenAI provider weight and keyless custom balance entries', async () => {
+    mocks.get.mockResolvedValue({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          weight: 2,
+          'disable-cooling': false,
+          'api-key-entries': [
+            {
+              'balance-token': 'balance-secret',
+              weight: 3,
+              headers: { 'X-Custom': 'yes' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const providers = await providersApi.getOpenAIProviders();
+
+    expect(providers[0]).toMatchObject({
+      name: 'openai-compatible',
+      weight: 2,
+      apiKeyEntries: [
+        {
+          apiKey: '',
+          balanceToken: 'balance-secret',
+          weight: 3,
+          headers: { 'X-Custom': 'yes' },
+        },
+      ],
+    });
+  });
+
+  it('serializes OpenAI provider weight and per-key balance metadata', async () => {
+    mocks.get.mockResolvedValue({ 'openai-compatibility': [] });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        weight: 2,
+        apiKeyEntries: [
+          {
+            apiKey: '',
+            weight: 3,
+            balanceToken: 'balance-secret',
+            headers: { 'X-Custom': 'yes' },
+          },
+        ],
+      },
+    ] as any);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        weight: 2,
+        'api-key-entries': [
+          {
+            weight: 3,
+            'balance-token': 'balance-secret',
+            headers: { 'X-Custom': 'yes' },
+          },
+        ],
+      },
+    ]);
+  });
+
   it('normalizes OpenAI model image/thinking and provider disable-cooling fields', async () => {
     mocks.get.mockResolvedValue({
       'openai-compatibility': [

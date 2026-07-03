@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isErrorLogsTab,
+  isRequestLogsTab,
   isFileLogsAvailable,
   isLogsRouteAvailable,
 } from './logFeatureAvailability';
@@ -14,13 +14,15 @@ describe('isFileLogsAvailable', () => {
   });
 });
 
-describe('isErrorLogsTab', () => {
-  it('detects the dedicated error logs tab from search params', () => {
-    expect(isErrorLogsTab('?tab=errors')).toBe(true);
-    expect(isErrorLogsTab(new URLSearchParams('tab=errors'))).toBe(true);
-    expect(isErrorLogsTab('?tab=logs')).toBe(false);
-    expect(isErrorLogsTab('')).toBe(false);
-    expect(isErrorLogsTab(null)).toBe(false);
+describe('isRequestLogsTab', () => {
+  it('detects dedicated request log tabs from search params', () => {
+    expect(isRequestLogsTab('?tab=errors')).toBe(true);
+    expect(isRequestLogsTab('?tab=success')).toBe(true);
+    expect(isRequestLogsTab(new URLSearchParams('tab=errors'))).toBe(true);
+    expect(isRequestLogsTab(new URLSearchParams('tab=success'))).toBe(true);
+    expect(isRequestLogsTab('?tab=logs')).toBe(false);
+    expect(isRequestLogsTab('')).toBe(false);
+    expect(isRequestLogsTab(null)).toBe(false);
   });
 });
 
@@ -31,9 +33,12 @@ describe('isLogsRouteAvailable', () => {
     expect(isLogsRouteAvailable(null, '')).toBe(false);
   });
 
-  it('allows the error request logs tab without file logging enabled', () => {
+  it('allows request log tabs without file logging enabled', () => {
     expect(isLogsRouteAvailable({ loggingToFile: false }, '?tab=errors')).toBe(true);
+    expect(isLogsRouteAvailable({ loggingToFile: false }, '?tab=success')).toBe(true);
     expect(isLogsRouteAvailable({}, '?tab=errors')).toBe(true);
+    expect(isLogsRouteAvailable({}, '?tab=success')).toBe(true);
     expect(isLogsRouteAvailable(null, '?tab=errors')).toBe(true);
+    expect(isLogsRouteAvailable(null, '?tab=success')).toBe(true);
   });
 });

@@ -147,6 +147,13 @@ vi.mock('@/stores', () => ({
       codexQuota: mocks.codexQuota,
       setCodexQuota: mocks.setCodexQuota,
     }),
+  useUsageServiceStore: (
+    selector: (state: {
+      enabled: false;
+      serviceBase: '';
+      revision: 0;
+    }) => unknown
+  ) => selector({ enabled: false, serviceBase: '', revision: 0 }),
 }));
 
 vi.mock('@/features/authFiles/hooks/useAuthFilesData', () => ({

@@ -203,6 +203,10 @@ describe('fetchClaudeQuota', () => {
             utilization: 12,
             resets_at: '2026-07-01T10:00:00Z',
           },
+          one_day: {
+            utilization: 34,
+            resets_at: '2026-07-01T18:00:00Z',
+          },
         },
       })
       .mockRejectedValueOnce(new Error('profile unavailable'));
@@ -217,11 +221,21 @@ describe('fetchClaudeQuota', () => {
     );
 
     expect(result.planType).toBeNull();
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]).toMatchObject({
-      id: 'five-hour',
-      usedPercent: 12,
-    });
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'five-hour',
+          labelKey: 'claude_quota.five_hour',
+          usedPercent: 12,
+        }),
+        expect.objectContaining({
+          id: 'one-day',
+          labelKey: 'claude_quota.one_day',
+          usedPercent: 34,
+        }),
+      ])
+    );
   });
 });
 

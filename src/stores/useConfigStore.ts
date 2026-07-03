@@ -137,6 +137,12 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         case 'request-log':
           nextConfig.requestLog = value as Config['requestLog'];
           break;
+        case 'success-request-log':
+          nextConfig.successRequestLog = value as Config['successRequestLog'];
+          break;
+        case 'success-logs-max-files':
+          nextConfig.successLogsMaxFiles = value as Config['successLogsMaxFiles'];
+          break;
         case 'logging-to-file':
           nextConfig.loggingToFile = value as Config['loggingToFile'];
           break;

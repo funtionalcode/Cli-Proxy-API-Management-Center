@@ -4,6 +4,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     get: vi.fn(),
     getRaw: vi.fn(),
+    patch: vi.fn(),
     postForm: vi.fn(),
   },
 }));
@@ -12,6 +13,7 @@ vi.mock('./client', () => ({
   apiClient: {
     get: mocks.get,
     getRaw: mocks.getRaw,
+    patch: mocks.patch,
     postForm: mocks.postForm,
   },
 }));
@@ -21,6 +23,7 @@ import { authFilesApi } from './authFiles';
 beforeEach(() => {
   mocks.get.mockReset();
   mocks.getRaw.mockReset();
+  mocks.patch.mockReset();
   mocks.postForm.mockReset();
 });
 
@@ -381,5 +384,34 @@ describe('authFilesApi patchFieldsForAuthIndexes', () => {
         { type: 'codex', authIndex: 'auth-3', priority: 3, websocket: true },
       ])
     );
+  });
+
+  it('updates and clears account weight fields', async () => {
+    mocks.getRaw.mockResolvedValueOnce({
+      data: new Blob([JSON.stringify([{ type: 'codex', authIndex: 0, weight: 2 }])]),
+    });
+    mocks.postForm.mockResolvedValue({
+      status: 'ok',
+      uploaded: 1,
+      files: ['shared-codex.json'],
+      failed: [],
+    });
+
+    await authFilesApi.patchFieldsForAuthIndexes('shared-codex.json', [0], { weight: 5 } as any);
+
+    let file = getUploadedFile();
+    await expect(file.text()).resolves.toBe(
+      JSON.stringify([{ type: 'codex', authIndex: 0, weight: 5 }])
+    );
+
+    mocks.getRaw.mockResolvedValueOnce({
+      data: new Blob([JSON.stringify([{ type: 'codex', authIndex: 0, weight: 5 }])]),
+    });
+    mocks.postForm.mockClear();
+
+    await authFilesApi.patchFieldsForAuthIndexes('shared-codex.json', [0], { weight: 0 } as any);
+
+    file = getUploadedFile();
+    await expect(file.text()).resolves.toBe(JSON.stringify([{ type: 'codex', authIndex: 0 }]));
   });
 });

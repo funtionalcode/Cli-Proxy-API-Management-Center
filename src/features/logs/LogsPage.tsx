@@ -26,6 +26,7 @@ import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import { logsApi } from '@/services/api/logs';
 import type { LogsQuery, LogsResponse } from '@/services/api/logs';
+import { configApi } from '@/services/api/config';
 import { copyToClipboard } from '@/utils/clipboard';
 import { downloadBlob } from '@/utils/download';
 import { MANAGEMENT_API_PREFIX } from '@/utils/constants';
@@ -64,7 +65,15 @@ const getErrorMessage = (err: unknown): string => {
   return typeof message === 'string' ? message : '';
 };
 
-type TabType = 'logs' | 'errors';
+const getFormattedLogFilename = (name: string): string => {
+  if (/\.log$/i.test(name)) return name.replace(/\.log$/i, '.formatted.txt');
+  return `${name}.formatted.txt`;
+};
+
+const parseLogsTabParam = (value: string | null): TabType =>
+  value === 'errors' || value === 'success' ? value : 'logs';
+
+type TabType = 'logs' | 'errors' | 'success';
 type LogPosition = Pick<LogsQuery, 'after' | 'cursor'>;
 
 const buildLogsQuery = (incremental: boolean, position: LogPosition): LogsQuery => {
@@ -86,12 +95,15 @@ export function LogsPage() {
   const { showNotification, showConfirmation } = useNotificationStore();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const config = useConfigStore((state) => state.config);
+  const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
+  const clearCache = useConfigStore((state) => state.clearCache);
   const fileLogsAvailable = isFileLogsAvailable(config);
 
   const [activeTab, setActiveTab] = useState<TabType>(() =>
-    searchParams.get('tab') === 'errors' ? 'errors' : 'logs'
+    parseLogsTabParam(searchParams.get('tab'))
   );
   const requestLogEnabled = config?.requestLog ?? false;
+  const successRequestLogEnabled = config?.successRequestLog ?? false;
   const [logState, setLogState] = useState<LogState>({ buffer: [], visibleFrom: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -110,6 +122,9 @@ export function LogsPage() {
   const [errorLogs, setErrorLogs] = useState<ErrorLogItem[]>([]);
   const [loadingErrors, setLoadingErrors] = useState(false);
   const [errorLogsError, setErrorLogsError] = useState('');
+  const [successLogs, setSuccessLogs] = useState<ErrorLogItem[]>([]);
+  const [loadingSuccesses, setLoadingSuccesses] = useState(false);
+  const [successLogsError, setSuccessLogsError] = useState('');
   const [requestLogId, setRequestLogId] = useState<string | null>(null);
   const [requestLogDownloading, setRequestLogDownloading] = useState(false);
 
@@ -150,10 +165,10 @@ export function LogsPage() {
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab);
     const nextParams = new URLSearchParams(searchParams);
-    if (tab === 'errors') {
-      nextParams.set('tab', 'errors');
-    } else {
+    if (tab === 'logs') {
       nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', tab);
     }
     setSearchParams(nextParams, { replace: true });
   };
@@ -293,7 +308,35 @@ export function LogsPage() {
     }
   };
 
+  const loadSuccessLogs = async () => {
+    if (connectionStatus !== 'connected') {
+      setLoadingSuccesses(false);
+      return;
+    }
+
+    setLoadingSuccesses(true);
+    setSuccessLogsError('');
+    try {
+      const res = await logsApi.fetchSuccessLogs();
+      setSuccessLogs(Array.isArray(res.files) ? res.files : []);
+    } catch (err: unknown) {
+      console.error('Failed to load success logs:', err);
+      setSuccessLogs([]);
+      const message = getErrorMessage(err);
+      setSuccessLogsError(
+        message
+          ? `${t('logs.success_logs_load_error')}: ${message}`
+          : t('logs.success_logs_load_error')
+      );
+    } finally {
+      setLoadingSuccesses(false);
+    }
+  };
+
   useHeaderRefresh(() => {
+    if (activeTab === 'success') {
+      return loadSuccessLogs();
+    }
     if (activeTab === 'errors') {
       return loadErrorLogs();
     }
@@ -314,8 +357,90 @@ export function LogsPage() {
     }
   };
 
+  const downloadFormattedErrorLog = async (name: string) => {
+    try {
+      const response = await logsApi.downloadFormattedErrorLog(name);
+      downloadBlob({
+        filename: getFormattedLogFilename(name),
+        blob: new Blob([response.data], { type: 'text/plain' })
+      });
+      showNotification(t('logs.formatted_log_download_success'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.download_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
+  const downloadSuccessLog = async (name: string) => {
+    try {
+      const response = await logsApi.downloadSuccessLog(name);
+      downloadBlob({ filename: name, blob: new Blob([response.data], { type: 'text/plain' }) });
+      showNotification(t('logs.success_log_download_success'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.download_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
+  const downloadFormattedSuccessLog = async (name: string) => {
+    try {
+      const response = await logsApi.downloadFormattedSuccessLog(name);
+      downloadBlob({
+        filename: getFormattedLogFilename(name),
+        blob: new Blob([response.data], { type: 'text/plain' })
+      });
+      showNotification(t('logs.formatted_log_download_success'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.download_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
+  const toggleRequestLog = async (value: boolean) => {
+    const previous = requestLogEnabled;
+    updateConfigValue('request-log', value);
+    try {
+      await configApi.updateRequestLog(value);
+      clearCache('request-log');
+      showNotification(t('notification.request_log_updated'), 'success');
+    } catch (err: unknown) {
+      updateConfigValue('request-log', previous);
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
+  const toggleSuccessRequestLog = async (value: boolean) => {
+    const previous = successRequestLogEnabled;
+    updateConfigValue('success-request-log', value);
+    try {
+      await configApi.updateSuccessRequestLog(value);
+      clearCache('success-request-log');
+      showNotification(t('notification.save_success'), 'success');
+    } catch (err: unknown) {
+      updateConfigValue('success-request-log', previous);
+      const message = getErrorMessage(err);
+      showNotification(
+        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    }
+  };
+
   useEffect(() => {
-    const tab = searchParams.get('tab') === 'errors' ? 'errors' : 'logs';
+    const tab = parseLogsTabParam(searchParams.get('tab'));
     setActiveTab((current) => (current === tab ? current : tab));
   }, [searchParams]);
 
@@ -341,6 +466,13 @@ export function LogsPage() {
     void loadErrorLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, connectionStatus, requestLogEnabled]);
+
+  useEffect(() => {
+    if (activeTab !== 'success') return;
+    if (connectionStatus !== 'connected') return;
+    void loadSuccessLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, connectionStatus, requestLogEnabled, successRequestLogEnabled]);
 
   useEffect(() => {
     if (!autoRefresh || connectionStatus !== 'connected' || !canLoadFileLogs) {
@@ -380,7 +512,10 @@ export function LogsPage() {
   const filters = useLogFilters({ parsedLines: parsedSearchLines });
   const structuredFiltersPanelId = 'logs-structured-filters';
   const structuredFilterCount =
-    filters.methodFilters.length + filters.statusFilters.length + filters.pathFilters.length;
+    filters.methodFilters.length +
+    filters.statusFilters.length +
+    filters.pathFilters.length +
+    (filters.hasLatencyFilter ? 1 : 0);
 
   const { filteredParsedLines, filteredLines, removedCount } = useMemo(() => {
     const filteredParsed = parsedSearchLines.filter((line) => {
@@ -403,6 +538,17 @@ export function LogsPage() {
         return false;
       }
 
+      if (filters.hasLatencyFilter) {
+        const hasMatchingTiming = line.timings.some((timing) => {
+          const meetsMin =
+            filters.latencyMinValue === undefined || timing.milliseconds >= filters.latencyMinValue;
+          const meetsMax =
+            filters.latencyMaxValue === undefined || timing.milliseconds <= filters.latencyMaxValue;
+          return meetsMin && meetsMax;
+        });
+        if (!hasMatchingTiming) return false;
+      }
+
       return true;
     });
 
@@ -413,6 +559,9 @@ export function LogsPage() {
     };
   }, [
     baseLines,
+    filters.hasLatencyFilter,
+    filters.latencyMaxValue,
+    filters.latencyMinValue,
     filters.methodFilterSet,
     filters.pathFilterSet,
     filters.statusFilterSet,
@@ -539,6 +688,13 @@ export function LogsPage() {
           onClick={() => handleTabChange('errors')}
         >
           {t('logs.error_logs_modal_title')}
+        </button>
+        <button
+          type="button"
+          className={`${styles.tabItem} ${activeTab === 'success' ? styles.tabActive : ''}`}
+          onClick={() => handleTabChange('success')}
+        >
+          {t('logs.success_logs_modal_title')}
         </button>
       </div>
 
@@ -671,6 +827,43 @@ export function LogsPage() {
                             </button>
                           );
                         })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className={styles.filterChipGroup}>
+                    <span className={styles.filterChipLabel}>{t('logs.filter_latency')}</span>
+                    <div className={styles.latencyFilterInputs}>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={filters.latencyMinMs}
+                        onChange={(e) => filters.setLatencyMinMs(e.target.value)}
+                        placeholder={t('logs.filter_latency_min')}
+                        className={styles.latencyFilterInput}
+                      />
+                      <span className={styles.latencyFilterSeparator}>-</span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={filters.latencyMaxMs}
+                        onChange={(e) => filters.setLatencyMaxMs(e.target.value)}
+                        placeholder={t('logs.filter_latency_max')}
+                        className={styles.latencyFilterInput}
+                      />
+                      <span className={styles.filterChipHint}>
+                        {t('logs.filter_latency_unit_ms')}
+                      </span>
+                      {filters.hasLatencyFilter && (
+                        <button
+                          type="button"
+                          className={styles.filterChip}
+                          onClick={filters.clearLatencyFilter}
+                        >
+                          {t('logs.filter_latency_clear')}
+                        </button>
                       )}
                     </div>
                   </div>
@@ -872,6 +1065,16 @@ export function LogsPage() {
                             )}
 
                             {line.latency && <span className={styles.pill}>{line.latency}</span>}
+                            {line.timings
+                              .filter((timing) => timing.value !== line.latency)
+                              .map((timing) => (
+                                <span
+                                  key={`${timing.label}-${timing.value}`}
+                                  className={styles.pill}
+                                >
+                                  {timing.label}: {timing.value}
+                                </span>
+                              ))}
                             {line.ip && <span className={styles.pill}>{line.ip}</span>}
 
                             {line.method && (
@@ -954,6 +1157,99 @@ export function LogsPage() {
                             disabled={disableControls}
                           >
                             {t('logs.error_logs_download')}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => downloadFormattedErrorLog(item.name)}
+                            disabled={disableControls}
+                          >
+                            {t('logs.error_logs_download_formatted')}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {activeTab === 'success' && (
+          <Card
+            extra={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={loadSuccessLogs}
+                loading={loadingSuccesses}
+                disabled={disableControls}
+              >
+                {t('common.refresh')}
+              </Button>
+            }
+          >
+            <div className="stack">
+              <div className="hint">{t('logs.success_logs_description')}</div>
+
+              <div className={styles.toggleRow}>
+                <ToggleSwitch
+                  label={t('basic_settings.request_log_enable')}
+                  checked={requestLogEnabled}
+                  disabled={disableControls}
+                  onChange={toggleRequestLog}
+                />
+                <ToggleSwitch
+                  label={t('logs.success_logs_enable')}
+                  checked={successRequestLogEnabled}
+                  disabled={disableControls || !requestLogEnabled}
+                  onChange={toggleSuccessRequestLog}
+                />
+              </div>
+
+              {!requestLogEnabled && (
+                <div>
+                  <div className="status-badge warning">
+                    {t('logs.success_logs_request_log_disabled')}
+                  </div>
+                </div>
+              )}
+
+              {successLogsError && <div className="error-box">{successLogsError}</div>}
+
+              <div className={styles.errorPanel}>
+                {loadingSuccesses ? (
+                  <div className="hint">{t('common.loading')}</div>
+                ) : successLogs.length === 0 ? (
+                  <div className="hint">{t('logs.success_logs_empty')}</div>
+                ) : (
+                  <div className="item-list">
+                    {successLogs.map((item) => (
+                      <div key={item.name} className="item-row">
+                        <div className="item-meta">
+                          <div className="item-title">{item.name}</div>
+                          <div className="item-subtitle">
+                            {item.size ? `${(item.size / 1024).toFixed(1)} KB` : ''}{' '}
+                            {item.modified ? formatUnixTimestamp(item.modified) : ''}
+                          </div>
+                        </div>
+                        <div className="item-actions">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => downloadSuccessLog(item.name)}
+                            disabled={disableControls}
+                          >
+                            {t('logs.success_logs_download')}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => downloadFormattedSuccessLog(item.name)}
+                            disabled={disableControls}
+                          >
+                            {t('logs.success_logs_download_formatted')}
                           </Button>
                         </div>
                       </div>

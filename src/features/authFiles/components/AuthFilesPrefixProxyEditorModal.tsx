@@ -143,6 +143,17 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
                     disabled={disableControls || editor.saving || !editor.json}
                     onChange={(e) => onChange('priority', e.target.value)}
                   />
+                  <Input
+                    label={t('auth_files.weight_label')}
+                    value={editor.weight}
+                    placeholder={t('auth_files.weight_placeholder')}
+                    hint={t('auth_files.weight_hint')}
+                    type="number"
+                    min={1}
+                    step={1}
+                    disabled={disableControls || editor.saving || !editor.json}
+                    onChange={(e) => onChange('weight', e.target.value)}
+                  />
                   {supportsAuthFileWebsockets(editor.providerKey) && (
                     <div className="form-group">
                       <label>{t('auth_files.websockets_label')}</label>

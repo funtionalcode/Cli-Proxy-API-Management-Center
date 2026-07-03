@@ -39,13 +39,13 @@ describe('resolveManagerRequestAuthKey', () => {
     ).toBe('cpa-or-admin-key');
   });
 
-  it('does not use CPA-hosted panel credentials for Manager config requests', () => {
+  it('uses the login key for external Manager config requests', () => {
     expect(
       resolveManagerRequestAuthKey({
         panelHostedByUsageService: false,
         managementKey: ' cpa-management-key ',
       })
-    ).toBe('');
+    ).toBe('cpa-management-key');
   });
 });
 
@@ -134,15 +134,17 @@ describe('resolveManagerCPAConnection', () => {
     });
   });
 
-  it('keeps external panel connections unchanged instead of binding the current CPA', () => {
+  it('allows external panel connections to be updated from the form', () => {
     expect(
       resolveManagerCPAConnection({
         panelHostedByUsageService: false,
         managerConfig: buildManagerConfig(),
+        cpaBaseUrlInput: ' http://next-cpa.local:9009 ',
+        managementKeyInput: ' next-key ',
       })
     ).toEqual({
-      cpaBaseUrl: 'http://cpa.local:8317',
-      managementKey: 'management-key',
+      cpaBaseUrl: 'http://next-cpa.local:9009',
+      managementKey: 'next-key',
     });
 
     expect(
@@ -269,7 +271,7 @@ describe('resolveManagerBindingStatus', () => {
 });
 
 describe('resolveManagerSaveState', () => {
-  it('allows saving only dirty same-origin Manager Server config', () => {
+  it('allows saving dirty Manager config', () => {
     expect(
       resolveManagerSaveState({
         panelHostedByUsageService: true,
@@ -297,7 +299,7 @@ describe('resolveManagerSaveState', () => {
     });
   });
 
-  it('does not allow Manager config saves from CPA-hosted panels', () => {
+  it('allows Manager config saves from CPA-hosted panels with an external service base', () => {
     expect(
       resolveManagerSaveState({
         panelHostedByUsageService: false,
@@ -306,8 +308,8 @@ describe('resolveManagerSaveState', () => {
     ).toEqual({
       adminKeyLoadPending: false,
       adminKeyOnlyPending: false,
-      hasPendingSave: false,
-      canSave: false,
+      hasPendingSave: true,
+      canSave: true,
     });
   });
 

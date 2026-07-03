@@ -63,10 +63,8 @@ export function resolveManagerRequestAuthKey({
   panelHostedByUsageService: boolean | null;
   managementKey: string;
 }): string {
-  if (panelHostedByUsageService === true) {
-    return managementKey.trim();
-  }
-  return '';
+  if (panelHostedByUsageService === null) return '';
+  return managementKey.trim();
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -93,7 +91,7 @@ export function resolveManagerSaveState({
   hasPendingSave: boolean;
   canSave: boolean;
 } {
-  const hasPendingSave = panelHostedByUsageService === true && managerDirty;
+  const hasPendingSave = panelHostedByUsageService !== null && managerDirty;
 
   return {
     adminKeyLoadPending: false,
@@ -120,7 +118,7 @@ export function resolveManagerCPAConnection({
     cpaBaseUrlInput === undefined ? savedConnection?.cpaBaseUrl || '' : cpaBaseUrlInput.trim();
   const nextManagementKey = managementKeyInput.trim() || savedConnection?.managementKey || '';
 
-  if (panelHostedByUsageService === true) {
+  if (panelHostedByUsageService !== null) {
     return {
       ...(savedConnection ?? {}),
       cpaBaseUrl: nextCPABaseUrl,
@@ -244,8 +242,11 @@ export function ConfigPage() {
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
+  const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
+  const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
+  const usageServiceBase = useUsageServiceStore((state) => state.serviceBase);
   const setUsageServiceConfig = useUsageServiceStore((state) => state.setUsageServiceConfig);
   const isMobile = useMediaQuery('(max-width: 768px)');
 
@@ -310,7 +311,8 @@ export function ConfigPage() {
   const floatingActionsRef = useRef<HTMLDivElement>(null);
 
   const disableControls = connectionStatus !== 'connected';
-  const showManagerTab = panelHostedByUsageService === true;
+  const hasConfiguredExternalManager = Boolean(usageServiceEnabled && usageServiceBase);
+  const showManagerTab = panelHostedByUsageService === true || hasConfiguredExternalManager;
   const isManagerTab = activeTab === 'manager' && showManagerTab;
   const sourceDirty = dirty || visualDirty;
   const shouldRenderFloatingActions = isCurrentLayer;
@@ -411,17 +413,23 @@ export function ConfigPage() {
   }, [detectedPanelBase]);
 
   useEffect(() => {
-    if (panelHostedByUsageService !== false || activeTab !== 'manager') return;
+    if (
+      panelHostedByUsageService !== false ||
+      activeTab !== 'manager' ||
+      hasConfiguredExternalManager
+    ) {
+      return;
+    }
     setActiveTab('visual');
     localStorage.setItem(CONFIG_TAB_STORAGE_KEY, 'visual');
-  }, [activeTab, panelHostedByUsageService]);
+  }, [activeTab, hasConfiguredExternalManager, panelHostedByUsageService]);
 
   const resolveManagerServiceBase = useCallback(() => {
     if (panelHostedByUsageService) {
       return normalizeUsageServiceBase(detectedPanelBase);
     }
-    return '';
-  }, [detectedPanelBase, panelHostedByUsageService]);
+    return usageServiceEnabled ? normalizeUsageServiceBase(usageServiceBase) : '';
+  }, [detectedPanelBase, panelHostedByUsageService, usageServiceBase, usageServiceEnabled]);
 
   const managerServiceTarget = resolveManagerServiceBase();
   const managerDirty = useMemo(
@@ -633,17 +641,23 @@ export function ConfigPage() {
         },
         {
           panelBase: detectedPanelBase,
-          panelHostMode: 'manager_embedded',
+          panelHostMode: panelHostedByUsageService === true ? 'manager_embedded' : 'external_panel',
         }
       );
       showNotification(t('config_management.manager.save_success'), 'success');
     },
-    [applyManagerConfigResponse, detectedPanelBase, setUsageServiceConfig, showNotification, t]
+    [
+      applyManagerConfigResponse,
+      detectedPanelBase,
+      panelHostedByUsageService,
+      setUsageServiceConfig,
+      showNotification,
+      t,
+    ]
   );
 
   const handleManagerSave = async () => {
     if (disableControls) return;
-    if (panelHostedByUsageService !== true) return;
     const serviceBase = resolveManagerServiceBase();
     if (!serviceBase) {
       showNotification(t('config_management.manager.service_base_required'), 'warning');
@@ -688,14 +702,20 @@ export function ConfigPage() {
       });
       const nextConfig: ManagerConfig = {
         ...(managerConfig ?? {
-          cpaConnection,
+          cpaConnection: {
+            cpaBaseUrl: cpaConnection.cpaBaseUrl || apiBase,
+            managementKey: cpaConnection.managementKey || managementKey,
+          },
           collector: MANAGER_COLLECTOR_DEFAULT,
           externalUsageService: {
-            enabled: false,
-            serviceBase: '',
+            enabled: panelHostedByUsageService !== true,
+            serviceBase: panelHostedByUsageService !== true ? serviceBase : '',
           },
         }),
-        cpaConnection,
+        cpaConnection: {
+          cpaBaseUrl: cpaConnection.cpaBaseUrl || apiBase,
+          managementKey: cpaConnection.managementKey || managementKey,
+        },
         collector: {
           ...(managerConfig?.collector ?? MANAGER_COLLECTOR_DEFAULT),
           enabled: managerRequestMonitoringEnabled,
@@ -705,8 +725,8 @@ export function ConfigPage() {
           queryLimit,
         },
         externalUsageService: {
-          enabled: false,
-          serviceBase: '',
+          enabled: panelHostedByUsageService !== true,
+          serviceBase: panelHostedByUsageService !== true ? serviceBase : '',
         },
       };
       const savedCPABase = normalizeUsageServiceBase(managerConfig?.cpaConnection?.cpaBaseUrl || '');
@@ -1169,7 +1189,6 @@ export function ConfigPage() {
   );
 
   const canConfigureRequestMonitoring =
-    panelHostedByUsageService === true &&
     Boolean(
       managerServiceTarget &&
         managerCPABaseInput.trim() &&
@@ -1233,7 +1252,7 @@ export function ConfigPage() {
               managerLoading={managerLoading}
               managerSaving={managerSaving}
               panelHostedByUsageService={panelHostedByUsageService}
-              detectedPanelBase={detectedPanelBase}
+              detectedPanelBase={managerServiceTarget || detectedPanelBase}
               managerRuntimeModeLabel={managerRuntimeModeLabel}
               managerHasBoundCPAManagementKey={Boolean(
                 managerConfig?.cpaConnection?.managementKey

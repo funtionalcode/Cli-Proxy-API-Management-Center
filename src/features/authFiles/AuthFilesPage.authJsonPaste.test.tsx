@@ -154,6 +154,13 @@ vi.mock('@/stores', () => ({
     selector({ resolvedTheme: 'dark' }),
   useQuotaStore: (selector: (state: { codexQuota: null }) => unknown) =>
     selector({ codexQuota: null }),
+  useUsageServiceStore: (
+    selector: (state: {
+      enabled: false;
+      serviceBase: '';
+      revision: 0;
+    }) => unknown
+  ) => selector({ enabled: false, serviceBase: '', revision: 0 }),
 }));
 
 vi.mock('@/features/authFiles/components/AuthFileCard', () => ({

@@ -6,7 +6,7 @@ import {
   type ManagerConfig,
 } from '@/services/api/usageService';
 import { DEMO_API_BASE, isDemoMode } from '@/features/demo/demoMode';
-import { useAuthStore } from '@/stores';
+import { useAuthStore, useUsageServiceStore } from '@/stores';
 import { detectApiBaseFromLocation } from '@/utils/connection';
 
 export type PanelHostMode = 'manager_embedded' | 'external_panel';
@@ -66,9 +66,6 @@ export function resolvePanelFeatureAvailability(
   if (!input.managementKey) {
     return buildUnavailableState(input, 'service_not_configured');
   }
-  if (!input.panelHostedByUsageService) {
-    return buildUnavailableState(input, 'service_not_configured');
-  }
 
   const managerServiceBase = normalizeBase(input.managerServiceBase);
   if (!managerServiceBase || !input.managerConfig) {
@@ -95,7 +92,7 @@ export function resolvePanelFeatureAvailability(
     modelPricesAvailable: true,
     serverCodexInspectionAvailable: true,
     dockerSetupAvailable: input.panelHostedByUsageService,
-    externalManagerConfigAvailable: false,
+    externalManagerConfigAvailable: !input.panelHostedByUsageService,
     reason: requestMonitoringAvailable
       ? ''
       : !hasCPAConnection
@@ -107,34 +104,69 @@ export function resolvePanelFeatureAvailability(
 export interface BuildPanelManagerServiceCandidatesInput {
   panelHostedByUsageService: boolean;
   panelBase: string;
+  apiBase?: string;
+  usageServiceEnabled?: boolean;
+  usageServiceBase?: string;
 }
 
 export function buildPanelManagerServiceCandidates({
   panelHostedByUsageService,
   panelBase,
+  apiBase,
+  usageServiceEnabled,
+  usageServiceBase,
 }: BuildPanelManagerServiceCandidatesInput): string[] {
   const normalizedPanelBase = normalizeBase(panelBase);
   if (panelHostedByUsageService) {
     return normalizedPanelBase ? [normalizedPanelBase] : [];
   }
 
-  return [];
+  return Array.from(
+    new Set(
+      [
+        usageServiceEnabled && usageServiceBase ? usageServiceBase : '',
+        apiBase,
+        normalizedPanelBase,
+      ]
+        .map(normalizeBase)
+        .filter(Boolean)
+    )
+  );
 }
 
 export function managerConfigMatchesPanel({
   panelHostedByUsageService,
+  apiBase,
+  managerServiceBase,
+  config,
 }: {
   panelHostedByUsageService: boolean;
   apiBase: string;
+  managerServiceBase?: string;
   config: ManagerConfig;
 }): boolean {
-  return panelHostedByUsageService;
+  if (panelHostedByUsageService) return true;
+
+  const normalizedApiBase = normalizeBase(apiBase);
+  const configuredCpaBase = normalizeBase(config.cpaConnection?.cpaBaseUrl || '');
+  if (configuredCpaBase && normalizedApiBase && configuredCpaBase !== normalizedApiBase) {
+    return false;
+  }
+
+  const externalConfig = config.externalUsageService;
+  if (externalConfig?.enabled === false) return false;
+
+  const configuredManagerBase = normalizeBase(externalConfig?.serviceBase || '');
+  const normalizedManagerBase = normalizeBase(managerServiceBase || '');
+  return !configuredManagerBase || !normalizedManagerBase || configuredManagerBase === normalizedManagerBase;
 }
 
 type PanelFeatureAvailabilityRequestInput = {
   apiBase: string;
   managementKey: string;
   usageServiceRevision: number;
+  usageServiceEnabled: boolean;
+  usageServiceBase: string;
   panelBase: string;
 };
 
@@ -180,11 +212,15 @@ const buildAvailabilityRequestKey = ({
   apiBase,
   managementKey,
   usageServiceRevision,
+  usageServiceEnabled,
+  usageServiceBase,
   panelBase,
 }: PanelFeatureAvailabilityRequestInput): string =>
   [
     normalizeBase(panelBase),
     normalizeBase(apiBase),
+    usageServiceEnabled ? '1' : '0',
+    normalizeBase(usageServiceBase),
     managementKey,
     String(usageServiceRevision),
   ].join('\u001f');
@@ -193,6 +229,8 @@ async function detectPanelFeatureAvailability({
   apiBase,
   managementKey,
   panelBase,
+  usageServiceEnabled,
+  usageServiceBase,
 }: PanelFeatureAvailabilityRequestInput): Promise<PanelFeatureAvailability> {
   const normalizedPanelBase = normalizeBase(panelBase);
   if (!managementKey) {
@@ -218,6 +256,9 @@ async function detectPanelFeatureAvailability({
   const candidates = buildPanelManagerServiceCandidates({
     panelHostedByUsageService,
     panelBase: normalizedPanelBase,
+    apiBase,
+    usageServiceEnabled,
+    usageServiceBase,
   });
 
   for (const candidate of candidates) {
@@ -229,6 +270,7 @@ async function detectPanelFeatureAvailability({
         !managerConfigMatchesPanel({
           panelHostedByUsageService,
           apiBase,
+          managerServiceBase: candidate,
           config: response.config,
         })
       ) {
@@ -292,15 +334,27 @@ export function usePanelFeatureAvailability(): PanelFeatureAvailability {
   const demoMode = __DEMO_SITE__ && isDemoMode();
   const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
+  const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
+  const usageServiceBase = useUsageServiceStore((state) => state.serviceBase);
+  const usageServiceRevision = useUsageServiceStore((state) => state.revision);
   const panelBase = useMemo(() => detectApiBaseFromLocation(), []);
   const requestInput = useMemo(
     () => ({
       apiBase,
       managementKey,
-      usageServiceRevision: 0,
+      usageServiceEnabled,
+      usageServiceBase,
+      usageServiceRevision,
       panelBase,
     }),
-    [apiBase, managementKey, panelBase]
+    [
+      apiBase,
+      managementKey,
+      panelBase,
+      usageServiceBase,
+      usageServiceEnabled,
+      usageServiceRevision,
+    ]
   );
   const requestKey = useMemo(
     () => buildAvailabilityRequestKey(requestInput),

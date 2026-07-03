@@ -30,6 +30,7 @@ const COMMON_PROVIDER_KEY_FIELDS = [
   'apiKey',
   ...AUTH_INDEX_FIELDS,
   'priority',
+  'weight',
   'prefix',
   'base-url',
   'baseUrl',
@@ -58,11 +59,12 @@ const CLAUDE_KEY_FIELDS = [
   'experimental_cch_signing',
 ] as const;
 const GEMINI_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
-const VERTEX_KEY_FIELDS = COMMON_PROVIDER_KEY_FIELDS;
+const VERTEX_KEY_FIELDS = COMMON_PROVIDER_KEY_FIELDS.filter((field) => field !== 'weight');
 
 const OPENAI_PROVIDER_FIELDS = [
   'name',
   'priority',
+  'weight',
   'disabled',
   'prefix',
   'base-url',
@@ -105,6 +107,10 @@ const API_KEY_ENTRY_FIELDS = [
   'apiKey',
   'key',
   ...AUTH_INDEX_FIELDS,
+  'weight',
+  'balance-token',
+  'balanceToken',
+  'balance_token',
   'proxy-url',
   'proxyUrl',
   'proxy_url',
@@ -448,6 +454,9 @@ const serializeApiKeyEntry = (entry: ApiKeyEntry) => {
   if (apiKey) payload['api-key'] = apiKey;
   const authIndex = serializeAuthIndex(entry.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
+  if (entry.weight !== undefined) payload.weight = entry.weight;
+  const balanceToken = entry.balanceToken?.trim();
+  if (balanceToken) payload['balance-token'] = balanceToken;
   if (entry.proxyUrl) payload['proxy-url'] = entry.proxyUrl;
   const headers = serializeHeaders(entry.headers);
   if (headers) payload.headers = headers;
@@ -461,6 +470,7 @@ const serializeProviderKey = (config: ProviderKeyConfig) => {
   const authIndex = serializeAuthIndex(config.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.websockets !== undefined) payload.websockets = config.websockets;
@@ -514,6 +524,7 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
   const authIndex = serializeAuthIndex(config.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
@@ -566,6 +577,7 @@ const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   const models = serializeModelAliases(provider.models);
   if (models && models.length) payload.models = models;
   if (provider.priority !== undefined) payload.priority = provider.priority;
+  if (provider.weight !== undefined) payload.weight = provider.weight;
   if (provider.testModel) payload['test-model'] = provider.testModel;
   return payload;
 };

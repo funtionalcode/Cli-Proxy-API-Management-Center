@@ -33,6 +33,8 @@ export interface Config {
   usageStatisticsEnabled?: boolean;
   redisUsageQueueRetentionSeconds?: number;
   requestLog?: boolean;
+  successRequestLog?: boolean;
+  successLogsMaxFiles?: number;
   loggingToFile?: boolean;
   logsMaxTotalSizeMb?: number;
   pluginsEnabled?: boolean;
@@ -57,6 +59,8 @@ export type RawConfigSection =
   | 'usage-statistics-enabled'
   | 'redis-usage-queue-retention-seconds'
   | 'request-log'
+  | 'success-request-log'
+  | 'success-logs-max-files'
   | 'logging-to-file'
   | 'logs-max-total-size-mb'
   | 'plugins'

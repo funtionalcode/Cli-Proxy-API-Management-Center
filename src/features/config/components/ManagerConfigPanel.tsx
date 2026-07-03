@@ -76,7 +76,7 @@ export function ManagerConfigPanel({
 }: ManagerConfigPanelProps) {
   const { t } = useTranslation();
   const connectionInputDisabled =
-    disableControls || managerLoading || managerSaving || panelHostedByUsageService !== true;
+    disableControls || managerLoading || managerSaving;
 
   return (
     <div className={styles.managerConfigPanel}>

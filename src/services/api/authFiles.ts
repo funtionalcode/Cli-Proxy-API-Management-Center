@@ -18,6 +18,7 @@ export type AuthFileFieldsPatch = {
   websockets?: boolean;
   headers?: Record<string, string>;
   priority?: number;
+  weight?: number;
   note?: string;
 };
 export type AuthFilePatchAuthIndex = string | number;
@@ -434,6 +435,14 @@ const applyFieldsPatchToAuthRecord = (
       delete next.priority;
     } else {
       next.priority = fields.priority;
+    }
+  }
+
+  if (fields.weight !== undefined) {
+    if (fields.weight === 0) {
+      delete next.weight;
+    } else {
+      next.weight = fields.weight;
     }
   }
 

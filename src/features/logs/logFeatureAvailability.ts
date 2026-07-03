@@ -4,14 +4,17 @@ export function isFileLogsAvailable(config?: Pick<Config, 'loggingToFile'> | nul
   return config?.loggingToFile === true;
 }
 
-export function isErrorLogsTab(search?: string | URLSearchParams | null): boolean {
+export function isRequestLogsTab(search?: string | URLSearchParams | null): boolean {
   const params = typeof search === 'string' ? new URLSearchParams(search) : search;
-  return params?.get('tab') === 'errors';
+  const tab = params?.get('tab');
+  return tab === 'errors' || tab === 'success';
 }
+
+export const isErrorLogsTab = isRequestLogsTab;
 
 export function isLogsRouteAvailable(
   config: Pick<Config, 'loggingToFile'> | null | undefined,
   search?: string | URLSearchParams | null
 ): boolean {
-  return isErrorLogsTab(search) || isFileLogsAvailable(config);
+  return isRequestLogsTab(search) || isFileLogsAvailable(config);
 }

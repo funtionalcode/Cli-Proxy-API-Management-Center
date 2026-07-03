@@ -71,4 +71,42 @@ describe('logs API', () => {
       timeout: expect.any(Number),
     });
   });
+
+  it('loads and downloads success request logs', async () => {
+    mocks.get.mockResolvedValue({ files: [{ name: 'success.log' }] });
+    mocks.getRaw.mockResolvedValue({ data: 'ok' });
+
+    await expect(logsApi.fetchSuccessLogs()).resolves.toEqual({
+      files: [{ name: 'success.log' }],
+    });
+    await logsApi.downloadSuccessLog('success.log');
+
+    expect(mocks.get).toHaveBeenCalledWith('/request-success-logs', {
+      timeout: expect.any(Number),
+    });
+    expect(mocks.getRaw).toHaveBeenCalledWith('/request-success-logs/success.log', {
+      responseType: 'blob',
+      timeout: expect.any(Number),
+    });
+  });
+
+  it('downloads formatted error and success request logs', async () => {
+    mocks.getRaw.mockResolvedValue({ data: 'formatted' });
+
+    await logsApi.downloadFormattedErrorLog('error 1.log');
+    await logsApi.downloadFormattedSuccessLog('success 1.log');
+
+    expect(mocks.getRaw).toHaveBeenNthCalledWith(1, '/request-error-logs/error%201.log/formatted', {
+      responseType: 'blob',
+      timeout: expect.any(Number),
+    });
+    expect(mocks.getRaw).toHaveBeenNthCalledWith(
+      2,
+      '/request-success-logs/success%201.log/formatted',
+      {
+        responseType: 'blob',
+        timeout: expect.any(Number),
+      }
+    );
+  });
 });
