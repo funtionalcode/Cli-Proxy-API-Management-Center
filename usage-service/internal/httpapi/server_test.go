@@ -262,6 +262,148 @@ func TestUsageSummaryReturnsAggregatesWithoutDetails(t *testing.T) {
 	}
 }
 
+func TestMonitoringAnalyticsReturnsUsageAggregates(t *testing.T) {
+	handler := newTestHandler(t, "http://example.test", true)
+	payload := `[
+	  {
+	    "request_id":"req-1",
+	    "event_hash":"event-1",
+	    "timestamp_ms":1782270000000,
+	    "timestamp":"2026-06-24T00:20:00Z",
+	    "provider":"codex",
+	    "model":"gpt-4o",
+	    "endpoint":"POST /v1/chat/completions",
+	    "method":"POST",
+	    "path":"/v1/chat/completions",
+	    "auth_index":"auth-1",
+	    "source":"alice@example.com",
+	    "api_key_hash":"hash-test-key",
+	    "account_snapshot":"alice@example.com",
+	    "auth_label_snapshot":"Alice",
+	    "auth_file_snapshot":"alice.json",
+	    "auth_provider_snapshot":"codex",
+	    "input_tokens":10,
+	    "output_tokens":20,
+	    "cached_tokens":3,
+	    "total_tokens":30,
+	    "latency_ms":120,
+	    "failed":false
+	  },
+	  {
+	    "request_id":"req-2",
+	    "event_hash":"event-2",
+	    "timestamp_ms":1782273600000,
+	    "timestamp":"2026-06-24T01:20:00Z",
+	    "provider":"codex",
+	    "model":"gpt-4o",
+	    "endpoint":"POST /v1/chat/completions",
+	    "method":"POST",
+	    "path":"/v1/chat/completions",
+	    "auth_index":"auth-1",
+	    "source":"alice@example.com",
+	    "api_key_hash":"hash-test-key",
+	    "account_snapshot":"alice@example.com",
+	    "auth_label_snapshot":"Alice",
+	    "auth_file_snapshot":"alice.json",
+	    "auth_provider_snapshot":"codex",
+	    "input_tokens":5,
+	    "output_tokens":7,
+	    "total_tokens":12,
+	    "latency_ms":300,
+	    "failed":true
+	  }
+	]`
+	postUsageImport(t, handler, payload)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/monitoring/analytics",
+		strings.NewReader(`{
+		  "from_ms":1782266400000,
+		  "to_ms":1782280000000,
+		  "include":{
+		    "summary":true,
+		    "timeline":true,
+		    "model_stats":true,
+		    "channel_share":true,
+		    "account_stats":true,
+		    "api_key_stats":true,
+		    "filter_options":true,
+		    "events_page":{"limit":10}
+		  }
+		}`),
+	)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("analytics status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		GeneratedAtMS int64  `json:"generated_at_ms"`
+		Granularity   string `json:"granularity"`
+		Summary       struct {
+			TotalCalls     int64   `json:"total_calls"`
+			SuccessCalls   int64   `json:"success_calls"`
+			FailureCalls   int64   `json:"failure_calls"`
+			SuccessRate    float64 `json:"success_rate"`
+			InputTokens    int64   `json:"input_tokens"`
+			OutputTokens   int64   `json:"output_tokens"`
+			CachedTokens   int64   `json:"cached_tokens"`
+			TotalTokens    int64   `json:"total_tokens"`
+			AverageLatency *int64  `json:"average_latency_ms"`
+		} `json:"summary"`
+		Timeline []struct {
+			Calls  int64 `json:"calls"`
+			Tokens int64 `json:"tokens"`
+		} `json:"timeline"`
+		ModelStats []struct {
+			Model       string `json:"model"`
+			Calls       int64  `json:"calls"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"model_stats"`
+		ChannelShare []struct {
+			AuthIndex string `json:"auth_index"`
+			Calls     int64  `json:"calls"`
+		} `json:"channel_share"`
+		Events struct {
+			Items []struct {
+				RequestID string `json:"request_id"`
+			} `json:"items"`
+			TotalCount int64 `json:"total_count"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode analytics response: %v", err)
+	}
+	if response.GeneratedAtMS <= 0 || response.Granularity != "hour" {
+		t.Fatalf("response metadata = %#v", response)
+	}
+	if response.Summary.TotalCalls != 2 || response.Summary.SuccessCalls != 1 || response.Summary.FailureCalls != 1 {
+		t.Fatalf("summary counts = %#v", response.Summary)
+	}
+	if response.Summary.InputTokens != 15 || response.Summary.OutputTokens != 27 || response.Summary.CachedTokens != 3 || response.Summary.TotalTokens != 42 {
+		t.Fatalf("summary tokens = %#v", response.Summary)
+	}
+	if response.Summary.AverageLatency == nil || *response.Summary.AverageLatency != 210 {
+		t.Fatalf("average latency = %#v", response.Summary.AverageLatency)
+	}
+	if len(response.Timeline) == 0 || response.Timeline[0].Calls == 0 {
+		t.Fatalf("timeline = %#v", response.Timeline)
+	}
+	if len(response.ModelStats) != 1 || response.ModelStats[0].Model != "gpt-4o" || response.ModelStats[0].Calls != 2 {
+		t.Fatalf("model stats = %#v", response.ModelStats)
+	}
+	if len(response.ChannelShare) != 1 || response.ChannelShare[0].AuthIndex != "auth-1" || response.ChannelShare[0].Calls != 2 {
+		t.Fatalf("channel share = %#v", response.ChannelShare)
+	}
+	if response.Events.TotalCount != 2 || len(response.Events.Items) != 2 || response.Events.Items[0].RequestID != "req-2" {
+		t.Fatalf("events = %#v", response.Events)
+	}
+}
+
 func TestUsageBreakdownPageEndpointsReturnPagination(t *testing.T) {
 	handler := newTestHandler(t, "http://example.test", true)
 	payload := `{

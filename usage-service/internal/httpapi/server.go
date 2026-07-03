@@ -126,6 +126,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.withCORS(s.handleAPIKeyAliases)(w, r)
 		return
 	}
+	if strings.TrimRight(r.URL.Path, "/") == "/v0/management/monitoring/analytics" {
+		s.withCORS(s.handleMonitoringAnalytics)(w, r)
+		return
+	}
 	cleanUsagePath := strings.TrimRight(r.URL.Path, "/")
 	if cleanUsagePath == "/v0/management/usage" || strings.HasPrefix(cleanUsagePath, "/v0/management/usage/") {
 		s.withCORS(s.handleUsage)(w, r)
@@ -531,6 +535,32 @@ func (s *Server) handleAPIKeyAliases(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) handleMonitoringAnalytics(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var req store.MonitoringAnalyticsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.FromMS <= 0 || req.ToMS <= 0 || req.FromMS >= req.ToMS {
+		writeError(w, http.StatusBadRequest, errors.New("from_ms and to_ms are required"))
+		return
+	}
+	response, err := s.store.MonitoringAnalytics(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // resolveCPAProxyURL 解析 CPA 全局代理 URL；任何步骤失败都返回空字符串，
