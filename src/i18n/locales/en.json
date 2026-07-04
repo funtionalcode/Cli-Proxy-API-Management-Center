@@ -2490,6 +2490,10 @@
           "timeout": "Timeout",
           "stabilize_device": "Stabilize Device Profile",
           "stabilize_device_desc": "Pin OS/Arch and stabilize the software fingerprint per credential/API key",
+          "online_update": "Online Header Update",
+          "online_update_desc": "Allow core to refresh version-sensitive managed header markers from public registries (global, default off)",
+          "normalize_account_env": "Normalize Account Env",
+          "normalize_account_env_desc": "Rewrite real cwd/home paths in request body to a per-account canonical path (global, default off; rollback by turning off)",
           "beta_features": "Beta Features",
           "identity_confuse": "Enable Codex Identity Confuse",
           "identity_confuse_desc": "Write codex.identity-confuse to let CPA mix Codex request identity headers for compatibility"

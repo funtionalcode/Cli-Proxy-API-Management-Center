@@ -134,6 +134,8 @@ export type VisualConfigValues = {
   claudeHeaderArch: string;
   claudeHeaderTimeout: string;
   claudeHeaderStabilizeDeviceProfile: boolean;
+  managedHeaderOnlineUpdate: boolean;
+  normalizeAccountEnv: boolean;
   codexHeaderUserAgent: string;
   codexHeaderBetaFeatures: string;
   codexIdentityConfuse: boolean;
@@ -199,6 +201,8 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   claudeHeaderArch: '',
   claudeHeaderTimeout: '',
   claudeHeaderStabilizeDeviceProfile: false,
+  managedHeaderOnlineUpdate: false,
+  normalizeAccountEnv: false,
   codexHeaderUserAgent: '',
   codexHeaderBetaFeatures: '',
   codexIdentityConfuse: false,

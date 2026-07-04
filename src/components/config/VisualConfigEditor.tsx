@@ -1119,6 +1119,26 @@ export function VisualConfigEditor({
                           onChange({ claudeHeaderStabilizeDeviceProfile })
                         }
                       />
+                      <ToggleRow
+                        title={t('config_management.visual.sections.headers.online_update')}
+                        description={t(
+                          'config_management.visual.sections.headers.online_update_desc'
+                        )}
+                        checked={values.managedHeaderOnlineUpdate}
+                        disabled={disabled}
+                        onChange={(managedHeaderOnlineUpdate) =>
+                          onChange({ managedHeaderOnlineUpdate })
+                        }
+                      />
+                      <ToggleRow
+                        title={t('config_management.visual.sections.headers.normalize_account_env')}
+                        description={t(
+                          'config_management.visual.sections.headers.normalize_account_env_desc'
+                        )}
+                        checked={values.normalizeAccountEnv}
+                        disabled={disabled}
+                        onChange={(normalizeAccountEnv) => onChange({ normalizeAccountEnv })}
+                      />
                     </SectionGrid>
                   </SectionSubsection>
 

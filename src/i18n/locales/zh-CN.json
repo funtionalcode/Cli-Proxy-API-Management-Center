@@ -2490,6 +2490,10 @@
           "timeout": "Timeout",
           "stabilize_device": "稳定设备指纹",
           "stabilize_device_desc": "固定 OS/Arch，并按凭据/API Key 稳定软件指纹",
+          "online_update": "请求头在线更新",
+          "online_update_desc": "允许核心从公开 registry 在线刷新版本敏感的托管请求头标记（全局，默认关）",
+          "normalize_account_env": "账号环境归一化",
+          "normalize_account_env_desc": "把请求正文中的真实 cwd/home 路径改写为每账号规范路径（全局，默认关；关掉即回滚）",
           "beta_features": "Beta Features",
           "identity_confuse": "启用 Codex 身份混淆",
           "identity_confuse_desc": "写入 codex.identity-confuse，让 CPA 混合 Codex 请求身份 Header 以提升兼容性"

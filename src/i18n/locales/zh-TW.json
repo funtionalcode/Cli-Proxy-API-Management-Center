@@ -2490,6 +2490,10 @@
           "timeout": "Timeout",
           "stabilize_device": "穩定設備指紋",
           "stabilize_device_desc": "固定 OS/Arch，並按憑證/API Key 穩定軟體指紋",
+          "online_update": "請求標頭線上更新",
+          "online_update_desc": "允許核心從公開 registry 線上刷新版本敏感的托管請求標頭標記（全域，預設關）",
+          "normalize_account_env": "帳號環境正規化",
+          "normalize_account_env_desc": "把請求正文中的真實 cwd/home 路徑改寫為每帳號規範路徑（全域，預設關；關掉即回滾）",
           "beta_features": "Beta Features",
           "identity_confuse": "啟用 Codex 身份混淆",
           "identity_confuse_desc": "寫入 codex.identity-confuse，讓 CPA 混合 Codex 請求身份 Header 以提升相容性"

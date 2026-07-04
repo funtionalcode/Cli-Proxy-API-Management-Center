@@ -2489,6 +2489,10 @@
           "timeout": "Timeout",
           "stabilize_device": "Стабилизировать профиль устройства",
           "stabilize_device_desc": "Фиксировать OS/Arch и стабилизировать программный отпечаток для учётных данных/API-ключа",
+          "online_update": "Онлайн-обновление заголовков",
+          "online_update_desc": "Разрешить ядру обновлять версионно-зависимые маркеры заголовков из публичных реестров (глобально, по умолчанию выкл.)",
+          "normalize_account_env": "Нормализация окружения аккаунта",
+          "normalize_account_env_desc": "Переписывать реальные пути cwd/home в теле запроса на канонический путь аккаунта (глобально, по умолчанию выкл.; откат — выключить)",
           "beta_features": "Beta Features",
           "identity_confuse": "Включить Codex identity-confuse",
           "identity_confuse_desc": "Записывает codex.identity-confuse, чтобы CPA смешивал identity-заголовки Codex для совместимости"

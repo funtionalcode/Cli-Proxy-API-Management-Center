@@ -153,6 +153,29 @@ function resolveApiKeysText(parsed: Record<string, unknown>): string {
   return parseApiKeysText(configApiKeyProvider['api-keys']);
 }
 
+function readRecordValue(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
+  }
+  return undefined;
+}
+
+function readBooleanConfigValue(
+  record: Record<string, unknown> | null | undefined,
+  keys: string[],
+  fallback: boolean
+): boolean {
+  const value = readRecordValue(record, keys);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return fallback;
+}
+
 type YamlDocument = ReturnType<typeof parseDocument>;
 type YamlPath = string[];
 
@@ -457,6 +480,8 @@ function getNextDirtyFields(
       'claudeHeaderArch',
       'claudeHeaderTimeout',
       'claudeHeaderStabilizeDeviceProfile',
+      'managedHeaderOnlineUpdate',
+      'normalizeAccountEnv',
       'codexHeaderUserAgent',
       'codexHeaderBetaFeatures',
       'codexIdentityConfuse',
@@ -733,6 +758,7 @@ export function useVisualConfig() {
       const streaming = asRecord(parsed.streaming);
       const claudeHeaderDefaults = asRecord(parsed['claude-header-defaults']);
       const codexHeaderDefaults = asRecord(parsed['codex-header-defaults']);
+      const managedHeaderProfile = asRecord(parsed['managed-header-profile']);
       const codex = asRecord(parsed.codex);
 
       const newValues: VisualConfigValues = {
@@ -813,6 +839,16 @@ export function useVisualConfig() {
           typeof claudeHeaderDefaults?.timeout === 'string' ? claudeHeaderDefaults.timeout : '',
         claudeHeaderStabilizeDeviceProfile: Boolean(
           claudeHeaderDefaults?.['stabilize-device-profile']
+        ),
+        managedHeaderOnlineUpdate: readBooleanConfigValue(
+          managedHeaderProfile,
+          ['online-update', 'online_update'],
+          DEFAULT_VISUAL_VALUES.managedHeaderOnlineUpdate
+        ),
+        normalizeAccountEnv: readBooleanConfigValue(
+          parsed,
+          ['normalize-account-env', 'normalize_account_env'],
+          DEFAULT_VISUAL_VALUES.normalizeAccountEnv
         ),
         codexHeaderUserAgent:
           typeof codexHeaderDefaults?.['user-agent'] === 'string'
@@ -1074,6 +1110,22 @@ export function useVisualConfig() {
           );
           deleteIfMapEmpty(doc, ['claude-header-defaults']);
         }
+
+        if (
+          docHas(doc, ['managed-header-profile']) ||
+          values.managedHeaderOnlineUpdate ||
+          dirtyFields.has('managedHeaderOnlineUpdate')
+        ) {
+          ensureMapInDoc(doc, ['managed-header-profile']);
+          setBooleanInDoc(
+            doc,
+            ['managed-header-profile', 'online-update'],
+            values.managedHeaderOnlineUpdate
+          );
+          deleteIfMapEmpty(doc, ['managed-header-profile']);
+        }
+
+        setBooleanInDoc(doc, ['normalize-account-env'], values.normalizeAccountEnv);
 
         if (
           docHas(doc, ['codex-header-defaults']) ||

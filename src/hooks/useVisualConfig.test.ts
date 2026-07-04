@@ -301,4 +301,41 @@ describe('useVisualConfig', () => {
 
     harness.unmount();
   });
+
+  it('loads and writes managed header and account env switches', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = [
+      'host: 127.0.0.1',
+      'managed-header-profile:',
+      '  online-update: false',
+      'normalize-account-env: false',
+      '',
+    ].join('\n');
+
+    act(() => {
+      const result = harness.getCurrent().loadVisualValuesFromYaml(yaml);
+      expect(result.ok).toBe(true);
+    });
+
+    expect(harness.getCurrent().visualValues.managedHeaderOnlineUpdate).toBe(false);
+    expect(harness.getCurrent().visualValues.normalizeAccountEnv).toBe(false);
+
+    act(() => {
+      harness.getCurrent().setVisualValues({
+        managedHeaderOnlineUpdate: true,
+        normalizeAccountEnv: true,
+      });
+    });
+
+    const savedYaml = harness.getCurrent().applyVisualChangesToYaml(yaml);
+    const parsed = parseYaml(savedYaml) as {
+      'managed-header-profile'?: { 'online-update'?: boolean };
+      'normalize-account-env'?: boolean;
+    };
+
+    expect(parsed['managed-header-profile']?.['online-update']).toBe(true);
+    expect(parsed['normalize-account-env']).toBe(true);
+
+    harness.unmount();
+  });
 });
