@@ -2351,13 +2351,25 @@ func (s *Store) RecentEvents(ctx context.Context, limit int) ([]usage.Event, err
 }
 
 func (s *Store) queryEvents(ctx context.Context, whereClause string, args []any, limit int, offset int) ([]usage.Event, error) {
+	return s.queryEventsWithRawJSON(ctx, whereClause, args, limit, offset, true)
+}
+
+func (s *Store) queryAnalyticsEvents(ctx context.Context, whereClause string, args []any, limit int, offset int) ([]usage.Event, error) {
+	return s.queryEventsWithRawJSON(ctx, whereClause, args, limit, offset, false)
+}
+
+func (s *Store) queryEventsWithRawJSON(ctx context.Context, whereClause string, args []any, limit int, offset int, includeRawJSON bool) ([]usage.Event, error) {
+	rawJSONExpression := "''"
+	if includeRawJSON {
+		rawJSONExpression = "raw_json"
+	}
 	rows, err := s.db.QueryContext(ctx, `select
 		request_id, event_hash, timestamp_ms, timestamp, provider, model, endpoint, method, path,
 		auth_type, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
 		requested_model, resolved_model,
 		input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_tokens, total_tokens,
-		latency_ms, failed, raw_json, created_at_ms
+		latency_ms, failed, `+rawJSONExpression+` as raw_json, created_at_ms
 		from usage_events`+whereClause+`
 		order by timestamp_ms desc, id desc
 		limit ? offset ?`, append(args, limit, offset)...)

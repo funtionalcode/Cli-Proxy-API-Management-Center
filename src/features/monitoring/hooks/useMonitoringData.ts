@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { MonitoringAnalyticsEventRow } from '@/services/api/usageService';
+import type {
+  MonitoringAnalyticsEventRow,
+  MonitoringAnalyticsEventsPageRequest,
+  MonitoringAnalyticsInclude,
+} from '@/services/api/usageService';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
@@ -97,6 +101,27 @@ export {
 const MONITORING_EVENTS_PAGE_LIMIT = 500;
 const MONITORING_PRESENTATION_CACHE_LIMIT = 24;
 const EMPTY_MONITORING_ANALYTICS_EVENT_ROWS: MonitoringAnalyticsEventRow[] = [];
+type MonitoringAnalyticsGranularity = 'hour' | 'day';
+
+export const buildMonitoringAggregateInclude = (
+  granularity: MonitoringAnalyticsGranularity
+): MonitoringAnalyticsInclude => ({
+  summary: true,
+  account_stats: true,
+  api_key_stats: true,
+  filter_options: true,
+  recent_failures: 8,
+  granularity,
+});
+
+export const buildMonitoringEventsPageRequest = (
+  beforeMs: number | null,
+  beforeId: number | null
+): MonitoringAnalyticsEventsPageRequest => ({
+  limit: MONITORING_EVENTS_PAGE_LIMIT,
+  before_ms: beforeMs,
+  before_id: beforeId,
+});
 
 interface MonitoringEventsPageState {
   scopeKey: string;
@@ -436,6 +461,14 @@ export function useMonitoringData({
   const eventItems = activeEventsPageState.items;
   const eventsHasMore = activeEventsPageState.hasMore;
   const eventsLoadingMore = activeEventsPageState.loadingMore;
+  const aggregateInclude = useMemo(
+    () => buildMonitoringAggregateInclude(analyticsGranularity),
+    [analyticsGranularity]
+  );
+  const eventsPageRequest = useMemo(
+    () => buildMonitoringEventsPageRequest(eventsBeforeMs, eventsBeforeId),
+    [eventsBeforeId, eventsBeforeMs]
+  );
 
   const analytics = useMonitoringAnalytics({
     fromMs: analyticsBounds?.startMs,
@@ -445,53 +478,49 @@ export function useMonitoringData({
     searchQuery,
     searchApiKeyHash,
     filters: analyticsFilters,
-    include: {
-      summary: true,
-      timeline: true,
-      hourly_distribution: true,
-      model_share: true,
-      channel_share: true,
-      model_stats: true,
-      failure_sources: true,
-      account_stats: true,
-      api_key_stats: true,
-      filter_options: true,
-      task_buckets: true,
-      recent_failures: 8,
-      events_page: {
-        limit: MONITORING_EVENTS_PAGE_LIMIT,
-        before_ms: eventsBeforeMs,
-        before_id: eventsBeforeId,
-      },
-      granularity: analyticsGranularity,
-    },
+    include: aggregateInclude,
     throttleMs: 1_000,
+  });
+  const eventsAnalytics = useMonitoringAnalytics({
+    fromMs: analyticsBounds?.startMs,
+    toMs: analyticsBounds?.endMs,
+    nowMs: analyticsNowMs,
+    dataScopeKey: eventsScopeKey,
+    searchQuery,
+    searchApiKeyHash,
+    filters: analyticsFilters,
+    include: {},
+    eventsPage: eventsPageRequest,
+    throttleMs: 0,
   });
   const analyticsData = analytics.data;
   const currentAnalyticsData = analytics.dataStale ? null : analyticsData;
+  const eventsAnalyticsData = eventsAnalytics.data;
+  const currentEventsAnalyticsData = eventsAnalytics.dataStale ? null : eventsAnalyticsData;
   const displayEventItems = useMemo(
     () =>
       resolveMonitoringDisplayEventItems({
-        analyticsData,
-        currentPageItems: currentAnalyticsData?.events?.items ?? null,
+        analyticsData: eventsAnalyticsData,
+        currentPageItems: currentEventsAnalyticsData?.events?.items ?? null,
         eventsPageItems: eventItems,
         eventsBeforeMs,
-        dataStale: analytics.dataStale,
+        dataStale: eventsAnalytics.dataStale,
       }),
     [
-      analytics.dataStale,
-      analyticsData,
-      currentAnalyticsData?.events?.items,
+      eventsAnalytics.dataStale,
+      eventsAnalyticsData,
+      currentEventsAnalyticsData?.events?.items,
       eventItems,
       eventsBeforeMs,
     ]
   );
-  const displayEventsHasMore = currentAnalyticsData?.events?.has_more ?? eventsHasMore;
+  const displayEventsHasMore = currentEventsAnalyticsData?.events?.has_more ?? eventsHasMore;
   const eventsLoadedCount = displayEventItems.length;
-  const displayEventsTotalCount = currentAnalyticsData?.events?.total_count ?? eventsLoadedCount;
+  const displayEventsTotalCount =
+    currentEventsAnalyticsData?.events?.total_count ?? eventsLoadedCount;
 
   useEffect(() => {
-    const page = currentAnalyticsData?.events;
+    const page = currentEventsAnalyticsData?.events;
     if (!page) return;
     const requestBeforeMs = eventsBeforeMs;
     const requestBeforeId = eventsBeforeId;
@@ -522,10 +551,10 @@ export function useMonitoringData({
     return () => {
       cancelled = true;
     };
-  }, [currentAnalyticsData?.events, eventsScopeKey, eventsBeforeMs, eventsBeforeId]);
+  }, [currentEventsAnalyticsData?.events, eventsScopeKey, eventsBeforeMs, eventsBeforeId]);
 
   useEffect(() => {
-    if (analytics.error) {
+    if (eventsAnalytics.error) {
       let cancelled = false;
       queueMicrotask(() => {
         if (cancelled) return;
@@ -537,13 +566,13 @@ export function useMonitoringData({
         cancelled = true;
       };
     }
-  }, [analytics.error]);
+  }, [eventsAnalytics.error]);
 
   const loadMoreEvents = useCallback(() => {
-    if (analytics.loading || eventsLoadingMore || !eventsHasMore) return;
-    const nextBeforeMs = currentAnalyticsData?.events?.next_before_ms;
+    if (eventsAnalytics.loading || eventsLoadingMore || !eventsHasMore) return;
+    const nextBeforeMs = currentEventsAnalyticsData?.events?.next_before_ms;
     if (!nextBeforeMs) return;
-    const nextBeforeId = currentAnalyticsData?.events?.next_before_id ?? null;
+    const nextBeforeId = currentEventsAnalyticsData?.events?.next_before_id ?? null;
     setEventsPageState((previous) => {
       const base =
         previous.scopeKey === eventsScopeKey ? previous : createEventsPageState(eventsScopeKey);
@@ -551,16 +580,16 @@ export function useMonitoringData({
       return { ...base, beforeMs: nextBeforeMs, beforeId: nextBeforeId, loadingMore: true };
     });
   }, [
-    currentAnalyticsData?.events?.next_before_ms,
-    currentAnalyticsData?.events?.next_before_id,
-    analytics.loading,
+    currentEventsAnalyticsData?.events?.next_before_ms,
+    currentEventsAnalyticsData?.events?.next_before_id,
+    eventsAnalytics.loading,
     eventsScopeKey,
     eventsHasMore,
     eventsLoadingMore,
   ]);
 
   const allRows = useMemo(() => {
-    const details = analyticsData
+    const details = eventsAnalyticsData
       ? buildUsageDetailsFromAnalyticsEvents(displayEventItems)
       : collectUsageDetailsWithEndpoint(usage);
     return buildEventRows(
@@ -577,8 +606,8 @@ export function useMonitoringData({
     authFileMap,
     authMetaMap,
     channelByAuthIndex,
-    analyticsData,
     displayEventItems,
+    eventsAnalyticsData,
     modelPrices,
     sourceInfoMap,
     usage,
@@ -813,9 +842,10 @@ export function useMonitoringData({
       timelineData.points,
     ]
   );
+  const presentationDataStale = analytics.dataStale || eventsAnalytics.dataStale;
 
   useEffect(() => {
-    if (analytics.dataStale) return;
+    if (presentationDataStale) return;
 
     let cancelled = false;
     queueMicrotask(() => {
@@ -844,21 +874,21 @@ export function useMonitoringData({
     return () => {
       cancelled = true;
     };
-  }, [analytics.dataStale, computedPresentationSnapshot, eventsScopeKey]);
+  }, [presentationDataStale, computedPresentationSnapshot, eventsScopeKey]);
 
   const presentationResolution = useMemo(
     () =>
       resolveMonitoringPresentationSnapshot({
         computedSnapshot: computedPresentationSnapshot,
         scopeKey: eventsScopeKey,
-        dataStale: analytics.dataStale,
+        dataStale: presentationDataStale,
         cachedSnapshots: presentationSnapshotStore.cachedSnapshots,
         lastStableSnapshot: presentationSnapshotStore.lastStableSnapshot,
       }),
     [
-      analytics.dataStale,
       computedPresentationSnapshot,
       eventsScopeKey,
+      presentationDataStale,
       presentationSnapshotStore.cachedSnapshots,
       presentationSnapshotStore.lastStableSnapshot,
     ]
@@ -885,10 +915,11 @@ export function useMonitoringData({
   }, [authFiles.length, channels, uniqueAuthMeta]);
 
   const statusChips = useMemo(() => buildStatusChips(metadata), [metadata]);
+  const eventsInitialLoading = eventsAnalytics.loading && displayEventItems.length === 0;
 
   return {
-    loading: loading || analytics.loading,
-    error: [error, analytics.error].filter(Boolean).join('；'),
+    loading: loading || analytics.loading || eventsInitialLoading,
+    error: [error, analytics.error, eventsAnalytics.error].filter(Boolean).join('；'),
     authFiles,
     channels,
     summary: presentationSnapshot.summary,
@@ -912,7 +943,7 @@ export function useMonitoringData({
     eventsTotalCount: presentationSnapshot.eventsTotalCount,
     eventsLoadedCount: presentationSnapshot.eventsLoadedCount,
     lastRefreshedAt: presentationSnapshot.lastRefreshedAt,
-    isTransitioningScope: analytics.dataStale,
+    isTransitioningScope: presentationDataStale,
     hasPresentationSnapshot: presentationResolution.hasPresentationSnapshot,
     refreshMeta,
     loadMoreEvents,

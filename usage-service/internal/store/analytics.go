@@ -558,27 +558,88 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 	if granularity != "day" {
 		granularity = "hour"
 	}
+	includeAll := allMonitoringAnalyticsIncludesEmpty(request.Include)
 	whereClause, args := request.monitoringAnalyticsWhereClause()
-	events, err := s.queryEvents(ctx, whereClause, args, maxMonitoringAnalyticsEvents, 0)
-	if err != nil {
-		return MonitoringAnalyticsResponse{}, err
+	events := []usage.Event{}
+	if monitoringAnalyticsNeedsAggregateEvents(request.Include, includeAll) {
+		queriedEvents, err := s.queryAnalyticsEvents(ctx, whereClause, args, maxMonitoringAnalyticsEvents, 0)
+		if err != nil {
+			return MonitoringAnalyticsResponse{}, err
+		}
+		events = queriedEvents
 	}
-	prices, err := s.LoadModelPrices(ctx)
-	if err != nil {
-		return MonitoringAnalyticsResponse{}, err
+	costs := monitoringAnalyticsCostContext{}
+	if monitoringAnalyticsNeedsCosts(request.Include, includeAll) {
+		prices, err := s.LoadModelPrices(ctx)
+		if err != nil {
+			return MonitoringAnalyticsResponse{}, err
+		}
+		costs = newMonitoringAnalyticsCostContext(prices)
 	}
-	costs := newMonitoringAnalyticsCostContext(prices)
 
 	response := MonitoringAnalyticsResponse{
 		GeneratedAtMS: time.Now().UnixMilli(),
 		Granularity:   granularity,
 	}
-	summary := buildMonitoringAnalyticsSummary(events, request, costs)
-	if request.Include.Summary || request.Include.SummaryComparison || allMonitoringAnalyticsIncludesEmpty(request.Include) {
-		response.Summary = &summary
+	var summary *MonitoringAnalyticsSummary
+	getSummary := func() *MonitoringAnalyticsSummary {
+		if summary == nil {
+			value := buildMonitoringAnalyticsSummary(events, request, costs)
+			summary = &value
+		}
+		return summary
+	}
+	var modelStats []MonitoringAnalyticsModelStat
+	modelStatsReady := false
+	getModelStats := func() []MonitoringAnalyticsModelStat {
+		if !modelStatsReady {
+			modelStats = buildMonitoringAnalyticsModelStats(events, costs)
+			modelStatsReady = true
+		}
+		return modelStats
+	}
+	var channelShare []MonitoringAnalyticsChannelShareRow
+	channelShareReady := false
+	getChannelShare := func() []MonitoringAnalyticsChannelShareRow {
+		if !channelShareReady {
+			channelShare = buildMonitoringAnalyticsChannelShare(events, costs)
+			channelShareReady = true
+		}
+		return channelShare
+	}
+	var accountStats []MonitoringAnalyticsAccountStatRow
+	accountStatsReady := false
+	getAccountStats := func() []MonitoringAnalyticsAccountStatRow {
+		if !accountStatsReady {
+			accountStats = buildMonitoringAnalyticsAccountStats(events, costs)
+			accountStatsReady = true
+		}
+		return accountStats
+	}
+	var credentialStats []MonitoringAnalyticsCredentialStatRow
+	credentialStatsReady := false
+	getCredentialStats := func() []MonitoringAnalyticsCredentialStatRow {
+		if !credentialStatsReady {
+			credentialStats = buildMonitoringAnalyticsCredentialStats(events, costs)
+			credentialStatsReady = true
+		}
+		return credentialStats
+	}
+	var apiKeyStats []MonitoringAnalyticsAPIKeyStatRow
+	apiKeyStatsReady := false
+	getAPIKeyStats := func() []MonitoringAnalyticsAPIKeyStatRow {
+		if !apiKeyStatsReady {
+			apiKeyStats = buildMonitoringAnalyticsAPIKeyStats(events, costs)
+			apiKeyStatsReady = true
+		}
+		return apiKeyStats
+	}
+
+	if request.Include.Summary || request.Include.SummaryComparison || includeAll {
+		response.Summary = getSummary()
 	}
 	if request.Include.SummaryComparison {
-		response.SummaryComparison = buildMonitoringAnalyticsComparison(ctx, s, request)
+		response.SummaryComparison = buildMonitoringAnalyticsComparison(ctx, s, request, costs)
 	}
 	if request.Include.Timeline {
 		response.Timeline = buildMonitoringAnalyticsTimeline(events, granularity, costs)
@@ -586,38 +647,33 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 	if request.Include.HourlyDistribution {
 		response.HourlyDistribution = buildMonitoringAnalyticsHourlyDistribution(events)
 	}
-	modelStats := buildMonitoringAnalyticsModelStats(events, costs)
-	channelShare := buildMonitoringAnalyticsChannelShare(events, costs)
-	accountStats := buildMonitoringAnalyticsAccountStats(events, costs)
-	credentialStats := buildMonitoringAnalyticsCredentialStats(events, costs)
-	apiKeyStats := buildMonitoringAnalyticsAPIKeyStats(events, costs)
 	if request.Include.ModelStats {
-		response.ModelStats = modelStats
+		response.ModelStats = getModelStats()
 	}
 	if request.Include.ModelShare {
-		response.ModelShare = buildMonitoringAnalyticsModelShare(modelStats)
+		response.ModelShare = buildMonitoringAnalyticsModelShare(getModelStats())
 	}
 	if request.Include.ChannelShare {
-		response.ChannelShare = channelShare
+		response.ChannelShare = getChannelShare()
 	}
 	if request.Include.AccountStats {
-		response.AccountStats = accountStats
+		response.AccountStats = getAccountStats()
 	}
 	if request.Include.CredentialStats {
-		response.CredentialStats = credentialStats
+		response.CredentialStats = getCredentialStats()
 	}
 	if request.Include.CredentialTimeline {
 		response.CredentialTimeline = buildMonitoringAnalyticsCredentialTimeline(events, granularity, costs)
 	}
 	if request.Include.APIKeyStats {
-		response.APIKeyStats = apiKeyStats
+		response.APIKeyStats = getAPIKeyStats()
 	}
 	if request.Include.FilterOptions {
 		response.FilterOptions = &MonitoringAnalyticsFilterOptions{
-			AccountStats: accountStats,
-			APIKeyStats:  apiKeyStats,
-			ChannelShare: channelShare,
-			ModelStats:   modelStats,
+			AccountStats: getAccountStats(),
+			APIKeyStats:  getAPIKeyStats(),
+			ChannelShare: getChannelShare(),
+			ModelStats:   getModelStats(),
 			Providers:    uniqueSorted(eventStrings(events, func(event usage.Event) string { return firstNonEmpty(event.AuthProviderSnapshot, event.Provider) })),
 			AuthFiles:    uniqueSorted(eventStrings(events, func(event usage.Event) string { return event.AuthFileSnapshot })),
 			ProjectIDs:   uniqueSorted(eventStrings(events, func(event usage.Event) string { return event.AuthProjectIDSnapshot })),
@@ -634,7 +690,11 @@ func (s *Store) MonitoringAnalytics(ctx context.Context, request MonitoringAnaly
 		response.TaskBuckets = []any{}
 	}
 	if request.Include.RecentFailures > 0 {
-		response.RecentFailures = buildMonitoringAnalyticsRecentFailures(events, request.Include.RecentFailures)
+		recentFailures, err := s.monitoringAnalyticsRecentFailures(ctx, request, request.Include.RecentFailures)
+		if err != nil {
+			return MonitoringAnalyticsResponse{}, err
+		}
+		response.RecentFailures = recentFailures
 	}
 	if request.Include.EventsPage != nil {
 		page, err := s.monitoringAnalyticsEventsPage(ctx, request, *request.Include.EventsPage)
@@ -668,6 +728,21 @@ func allMonitoringAnalyticsIncludesEmpty(include MonitoringAnalyticsInclude) boo
 		!include.FilterOptions && !include.Heatmap && !include.AnomalyPoints &&
 		!include.TaskBuckets && include.RecentFailures <= 0 && include.EventsPage == nil &&
 		include.DrilldownPreview == nil
+}
+
+func monitoringAnalyticsNeedsAggregateEvents(include MonitoringAnalyticsInclude, includeAll bool) bool {
+	return includeAll || include.Summary || include.SummaryComparison || include.Timeline ||
+		include.HourlyDistribution || include.ModelShare || include.ChannelShare ||
+		include.ModelStats || include.AccountStats || include.CredentialStats ||
+		include.CredentialTimeline || include.APIKeyStats || include.FilterOptions ||
+		include.Heatmap
+}
+
+func monitoringAnalyticsNeedsCosts(include MonitoringAnalyticsInclude, includeAll bool) bool {
+	return includeAll || include.Summary || include.SummaryComparison || include.Timeline ||
+		include.ModelShare || include.ChannelShare || include.ModelStats ||
+		include.AccountStats || include.CredentialStats || include.CredentialTimeline ||
+		include.APIKeyStats || include.FilterOptions || include.Heatmap
 }
 
 func (request MonitoringAnalyticsRequest) monitoringAnalyticsWhereClause() (string, []any) {
@@ -838,7 +913,7 @@ func buildMonitoringAnalyticsSummary(events []usage.Event, request MonitoringAna
 	}
 }
 
-func buildMonitoringAnalyticsComparison(ctx context.Context, s *Store, request MonitoringAnalyticsRequest) *MonitoringAnalyticsSummaryComparison {
+func buildMonitoringAnalyticsComparison(ctx context.Context, s *Store, request MonitoringAnalyticsRequest, costs monitoringAnalyticsCostContext) *MonitoringAnalyticsSummaryComparison {
 	rangeMS := request.ToMS - request.FromMS
 	if rangeMS <= 0 {
 		return nil
@@ -847,15 +922,11 @@ func buildMonitoringAnalyticsComparison(ctx context.Context, s *Store, request M
 	previous.ToMS = request.FromMS
 	previous.FromMS = request.FromMS - rangeMS
 	whereClause, args := previous.monitoringAnalyticsWhereClause()
-	events, err := s.queryEvents(ctx, whereClause, args, maxMonitoringAnalyticsEvents, 0)
+	events, err := s.queryAnalyticsEvents(ctx, whereClause, args, maxMonitoringAnalyticsEvents, 0)
 	if err != nil {
 		return nil
 	}
-	prices, err := s.LoadModelPrices(ctx)
-	if err != nil {
-		return nil
-	}
-	summary := buildMonitoringAnalyticsSummary(events, previous, newMonitoringAnalyticsCostContext(prices))
+	summary := buildMonitoringAnalyticsSummary(events, previous, costs)
 	return &MonitoringAnalyticsSummaryComparison{
 		FromMS:       previous.FromMS,
 		ToMS:         previous.ToMS,
@@ -1390,18 +1461,24 @@ func buildMonitoringAnalyticsHeatmap(events []usage.Event, costs monitoringAnaly
 	return result
 }
 
-func buildMonitoringAnalyticsRecentFailures(events []usage.Event, limit int) []MonitoringAnalyticsEventRow {
-	result := []MonitoringAnalyticsEventRow{}
-	for _, event := range events {
-		if !event.Failed {
-			continue
-		}
-		result = append(result, monitoringAnalyticsEventRow(event))
-		if len(result) >= limit {
-			break
-		}
+func (s *Store) monitoringAnalyticsRecentFailures(ctx context.Context, request MonitoringAnalyticsRequest, limit int) ([]MonitoringAnalyticsEventRow, error) {
+	if limit <= 0 {
+		return nil, nil
 	}
-	return result
+	if limit > MaxUsagePageSize {
+		limit = MaxUsagePageSize
+	}
+	whereClause, args := request.monitoringAnalyticsWhereClause()
+	whereClause, args = appendWhereCondition(whereClause, args, "failed != 0")
+	events, err := s.queryEvents(ctx, whereClause, args, limit, 0)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]MonitoringAnalyticsEventRow, 0, len(events))
+	for _, event := range events {
+		result = append(result, monitoringAnalyticsEventRow(event))
+	}
+	return result, nil
 }
 
 func (s *Store) monitoringAnalyticsEventsPage(ctx context.Context, request MonitoringAnalyticsRequest, page MonitoringAnalyticsEventsPageRequest) (MonitoringAnalyticsEventsResponse, error) {

@@ -651,6 +651,61 @@ func TestMonitoringAnalyticsAppliesModelPrices(t *testing.T) {
 	}
 }
 
+func TestMonitoringAnalyticsEventsPageDoesNotLoadModelPrices(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	_, err = db.InsertEvents(context.Background(), []usage.Event{
+		{
+			EventHash:   "analytics-page-old",
+			TimestampMS: 1_778_000_001_000,
+			Timestamp:   "2026-05-06T00:00:01Z",
+			Model:       "gpt-test",
+			Endpoint:    "POST /v1/chat/completions",
+			TotalTokens: 10,
+		},
+		{
+			EventHash:   "analytics-page-new",
+			TimestampMS: 1_778_000_002_000,
+			Timestamp:   "2026-05-06T00:00:02Z",
+			Model:       "gpt-test",
+			Endpoint:    "POST /v1/chat/completions",
+			TotalTokens: 20,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := db.db.ExecContext(context.Background(), `drop table model_prices`); err != nil {
+		t.Fatalf("drop model prices: %v", err)
+	}
+
+	response, err := db.MonitoringAnalytics(context.Background(), MonitoringAnalyticsRequest{
+		FromMS: 1_778_000_000_000,
+		ToMS:   1_778_000_003_000,
+		Include: MonitoringAnalyticsInclude{
+			EventsPage: &MonitoringAnalyticsEventsPageRequest{Limit: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("monitoring analytics events page: %v", err)
+	}
+	if response.Summary != nil {
+		t.Fatalf("summary = %#v, want nil", response.Summary)
+	}
+	if response.Events == nil || response.Events.TotalCount != 2 || len(response.Events.Items) != 1 {
+		t.Fatalf("events page = %#v, want one item with total count 2", response.Events)
+	}
+	if response.Events.Items[0].EventHash != "analytics-page-new" {
+		t.Fatalf("first event = %q, want newest event", response.Events.Items[0].EventHash)
+	}
+}
+
 func TestStoreUsageBreakdownPagePaginatesApiKeyGroups(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

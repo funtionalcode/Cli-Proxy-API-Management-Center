@@ -6,6 +6,8 @@ import {
   buildMonitoringEventsScopeKey,
   buildMonitoringAuthMetaMap,
   buildMonitoringSummary,
+  buildMonitoringAggregateInclude,
+  buildMonitoringEventsPageRequest,
   buildRangeFilteredRows,
   buildScopeFilteredRows,
   mergeMonitoringEventsPageItems,
@@ -557,6 +559,32 @@ describe('buildMonitoringEventsScopeKey', () => {
     );
 
     expect(second).not.toBe(first);
+  });
+});
+
+describe('monitoring analytics request planning', () => {
+  it('keeps event pagination out of the aggregate include', () => {
+    const include = buildMonitoringAggregateInclude('hour');
+
+    expect(include).toMatchObject({
+      summary: true,
+      account_stats: true,
+      api_key_stats: true,
+      filter_options: true,
+      recent_failures: 8,
+      granularity: 'hour',
+    });
+    expect(include.events_page).toBeUndefined();
+    expect(include.timeline).toBeUndefined();
+    expect(include.model_stats).toBeUndefined();
+  });
+
+  it('builds event pagination as a standalone request', () => {
+    expect(buildMonitoringEventsPageRequest(1_778_000_000_000, 42)).toEqual({
+      limit: 500,
+      before_ms: 1_778_000_000_000,
+      before_id: 42,
+    });
   });
 });
 
