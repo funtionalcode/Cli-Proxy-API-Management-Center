@@ -1217,8 +1217,32 @@ const buildUrl = (base: string, path: string): string => {
   return `${normalized}${path}`;
 };
 
+export const MANAGER_SERVICE_PROXY_HEADER = 'X-CPA-Manager-Service';
+
 const authHeaders = (managementKey?: string) =>
   managementKey ? { Authorization: `Bearer ${managementKey}` } : undefined;
+
+export const shouldUseManagerServiceProxyHeader = (base: string): boolean => {
+  if (typeof window === 'undefined') return false;
+  const normalizedBase = normalizeUsageServiceBase(base);
+  if (!normalizedBase) return false;
+
+  try {
+    return new URL(normalizedBase).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+};
+
+const managerServiceProxyHeaders = (base: string, managementKey?: string) => {
+  const headers: Record<string, string> = {
+    ...(authHeaders(managementKey) ?? {}),
+  };
+  if (shouldUseManagerServiceProxyHeader(base)) {
+    headers[MANAGER_SERVICE_PROXY_HEADER] = 'true';
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object';
@@ -1663,7 +1687,7 @@ export const usageServiceApi = {
     return withUsageServiceError(async () => {
       const response = await axios.get<UsagePayload>(buildUrl(base, '/v0/management/usage'), {
         timeout: USAGE_SERVICE_TIMEOUT_MS,
-        headers: authHeaders(managementKey),
+        headers: managerServiceProxyHeaders(base, managementKey),
       });
       return response.data;
     });
@@ -1940,7 +1964,7 @@ export const usageServiceApi = {
     return withUsageServiceError(async () => {
       const response = await axios.get<Blob>(buildUrl(base, '/v0/management/usage/export'), {
         timeout: USAGE_SERVICE_TRANSFER_TIMEOUT_MS,
-        headers: authHeaders(managementKey),
+        headers: managerServiceProxyHeaders(base, managementKey),
         responseType: 'blob',
       });
       const contentDisposition = readHeader(response.headers, 'content-disposition');
@@ -1966,7 +1990,7 @@ export const usageServiceApi = {
         payload,
         {
           timeout: USAGE_SERVICE_TRANSFER_TIMEOUT_MS,
-          headers: authHeaders(managementKey),
+          headers: managerServiceProxyHeaders(base, managementKey),
         }
       );
       return response.data;
