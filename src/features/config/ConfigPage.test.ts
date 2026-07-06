@@ -7,6 +7,7 @@ import {
   resolveManagerFormDirty,
   resolveManagerRequestAuthKey,
   resolveManagerSaveState,
+  shouldProbeDetectedPanelUsageServiceHost,
   shouldShowManagerTab,
 } from './ConfigPage';
 
@@ -38,6 +39,35 @@ describe('shouldShowManagerTab', () => {
         panelHostedByUsageService: false,
         usageServiceEnabled: false,
         usageServiceBase: '',
+      })
+    ).toBe(true);
+  });
+});
+
+describe('shouldProbeDetectedPanelUsageServiceHost', () => {
+  it('does not probe regular CPA panel ports for Usage Service info', () => {
+    expect(
+      shouldProbeDetectedPanelUsageServiceHost({
+        detectedPanelBase: 'http://192.168.2.5:8317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toBe(false);
+  });
+
+  it('probes known Manager ports and the configured current Manager base', () => {
+    expect(
+      shouldProbeDetectedPanelUsageServiceHost({
+        detectedPanelBase: 'http://192.168.2.5:18317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toBe(true);
+    expect(
+      shouldProbeDetectedPanelUsageServiceHost({
+        detectedPanelBase: 'http://manager.local:9443',
+        usageServiceEnabled: true,
+        usageServiceBase: 'http://manager.local:9443/',
       })
     ).toBe(true);
   });

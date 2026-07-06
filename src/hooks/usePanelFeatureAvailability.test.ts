@@ -67,13 +67,7 @@ describe('panel feature availability', () => {
         usageServiceEnabled: true,
         usageServiceBase: 'http://manager.local:18317',
       })
-    ).toEqual([
-      'http://manager.local:18317',
-      'http://cpa.local:18317',
-      'http://panel.local:18317',
-      'http://cpa.local:8317',
-      'http://panel.local:5174',
-    ]);
+    ).toEqual(['http://manager.local:18317', 'http://cpa.local:18317', 'http://panel.local:18317']);
   });
 
   it('tries the default same-host Manager Server port for external CPA panels', () => {
@@ -85,7 +79,7 @@ describe('panel feature availability', () => {
         usageServiceEnabled: false,
         usageServiceBase: '',
       })
-    ).toEqual(['http://192.168.2.5:18317', 'http://192.168.2.5:8317']);
+    ).toEqual(['http://192.168.2.5:18317']);
   });
 
   it('only accepts Manager config for same-origin Manager Server panels', () => {

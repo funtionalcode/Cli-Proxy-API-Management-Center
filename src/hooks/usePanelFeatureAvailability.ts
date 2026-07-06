@@ -8,6 +8,10 @@ import {
 import { DEMO_API_BASE, isDemoMode } from '@/features/demo/demoMode';
 import { useAuthStore, useUsageServiceStore } from '@/stores';
 import { detectApiBaseFromLocation, isLocalhost } from '@/utils/connection';
+import {
+  DEFAULT_MANAGER_SERVICE_PORT,
+  shouldProbeUsageServiceBase,
+} from '@/entities/usageService/baseResolver';
 
 export type PanelHostMode = 'manager_embedded' | 'external_panel';
 
@@ -42,7 +46,6 @@ export interface ResolvePanelFeatureAvailabilityInput {
 }
 
 const normalizeBase = (value?: string) => normalizeUsageServiceBase(value || '');
-const DEFAULT_MANAGER_SERVICE_PORT = '18317';
 
 const buildDefaultManagerServiceCandidate = (base?: string): string => {
   const normalizedBase = normalizeBase(base);
@@ -208,8 +211,8 @@ export function buildPanelManagerServiceCandidates({
         usageServiceEnabled && usageServiceBase ? usageServiceBase : '',
         buildDefaultManagerServiceCandidate(apiBase),
         buildDefaultManagerServiceCandidate(normalizedPanelBase),
-        apiBase,
-        normalizedPanelBase,
+        shouldProbeUsageServiceBase(apiBase, { allowHostedManagementPage: false }) ? apiBase : '',
+        shouldProbeUsageServiceBase(normalizedPanelBase) ? normalizedPanelBase : '',
       ]
         .map(normalizeBase)
         .filter(Boolean)

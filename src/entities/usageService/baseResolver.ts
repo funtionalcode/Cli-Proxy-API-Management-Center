@@ -18,6 +18,31 @@ export interface ResolveUsageServiceBaseDeps {
 }
 
 const normalizeCandidate = (value: string | undefined) => normalizeUsageServiceBase(value || '');
+export const DEFAULT_MANAGER_SERVICE_PORT = '18317';
+
+export const isHostedManagementPagePath = (pathname?: string): boolean => {
+  const resolvedPathname =
+    pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  return /\/management\.html$/i.test(resolvedPathname);
+};
+
+export const shouldProbeUsageServiceBase = (
+  base: string | undefined,
+  options: { pathname?: string; allowHostedManagementPage?: boolean } = {}
+): boolean => {
+  const normalizedBase = normalizeCandidate(base);
+  if (!normalizedBase) return false;
+  if (options.allowHostedManagementPage !== false && isHostedManagementPagePath(options.pathname)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(normalizedBase);
+    return url.port === DEFAULT_MANAGER_SERVICE_PORT;
+  } catch {
+    return false;
+  }
+};
 
 export const hasConfiguredUsageServiceBase = ({
   usageServiceEnabled,
@@ -38,8 +63,8 @@ export function buildUsageServiceBaseCandidates({
     new Set(
       [
         usageServiceEnabled && usageServiceBase ? usageServiceBase : '',
-        apiBase,
-        resolvedDetectedBase,
+        shouldProbeUsageServiceBase(apiBase, { allowHostedManagementPage: false }) ? apiBase : '',
+        shouldProbeUsageServiceBase(resolvedDetectedBase) ? resolvedDetectedBase : '',
       ]
         .map(normalizeCandidate)
         .filter(Boolean)

@@ -3,6 +3,10 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { isUsageServiceId, usageServiceApi } from '@/services/api/usageService';
+import {
+  isHostedManagementPagePath,
+  shouldProbeUsageServiceBase,
+} from '@/entities/usageService/baseResolver';
 import { detectApiBaseFromLocation } from '@/utils/connection';
 
 export function ProtectedRoute({ children }: { children: ReactElement }) {
@@ -21,15 +25,15 @@ export function ProtectedRoute({ children }: { children: ReactElement }) {
         try {
           const detectedBase = detectApiBaseFromLocation();
           let detectedUsageService = false;
-          try {
-            const info = await usageServiceApi.getInfo(detectedBase);
-            detectedUsageService = isUsageServiceId(info.service);
-          } catch {
-            detectedUsageService = false;
+          if (shouldProbeUsageServiceBase(detectedBase)) {
+            try {
+              const info = await usageServiceApi.getInfo(detectedBase);
+              detectedUsageService = isUsageServiceId(info.service);
+            } catch {
+              detectedUsageService = false;
+            }
           }
-          const hostedManagementPage =
-            typeof window !== 'undefined' &&
-            /\/management\.html$/i.test(window.location.pathname);
+          const hostedManagementPage = isHostedManagementPagePath();
           const result = await restoreSession({
             expectedMode: detectedUsageService ? 'manager_embedded' : 'external_panel',
             expectedPanelBase:

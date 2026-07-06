@@ -30,6 +30,10 @@ import {
   usageServiceApi,
 } from '@/services/api/usageService';
 import {
+  isHostedManagementPagePath,
+  shouldProbeUsageServiceBase,
+} from '@/entities/usageService/baseResolver';
+import {
   detectApiBaseFromLocation,
   normalizeApiBase,
   resolveDefaultCPAConnectionBase,
@@ -224,26 +228,32 @@ export function LoginPage() {
       try {
         let detectedUsageService = false;
         let detectedUsageServiceConfigured = false;
-        try {
-          const info = await usageServiceApi.getInfo(detectedBase);
-          const mode = resolveUsageServiceLoginMode(info);
-          detectedUsageService = mode.hostedByUsageService;
-          detectedUsageServiceConfigured = detectedUsageService && !mode.usageServiceNeedsSetup;
-          setHostedByUsageService(mode.hostedByUsageService);
-          setUsageServiceNeedsSetup(mode.usageServiceNeedsSetup);
-          setHasHistoricalData(Boolean(info.hasHistoricalData));
-          setMigrationStatus(info.migrationStatus || '');
-        } catch {
-          detectedUsageService = false;
-          detectedUsageServiceConfigured = false;
+        if (shouldProbeUsageServiceBase(detectedBase)) {
+          try {
+            const info = await usageServiceApi.getInfo(detectedBase);
+            const mode = resolveUsageServiceLoginMode(info);
+            detectedUsageService = mode.hostedByUsageService;
+            detectedUsageServiceConfigured = detectedUsageService && !mode.usageServiceNeedsSetup;
+            setHostedByUsageService(mode.hostedByUsageService);
+            setUsageServiceNeedsSetup(mode.usageServiceNeedsSetup);
+            setHasHistoricalData(Boolean(info.hasHistoricalData));
+            setMigrationStatus(info.migrationStatus || '');
+          } catch {
+            detectedUsageService = false;
+            detectedUsageServiceConfigured = false;
+            setHostedByUsageService(false);
+            setUsageServiceNeedsSetup(false);
+            setHasHistoricalData(false);
+            setMigrationStatus('');
+          }
+        } else {
           setHostedByUsageService(false);
           setUsageServiceNeedsSetup(false);
           setHasHistoricalData(false);
           setMigrationStatus('');
         }
 
-        const hostedManagementPage =
-          typeof window !== 'undefined' && /\/management\.html$/i.test(window.location.pathname);
+        const hostedManagementPage = isHostedManagementPagePath();
         const autoLoginExpectedPanelBase =
           detectedUsageService || hostedManagementPage ? detectedBase : undefined;
         const autoLoggedIn = await restoreSession({
@@ -523,11 +533,7 @@ export function LoginPage() {
             <IconLanguages size={17} />
           </button>
           {languageMenuOpen && (
-            <div
-              className={styles.languagePopover}
-              role="menu"
-              aria-label={t('language.switch')}
-            >
+            <div className={styles.languagePopover} role="menu" aria-label={t('language.switch')}>
               {LANGUAGE_ORDER.map((lang) => (
                 <button
                   key={lang}
@@ -563,7 +569,9 @@ export function LoginPage() {
               usageServiceNeedsSetup ? styles.setupFormContent : ''
             }`}
           >
-            <div className={`${styles.loginCard} ${usageServiceNeedsSetup ? styles.setupCard : ''}`}>
+            <div
+              className={`${styles.loginCard} ${usageServiceNeedsSetup ? styles.setupCard : ''}`}
+            >
               <div className={styles.cardBranding}>
                 <img src={INLINE_LOGO_JPEG} alt="CPA Manager Plus" className={styles.logo} />
                 <h1>CPA Manager Plus</h1>
@@ -849,7 +857,9 @@ export function LoginPage() {
                     label={loginCredentialLabel}
                     placeholder={loginCredentialPlaceholder}
                     type={
-                      (isManagerServerMode ? showAdminKey : showCPAManagementKey) ? 'text' : 'password'
+                      (isManagerServerMode ? showAdminKey : showCPAManagementKey)
+                        ? 'text'
+                        : 'password'
                     }
                     value={loginCredential}
                     onChange={(event) =>

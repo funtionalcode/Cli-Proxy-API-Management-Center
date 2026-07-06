@@ -1,4 +1,13 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import type { ReactCodeMirrorRef } from '@uiw/react-codemirror';
@@ -35,6 +44,7 @@ import {
   type ManagerConfig,
   type ManagerConfigResponse,
 } from '@/services/api/usageService';
+import { shouldProbeUsageServiceBase } from '@/entities/usageService/baseResolver';
 import { detectApiBaseFromLocation } from '@/utils/connection';
 import { ManagerConfigPanel } from './components/ManagerConfigPanel';
 import styles from './ConfigPage.module.scss';
@@ -119,6 +129,24 @@ export function shouldShowManagerTab({
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
+export function shouldProbeDetectedPanelUsageServiceHost({
+  detectedPanelBase,
+  usageServiceEnabled,
+  usageServiceBase,
+}: {
+  detectedPanelBase: string;
+  usageServiceEnabled: boolean;
+  usageServiceBase: string;
+}): boolean {
+  const normalizedDetectedBase = normalizeUsageServiceBase(detectedPanelBase);
+  const currentPanelKnownAsUsageService =
+    usageServiceEnabled &&
+    normalizedDetectedBase &&
+    normalizedDetectedBase === normalizeUsageServiceBase(usageServiceBase);
+  return Boolean(shouldProbeUsageServiceBase(detectedPanelBase) || currentPanelKnownAsUsageService);
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
 export function resolveManagerServiceBase({
   panelHostedByUsageService,
   detectedPanelBase,
@@ -176,7 +204,10 @@ function parseManagerPositiveIntegerInput(value: string): number | null {
   return Math.floor(parsed);
 }
 
-function resolveManagerPositiveIntegerBaseline(value: number | undefined, fallback: number): number {
+function resolveManagerPositiveIntegerBaseline(
+  value: number | undefined,
+  fallback: number
+): number {
   return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : fallback;
 }
 
@@ -321,9 +352,8 @@ export function ConfigPage() {
   const [managerLoading, setManagerLoading] = useState(false);
   const [managerSaving, setManagerSaving] = useState(false);
   const [managerError, setManagerError] = useState('');
-  const [externalManagerServiceBaseInput, setExternalManagerServiceBaseInput] = useState(
-    usageServiceBase
-  );
+  const [externalManagerServiceBaseInput, setExternalManagerServiceBaseInput] =
+    useState(usageServiceBase);
   const [managerRequestMonitoringEnabled, setManagerRequestMonitoringEnabled] = useState(true);
   const [managerCPABaseInput, setManagerCPABaseInput] = useState('');
   const [managerCPAManagementKeyInput, setManagerCPAManagementKeyInput] = useState('');
@@ -440,6 +470,16 @@ export function ConfigPage() {
   useEffect(() => {
     let cancelled = false;
     const detectUsageServiceHost = async () => {
+      if (
+        !shouldProbeDetectedPanelUsageServiceHost({
+          detectedPanelBase,
+          usageServiceEnabled,
+          usageServiceBase,
+        })
+      ) {
+        setPanelHostedByUsageService(false);
+        return;
+      }
       try {
         const info = await usageServiceApi.getInfo(detectedPanelBase);
         if (!cancelled) {
@@ -455,7 +495,7 @@ export function ConfigPage() {
     return () => {
       cancelled = true;
     };
-  }, [detectedPanelBase]);
+  }, [detectedPanelBase, usageServiceBase, usageServiceEnabled]);
 
   useEffect(() => {
     if (activeTab !== 'manager' || showManagerTab) {
@@ -494,43 +534,38 @@ export function ConfigPage() {
     managerCPAManagementKeyInput.trim() ||
     managerConfig?.cpaConnection?.managementKey ||
     managementKey;
-  const managerDirty = useMemo(
-    () => {
-      const formDirty = resolveManagerFormDirty({
-        managerConfig,
-        cpaBaseUrlInput: managerCPABaseInput,
-        managementKeyInput: managerCPAManagementKeyInput,
-        requestMonitoringEnabled: managerRequestMonitoringEnabled,
-        collectorMode: managerCollectorMode,
-        pollIntervalMs: managerPollIntervalMs,
-        batchSize: managerBatchSize,
-        queryLimit: managerQueryLimit,
-      });
-      if (formDirty) return true;
-      if (panelHostedByUsageService === false && !managerConfig) {
-        return Boolean(
-          managerServiceTarget &&
-            managerEffectiveCPABase &&
-            managerEffectiveCPAManagementKey
-        );
-      }
-      return false;
-    },
-    [
-      managerBatchSize,
-      managerCPABaseInput,
-      managerCPAManagementKeyInput,
-      managerCollectorMode,
+  const managerDirty = useMemo(() => {
+    const formDirty = resolveManagerFormDirty({
       managerConfig,
-      managerEffectiveCPABase,
-      managerEffectiveCPAManagementKey,
-      managerPollIntervalMs,
-      managerQueryLimit,
-      managerRequestMonitoringEnabled,
-      managerServiceTarget,
-      panelHostedByUsageService,
-    ]
-  );
+      cpaBaseUrlInput: managerCPABaseInput,
+      managementKeyInput: managerCPAManagementKeyInput,
+      requestMonitoringEnabled: managerRequestMonitoringEnabled,
+      collectorMode: managerCollectorMode,
+      pollIntervalMs: managerPollIntervalMs,
+      batchSize: managerBatchSize,
+      queryLimit: managerQueryLimit,
+    });
+    if (formDirty) return true;
+    if (panelHostedByUsageService === false && !managerConfig) {
+      return Boolean(
+        managerServiceTarget && managerEffectiveCPABase && managerEffectiveCPAManagementKey
+      );
+    }
+    return false;
+  }, [
+    managerBatchSize,
+    managerCPABaseInput,
+    managerCPAManagementKeyInput,
+    managerCollectorMode,
+    managerConfig,
+    managerEffectiveCPABase,
+    managerEffectiveCPAManagementKey,
+    managerPollIntervalMs,
+    managerQueryLimit,
+    managerRequestMonitoringEnabled,
+    managerServiceTarget,
+    panelHostedByUsageService,
+  ]);
   const managerSaveState = resolveManagerSaveState({
     panelHostedByUsageService,
     managerDirty,
@@ -552,25 +587,24 @@ export function ConfigPage() {
     [detectedPanelBase, panelHostedByUsageService, setUsageServiceConfig]
   );
 
-  const applyManagerConfigResponse = useCallback(
-    (response: ManagerConfigResponse) => {
-      const nextConfig = response.config;
-      const collector = nextConfig.collector ?? MANAGER_COLLECTOR_DEFAULT;
+  const applyManagerConfigResponse = useCallback((response: ManagerConfigResponse) => {
+    const nextConfig = response.config;
+    const collector = nextConfig.collector ?? MANAGER_COLLECTOR_DEFAULT;
 
-      setManagerConfig(nextConfig);
-      setManagerConfigSource(response.source || '');
-      setManagerCPAUsage(response.cpaUsage ?? null);
-      setManagerRequestMonitoringEnabled(collector.enabled !== false);
-      setManagerCPABaseInput(nextConfig.cpaConnection?.cpaBaseUrl || '');
-      setManagerCollectorMode(collector.collectorMode || MANAGER_COLLECTOR_DEFAULT.collectorMode);
-      setManagerPollIntervalMs(String(collector.pollIntervalMs || MANAGER_COLLECTOR_DEFAULT.pollIntervalMs));
-      setManagerBatchSize(String(collector.batchSize || MANAGER_COLLECTOR_DEFAULT.batchSize));
-      setManagerQueryLimit(String(collector.queryLimit || MANAGER_COLLECTOR_DEFAULT.queryLimit));
-      setManagerCPAManagementKeyInput('');
-      setManagerCPAManagementKeyVisible(false);
-    },
-    []
-  );
+    setManagerConfig(nextConfig);
+    setManagerConfigSource(response.source || '');
+    setManagerCPAUsage(response.cpaUsage ?? null);
+    setManagerRequestMonitoringEnabled(collector.enabled !== false);
+    setManagerCPABaseInput(nextConfig.cpaConnection?.cpaBaseUrl || '');
+    setManagerCollectorMode(collector.collectorMode || MANAGER_COLLECTOR_DEFAULT.collectorMode);
+    setManagerPollIntervalMs(
+      String(collector.pollIntervalMs || MANAGER_COLLECTOR_DEFAULT.pollIntervalMs)
+    );
+    setManagerBatchSize(String(collector.batchSize || MANAGER_COLLECTOR_DEFAULT.batchSize));
+    setManagerQueryLimit(String(collector.queryLimit || MANAGER_COLLECTOR_DEFAULT.queryLimit));
+    setManagerCPAManagementKeyInput('');
+    setManagerCPAManagementKeyVisible(false);
+  }, []);
 
   const loadManagerConfig = useCallback(async () => {
     const serviceBase = resolveCurrentManagerServiceBase();
@@ -598,12 +632,12 @@ export function ConfigPage() {
       syncEmbeddedManagerBootstrap(serviceBase);
     } catch (error: unknown) {
       const code = getUsageServiceErrorCode(error);
-      if (
-        isManagerAuthErrorCode(code)
-      ) {
+      if (isManagerAuthErrorCode(code)) {
         setManagerError(t('config_management.manager.admin_key_required'));
       } else {
-        setManagerError(getUsageServiceDisplayError(error, 'config_management.manager.load_failed'));
+        setManagerError(
+          getUsageServiceDisplayError(error, 'config_management.manager.load_failed')
+        );
       }
     } finally {
       setManagerLoading(false);
@@ -756,16 +790,10 @@ export function ConfigPage() {
           )
         : MANAGER_COLLECTOR_DEFAULT.pollIntervalMs;
       const batchSize = managerRequestMonitoringEnabled
-        ? readManagerPositiveInteger(
-            managerBatchSize,
-            t('config_management.manager.batch_size')
-          )
+        ? readManagerPositiveInteger(managerBatchSize, t('config_management.manager.batch_size'))
         : MANAGER_COLLECTOR_DEFAULT.batchSize;
       const queryLimit = managerRequestMonitoringEnabled
-        ? readManagerPositiveInteger(
-            managerQueryLimit,
-            t('config_management.manager.query_limit')
-          )
+        ? readManagerPositiveInteger(managerQueryLimit, t('config_management.manager.query_limit'))
         : MANAGER_COLLECTOR_DEFAULT.queryLimit;
       if (managerRequestMonitoringEnabled && pollIntervalMs > managerRetentionSeconds * 1000) {
         showNotification(t('config_management.manager.poll_interval_retention_error'), 'error');
@@ -806,7 +834,9 @@ export function ConfigPage() {
           serviceBase: panelHostedByUsageService !== true ? serviceBase : '',
         },
       };
-      const savedCPABase = normalizeUsageServiceBase(managerConfig?.cpaConnection?.cpaBaseUrl || '');
+      const savedCPABase = normalizeUsageServiceBase(
+        managerConfig?.cpaConnection?.cpaBaseUrl || ''
+      );
       const nextCPABase = normalizeUsageServiceBase(cpaConnection.cpaBaseUrl || '');
       const cpaConnectionChanged =
         savedCPABase !== nextCPABase || managerCPAManagementKeyInput.trim() !== '';
@@ -817,7 +847,10 @@ export function ConfigPage() {
           await saveManagerConfigPayload(serviceBase, nextConfig, requestAuthKey);
         } catch (error: unknown) {
           if (notifyOnError) {
-            const message = getUsageServiceDisplayError(error, 'usage_service_errors.request_failed');
+            const message = getUsageServiceDisplayError(
+              error,
+              'usage_service_errors.request_failed'
+            );
             showNotification(
               `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
               'error'
@@ -848,10 +881,7 @@ export function ConfigPage() {
     } catch (error: unknown) {
       setManagerSaving(false);
       const message = getUsageServiceDisplayError(error, 'usage_service_errors.request_failed');
-      showNotification(
-        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
-        'error'
-      );
+      showNotification(`${t('notification.save_failed')}${message ? `: ${message}` : ''}`, 'error');
     }
   };
 
@@ -1177,8 +1207,7 @@ export function ConfigPage() {
     if (error) return t('config_management.status_load_failed_short', { defaultValue: 'Failed' });
     if (hasVisualModeError)
       return t('config_management.visual_mode_unavailable_short', { defaultValue: 'YAML issue' });
-    if (hasVisualValidationErrors)
-      return t('config_management.visual.validation_blocked_short');
+    if (hasVisualValidationErrors) return t('config_management.visual.validation_blocked_short');
     if (saving) return t('config_management.status_saving_short', { defaultValue: 'Saving' });
     if (isDirty) return t('config_management.status_dirty_short', { defaultValue: 'Unsaved' });
     return t('config_management.status_loaded_short', { defaultValue: 'Loaded' });
@@ -1265,12 +1294,9 @@ export function ConfigPage() {
     </div>
   );
 
-  const canConfigureRequestMonitoring =
-    Boolean(
-      managerServiceTarget &&
-        managerEffectiveCPABase &&
-        managerEffectiveCPAManagementKey
-    );
+  const canConfigureRequestMonitoring = Boolean(
+    managerServiceTarget && managerEffectiveCPABase && managerEffectiveCPAManagementKey
+  );
   const managerRuntimeModeLabel =
     panelHostedByUsageService === true
       ? t('config_management.manager.runtime_embedded')
@@ -1315,9 +1341,7 @@ export function ConfigPage() {
 
         <div className={styles.content}>
           {!isManagerTab && error && <div className="error-box">{error}</div>}
-          {isManagerTab && managerError && (
-            <div className="error-box">{managerError}</div>
-          )}
+          {isManagerTab && managerError && <div className="error-box">{managerError}</div>}
           {!isManagerTab && !error && visualParseError && (
             <div className="error-box">
               {t('config_management.visual_mode_unavailable_detail', { message: visualParseError })}
@@ -1332,9 +1356,7 @@ export function ConfigPage() {
               detectedPanelBase={managerServiceTarget || detectedPanelBase}
               managerServiceBaseInput={externalManagerServiceBaseInput}
               managerRuntimeModeLabel={managerRuntimeModeLabel}
-              managerHasBoundCPAManagementKey={Boolean(
-                managerConfig?.cpaConnection?.managementKey
-              )}
+              managerHasBoundCPAManagementKey={Boolean(managerConfig?.cpaConnection?.managementKey)}
               managerCPABaseInput={managerCPABaseInput}
               managerCPAManagementKeyInput={managerCPAManagementKeyInput}
               managerCPAManagementKeyVisible={managerCPAManagementKeyVisible}
