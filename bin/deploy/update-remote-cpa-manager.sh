@@ -16,8 +16,11 @@ ssh_opts=(
   -o UserKnownHostsFile=/dev/null
 )
 
+if [[ -z "${DEPLOY_SSH_PASSWORD:-}" ]]; then
+  ssh_opts+=(-o BatchMode=yes)
+fi
+
 ssh_cmd=(ssh "${ssh_opts[@]}")
-scp_cmd=(scp "${ssh_opts[@]}")
 
 if [[ -n "${DEPLOY_SSH_PASSWORD:-}" ]]; then
   if ! command -v sshpass >/dev/null 2>&1; then
@@ -26,7 +29,6 @@ if [[ -n "${DEPLOY_SSH_PASSWORD:-}" ]]; then
   fi
   export SSHPASS="${DEPLOY_SSH_PASSWORD}"
   ssh_cmd=(sshpass -e "${ssh_cmd[@]}")
-  scp_cmd=(sshpass -e "${scp_cmd[@]}")
 fi
 
 run_remote() {
