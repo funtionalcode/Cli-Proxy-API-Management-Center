@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.usage-service
+      network: ${DEPLOY_BUILD_NETWORK:-default}
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
