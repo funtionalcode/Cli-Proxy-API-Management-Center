@@ -336,8 +336,17 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.withCORS(s.handleLatestVersion)(w, r)
 		return
 	}
-	if strings.TrimRight(r.URL.Path, "/") == "/v0/management/monitoring/analytics" {
+	if cleanManagementPath == "/v0/management/monitoring/header-snapshots" {
+		s.withCORS(s.handleMonitoringHeaderSnapshots)(w, r)
+		return
+	}
+	if cleanManagementPath == "/v0/management/monitoring/analytics" {
 		s.withCORS(s.handleMonitoringAnalytics)(w, r)
+		return
+	}
+	if cleanManagementPath == "/v0/management/account-action-candidates" ||
+		strings.HasPrefix(cleanManagementPath, "/v0/management/account-action-candidates/") {
+		s.withCORS(s.handleAccountActionCandidates)(w, r)
 		return
 	}
 	cleanUsagePath := cleanManagementPath
@@ -834,6 +843,151 @@ func (s *Server) handleMonitoringAnalytics(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleMonitoringHeaderSnapshots(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	query := r.URL.Query()
+	days, err := parseQueryInt(query.Get("days"), 30)
+	if err != nil || days <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("days must be a positive number"))
+		return
+	}
+	if days > 365 {
+		days = 365
+	}
+	limit, err := parseQueryInt(query.Get("limit"), 1000)
+	if err != nil || limit <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("limit must be a positive number"))
+		return
+	}
+	nowMS := time.Now().UnixMilli()
+	response, err := s.store.HeaderSnapshots(
+		r.Context(),
+		nowMS-int64(days)*int64(24*time.Hour/time.Millisecond),
+		nowMS,
+		limit,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleAccountActionCandidates(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+
+	const basePath = "/v0/management/account-action-candidates"
+	path := strings.TrimRight(r.URL.Path, "/")
+	if path == basePath {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleListAccountActionCandidates(w, r)
+		return
+	}
+
+	rest := strings.TrimPrefix(path, basePath+"/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid candidate id"))
+		return
+	}
+
+	var status string
+	switch parts[1] {
+	case "ignore":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		status = store.AccountActionStatusIgnored
+	case "resolve", "enable":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		status = store.AccountActionStatusResolved
+	case "auth-file":
+		if r.Method != http.MethodDelete {
+			methodNotAllowed(w)
+			return
+		}
+		status = store.AccountActionStatusDeleted
+	default:
+		http.NotFound(w, r)
+		return
+	}
+
+	candidate, ok, err := s.findAccountActionCandidate(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, errors.New("account action candidate not found"))
+		return
+	}
+	if err := s.store.UpdateAccountActionCandidateStatus(r.Context(), id, status); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	candidate.Status = status
+	candidate.UpdatedAtMS = time.Now().UnixMilli()
+	writeJSON(w, http.StatusOK, map[string]any{"item": candidate})
+}
+
+func (s *Server) handleListAccountActionCandidates(w http.ResponseWriter, r *http.Request) {
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "all" {
+		status = ""
+	}
+	switch status {
+	case "", store.AccountActionStatusPending, store.AccountActionStatusIgnored, store.AccountActionStatusResolved, store.AccountActionStatusDeleted:
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("invalid status"))
+		return
+	}
+	limit, err := parseQueryInt(r.URL.Query().Get("limit"), 100)
+	if err != nil || limit <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("limit must be a positive number"))
+		return
+	}
+	response, err := s.store.ListAccountActionCandidates(r.Context(), status, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) findAccountActionCandidate(ctx context.Context, id int64) (store.AccountActionCandidate, bool, error) {
+	response, err := s.store.ListAccountActionCandidates(ctx, "", 500)
+	if err != nil {
+		return store.AccountActionCandidate{}, false, err
+	}
+	for _, candidate := range response.Items {
+		if candidate.ID == id {
+			return candidate, true, nil
+		}
+	}
+	return store.AccountActionCandidate{}, false, nil
 }
 
 func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {

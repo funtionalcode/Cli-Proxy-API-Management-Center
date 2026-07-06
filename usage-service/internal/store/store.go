@@ -187,6 +187,11 @@ func (s *Store) init() error {
 			alias text not null,
 			updated_at_ms integer not null
 		)`,
+		`create table if not exists account_action_candidate_statuses (
+			id integer primary key,
+			status text not null,
+			updated_at_ms integer not null
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {

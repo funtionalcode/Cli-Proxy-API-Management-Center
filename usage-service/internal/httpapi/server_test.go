@@ -15,6 +15,7 @@ import (
 	"github.com/seakee/cpa-manager/usage-service/internal/collector"
 	"github.com/seakee/cpa-manager/usage-service/internal/config"
 	"github.com/seakee/cpa-manager/usage-service/internal/store"
+	"github.com/seakee/cpa-manager/usage-service/internal/usage"
 )
 
 type observedRequest struct {
@@ -299,6 +300,171 @@ func TestQuotaCooldownsEndpointReturnsEmptyItems(t *testing.T) {
 	}
 	if strings.TrimSpace(rr.Body.String()) != `{"items":[]}` {
 		t.Fatalf("response body = %s", rr.Body.String())
+	}
+}
+
+func TestHeaderSnapshotsEndpointReturnsRecentMetadata(t *testing.T) {
+	cfg := config.Config{
+		DBPath:      filepath.Join(t.TempDir(), "usage.sqlite"),
+		Queue:       "usage",
+		PopSide:     "right",
+		CORSOrigins: []string{"*"},
+	}
+	db, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := db.SaveSetup(context.Background(), store.Setup{
+		CPAUpstreamURL: "http://example.test",
+		ManagementKey:  "management-key",
+		Queue:          "usage",
+		PopSide:        "right",
+	}); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+	_, err = db.InsertEvents(context.Background(), []usage.Event{
+		{
+			EventHash:            "header-snapshot-event",
+			TimestampMS:          time.Now().Add(-time.Hour).UnixMilli(),
+			Timestamp:            time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AuthIndex:            "auth-1",
+			AccountSnapshot:      "alice@example.com",
+			AuthFileSnapshot:     "alice.json",
+			AuthProviderSnapshot: "codex",
+			RawJSON: `{
+				"response_metadata": {
+					"quota": {"used_percent": 100, "plan_type": "free", "recover_at_ms": 1778000100000},
+					"errors": {"kind": "usage_limit_reached", "code": "usage_limit_reached"},
+					"trace": {"primary_trace_id": "trace-1"}
+				}
+			}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	handler := New(cfg, db, collector.NewManager(cfg, db)).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/monitoring/header-snapshots?days=3&limit=100", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			EventHash          string         `json:"event_hash"`
+			AuthIndex          string         `json:"auth_index"`
+			ResponseMetadata   map[string]any `json:"response_metadata"`
+			HeaderErrorKind    string         `json:"header_error_kind"`
+			HeaderErrorCode    string         `json:"header_error_code"`
+			HeaderTraceID      string         `json:"header_trace_id"`
+			HeaderQuotaPlan    string         `json:"header_quota_plan_type"`
+			HeaderQuotaPercent *float64       `json:"header_quota_used_percent"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items len = %d, body = %s", len(response.Items), rr.Body.String())
+	}
+	item := response.Items[0]
+	if item.EventHash != "header-snapshot-event" || item.AuthIndex != "auth-1" || item.HeaderErrorKind != "usage_limit_reached" {
+		t.Fatalf("snapshot item = %#v", item)
+	}
+	if item.HeaderQuotaPercent == nil || *item.HeaderQuotaPercent != 100 || item.HeaderQuotaPlan != "free" {
+		t.Fatalf("quota fields = %#v", item)
+	}
+}
+
+func TestAccountActionCandidatesEndpointReturnsPendingItems(t *testing.T) {
+	cfg := config.Config{
+		DBPath:      filepath.Join(t.TempDir(), "usage.sqlite"),
+		Queue:       "usage",
+		PopSide:     "right",
+		CORSOrigins: []string{"*"},
+	}
+	db, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := db.SaveSetup(context.Background(), store.Setup{
+		CPAUpstreamURL: "http://example.test",
+		ManagementKey:  "management-key",
+		Queue:          "usage",
+		PopSide:        "right",
+	}); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+	_, err = db.InsertEvents(context.Background(), []usage.Event{
+		{
+			EventHash:            "account-action-event",
+			TimestampMS:          time.Now().UnixMilli(),
+			Timestamp:            time.Now().UTC().Format(time.RFC3339Nano),
+			Provider:             "codex",
+			Model:                "gpt-test",
+			Endpoint:             "POST /v1/chat/completions",
+			AuthIndex:            "auth-1",
+			AccountSnapshot:      "alice@example.com",
+			AuthFileSnapshot:     "alice.json",
+			AuthProviderSnapshot: "codex",
+			Failed:               true,
+			RawJSON: `{
+				"response_metadata": {
+					"errors": {"kind": "usage_limit_reached", "code": "usage_limit_reached"},
+					"trace": {"primary_trace_id": "trace-1"}
+				}
+			}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	handler := New(cfg, db, collector.NewManager(cfg, db)).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/account-action-candidates?status=pending&limit=20", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		PendingCount int `json:"pendingCount"`
+		Items        []struct {
+			ID           int64          `json:"id"`
+			ActionType   string         `json:"actionType"`
+			Status       string         `json:"status"`
+			AuthFileName string         `json:"authFileName"`
+			AuthIndex    string         `json:"authIndex"`
+			Evidence     map[string]any `json:"evidence"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.PendingCount != 1 || len(response.Items) != 1 {
+		t.Fatalf("response = %#v body=%s", response, rr.Body.String())
+	}
+	item := response.Items[0]
+	if item.ID == 0 || item.ActionType != "review" || item.Status != "pending" || item.AuthFileName != "alice.json" || item.AuthIndex != "auth-1" {
+		t.Fatalf("candidate = %#v", item)
+	}
+	if item.Evidence["headerErrorKind"] != "usage_limit_reached" {
+		t.Fatalf("candidate evidence = %#v", item.Evidence)
 	}
 }
 

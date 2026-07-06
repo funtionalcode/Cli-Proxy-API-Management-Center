@@ -2,12 +2,15 @@
 set -euo pipefail
 
 branch="${DEPLOY_BRANCH:-master}"
+deploy_mode="${DEPLOY_MODE:-image-stream}"
 ssh_host="${DEPLOY_SSH_HOST:-192.168.2.5}"
 ssh_user="${DEPLOY_SSH_USER:-root}"
 remote_dir="${DEPLOY_REMOTE_DIR:-/data/haogege/gpt/Cli-Proxy-API-Management-Center}"
 remote_data_dir="${DEPLOY_REMOTE_DATA_DIR:-/data/haogege/gpt/CLIProxyAPIPlus/cpa-manager-data}"
 remote_network="${DEPLOY_REMOTE_NETWORK:-cliproxyapiplus_default}"
 container="${DEPLOY_CONTAINER:-cpa-manager}"
+compose_file="${DEPLOY_COMPOSE_FILE:-docker-compose.usage.yml}"
+service="${DEPLOY_SERVICE:-cpa-manager}"
 image="${DEPLOY_IMAGE:-seakee/cpa-manager:latest}"
 platform="${DEPLOY_PLATFORM:-linux/amd64}"
 dockerfile="${DEPLOY_DOCKERFILE:-Dockerfile.usage-service}"
@@ -122,6 +125,39 @@ load_image_remote() {
   docker save "${image}" | gzip -1 | run_remote 'gzip -dc | docker load'
 }
 
+build_remote_image() {
+  run_remote \
+    "DEPLOY_REMOTE_DIR=$(shell_quote "${remote_dir}") DEPLOY_COMPOSE_FILE=$(shell_quote "${compose_file}") DEPLOY_SERVICE=$(shell_quote "${service}") DEPLOY_IMAGE=$(shell_quote "${image}") DEPLOY_BUILD_PROXY=$(shell_quote "${DEPLOY_BUILD_PROXY:-}") DEPLOY_NO_PROXY=$(shell_quote "${DEPLOY_NO_PROXY:-localhost,127.0.0.1,::1}") bash -s" <<'REMOTE'
+set -euo pipefail
+
+cd "${DEPLOY_REMOTE_DIR}"
+
+if [[ -n "${DEPLOY_BUILD_PROXY}" ]]; then
+  export HTTP_PROXY="${DEPLOY_BUILD_PROXY}"
+  export HTTPS_PROXY="${DEPLOY_BUILD_PROXY}"
+  export ALL_PROXY="${DEPLOY_BUILD_PROXY}"
+  export http_proxy="${DEPLOY_BUILD_PROXY}"
+  export https_proxy="${DEPLOY_BUILD_PROXY}"
+  export all_proxy="${DEPLOY_BUILD_PROXY}"
+  export NO_PROXY="${DEPLOY_NO_PROXY}"
+  export no_proxy="${DEPLOY_NO_PROXY}"
+fi
+
+if docker compose version >/dev/null 2>&1; then
+  compose=(docker compose -f "${DEPLOY_COMPOSE_FILE}")
+elif command -v docker-compose >/dev/null 2>&1; then
+  compose=(docker-compose -f "${DEPLOY_COMPOSE_FILE}")
+else
+  echo "Neither docker compose nor docker-compose is available on remote host." >&2
+  exit 1
+fi
+
+echo "-- remote image build --"
+"${compose[@]}" build "${DEPLOY_SERVICE}"
+docker image inspect "${DEPLOY_IMAGE}" --format 'remote-image={{.Id}} arch={{.Architecture}}'
+REMOTE
+}
+
 recreate_remote_container() {
   run_remote \
     "DEPLOY_CONTAINER=$(shell_quote "${container}") DEPLOY_IMAGE=$(shell_quote "${image}") DEPLOY_REMOTE_DATA_DIR=$(shell_quote "${remote_data_dir}") DEPLOY_REMOTE_NETWORK=$(shell_quote "${remote_network}") DEPLOY_HOST_PORT=$(shell_quote "${host_port}") DEPLOY_CONTAINER_PORT=$(shell_quote "${container_port}") DEPLOY_HEALTH_URL=$(shell_quote "${health_url}") DEPLOY_STALE_CONTAINER=$(shell_quote "${stale_container}") DEPLOY_KEEP_BACKUP=$(shell_quote "${keep_backup}") bash -s" <<'REMOTE'
@@ -196,8 +232,20 @@ REMOTE
 main() {
   require_clean_local_branch
   sync_remote_git
-  build_local_image
-  load_image_remote
+  case "${deploy_mode}" in
+    image-stream)
+      build_local_image
+      load_image_remote
+      ;;
+    remote-build)
+      build_remote_image
+      ;;
+    *)
+      echo "Unsupported DEPLOY_MODE: ${deploy_mode}" >&2
+      echo "Supported modes: image-stream, remote-build" >&2
+      exit 1
+      ;;
+  esac
   recreate_remote_container
 }
 

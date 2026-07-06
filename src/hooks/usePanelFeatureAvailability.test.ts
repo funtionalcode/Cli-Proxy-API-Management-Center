@@ -187,11 +187,9 @@ describe('panel feature availability', () => {
   });
 
   it('shares one feature detection request across concurrent hook consumers', async () => {
-    const getInfoSpy = vi
-      .spyOn(usageServiceApi, 'getInfo')
-      .mockImplementation(async (base) => ({
-        service: base === 'http://manager.local:18317' ? 'cpa-manager-plus' : 'cli-proxy-api',
-      }));
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockImplementation(async (base) => ({
+      service: base === 'http://manager.local:18317' ? 'cpa-manager-plus' : 'cli-proxy-api',
+    }));
     const getManagerConfigSpy = vi
       .spyOn(usageServiceApi, 'getManagerConfig')
       .mockResolvedValue({ config: buildManagerConfig(), source: 'db' });
@@ -227,18 +225,12 @@ describe('panel feature availability', () => {
 
       await act(async () => {
         renderer = create(
-          createElement(
-            'div',
-            null,
-            createElement(HookConsumer),
-            createElement(HookConsumer)
-          )
+          createElement('div', null, createElement(HookConsumer), createElement(HookConsumer))
         );
       });
 
-      expect(getInfoSpy).toHaveBeenCalledTimes(2);
-      expect(getInfoSpy).toHaveBeenNthCalledWith(1, 'http://panel.local:5174');
-      expect(getInfoSpy).toHaveBeenNthCalledWith(2, 'http://manager.local:18317');
+      expect(getInfoSpy).toHaveBeenCalledTimes(1);
+      expect(getInfoSpy).toHaveBeenNthCalledWith(1, 'http://manager.local:18317');
       expect(getManagerConfigSpy).toHaveBeenCalledTimes(1);
       expect(getManagerConfigSpy).toHaveBeenCalledWith(
         'http://manager.local:18317',
