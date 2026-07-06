@@ -27,10 +27,11 @@ type Setup struct {
 }
 
 type ManagerConfig struct {
-	CPAConnection        ManagerCPAConnectionConfig        `json:"cpaConnection"`
-	Collector            ManagerCollectorConfig            `json:"collector"`
-	ExternalUsageService ManagerExternalUsageServiceConfig `json:"externalUsageService"`
-	UpdatedAtMS          int64                             `json:"updatedAtMs,omitempty"`
+	CPAConnection           ManagerCPAConnectionConfig           `json:"cpaConnection"`
+	Collector               ManagerCollectorConfig               `json:"collector"`
+	ExternalUsageService    ManagerExternalUsageServiceConfig    `json:"externalUsageService"`
+	AccountProcessingPolicy ManagerAccountProcessingPolicyConfig `json:"accountProcessingPolicy,omitempty"`
+	UpdatedAtMS             int64                                `json:"updatedAtMs,omitempty"`
 }
 
 type ManagerCPAConnectionConfig struct {
@@ -52,6 +53,12 @@ type ManagerCollectorConfig struct {
 type ManagerExternalUsageServiceConfig struct {
 	Enabled     bool   `json:"enabled"`
 	ServiceBase string `json:"serviceBase,omitempty"`
+}
+
+type ManagerAccountProcessingPolicyConfig struct {
+	CodexQuotaCooldownEnabled   *bool `json:"codexQuotaCooldownEnabled,omitempty"`
+	AuthIssueQueueEnabled       *bool `json:"authIssueQueueEnabled,omitempty"`
+	AuthIssueAutoDisableEnabled *bool `json:"authIssueAutoDisableEnabled,omitempty"`
 }
 
 type InsertResult struct {

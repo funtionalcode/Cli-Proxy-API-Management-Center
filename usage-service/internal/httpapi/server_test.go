@@ -23,6 +23,24 @@ type observedRequest struct {
 	auth  string
 }
 
+type testAccountProcessingPolicyResponse struct {
+	Source               string                      `json:"source"`
+	UpdatedAtMS          int64                       `json:"updatedAtMs"`
+	CodexQuotaCooldown   testAccountPolicyCapability `json:"codexQuotaCooldown"`
+	AuthIssueQueue       testAccountPolicyCapability `json:"authIssueQueue"`
+	AuthIssueAutoDisable testAccountPolicyCapability `json:"authIssueAutoDisable"`
+}
+
+type testAccountPolicyCapability struct {
+	Enabled       bool   `json:"enabled"`
+	Configured    bool   `json:"configured"`
+	Source        string `json:"source"`
+	Locked        bool   `json:"locked"`
+	EnvKey        string `json:"envKey"`
+	ConfigFileKey string `json:"configFileKey"`
+	DependsOn     string `json:"dependsOn"`
+}
+
 func newTestHandler(t *testing.T, upstreamURL string, saveSetup bool) http.Handler {
 	t.Helper()
 
@@ -158,6 +176,156 @@ func TestInfoReportsConfiguredState(t *testing.T) {
 				t.Fatalf("configured = %v, want %v", response.Configured, tc.configured)
 			}
 		})
+	}
+}
+
+func TestAccountProcessingPolicyDefaultsAndPersistsPatch(t *testing.T) {
+	handler := newTestHandler(t, "http://example.test", true)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-service/account-processing-policy", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("initial status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var initial testAccountProcessingPolicyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &initial); err != nil {
+		t.Fatalf("decode initial response: %v", err)
+	}
+	if !initial.CodexQuotaCooldown.Enabled || !initial.AuthIssueQueue.Enabled || !initial.AuthIssueAutoDisable.Enabled {
+		t.Fatalf("initial policy = %#v", initial)
+	}
+	if initial.CodexQuotaCooldown.EnvKey != "CPA_CODEX_QUOTA_COOLDOWN_ENABLED" {
+		t.Fatalf("quota env key = %q", initial.CodexQuotaCooldown.EnvKey)
+	}
+	if initial.AuthIssueAutoDisable.DependsOn != "authIssueQueue" {
+		t.Fatalf("auto-disable dependency = %q", initial.AuthIssueAutoDisable.DependsOn)
+	}
+
+	body := bytes.NewBufferString(`{"authIssueQueueEnabled":false,"authIssueAutoDisableEnabled":true}`)
+	req = httptest.NewRequest(http.MethodPatch, "/usage-service/account-processing-policy", body)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var patched testAccountProcessingPolicyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &patched); err != nil {
+		t.Fatalf("decode patched response: %v", err)
+	}
+	if patched.AuthIssueQueue.Configured || patched.AuthIssueQueue.Enabled {
+		t.Fatalf("auth issue queue after patch = %#v", patched.AuthIssueQueue)
+	}
+	if !patched.AuthIssueAutoDisable.Configured || patched.AuthIssueAutoDisable.Enabled {
+		t.Fatalf("auto-disable should stay configured but blocked: %#v", patched.AuthIssueAutoDisable)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/usage-service/account-processing-policy", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var reloaded testAccountProcessingPolicyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &reloaded); err != nil {
+		t.Fatalf("decode reloaded response: %v", err)
+	}
+	if reloaded.AuthIssueQueue.Configured || reloaded.AuthIssueQueue.Enabled {
+		t.Fatalf("reloaded auth issue queue = %#v", reloaded.AuthIssueQueue)
+	}
+}
+
+func TestAccountProcessingPolicyEnvLockRejectsPatch(t *testing.T) {
+	clearHTTPAPIConfigEnv(t)
+	dir := t.TempDir()
+	t.Setenv("CPA_MANAGER_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("CPA_CODEX_QUOTA_COOLDOWN_ENABLED", "false")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	handler := newTestHandlerWithConfig(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-service/account-processing-policy", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var response testAccountProcessingPolicyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.CodexQuotaCooldown.Configured || response.CodexQuotaCooldown.Enabled || !response.CodexQuotaCooldown.Locked {
+		t.Fatalf("env-locked quota policy = %#v", response.CodexQuotaCooldown)
+	}
+	if response.CodexQuotaCooldown.Source != "env" {
+		t.Fatalf("quota source = %q, want env", response.CodexQuotaCooldown.Source)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		"/usage-service/account-processing-policy",
+		bytes.NewBufferString(`{"codexQuotaCooldownEnabled":true}`),
+	)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("patch status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"account_processing_policy_env_locked"`) {
+		t.Fatalf("patch body = %s", rr.Body.String())
+	}
+}
+
+func TestQuotaCooldownsEndpointReturnsEmptyItems(t *testing.T) {
+	handler := newTestHandler(t, "http://example.test", true)
+	req := httptest.NewRequest(http.MethodGet, "/usage-service/quota-cooldowns", nil)
+	req.Header.Set("Authorization", "Bearer management-key")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"items":[]}` {
+		t.Fatalf("response body = %s", rr.Body.String())
+	}
+}
+
+func clearHTTPAPIConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"CPA_MANAGER_CONFIG",
+		"HTTP_ADDR",
+		"USAGE_DATA_DIR",
+		"USAGE_DB_PATH",
+		"CPA_UPSTREAM_URL",
+		"CPA_MANAGEMENT_KEY",
+		"CPA_MANAGEMENT_KEY_FILE",
+		"USAGE_COLLECTOR_MODE",
+		"USAGE_RESP_QUEUE",
+		"USAGE_RESP_POP_SIDE",
+		"USAGE_BATCH_SIZE",
+		"USAGE_POLL_INTERVAL_MS",
+		"USAGE_QUERY_LIMIT",
+		"USAGE_CORS_ORIGINS",
+		"USAGE_RESP_TLS_SKIP_VERIFY",
+		"PANEL_PATH",
+		"CPA_CODEX_QUOTA_COOLDOWN_ENABLED",
+		"CPA_AUTH_ISSUE_QUEUE_ENABLED",
+		"CPA_AUTH_ISSUE_AUTO_DISABLE_ENABLED",
+	} {
+		t.Setenv(key, "")
 	}
 }
 

@@ -46,6 +46,19 @@ const (
 	setupSourceDB   setupSource = "db"
 )
 
+const (
+	accountPolicySourceStartup  = "startup"
+	accountPolicySourceEnv      = "env"
+	accountPolicySourceDatabase = "database"
+
+	accountPolicyEnvCodexQuotaCooldown   = "CPA_CODEX_QUOTA_COOLDOWN_ENABLED"
+	accountPolicyEnvAuthIssueQueue       = "CPA_AUTH_ISSUE_QUEUE_ENABLED"
+	accountPolicyEnvAuthIssueAutoDisable = "CPA_AUTH_ISSUE_AUTO_DISABLE_ENABLED"
+	accountPolicyKeyCodexQuotaCooldown   = "codexQuotaCooldownEnabled"
+	accountPolicyKeyAuthIssueQueue       = "authIssueQueueEnabled"
+	accountPolicyKeyAuthIssueAutoDisable = "authIssueAutoDisableEnabled"
+)
+
 const maxUsageImportBytes int64 = 64 * 1024 * 1024
 
 const modelPriceSyncSource = "litellm"
@@ -76,6 +89,30 @@ type cpaUsageConfig struct {
 	UsageStatisticsEnabled          bool `json:"usageStatisticsEnabled"`
 	RedisUsageQueueRetentionSeconds int  `json:"redisUsageQueueRetentionSeconds"`
 	RetentionSourceDefault          bool `json:"retentionSourceDefault"`
+}
+
+type accountProcessingPolicyPatch struct {
+	CodexQuotaCooldownEnabled   *bool `json:"codexQuotaCooldownEnabled"`
+	AuthIssueQueueEnabled       *bool `json:"authIssueQueueEnabled"`
+	AuthIssueAutoDisableEnabled *bool `json:"authIssueAutoDisableEnabled"`
+}
+
+type accountProcessingPolicyResponse struct {
+	Source               string                  `json:"source"`
+	UpdatedAtMS          int64                   `json:"updatedAtMs,omitempty"`
+	CodexQuotaCooldown   accountPolicyCapability `json:"codexQuotaCooldown"`
+	AuthIssueQueue       accountPolicyCapability `json:"authIssueQueue"`
+	AuthIssueAutoDisable accountPolicyCapability `json:"authIssueAutoDisable"`
+}
+
+type accountPolicyCapability struct {
+	Enabled       bool   `json:"enabled"`
+	Configured    bool   `json:"configured"`
+	Source        string `json:"source"`
+	Locked        bool   `json:"locked"`
+	EnvKey        string `json:"envKey"`
+	ConfigFileKey string `json:"configFileKey"`
+	DependsOn     string `json:"dependsOn,omitempty"`
 }
 
 type modelPricesRequest struct {
@@ -268,6 +305,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.withCORS(s.handleStatus))
 	mux.HandleFunc("/usage-service/info", s.withCORS(s.handleInfo))
 	mux.HandleFunc("/usage-service/config", s.withCORS(s.handleManagerConfig))
+	mux.HandleFunc("/usage-service/account-processing-policy", s.withCORS(s.handleAccountProcessingPolicy))
+	mux.HandleFunc("/usage-service/quota-cooldowns", s.withCORS(s.handleQuotaCooldowns))
 	mux.HandleFunc("/setup", s.withCORS(s.handleSetup))
 	mux.HandleFunc("/management.html", s.handlePanel)
 	mux.HandleFunc("/", s.handleRoot)
@@ -481,6 +520,69 @@ func (s *Server) handleManagerConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) handleAccountProcessingPolicy(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		cfg, _, _, err := s.resolveManagerConfigWithSource(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.buildAccountProcessingPolicyResponse(cfg))
+	case http.MethodPatch:
+		var patch accountProcessingPolicyPatch
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.validateAccountProcessingPolicyPatch(patch); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		cfg, err := s.resolvePersistedManagerConfig(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if patch.CodexQuotaCooldownEnabled != nil {
+			cfg.AccountProcessingPolicy.CodexQuotaCooldownEnabled = boolPtr(*patch.CodexQuotaCooldownEnabled)
+		}
+		if patch.AuthIssueQueueEnabled != nil {
+			cfg.AccountProcessingPolicy.AuthIssueQueueEnabled = boolPtr(*patch.AuthIssueQueueEnabled)
+		}
+		if patch.AuthIssueAutoDisableEnabled != nil {
+			cfg.AccountProcessingPolicy.AuthIssueAutoDisableEnabled = boolPtr(*patch.AuthIssueAutoDisableEnabled)
+		}
+		if err := s.store.SaveManagerConfig(r.Context(), cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		saved, _, _, err := s.resolveManagerConfigWithSource(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.buildAccountProcessingPolicyResponse(saved))
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) handleQuotaCooldowns(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeIfConfigured(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -1829,6 +1931,108 @@ func (s *Server) resolveManagerConfigWithSource(ctx context.Context) (store.Mana
 	return cfg, source, found, nil
 }
 
+func (s *Server) resolvePersistedManagerConfig(ctx context.Context) (store.ManagerConfig, error) {
+	cfg := s.defaultManagerConfig()
+	if saved, ok, err := s.store.LoadManagerConfig(ctx); err != nil {
+		return cfg, err
+	} else if ok {
+		cfg = s.mergeSubmittedManagerConfig(cfg, saved)
+	}
+	if setup, ok, err := s.store.LoadSetup(ctx); err != nil {
+		return cfg, err
+	} else if ok && cfg.CPAConnection.CPABaseURL == "" && cfg.CPAConnection.ManagementKey == "" {
+		cfg.CPAConnection.CPABaseURL = normalizeBaseURL(setup.CPAUpstreamURL)
+		cfg.CPAConnection.ManagementKey = setup.ManagementKey
+		cfg.Collector.Queue = valueOr(setup.Queue, cfg.Collector.Queue)
+		cfg.Collector.PopSide = normalizePopSide(setup.PopSide, cfg.Collector.PopSide)
+	}
+	return cfg, nil
+}
+
+func (s *Server) buildAccountProcessingPolicyResponse(cfg store.ManagerConfig) accountProcessingPolicyResponse {
+	policy := cfg.AccountProcessingPolicy
+	codexQuotaCooldown := accountPolicyCapabilityFromValues(
+		policy.CodexQuotaCooldownEnabled,
+		s.cfg.CodexQuotaCooldownEnabled,
+		accountPolicyEnvCodexQuotaCooldown,
+		accountPolicyKeyCodexQuotaCooldown,
+		"",
+	)
+	authIssueQueue := accountPolicyCapabilityFromValues(
+		policy.AuthIssueQueueEnabled,
+		s.cfg.AuthIssueQueueEnabled,
+		accountPolicyEnvAuthIssueQueue,
+		accountPolicyKeyAuthIssueQueue,
+		"",
+	)
+	authIssueAutoDisable := accountPolicyCapabilityFromValues(
+		policy.AuthIssueAutoDisableEnabled,
+		s.cfg.AuthIssueAutoDisableEnabled,
+		accountPolicyEnvAuthIssueAutoDisable,
+		accountPolicyKeyAuthIssueAutoDisable,
+		"authIssueQueue",
+	)
+	authIssueAutoDisable.Enabled = authIssueAutoDisable.Configured && authIssueQueue.Enabled
+
+	return accountProcessingPolicyResponse{
+		Source:               accountProcessingPolicySource(codexQuotaCooldown, authIssueQueue, authIssueAutoDisable),
+		UpdatedAtMS:          cfg.UpdatedAtMS,
+		CodexQuotaCooldown:   codexQuotaCooldown,
+		AuthIssueQueue:       authIssueQueue,
+		AuthIssueAutoDisable: authIssueAutoDisable,
+	}
+}
+
+func accountPolicyCapabilityFromValues(dbValue *bool, envValue *bool, envKey string, configFileKey string, dependsOn string) accountPolicyCapability {
+	configured := true
+	source := accountPolicySourceStartup
+	locked := false
+	if dbValue != nil {
+		configured = *dbValue
+		source = accountPolicySourceDatabase
+	}
+	if envValue != nil {
+		configured = *envValue
+		source = accountPolicySourceEnv
+		locked = true
+	}
+	return accountPolicyCapability{
+		Enabled:       configured,
+		Configured:    configured,
+		Source:        source,
+		Locked:        locked,
+		EnvKey:        envKey,
+		ConfigFileKey: configFileKey,
+		DependsOn:     dependsOn,
+	}
+}
+
+func accountProcessingPolicySource(capabilities ...accountPolicyCapability) string {
+	source := accountPolicySourceStartup
+	for _, capability := range capabilities {
+		switch capability.Source {
+		case accountPolicySourceEnv:
+			return accountPolicySourceEnv
+		case accountPolicySourceDatabase:
+			source = accountPolicySourceDatabase
+		}
+	}
+	return source
+}
+
+func (s *Server) validateAccountProcessingPolicyPatch(patch accountProcessingPolicyPatch) error {
+	if patch.CodexQuotaCooldownEnabled != nil && s.cfg.CodexQuotaCooldownEnabled != nil {
+		return errors.New("account processing policy is managed by environment variables")
+	}
+	if patch.AuthIssueQueueEnabled != nil && s.cfg.AuthIssueQueueEnabled != nil {
+		return errors.New("account processing policy is managed by environment variables")
+	}
+	if patch.AuthIssueAutoDisableEnabled != nil && s.cfg.AuthIssueAutoDisableEnabled != nil {
+		return errors.New("account processing policy is managed by environment variables")
+	}
+	return nil
+}
+
 func setupDiffers(existing store.Setup, req setupRequest) bool {
 	return normalizeBaseURL(existing.CPAUpstreamURL) != req.CPAUpstreamURL ||
 		existing.ManagementKey != req.ManagementKey ||
@@ -1897,6 +2101,16 @@ func (s *Server) mergeSubmittedManagerConfig(base store.ManagerConfig, submitted
 	next.ExternalUsageService.ServiceBase = normalizeBaseURL(submitted.ExternalUsageService.ServiceBase)
 	if !next.ExternalUsageService.Enabled {
 		next.ExternalUsageService.ServiceBase = ""
+	}
+
+	if submitted.AccountProcessingPolicy.CodexQuotaCooldownEnabled != nil {
+		next.AccountProcessingPolicy.CodexQuotaCooldownEnabled = boolPtr(*submitted.AccountProcessingPolicy.CodexQuotaCooldownEnabled)
+	}
+	if submitted.AccountProcessingPolicy.AuthIssueQueueEnabled != nil {
+		next.AccountProcessingPolicy.AuthIssueQueueEnabled = boolPtr(*submitted.AccountProcessingPolicy.AuthIssueQueueEnabled)
+	}
+	if submitted.AccountProcessingPolicy.AuthIssueAutoDisableEnabled != nil {
+		next.AccountProcessingPolicy.AuthIssueAutoDisableEnabled = boolPtr(*submitted.AccountProcessingPolicy.AuthIssueAutoDisableEnabled)
 	}
 
 	return next
@@ -2024,7 +2238,7 @@ func (s *Server) writeCORS(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 	}
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 }
 
@@ -2227,6 +2441,8 @@ func usageServiceErrorCode(err error) string {
 		return "api_key_alias_duplicate"
 	case strings.Contains(message, "model price sync failed"):
 		return "model_price_sync_failed"
+	case strings.Contains(message, "account processing policy is managed by environment variables"):
+		return "account_processing_policy_env_locked"
 	case strings.Contains(message, "method not allowed"):
 		return "method_not_allowed"
 	default:

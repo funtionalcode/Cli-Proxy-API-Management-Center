@@ -17,19 +17,22 @@ const defaultConfigName = "config.json"
 const defaultSecretFile = "/run/secrets/cpa_management_key"
 
 type Config struct {
-	HTTPAddr       string
-	DBPath         string
-	CPAUpstreamURL string
-	ManagementKey  string
-	CollectorMode  string
-	Queue          string
-	PopSide        string
-	BatchSize      int
-	PollInterval   time.Duration
-	QueryLimit     int
-	PanelPath      string
-	CORSOrigins    []string
-	TLSSkipVerify  bool
+	HTTPAddr                    string
+	DBPath                      string
+	CPAUpstreamURL              string
+	ManagementKey               string
+	CollectorMode               string
+	Queue                       string
+	PopSide                     string
+	BatchSize                   int
+	PollInterval                time.Duration
+	QueryLimit                  int
+	PanelPath                   string
+	CORSOrigins                 []string
+	TLSSkipVerify               bool
+	CodexQuotaCooldownEnabled   *bool
+	AuthIssueQueueEnabled       *bool
+	AuthIssueAutoDisableEnabled *bool
 }
 
 type fileConfig struct {
@@ -74,19 +77,22 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:       env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
-		DBPath:         env("USAGE_DB_PATH", dbPathFallback),
-		CPAUpstreamURL: env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
-		ManagementKey:  readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
-		CollectorMode:  normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
-		Queue:          env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
-		PopSide:        env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
-		BatchSize:      envInt("USAGE_BATCH_SIZE", intFallback(cfgFile.BatchSize, 100)),
-		PollInterval:   time.Duration(envInt("USAGE_POLL_INTERVAL_MS", intFallback(cfgFile.PollIntervalMS, 500))) * time.Millisecond,
-		QueryLimit:     envInt("USAGE_QUERY_LIMIT", intFallback(cfgFile.QueryLimit, 50000)),
-		PanelPath:      env("PANEL_PATH", resolveConfigPath(cfgFile.PanelPath, cfgDir)),
-		CORSOrigins:    splitCSV(env("USAGE_CORS_ORIGINS", strings.Join(sliceFallback(cfgFile.CORSOrigins, []string{"*"}), ","))),
-		TLSSkipVerify:  envBool("USAGE_RESP_TLS_SKIP_VERIFY", cfgFile.TLSSkipVerify),
+		HTTPAddr:                    env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
+		DBPath:                      env("USAGE_DB_PATH", dbPathFallback),
+		CPAUpstreamURL:              env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
+		ManagementKey:               readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
+		CollectorMode:               normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
+		Queue:                       env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
+		PopSide:                     env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
+		BatchSize:                   envInt("USAGE_BATCH_SIZE", intFallback(cfgFile.BatchSize, 100)),
+		PollInterval:                time.Duration(envInt("USAGE_POLL_INTERVAL_MS", intFallback(cfgFile.PollIntervalMS, 500))) * time.Millisecond,
+		QueryLimit:                  envInt("USAGE_QUERY_LIMIT", intFallback(cfgFile.QueryLimit, 50000)),
+		PanelPath:                   env("PANEL_PATH", resolveConfigPath(cfgFile.PanelPath, cfgDir)),
+		CORSOrigins:                 splitCSV(env("USAGE_CORS_ORIGINS", strings.Join(sliceFallback(cfgFile.CORSOrigins, []string{"*"}), ","))),
+		TLSSkipVerify:               envBool("USAGE_RESP_TLS_SKIP_VERIFY", cfgFile.TLSSkipVerify),
+		CodexQuotaCooldownEnabled:   envBoolPtr("CPA_CODEX_QUOTA_COOLDOWN_ENABLED"),
+		AuthIssueQueueEnabled:       envBoolPtr("CPA_AUTH_ISSUE_QUEUE_ENABLED"),
+		AuthIssueAutoDisableEnabled: envBoolPtr("CPA_AUTH_ISSUE_AUTO_DISABLE_ENABLED"),
 	}, nil
 }
 
@@ -198,6 +204,15 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func envBoolPtr(key string) *bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return nil
+	}
+	enabled := value == "1" || value == "true" || value == "yes" || value == "on"
+	return &enabled
 }
 
 func stringFallback(value string, fallback string) string {
