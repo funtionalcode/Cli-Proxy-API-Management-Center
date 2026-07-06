@@ -12,6 +12,7 @@ container="${DEPLOY_CONTAINER:-cpa-manager}"
 compose_file="${DEPLOY_COMPOSE_FILE:-docker-compose.usage.yml}"
 service="${DEPLOY_SERVICE:-cpa-manager}"
 build_network="${DEPLOY_BUILD_NETWORK:-host}"
+go_builder_image="${DEPLOY_GO_BUILDER_IMAGE:-golang:1.26-alpine}"
 image="${DEPLOY_IMAGE:-seakee/cpa-manager:latest}"
 platform="${DEPLOY_PLATFORM:-linux/amd64}"
 dockerfile="${DEPLOY_DOCKERFILE:-Dockerfile.usage-service}"
@@ -128,7 +129,7 @@ load_image_remote() {
 
 build_remote_image() {
   run_remote \
-    "DEPLOY_REMOTE_DIR=$(shell_quote "${remote_dir}") DEPLOY_COMPOSE_FILE=$(shell_quote "${compose_file}") DEPLOY_SERVICE=$(shell_quote "${service}") DEPLOY_IMAGE=$(shell_quote "${image}") DEPLOY_BUILD_NETWORK=$(shell_quote "${build_network}") DEPLOY_BUILD_PROXY=$(shell_quote "${DEPLOY_BUILD_PROXY:-}") DEPLOY_NO_PROXY=$(shell_quote "${DEPLOY_NO_PROXY:-localhost,127.0.0.1,::1}") bash -s" <<'REMOTE'
+    "DEPLOY_REMOTE_DIR=$(shell_quote "${remote_dir}") DEPLOY_COMPOSE_FILE=$(shell_quote "${compose_file}") DEPLOY_SERVICE=$(shell_quote "${service}") DEPLOY_IMAGE=$(shell_quote "${image}") DEPLOY_BUILD_NETWORK=$(shell_quote "${build_network}") GO_BUILDER_IMAGE=$(shell_quote "${go_builder_image}") DEPLOY_BUILD_PROXY=$(shell_quote "${DEPLOY_BUILD_PROXY:-}") DEPLOY_NO_PROXY=$(shell_quote "${DEPLOY_NO_PROXY:-localhost,127.0.0.1,::1}") bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${DEPLOY_REMOTE_DIR}"
@@ -144,6 +145,7 @@ if [[ -n "${DEPLOY_BUILD_PROXY}" ]]; then
   export no_proxy="${DEPLOY_NO_PROXY}"
 fi
 export DEPLOY_BUILD_NETWORK
+export GO_BUILDER_IMAGE
 
 if docker compose version >/dev/null 2>&1; then
   compose=(docker compose -f "${DEPLOY_COMPOSE_FILE}")

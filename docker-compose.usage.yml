@@ -13,6 +13,7 @@ services:
         https_proxy: ${https_proxy:-}
         all_proxy: ${all_proxy:-}
         no_proxy: ${no_proxy:-}
+        GO_BUILDER_IMAGE: ${GO_BUILDER_IMAGE:-golang:1.24-alpine}
     image: seakee/cpa-manager:latest
     restart: unless-stopped
     ports:
