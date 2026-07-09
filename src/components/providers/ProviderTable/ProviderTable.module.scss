@@ -1,8 +1,8 @@
 @use '@/styles/variables.scss' as *;
 @use '@/styles/mixins.scss' as *;
 
-// 类型 / 标识 / 地址 / 模型 / 优先级 / 近期请求 / 启用 / 操作
-$table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px 60px 108px;
+// Type / Identity / Address / Models / Priority / Weight / Recent / Enabled / Actions
+$table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.94fr) 72px 72px 72px 340px 60px 108px;
 
 .table {
   display: flex;
@@ -52,7 +52,7 @@ $table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px
     grid-template-areas:
       'type identity toggle'
       'url url url'
-      'priority models models'
+      'priority weight models'
       'recent recent recent'
       'actions actions actions';
     row-gap: 6px;
@@ -70,6 +70,7 @@ $table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px
   .cellIdentity,
   .cellUrl,
   .cellPriority,
+  .cellWeight,
   .cellModels,
   .cellRecent {
     opacity: 0.55;
@@ -172,6 +173,7 @@ $table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px
 }
 
 .cellPriority,
+.cellWeight,
 .cellModels {
   font-size: 13px;
   color: var(--text-secondary);
@@ -187,6 +189,12 @@ $table-columns: 92px minmax(112px, 0.72fr) minmax(144px, 0.96fr) 80px 76px 360px
 .cellPriority {
   @include mobile {
     grid-area: priority;
+  }
+}
+
+.cellWeight {
+  @include mobile {
+    grid-area: weight;
   }
 }
 

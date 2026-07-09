@@ -67,6 +67,9 @@ export function ProviderTable({
         <span role="columnheader" className={styles.cellNumeric}>
           {t('common.priority')}
         </span>
+        <span role="columnheader" className={styles.cellNumeric}>
+          {t('ai_providers.weight_short')}
+        </span>
         <span role="columnheader" className={styles.cellRecentHeader}>
           {t('ai_providers.table_col_recent')}
         </span>
@@ -130,6 +133,11 @@ export function ProviderTable({
             <div className={`${styles.cellPriority} ${styles.cellNumeric}`} role="cell">
               <span className={styles.cellCaption}>{t('common.priority')}</span>
               {row.priority ?? '—'}
+            </div>
+
+            <div className={`${styles.cellWeight} ${styles.cellNumeric}`} role="cell">
+              <span className={styles.cellCaption}>{t('ai_providers.weight_short')}</span>
+              {row.weight ?? '—'}
             </div>
 
             <div className={styles.cellRecent} role="cell">

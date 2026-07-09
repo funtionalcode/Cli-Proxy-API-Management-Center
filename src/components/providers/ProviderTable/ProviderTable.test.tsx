@@ -151,6 +151,19 @@ describe('ProviderTable', () => {
     expect(getText(renderer.root as unknown as ReactTestInstance)).toContain('empty');
   });
 
+  it('renders configured provider weights in the table', () => {
+    const rows = buildProviderRows({
+      ...emptyInput,
+      codex: [{ apiKey: 'weighted-key', baseUrl: 'https://weighted.example.com/v1', weight: 42 }],
+    });
+
+    expect(rows[0]).toEqual(expect.objectContaining({ weight: 42 }));
+
+    const renderer = renderTable(rows);
+    const renderedRows = getRows(renderer);
+    expect(getText(renderedRows[0])).toContain('42');
+  });
+
   it('shows a placeholder instead of the status bar for zero-traffic rows', () => {
     const usageByProvider: ProviderRecentUsageMap = new Map([
       [

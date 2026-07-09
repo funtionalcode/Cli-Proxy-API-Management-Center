@@ -35,6 +35,7 @@ interface ProviderRowBase {
   /** 名称排序依据：OpenAI 为名称，其余沿用 prefix/baseUrl/proxyUrl/authIndex 首个非空值 */
   sortName: string;
   baseUrl: string;
+  weight?: number;
   priority?: number;
   modelNames: string[];
   modelCount: number;
@@ -68,7 +69,11 @@ const collectModelNames = (models?: { name: string }[]): string[] =>
 
 const buildHaystack = (parts: Array<string | undefined>): string =>
   parts
-    .map((part) => String(part ?? '').trim().toLowerCase())
+    .map((part) =>
+      String(part ?? '')
+        .trim()
+        .toLowerCase()
+    )
     .filter(Boolean)
     .join('\n');
 
@@ -91,6 +96,7 @@ function buildKeyConfigRow(
     label: maskApiKey(config.apiKey),
     sortName: getKeyConfigSortName(config),
     baseUrl: config.baseUrl ?? '',
+    weight: config.weight,
     priority: config.priority,
     modelNames,
     modelCount: modelNames.length,
@@ -129,6 +135,7 @@ function buildOpenAIRow(
     label: provider.name,
     sortName: provider.name,
     baseUrl: provider.baseUrl ?? '',
+    weight: provider.weight,
     priority: provider.priority,
     modelNames,
     modelCount: modelNames.length,

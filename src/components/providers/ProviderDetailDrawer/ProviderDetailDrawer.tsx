@@ -214,15 +214,14 @@ export function ProviderDetailDrawer({
       <>
         <section className={styles.section}>
           {!row.enabled && (
-            <div className={styles.disabledBadge}>
-              {t('ai_providers.config_disabled_badge')}
-            </div>
+            <div className={styles.disabledBadge}>{t('ai_providers.config_disabled_badge')}</div>
           )}
           {row.kind !== 'openai' && (
             <FieldRow label={t('common.api_key')} value={maskApiKey(row.raw.apiKey)} />
           )}
           <FieldRow label={t('common.base_url')} value={row.baseUrl} />
           <FieldRow label={t('common.priority')} value={row.priority} />
+          <FieldRow label={t('ai_providers.weight_short')} value={row.weight} />
           <FieldRow label={t('common.prefix')} value={row.raw.prefix} />
           {row.kind !== 'openai' && (
             <FieldRow label={t('common.proxy_url')} value={row.raw.proxyUrl} />
