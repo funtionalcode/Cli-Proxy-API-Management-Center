@@ -59,6 +59,7 @@ const GITHUB_REPOSITORY_URL = 'https://github.com/seakee/CPA-Manager-Plus';
 const sidebarIcons: Record<string, ReactNode> = {
   dashboard: <IconSidebarDashboard size={SIDEBAR_ICON_SIZE} />,
   aiProviders: <IconSidebarProviders size={SIDEBAR_ICON_SIZE} />,
+  proxyConfigs: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
   authFiles: <IconSidebarAuthFiles size={SIDEBAR_ICON_SIZE} />,
   oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
   quota: <IconSidebarQuota size={SIDEBAR_ICON_SIZE} />,
@@ -577,6 +578,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.ai_providers'),
         shortLabel: navShortLabel('nav.ai_providers', t('nav.ai_providers')),
         icon: sidebarIcons.aiProviders,
+      },
+      {
+        path: '/proxy-configs',
+        label: t('nav.proxy_configs'),
+        shortLabel: navShortLabel('nav.proxy_configs', t('nav.proxy_configs')),
+        icon: sidebarIcons.proxyConfigs,
       },
       ...pluginControlNavItems,
     ],

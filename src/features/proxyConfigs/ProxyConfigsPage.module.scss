@@ -1,0 +1,498 @@
+@use '@/styles/variables.scss' as *;
+@use '@/styles/mixins.scss' as *;
+
+$table-columns: 92px 128px minmax(220px, 1.35fr) 96px 84px minmax(150px, 0.82fr) 66px
+  minmax(104px, 0.68fr) 88px 56px;
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-width: 0;
+}
+
+.errorBox {
+  padding: $spacing-md;
+  border: 1px solid var(--danger-color);
+  border-radius: $radius-md;
+  background: rgba($error-color, 0.1);
+  color: var(--danger-color);
+  font-size: 14px;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+
+  @include mobile {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.summaryItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-md;
+  background: var(--glass-bg);
+}
+
+.summaryLabel {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  @include text-ellipsis;
+}
+
+.summaryValue {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-lg;
+  background: var(--glass-bg);
+
+  :global(.btn.btn-sm) {
+    height: 36px;
+    border-radius: 12px;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.searchField {
+  min-width: 0;
+
+  :global(.form-group) {
+    margin-bottom: 0;
+  }
+
+  :global(.input) {
+    height: 36px;
+    min-height: 36px;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+}
+
+.scopeField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+
+  label {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  :global(button) {
+    height: 36px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+}
+
+.tablePanel {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  background: var(--bg-primary);
+  overflow: hidden;
+
+  > :global(.hint),
+  > :global(.empty-state) {
+    margin: $spacing-md;
+  }
+
+  @include mobile {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+  }
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.headerRow,
+.row {
+  display: grid;
+  grid-template-columns: $table-columns;
+  align-items: center;
+  gap: 10px;
+}
+
+.headerRow {
+  padding: $spacing-sm $spacing-md;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 700;
+
+  @include mobile {
+    display: none;
+  }
+}
+
+.row {
+  min-height: 62px;
+  padding: 10px $spacing-md;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background $transition-fast;
+
+  &:hover {
+    background: var(--surface-subtle);
+  }
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'name actions'
+      'scope status'
+      'provider provider'
+      'protocol host'
+      'port user'
+      'password password';
+    align-items: start;
+    row-gap: 8px;
+    margin-bottom: $spacing-sm;
+    padding: $spacing-md;
+    border: 1px solid var(--border-color);
+    border-radius: $radius-md;
+    background: var(--bg-primary);
+  }
+}
+
+.scopeCell,
+.providerCell,
+.nameCell,
+.statusCell,
+.monoCell,
+.hostCell,
+.userCell,
+.actionsCell {
+  min-width: 0;
+}
+
+.scopeCell {
+  @include mobile {
+    grid-area: scope;
+  }
+}
+
+.providerCell {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  @include text-ellipsis;
+
+  @include mobile {
+    grid-area: provider;
+  }
+}
+
+.nameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  @include mobile {
+    grid-area: name;
+  }
+}
+
+.nameText {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  @include text-ellipsis;
+}
+
+.detailText,
+.maskedUrl {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  @include text-ellipsis;
+}
+
+.maskedUrl {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.statusCell {
+  @include mobile {
+    grid-area: status;
+    justify-self: end;
+  }
+}
+
+.monoCell,
+.hostCell,
+.userCell {
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  @include text-ellipsis;
+}
+
+.monoCell {
+  font-variant-numeric: tabular-nums;
+}
+
+.hostCell,
+.userCell {
+  @include mobile {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.hostCell {
+  @include mobile {
+    grid-area: host;
+  }
+}
+
+.userCell {
+  @include mobile {
+    grid-area: user;
+  }
+}
+
+.mobileCaption {
+  display: none;
+
+  @include mobile {
+    display: inline;
+    margin-right: 6px;
+    color: var(--text-tertiary);
+    font-family: $font-family;
+    font-size: 12px;
+    font-weight: 600;
+  }
+}
+
+.actionsHeader {
+  text-align: center;
+}
+
+.actionsCell {
+  display: flex;
+  justify-content: center;
+
+  @include mobile {
+    grid-area: actions;
+    justify-self: end;
+  }
+}
+
+.scopeBadge,
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: $radius-full;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.scope_global {
+  border-color: color-mix(in srgb, #2563eb 28%, transparent);
+  background: color-mix(in srgb, #2563eb 10%, transparent);
+  color: color-mix(in srgb, #2563eb 82%, var(--text-primary));
+}
+
+.scope_provider {
+  border-color: color-mix(in srgb, #0891b2 28%, transparent);
+  background: color-mix(in srgb, #0891b2 10%, transparent);
+  color: color-mix(in srgb, #0891b2 82%, var(--text-primary));
+}
+
+.scope_auth-file {
+  border-color: color-mix(in srgb, #7c3aed 28%, transparent);
+  background: color-mix(in srgb, #7c3aed 10%, transparent);
+  color: color-mix(in srgb, #7c3aed 82%, var(--text-primary));
+}
+
+.status_override {
+  border-color: color-mix(in srgb, $success-color 36%, transparent);
+  background: color-mix(in srgb, $success-color 12%, transparent);
+  color: color-mix(in srgb, $success-color 82%, var(--text-primary));
+}
+
+.status_inherit {
+  border-color: color-mix(in srgb, $primary-color 34%, transparent);
+  background: color-mix(in srgb, $primary-color 10%, transparent);
+  color: color-mix(in srgb, $primary-color 82%, var(--text-primary));
+}
+
+.status_direct {
+  border-color: color-mix(in srgb, $warning-color 38%, transparent);
+  background: color-mix(in srgb, $warning-color 14%, transparent);
+  color: color-mix(in srgb, $warning-color 84%, var(--text-primary));
+}
+
+.status_unset {
+  border-color: var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--text-tertiary);
+}
+
+.status_invalid {
+  border-color: color-mix(in srgb, $error-color 38%, transparent);
+  background: color-mix(in srgb, $error-color 12%, transparent);
+  color: var(--danger-color);
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+}
+
+.editorTarget {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: var(--surface-subtle);
+}
+
+.editorProvider,
+.editorName,
+.editorDetail {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.editorProvider {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.editorName {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.editorDetail {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.previewGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+
+  @include mobile {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.previewItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: var(--bg-secondary);
+}
+
+.previewLabel {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.previewValue {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  @include text-ellipsis;
+}
+
+.maskPreview {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+
+  code {
+    min-width: 0;
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+  }
+
+  @include mobile {
+    flex-direction: column;
+  }
+}
+
+@include mobile {
+  .row .monoCell:nth-of-type(5) {
+    grid-area: protocol;
+  }
+
+  .row .monoCell:nth-of-type(7) {
+    grid-area: port;
+  }
+
+  .row .monoCell:nth-of-type(9) {
+    grid-area: password;
+  }
+}
