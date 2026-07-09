@@ -29,6 +29,7 @@ import {
   buildCodexResponsesEndpoint,
   excludedModelsToText,
   parseExcludedModels,
+  parseProviderWeightInput,
 } from '@/components/providers/utils';
 import type { ProviderFormState } from '@/components/providers';
 import type { ModelInfo } from '@/utils/models';
@@ -49,6 +50,7 @@ const CODEX_TEST_TIMEOUT_MS = 20_000;
 
 const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -74,6 +76,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 const buildCodexBaseline = (form: ProviderFormState) => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -188,6 +191,7 @@ export function CodexEditDrawer({
   const canSave = !disabled && !saving && !loading && !invalidIndex && !isTesting;
 
   const isDirty = useMemo(() => {
+    const normalizedWeight = parseProviderWeightInput(form.weight) ?? null;
     const normalizedPriority =
       form.priority !== undefined && Number.isFinite(form.priority)
         ? Math.trunc(form.priority)
@@ -195,6 +199,7 @@ export function CodexEditDrawer({
     return (
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+      baseline.weight !== normalizedWeight ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -220,11 +225,7 @@ export function CodexEditDrawer({
 
   const configuredModelNames = useMemo(
     () =>
-      new Set(
-        form.modelEntries
-          .map((entry) => entry.name.trim().toLowerCase())
-          .filter(Boolean)
-      ),
+      new Set(form.modelEntries.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [form.modelEntries]
   );
 
@@ -461,6 +462,7 @@ export function CodexEditDrawer({
     try {
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: trimmedBaseUrl,
@@ -524,7 +526,9 @@ export function CodexEditDrawer({
   }, [modelDiscoveryOpen, fetchModelDiscovery]);
 
   useEffect(() => {
-    const availableNames = new Set(discoveredModels.map((model) => String(model.name ?? '').trim()));
+    const availableNames = new Set(
+      discoveredModels.map((model) => String(model.name ?? '').trim())
+    );
     setModelDiscoverySelected((prev) => {
       let changed = false;
       const next = new Set<string>();
@@ -616,6 +620,22 @@ export function CodexEditDrawer({
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={disabled || saving}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={disabled || saving}
             />
             <Input

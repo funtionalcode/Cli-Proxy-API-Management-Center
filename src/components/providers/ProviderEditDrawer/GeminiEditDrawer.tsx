@@ -20,7 +20,11 @@ import {
 } from '@/utils/compare';
 import type { ModelInfo } from '@/utils/models';
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
-import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
+import {
+  excludedModelsToText,
+  parseExcludedModels,
+  parseProviderWeightInput,
+} from '@/components/providers/utils';
 import type { GeminiFormState } from '@/components/providers';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
 
@@ -36,6 +40,7 @@ type GeminiFormBaseline = ReturnType<typeof buildGeminiBaseline>;
 
 const buildEmptyForm = (): GeminiFormState => ({
   apiKey: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -64,6 +69,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 const buildGeminiBaseline = (form: GeminiFormState) => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -175,6 +181,7 @@ export function GeminiEditDrawer({
   const canSave = !disabled && !saving && !loading && !invalidIndex;
 
   const isDirty = useMemo(() => {
+    const normalizedWeight = parseProviderWeightInput(form.weight) ?? null;
     const normalizedPriority =
       form.priority !== undefined && Number.isFinite(form.priority)
         ? Math.trunc(form.priority)
@@ -182,6 +189,7 @@ export function GeminiEditDrawer({
     return (
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+      baseline.weight !== normalizedWeight ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -304,6 +312,7 @@ export function GeminiEditDrawer({
       }));
       const payload: GeminiKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: form.baseUrl?.trim() || undefined,
@@ -457,6 +466,22 @@ export function GeminiEditDrawer({
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={disabled || saving}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={disabled || saving}
             />
             <Input

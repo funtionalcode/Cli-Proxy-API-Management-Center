@@ -14,7 +14,11 @@ import { apiCallApi, getApiCallErrorMessage } from '@/services/api';
 import { useNotificationStore } from '@/stores';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject } from '@/utils/headers';
-import { buildClaudeMessagesEndpoint, parseTextList } from '@/components/providers/utils';
+import {
+  buildClaudeMessagesEndpoint,
+  parseProviderWeightInput,
+  parseTextList,
+} from '@/components/providers/utils';
 import type { ClaudeEditOutletContext } from './AiProvidersClaudeEditLayout';
 import styles from './AiProvidersPage.module.scss';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
@@ -330,6 +334,22 @@ export function AiProvidersClaudeEditPage() {
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={saving || disableControls || isTesting}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={saving || disableControls || isTesting}
             />
             <Input

@@ -36,6 +36,14 @@ export const parseTextList = (text: string): string[] =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+export const parseProviderWeightInput = (value: unknown): number | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const raw = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isFinite(raw) || raw <= 0) return undefined;
+  const normalized = Math.trunc(raw);
+  return normalized > 0 ? normalized : undefined;
+};
+
 export const parseExcludedModels = parseTextList;
 
 export const excludedModelsToText = (models?: string[]) =>
@@ -116,7 +124,9 @@ const EMPTY_RECENT_USAGE_ENTRY: RecentRequestUsageEntry = {
 };
 
 const normalizeProviderRecentKey = (value: unknown): string =>
-  String(value ?? '').trim().toLowerCase();
+  String(value ?? '')
+    .trim()
+    .toLowerCase();
 
 export function getProviderRecentUsageEntry(
   usageByProvider: ProviderRecentUsageMap,
@@ -139,12 +149,7 @@ export function getProviderRecentBuckets(
   apiKey?: string,
   baseUrl?: string
 ): RecentRequestBucket[] {
-  return getProviderRecentUsageEntry(
-    usageByProvider,
-    provider,
-    apiKey,
-    baseUrl
-  ).recentRequests;
+  return getProviderRecentUsageEntry(usageByProvider, provider, apiKey, baseUrl).recentRequests;
 }
 
 export function getProviderTotalStats(
@@ -280,6 +285,7 @@ export const getOpenAIEntryKey = (entry: ApiKeyEntry, index: number): string => 
 
 export const buildApiKeyEntry = (input?: Partial<ApiKeyEntry>): ApiKeyEntry => ({
   apiKey: input?.apiKey ?? '',
+  weight: input?.weight,
   proxyUrl: input?.proxyUrl ?? '',
   authIndex: input?.authIndex ?? '',
   headers: input?.headers ?? {},

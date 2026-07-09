@@ -20,7 +20,11 @@ import {
   areModelEntriesEqual,
   areStringArraysEqual,
 } from '@/utils/compare';
-import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
+import {
+  excludedModelsToText,
+  parseExcludedModels,
+  parseProviderWeightInput,
+} from '@/components/providers/utils';
 import { modelsToEntries } from '@/components/ui/modelInputListUtils';
 import {
   buildProviderDraftKey,
@@ -57,6 +61,7 @@ export type ClaudeEditOutletContext = {
 const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
   authIndex: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -106,6 +111,7 @@ const normalizeCloakConfig = (cloak: ProviderFormState['cloak']) => {
 const buildClaudeBaseline = (form: ProviderFormState): ClaudeEditBaseline => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -307,6 +313,10 @@ export function AiProvidersClaudeEditLayout() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(
+    () => parseProviderWeightInput(form.weight) ?? null,
+    [form.weight]
+  );
   const isHeadersDirty = useMemo(() => {
     if (!baseline) return false;
     return !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders);
@@ -328,6 +338,7 @@ export function AiProvidersClaudeEditLayout() {
     baseline !== null &&
     (baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+      baseline.weight !== normalizedWeight ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -426,6 +437,7 @@ export function AiProvidersClaudeEditLayout() {
     try {
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: (form.baseUrl ?? '').trim() || undefined,

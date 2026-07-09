@@ -23,6 +23,7 @@ import {
   excludedModelsToText,
   parseExcludedModels,
   buildClaudeMessagesEndpoint,
+  parseProviderWeightInput,
   parseTextList,
 } from '@/components/providers/utils';
 import { modelsToEntries } from '@/components/ui/modelInputListUtils';
@@ -46,6 +47,7 @@ const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
   authIndex: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -95,6 +97,7 @@ const areCloakConfigsEqual = (
 const buildClaudeBaseline = (form: ProviderFormState) => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -232,6 +235,7 @@ export function ClaudeEditDrawer({
   const canSave = !disabled && !loading && !saving && !invalidIndex && !isTesting;
 
   const isDirty = useMemo(() => {
+    const normalizedWeight = parseProviderWeightInput(form.weight) ?? null;
     const normalizedPriority =
       form.priority !== undefined && Number.isFinite(form.priority)
         ? Math.trunc(form.priority)
@@ -239,6 +243,7 @@ export function ClaudeEditDrawer({
     return (
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+      baseline.weight !== normalizedWeight ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -284,11 +289,7 @@ export function ClaudeEditDrawer({
 
   const configuredModelNames = useMemo(
     () =>
-      new Set(
-        form.modelEntries
-          .map((entry) => entry.name.trim().toLowerCase())
-          .filter(Boolean)
-      ),
+      new Set(form.modelEntries.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [form.modelEntries]
   );
 
@@ -392,9 +393,7 @@ export function ClaudeEditDrawer({
             hasCustomXApiKey ? 'yes' : 'no'
           }, customAuthorization=${hasAuthorization ? 'yes' : 'no'}]`
         : '';
-      setModelDiscoveryError(
-        `${t('ai_providers.claude_models_fetch_error')}: ${message}${diag}`
-      );
+      setModelDiscoveryError(`${t('ai_providers.claude_models_fetch_error')}: ${message}${diag}`);
     } finally {
       setModelDiscoveryFetching(false);
     }
@@ -425,15 +424,18 @@ export function ClaudeEditDrawer({
     });
   }, [configuredModelNames, discoveredModels]);
 
-  const toggleModelDiscoverySelection = useCallback((name: string) => {
-    if (configuredModelNames.has(name.toLowerCase())) return;
-    setModelDiscoverySelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  }, [configuredModelNames]);
+  const toggleModelDiscoverySelection = useCallback(
+    (name: string) => {
+      if (configuredModelNames.has(name.toLowerCase())) return;
+      setModelDiscoverySelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(name)) next.delete(name);
+        else next.add(name);
+        return next;
+      });
+    },
+    [configuredModelNames]
+  );
 
   const handleSelectVisibleModels = useCallback(() => {
     setModelDiscoverySelected((prev) => {
@@ -562,6 +564,7 @@ export function ClaudeEditDrawer({
     try {
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: (form.baseUrl ?? '').trim() || undefined,
@@ -669,6 +672,22 @@ export function ClaudeEditDrawer({
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={saving || disabled || isTesting}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={saving || disabled || isTesting}
             />
             <Input
@@ -974,9 +993,7 @@ export function ClaudeEditDrawer({
                                 )}
                               </div>
                               {model.description && (
-                                <div className={styles.modelDiscoveryDesc}>
-                                  {model.description}
-                                </div>
+                                <div className={styles.modelDiscoveryDesc}>{model.description}</div>
                               )}
                             </div>
                           }

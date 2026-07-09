@@ -22,6 +22,7 @@ export type KeyTestStatus = {
 
 export type OpenAIEditBaseline = {
   name: string;
+  weight: number | null;
   priority: number | null;
   prefix: string;
   baseUrl: string;
@@ -31,6 +32,7 @@ export type OpenAIEditBaseline = {
     apiKey: string;
     proxyUrl: string;
     authIndex: string;
+    weight: number | null;
     headers: Array<{ key: string; value: string }>;
   }>;
   models: Array<{ name: string; alias: string }>;
@@ -65,7 +67,7 @@ interface OpenAIEditDraftState {
   clearDraft: (key: string) => void;
 }
 
-const resolveAction = <T,>(action: SetStateAction<T>, prev: T): T =>
+const resolveAction = <T>(action: SetStateAction<T>, prev: T): T =>
   typeof action === 'function' ? (action as (previous: T) => T)(prev) : action;
 
 const buildEmptyForm = (): OpenAIFormState => ({

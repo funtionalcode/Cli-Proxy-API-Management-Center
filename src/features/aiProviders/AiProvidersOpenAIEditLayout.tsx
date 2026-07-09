@@ -10,19 +10,26 @@ import {
   useNotificationStore,
   useOpenAIEditDraftStore,
 } from '@/stores';
-import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
-import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
+import { modelsToEntries } from '@/components/ui/modelInputListUtils';
+import type { OpenAIProviderConfig } from '@/types';
 import type { ModelInfo } from '@/utils/models';
-import { normalizeAuthIndex } from '@/utils/authIndex';
-import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
+import { headersToEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
 import { buildApiKeyEntry } from '@/components/providers/utils';
+import {
+  areNormalizedOpenAIApiKeyEntriesEqual,
+  buildOpenAIBaseline,
+  buildOpenAIProviderPayload,
+  normalizeOpenAIApiKeyEntries,
+  normalizeOpenAIModelEntries,
+  parseOpenAIWeightInput,
+} from '@/features/aiProviders/model/openaiProviderForm';
 import {
   buildProviderDraftKey,
   parseProviderIndexParam,
 } from '@/features/aiProviders/model/routeParams';
 import type { ModelEntry, OpenAIFormState } from '@/components/providers/types';
-import type { KeyTestStatus, OpenAIEditBaseline } from '@/stores/useOpenAIEditDraftStore';
+import type { KeyTestStatus } from '@/stores/useOpenAIEditDraftStore';
 
 type LocationState = { fromAiProviders?: boolean } | null;
 
@@ -54,6 +61,7 @@ export type OpenAIEditOutletContext = {
 
 const buildEmptyForm = (): OpenAIFormState => ({
   name: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -67,85 +75,6 @@ const getErrorMessage = (err: unknown) => {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return '';
-};
-
-const normalizeModelEntries = (entries: ModelEntry[]) =>
-  (entries ?? []).reduce<Array<{ name: string; alias: string }>>((acc, entry) => {
-    const name = String(entry?.name ?? '').trim();
-    let alias = String(entry?.alias ?? '').trim();
-    if (name && (alias === '' || alias === name)) {
-      alias = '';
-    }
-    if (!name && !alias) return acc;
-    acc.push({ name, alias });
-    return acc;
-  }, []);
-
-const normalizeKeyHeaders = (headers: ApiKeyEntry['headers']) => {
-  if (!headers || typeof headers !== 'object') return [];
-  return Object.entries(headers)
-    .map(([key, value]) => ({ key: String(key ?? '').trim(), value: String(value ?? '').trim() }))
-    .filter((entry) => entry.key || entry.value)
-    .sort((a, b) => {
-      const byKey = a.key.toLowerCase().localeCompare(b.key.toLowerCase());
-      if (byKey !== 0) return byKey;
-      return a.value.localeCompare(b.value);
-    });
-};
-
-const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
-  (entries ?? []).reduce<
-    Array<{
-      apiKey: string;
-      proxyUrl: string;
-      authIndex: string;
-      headers: Array<{ key: string; value: string }>;
-    }>
-  >((acc, entry) => {
-    const apiKey = String(entry?.apiKey ?? '').trim();
-    const proxyUrl = String(entry?.proxyUrl ?? '').trim();
-    const authIndex = normalizeAuthIndex(entry?.authIndex) ?? '';
-    const headers = normalizeKeyHeaders(entry?.headers);
-    if (!apiKey && !proxyUrl && !authIndex && headers.length === 0) return acc;
-    acc.push({ apiKey, proxyUrl, authIndex, headers });
-    return acc;
-  }, []);
-
-const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEditBaseline => ({
-  name: String(form.name ?? '').trim(),
-  priority:
-    form.priority !== undefined && Number.isFinite(form.priority)
-      ? Math.trunc(form.priority)
-      : null,
-  prefix: String(form.prefix ?? '').trim(),
-  baseUrl: String(form.baseUrl ?? '').trim(),
-  disableCooling: Boolean(form.disableCooling),
-  headers: normalizeHeaderEntries(form.headers),
-  apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
-  models: normalizeModelEntries(form.modelEntries),
-  testModel: String(testModel ?? '').trim(),
-});
-
-const areNormalizedApiKeyEntriesEqual = (
-  a: OpenAIEditBaseline['apiKeyEntries'],
-  b: ReturnType<typeof normalizeApiKeyEntries>
-) => {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    const left = a[i];
-    const right = b[i];
-    if (!left || !right) return false;
-    if (
-      left.apiKey !== right.apiKey ||
-      left.proxyUrl !== right.proxyUrl ||
-      left.authIndex !== right.authIndex
-    ) {
-      return false;
-    }
-    if (!areKeyValueEntriesEqual(left.headers, right.headers)) return false;
-  }
-  return true;
 };
 
 export function AiProvidersOpenAIEditLayout() {
@@ -319,6 +248,7 @@ export function AiProvidersOpenAIEditLayout() {
       const modelEntries = modelsToEntries(initialData.models);
       const seededForm: OpenAIFormState = {
         name: initialData.name,
+        weight: initialData.weight,
         priority: initialData.priority,
         prefix: initialData.prefix ?? '',
         baseUrl: initialData.baseUrl,
@@ -421,14 +351,21 @@ export function AiProvidersOpenAIEditLayout() {
 
   const resolvedLoading = !draft?.initialized;
   const baseline = draft?.baseline ?? null;
-  const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
+  const normalizedHeaders = useMemo(
+    () => buildOpenAIBaseline(form, testModel).headers,
+    [form, testModel]
+  );
   const normalizedModels = useMemo(
-    () => normalizeModelEntries(form.modelEntries),
+    () => normalizeOpenAIModelEntries(form.modelEntries),
     [form.modelEntries]
   );
   const normalizedApiKeyEntries = useMemo(
-    () => normalizeApiKeyEntries(form.apiKeyEntries),
+    () => normalizeOpenAIApiKeyEntries(form.apiKeyEntries),
     [form.apiKeyEntries]
+  );
+  const normalizedWeight = useMemo(
+    () => parseOpenAIWeightInput(form.weight) ?? null,
+    [form.weight]
   );
   const normalizedPriority = useMemo(() => {
     return form.priority !== undefined && Number.isFinite(form.priority)
@@ -446,12 +383,13 @@ export function AiProvidersOpenAIEditLayout() {
   }, [baseline, normalizedModels]);
   const isApiKeyEntriesDirty = useMemo(() => {
     if (!baseline) return false;
-    return !areNormalizedApiKeyEntriesEqual(baseline.apiKeyEntries, normalizedApiKeyEntries);
+    return !areNormalizedOpenAIApiKeyEntriesEqual(baseline.apiKeyEntries, normalizedApiKeyEntries);
   }, [baseline, normalizedApiKeyEntries]);
   const isDirty =
     Boolean(draft?.initialized) &&
     baseline !== null &&
     (baseline.name !== form.name.trim() ||
+      baseline.weight !== normalizedWeight ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
@@ -495,31 +433,10 @@ export function AiProvidersOpenAIEditLayout() {
 
     setSaving(true);
     try {
-      const payload: OpenAIProviderConfig = {
-        name,
-        prefix: form.prefix?.trim() || undefined,
-        baseUrl,
-        headers: buildHeaderObject(form.headers),
-        apiKeyEntries: form.apiKeyEntries.map((entry: ApiKeyEntry) => ({
-          apiKey: entry.apiKey.trim(),
-          proxyUrl: entry.proxyUrl?.trim() || undefined,
-          authIndex: normalizeAuthIndex(entry.authIndex) ?? undefined,
-          headers: entry.headers,
-        })),
-      };
-      if (form.priority !== undefined && Number.isFinite(form.priority)) {
-        payload.priority = Math.trunc(form.priority);
-      }
-      if (form.disableCooling !== undefined) {
-        payload.disableCooling = form.disableCooling;
-      }
-      if (initialData?.disabled !== undefined) {
-        payload.disabled = initialData.disabled;
-      }
-      const resolvedTestModel = testModel.trim();
-      if (resolvedTestModel) payload.testModel = resolvedTestModel;
-      const models = entriesToModels(form.modelEntries);
-      if (models.length) payload.models = models;
+      const payload = buildOpenAIProviderPayload(form, {
+        disabled: initialData?.disabled,
+        testModel,
+      });
 
       const nextList =
         editIndex !== null

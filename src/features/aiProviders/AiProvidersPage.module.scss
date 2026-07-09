@@ -736,9 +736,9 @@
 // 表头
 .keyTableHeader {
   display: grid;
-  grid-template-columns: 46px 56px minmax(220px, 1.4fr) minmax(200px, 1.1fr) 180px;
+  grid-template-columns: 46px 56px minmax(220px, 1.4fr) 96px minmax(200px, 1.1fr) 180px;
   gap: $spacing-sm;
-  min-width: 760px;
+  min-width: 880px;
   padding: 10px $spacing-md;
   background: var(--surface-subtle-strong);
   border: 1px solid var(--border-subtle);
@@ -755,9 +755,9 @@
 // 数据行
 .keyTableRow {
   display: grid;
-  grid-template-columns: 46px 56px minmax(220px, 1.4fr) minmax(200px, 1.1fr) 180px;
+  grid-template-columns: 46px 56px minmax(220px, 1.4fr) 96px minmax(200px, 1.1fr) 180px;
   gap: $spacing-sm;
-  min-width: 760px;
+  min-width: 880px;
   padding: 10px $spacing-md;
   background: var(--surface-subtle);
   border: 1px solid var(--border-subtle);
@@ -826,6 +826,7 @@
 }
 
 .keyTableColKey,
+.keyTableColWeight,
 .keyTableColProxy {
   min-width: 0;
   display: flex;
@@ -923,5 +924,4 @@
     background: rgba($error-color, 0.24);
     color: #f1b0a6;
   }
-
 }

@@ -32,6 +32,7 @@ import {
   buildCodexResponsesEndpoint,
   excludedModelsToText,
   parseExcludedModels,
+  parseProviderWeightInput,
 } from '@/components/providers/utils';
 import type { ProviderFormState } from '@/components/providers';
 import type { ModelInfo } from '@/utils/models';
@@ -46,6 +47,7 @@ const CODEX_TEST_TIMEOUT_MS = 20_000;
 
 const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -79,6 +81,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 type CodexFormBaseline = {
   apiKey: string;
   authIndex: string;
+  weight: number | null;
   priority: number | null;
   prefix: string;
   baseUrl: string;
@@ -93,6 +96,7 @@ type CodexFormBaseline = {
 const buildCodexBaseline = (form: ProviderFormState): CodexFormBaseline => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -256,6 +260,10 @@ export function AiProvidersCodexEditPage() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(
+    () => parseProviderWeightInput(form.weight) ?? null,
+    [form.weight]
+  );
   const isHeadersDirty = useMemo(
     () => !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders),
     [baseline.headers, normalizedHeaders]
@@ -271,6 +279,7 @@ export function AiProvidersCodexEditPage() {
   const isDirty =
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+    baseline.weight !== normalizedWeight ||
     baseline.priority !== normalizedPriority ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -622,6 +631,7 @@ export function AiProvidersCodexEditPage() {
     try {
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
@@ -742,6 +752,22 @@ export function AiProvidersCodexEditPage() {
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={disableControls || saving}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={disableControls || saving}
             />
             <Input

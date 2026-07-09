@@ -24,7 +24,11 @@ import {
 } from '@/utils/compare';
 import type { ModelInfo } from '@/utils/models';
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
-import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
+import {
+  excludedModelsToText,
+  parseExcludedModels,
+  parseProviderWeightInput,
+} from '@/components/providers/utils';
 import type { GeminiFormState } from '@/components/providers';
 import { parseProviderIndexParam } from '@/features/aiProviders/model/routeParams';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
@@ -34,6 +38,7 @@ type LocationState = { fromAiProviders?: boolean } | null;
 
 const buildEmptyForm = (): GeminiFormState => ({
   apiKey: '',
+  weight: undefined,
   priority: undefined,
   prefix: '',
   baseUrl: '',
@@ -65,6 +70,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 type GeminiFormBaseline = {
   apiKey: string;
   authIndex: string;
+  weight: number | null;
   priority: number | null;
   prefix: string;
   baseUrl: string;
@@ -78,6 +84,7 @@ type GeminiFormBaseline = {
 const buildGeminiBaseline = (form: GeminiFormState): GeminiFormBaseline => ({
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
+  weight: parseProviderWeightInput(form.weight) ?? null,
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
       ? Math.trunc(form.priority)
@@ -222,6 +229,10 @@ export function AiProvidersGeminiEditPage() {
       ? Math.trunc(form.priority)
       : null;
   }, [form.priority]);
+  const normalizedWeight = useMemo(
+    () => parseProviderWeightInput(form.weight) ?? null,
+    [form.weight]
+  );
 
   const discoveredModelsFiltered = useMemo(() => {
     const filter = modelDiscoverySearch.trim().toLowerCase();
@@ -234,10 +245,7 @@ export function AiProvidersGeminiEditPage() {
     });
   }, [discoveredModels, modelDiscoverySearch]);
   const configuredModelNames = useMemo(
-    () =>
-      new Set(
-        normalizedModels.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)
-      ),
+    () => new Set(normalizedModels.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [normalizedModels]
   );
   const visibleDiscoveredModelNames = useMemo(
@@ -444,6 +452,7 @@ export function AiProvidersGeminiEditPage() {
   const isDirty =
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
+    baseline.weight !== normalizedWeight ||
     baseline.priority !== normalizedPriority ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
@@ -480,6 +489,7 @@ export function AiProvidersGeminiEditPage() {
 
       const payload: GeminiKeyConfig = {
         apiKey: form.apiKey.trim(),
+        weight: parseProviderWeightInput(form.weight),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: form.baseUrl?.trim() || undefined,
@@ -594,6 +604,22 @@ export function AiProvidersGeminiEditPage() {
                   priority: parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
                 }));
               }}
+              disabled={disableControls || saving}
+            />
+            <Input
+              label={t('ai_providers.weight_label')}
+              hint={t('ai_providers.weight_hint')}
+              type="number"
+              min={1}
+              step={1}
+              value={form.weight ?? ''}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  weight: parseProviderWeightInput(e.target.value),
+                }))
+              }
+              placeholder={t('ai_providers.weight_placeholder')}
               disabled={disableControls || saving}
             />
             <Input
