@@ -1,6 +1,6 @@
 # 二开功能保留清单
 
-更新时间：2026-07-03
+更新时间：2026-07-09
 
 本文记录当前 `master` 中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
@@ -17,6 +17,7 @@
 - 历史二开提交：`d97e2bb`、`8a53a52`、`6aa9e9b`、`f7690f2`、`831fd03`、`def26b4`、`b1f494e`、`b18c579`、`6278782`、`fc8ea44`。
 - 2026-07-03 已恢复并验证的提交：`fc8ea44 fix(frontend): 恢复同步后隐藏的二开功能`。
 - 2026-07-03 已补充并验证的提交：`da3e5a0 fix(frontend): 恢复认证文件权重展示`。
+- 2026-07-09 已补充并验证的提交：`f0be172 feat(proxy-configs): 新增代理配置总览页面`。
 
 ## 当前应保留的二开功能
 
@@ -115,7 +116,25 @@
 - `src/features/authFiles/hooks/useAuthFilesPrefixProxyEditor.ts`
 - `src/features/authFiles/sessionAuthConverter.ts`
 
-### 6. 额度管理增强
+### 6. 代理配置总览
+
+- 新增代理配置总览页 `/proxy-configs`，在一个列表中整合全局 `proxy-url`、AI Provider/key 代理配置、OpenAI compatible key entry 代理配置和认证文件 `proxy_url`。
+- 列表展示配置范围、提供商、名称、覆盖状态、代理协议、主机、端口、代理用户和脱敏后的代理密码。
+- 代理 URL 展示层必须脱敏密码；编辑弹窗中保留原始 URL 供用户修改和保存。
+- 支持编辑/清空单行代理配置：全局配置写入 `/proxy-url`，Provider 配置复用现有 provider 保存接口，认证文件配置复用 `authFilesApi.patchFields` / `patchFieldsForAuthIndexes`。
+- 认证文件带 `authIndex` 时必须按账号粒度写回，避免同一个认证文件内其他账号的代理配置被误改。
+
+关键位置：
+
+- `src/features/proxyConfigs/`
+- `src/pages/ProxyConfigsPage.tsx`
+- `src/router/MainRoutes.tsx`
+- `src/components/layout/MainLayout.tsx`
+- `src/services/api/providers.ts`
+- `src/services/api/authFiles.ts`
+- `src/services/api/config.ts`
+
+### 7. 额度管理增强
 
 - 统一额度页 `/quota` 支持 Claude、Codex、Antigravity、Kimi、xAI 等账号额度。
 - Claude 额度支持 `one_day` 日限额窗口。
@@ -137,7 +156,7 @@
 - `src/stores/useQuotaStore.ts`
 - `src/types/quota.ts`
 
-### 7. OAuth 与重新登录增强
+### 8. OAuth 与重新登录增强
 
 - OAuth 页面支持 Codex、Claude、Antigravity、xAI 等登录入口。
 - Codex 支持重新登录对话框，帮助对指定账号重新授权。
@@ -150,7 +169,7 @@
 - `src/services/api/oauth.ts`
 - `src/types/oauth.ts`
 
-### 8. 插件管理
+### 9. 插件管理
 
 - 插件管理页 `/plugins`、插件商店 tab、插件资源页保留。
 - 插件能力通过后端能力位门控，不支持时应隐藏或跳转。
@@ -163,7 +182,7 @@
 - `src/types/plugin.ts`
 - `src/router/MainRoutes.tsx`
 
-### 9. 配置管理和可视化编辑增强
+### 10. 配置管理和可视化编辑增强
 
 - 配置页保留可视化编辑器和源码 diff。
 - 配置分组支持 `request-log`、`success-request-log`、`success-logs-max-files`、`logging-to-file`、`plugins`、`ws-auth`、`routing/strategy`、各 Provider 配置等 section。
@@ -179,7 +198,7 @@
 - `src/hooks/visualConfigPayloadRules.ts`
 - `src/features/config/components/AccountProcessingPolicySection.tsx`
 
-### 10. Dashboard、Demo 和构建输出
+### 11. Dashboard、Demo 和构建输出
 
 - Dashboard 保留用量摘要、请求记录读取状态、健康告警、流量概览、版本信息等卡片。
 - Demo 模式 `/demo` 和演示 fixtures 保留，用于无后端预览。
@@ -211,12 +230,13 @@
 
 每次同步上游后，至少检查以下项目：
 
-- 路由可见性：`/monitoring`、`/usage-analytics`、`/model-prices`、`/codex-inspection/server`、`/logs?tab=success`、`/plugins`。
+- 路由可见性：`/monitoring`、`/usage-analytics`、`/model-prices`、`/codex-inspection/server`、`/logs?tab=success`、`/plugins`、`/proxy-configs`。
 - 外部 CPA 面板连接 Manager Server 时，请求监控入口和 API Key 别名是否仍可用。
 - 配置页能否显示和保存 Manager Server 的 CPA 连接、采集模式、请求监控开关。
 - 日志页能否切换成功请求日志，能否下载格式化错误/成功日志，耗时筛选是否有效。
 - Provider 保存后是否保留 `headers`、`weight`、`balanceToken`，keyless OpenAI custom entry 是否不会被丢弃。
 - AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `weight`、`headers`。
+- 代理配置总览页是否能展示全局、Provider、OpenAI key entry、认证文件代理配置；代理用户是否可见、代理密码是否脱敏；按 `authIndex` 编辑认证文件代理是否只影响目标账号。
 - AuthFiles 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级是否仍可用。
 - Claude `one_day` 日额度窗口是否正常展示。
 - Codex 额度 Header 快照、手动刷新、冷却恢复刷新是否不会相互覆盖错误状态。
@@ -247,5 +267,6 @@ pnpm test \
   src/services/api/authFiles.test.ts \
   src/features/authFiles/hooks/useAuthFilesData.test.ts \
   src/features/authFiles/components/AuthFileCard.test.tsx \
+  src/features/proxyConfigs/proxyConfigModel.test.ts \
   src/components/quota/QuotaSection.test.tsx
 ```
