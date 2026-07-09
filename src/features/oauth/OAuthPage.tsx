@@ -39,6 +39,7 @@ interface ProviderState {
   callbackSubmitting?: boolean;
   callbackStatus?: 'success' | 'error';
   callbackError?: string;
+  proxyUrl?: string;
 }
 
 interface VertexImportResult {
@@ -410,6 +411,7 @@ export function OAuthPage() {
   };
 
   const startAuth = async (provider: OAuthProvider) => {
+    const proxyUrl = states[provider]?.proxyUrl?.trim();
     clearProviderTimers(provider);
     updateProviderState(provider, {
       url: undefined,
@@ -422,7 +424,7 @@ export function OAuthPage() {
       callbackUrl: '',
     });
     try {
-      const res = await oauthApi.startAuth(provider);
+      const res = await oauthApi.startAuth(provider, proxyUrl || undefined);
       if (!res.state) {
         const message = t('auth_login.missing_state');
         updateProviderState(provider, {
@@ -616,6 +618,16 @@ export function OAuthPage() {
               >
                 <div className={styles.cardContent}>
                   <div className={styles.cardHint}>{provider.hint}</div>
+                  <Input
+                    label={t('auth_files.proxy_url_label')}
+                    value={state.proxyUrl || ''}
+                    onChange={(e) =>
+                      updateProviderState(provider.id, {
+                        proxyUrl: e.target.value,
+                      })
+                    }
+                    placeholder={t('auth_files.proxy_url_placeholder')}
+                  />
                   {state.url && (
                     <div className={styles.authUrlBox}>
                       <div className={styles.authUrlLabel}>{provider.urlLabel}</div>

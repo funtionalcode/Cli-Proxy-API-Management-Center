@@ -32,6 +32,16 @@ describe('oauthApi', () => {
     });
   });
 
+  it('passes proxy_url when starting OAuth with a proxy', async () => {
+    mocks.get.mockResolvedValue({ url: 'https://auth.example/xai', state: 'state-1' });
+
+    await oauthApi.startAuth('xai', ' socks5://proxy.local:1080 ');
+
+    expect(mocks.get).toHaveBeenCalledWith('/xai-auth-url', {
+      params: { is_webui: true, proxy_url: 'socks5://proxy.local:1080' },
+    });
+  });
+
   it('starts plugin OAuth providers through their dynamic auth-url endpoint', async () => {
     mocks.get.mockResolvedValue({ url: 'https://auth.example/plugin', state: 'state-2' });
 
