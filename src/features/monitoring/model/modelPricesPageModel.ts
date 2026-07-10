@@ -14,6 +14,8 @@ export type PriceDraft = {
   prompt: string;
   completion: string;
   cache: string;
+  cacheRead: string;
+  cacheCreation: string;
 };
 
 export type ModelPriceRow = {
@@ -38,13 +40,22 @@ export const createEmptyPriceDraft = (): PriceDraft => ({
   prompt: '',
   completion: '',
   cache: '',
+  cacheRead: '',
+  cacheCreation: '',
 });
+
+const createConfiguredDraftValue = (value: number | undefined, configured?: boolean): string =>
+  configured || Number(value) > 0 ? String(Number(value) || 0) : '';
 
 export const createPriceDraft = (model: string, price?: ModelPrice): PriceDraft => ({
   model,
-  prompt: price ? String(price.prompt) : '',
-  completion: price ? String(price.completion) : '',
+  prompt: price ? createConfiguredDraftValue(price.prompt, price.promptConfigured) : '',
+  completion: price ? createConfiguredDraftValue(price.completion, price.completionConfigured) : '',
   cache: price ? String(price.cache) : '',
+  cacheRead: price ? createConfiguredDraftValue(price.cacheRead, price.cacheReadConfigured) : '',
+  cacheCreation: price
+    ? createConfiguredDraftValue(price.cacheCreation, price.cacheCreationConfigured)
+    : '',
 });
 
 export const parsePriceValue = (value: string) => {
@@ -58,7 +69,18 @@ export const buildPriceFromDraft = (draft: PriceDraft): ModelPrice | null => {
   const prompt = parsePriceValue(draft.prompt);
   const completion = parsePriceValue(draft.completion);
   const cache = draft.cache.trim() === '' ? prompt : parsePriceValue(draft.cache);
-  return { prompt, completion, cache, source: 'manual' };
+  return {
+    prompt,
+    completion,
+    cache,
+    cacheRead: parsePriceValue(draft.cacheRead),
+    cacheCreation: parsePriceValue(draft.cacheCreation),
+    promptConfigured: draft.prompt.trim() !== '',
+    completionConfigured: draft.completion.trim() !== '',
+    cacheReadConfigured: draft.cacheRead.trim() !== '',
+    cacheCreationConfigured: draft.cacheCreation.trim() !== '',
+    source: 'manual',
+  };
 };
 
 export const applyCandidatePrice = (
@@ -78,9 +100,7 @@ export const shouldFallbackToModelPriceModelStats = (error: unknown): boolean =>
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { status?: unknown; code?: unknown };
   return (
-    candidate.status === 404 ||
-    candidate.status === 405 ||
-    candidate.code === 'method_not_allowed'
+    candidate.status === 404 || candidate.status === 405 || candidate.code === 'method_not_allowed'
   );
 };
 
@@ -118,12 +138,7 @@ export const buildSyncPriceModelsFromModelStats = (
   > = [],
   prices: Record<string, ModelPrice>
 ) =>
-  Array.from(
-    new Set([
-      ...modelStats.map((row) => row.model),
-      ...Object.keys(prices),
-    ])
-  )
+  Array.from(new Set([...modelStats.map((row) => row.model), ...Object.keys(prices)]))
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
 
