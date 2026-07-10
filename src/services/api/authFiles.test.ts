@@ -27,6 +27,76 @@ beforeEach(() => {
   mocks.postForm.mockReset();
 });
 
+describe('authFilesApi OAuth model alias normalization', () => {
+  it.each(['force-mapping', 'forceMapping', 'force_mapping'])(
+    'preserves %s and keeps forceMapping variants distinct during deduplication',
+    async (forceMappingField) => {
+      mocks.get.mockResolvedValue({
+        'oauth-model-alias': {
+          codex: [
+            {
+              name: 'gpt-5-codex',
+              alias: 'team-codex',
+              fork: true,
+              [forceMappingField]: true,
+            },
+            {
+              name: 'gpt-5-codex',
+              alias: 'team-codex',
+              fork: true,
+              [forceMappingField]: true,
+            },
+            {
+              name: 'gpt-5-codex',
+              alias: 'team-codex',
+              fork: true,
+            },
+          ],
+        },
+      });
+
+      await expect(authFilesApi.getOauthModelAlias()).resolves.toEqual({
+        codex: [
+          {
+            name: 'gpt-5-codex',
+            alias: 'team-codex',
+            fork: true,
+            forceMapping: true,
+          },
+          {
+            name: 'gpt-5-codex',
+            alias: 'team-codex',
+            fork: true,
+          },
+        ],
+      });
+    }
+  );
+
+  it('serializes forceMapping using the CPA force-mapping field', async () => {
+    mocks.patch.mockResolvedValue({ status: 'ok' });
+
+    await authFilesApi.saveOauthModelAlias('codex', [
+      {
+        name: 'gpt-5-codex',
+        alias: 'team-codex',
+        forceMapping: true,
+      },
+    ]);
+
+    expect(mocks.patch).toHaveBeenCalledWith('/oauth-model-alias', {
+      channel: 'codex',
+      aliases: [
+        {
+          name: 'gpt-5-codex',
+          alias: 'team-codex',
+          'force-mapping': true,
+        },
+      ],
+    });
+  });
+});
+
 describe('authFilesApi list normalization', () => {
   it('preserves same-name auth file rows when authIndex differs', async () => {
     mocks.get.mockResolvedValue({

@@ -2,14 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
+    delete: vi.fn(),
     get: vi.fn(),
+    patch: vi.fn(),
     put: vi.fn(),
   },
 }));
 
 vi.mock('./client', () => ({
   apiClient: {
+    delete: mocks.delete,
     get: mocks.get,
+    patch: mocks.patch,
     put: mocks.put,
   },
 }));
@@ -17,11 +21,185 @@ vi.mock('./client', () => ({
 import { providersApi } from './providers';
 
 beforeEach(() => {
+  mocks.delete.mockReset();
   mocks.get.mockReset();
+  mocks.patch.mockReset();
   mocks.put.mockReset();
 });
 
 describe('providersApi auth-index preservation', () => {
+  it('loads native Interactions API keys through their management endpoint', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'interactions-api-key': [
+        {
+          'api-key': 'interactions-key',
+          prefix: 'native',
+          'base-url': 'https://generativelanguage.googleapis.com',
+          'disable-cooling': true,
+        },
+      ],
+    });
+
+    await expect(providersApi.getInteractionsKeys()).resolves.toEqual([
+      expect.objectContaining({
+        apiKey: 'interactions-key',
+        prefix: 'native',
+        disableCooling: true,
+      }),
+    ]);
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+    expect(mocks.get).toHaveBeenCalledWith('/interactions-api-key');
+  });
+
+  it('saves Interactions keys while preserving unknown provider and model fields', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'interactions-api-key': [
+        {
+          'api-key': 'interactions-key',
+          'base-url': 'https://generativelanguage.googleapis.com',
+          prefix: 'legacy',
+          'raw-provider-field': 'keep-provider',
+          models: [
+            {
+              name: 'image-model',
+              image: true,
+              'raw-model-field': 'keep-model',
+            },
+          ],
+        },
+      ],
+    });
+
+    mocks.put.mockResolvedValue({});
+    await providersApi.saveInteractionsKeys([
+      {
+        apiKey: ' interactions-key ',
+        authIndex: 'runtime-only-index',
+        prefix: 'native',
+        baseUrl: 'https://generativelanguage.googleapis.com',
+        disableCooling: true,
+        models: [
+          {
+            name: 'image-model',
+            alias: 'image-alias',
+            image: false,
+            forceMapping: true,
+            inputModalities: ['text', 'image'],
+            outputModalities: ['image'],
+            thinking: { mode: 'auto' },
+          },
+        ],
+      },
+    ]);
+
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+    expect(mocks.get).toHaveBeenCalledWith('/interactions-api-key');
+    expect(mocks.put).toHaveBeenCalledWith('/interactions-api-key', [
+      {
+        'raw-provider-field': 'keep-provider',
+        'api-key': 'interactions-key',
+        prefix: 'native',
+        'base-url': 'https://generativelanguage.googleapis.com',
+        'disable-cooling': true,
+        models: [
+          {
+            'raw-model-field': 'keep-model',
+            name: 'image-model',
+            alias: 'image-alias',
+            image: false,
+            'force-mapping': true,
+            'input-modalities': ['text', 'image'],
+            'output-modalities': ['image'],
+            thinking: { mode: 'auto' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('updates an Interactions key without leaking its runtime auth index', async () => {
+    mocks.patch.mockResolvedValue({});
+
+    await providersApi.updateInteractionsKey(2, {
+      apiKey: ' interactions-key ',
+      authIndex: 'runtime-only-index',
+      priority: 7,
+      prefix: ' native ',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      disableCooling: false,
+      models: [
+        {
+          name: 'image-model',
+          alias: 'image-alias',
+          forceMapping: true,
+          inputModalities: ['text', 'image'],
+          outputModalities: ['image'],
+        },
+      ],
+    });
+
+    expect(mocks.patch).toHaveBeenCalledWith('/interactions-api-key', {
+      index: 2,
+      value: {
+        'api-key': 'interactions-key',
+        priority: 7,
+        prefix: 'native',
+        'base-url': 'https://generativelanguage.googleapis.com',
+        'disable-cooling': false,
+        models: [
+          {
+            name: 'image-model',
+            alias: 'image-alias',
+            'force-mapping': true,
+            'input-modalities': ['text', 'image'],
+            'output-modalities': ['image'],
+          },
+        ],
+      },
+    });
+  });
+
+  it('deletes an Interactions key with trimmed and URLSearchParams-encoded identity fields', async () => {
+    mocks.delete.mockResolvedValue({});
+
+    await providersApi.deleteInteractionsKey(
+      '  api +/=?& key  ',
+      '  https://api.example.com/v1?x=a+b&y=c d  '
+    );
+
+    expect(mocks.delete).toHaveBeenCalledWith(
+      '/interactions-api-key?api-key=api+%2B%2F%3D%3F%26+key&base-url=https%3A%2F%2Fapi.example.com%2Fv1%3Fx%3Da%2Bb%26y%3Dc+d'
+    );
+  });
+
+  it('rejects auth-index-only Interactions provider entries', async () => {
+    await expect(
+      providersApi.saveInteractionsKeys([
+        {
+          apiKey: '',
+          authIndex: 'runtime-only-index',
+        },
+      ])
+    ).rejects.toThrow('API key is required for Gemini and Interactions providers');
+
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it('rejects auth-index-only Gemini provider entries', async () => {
+    await expect(
+      providersApi.saveGeminiKeys([
+        {
+          apiKey: '',
+          authIndex: 'runtime-only-index',
+        },
+      ])
+    ).rejects.toThrow('API key is required for Gemini and Interactions providers');
+
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
   it('serializes auth-index-only provider keys and preserves unknown raw fields', async () => {
     mocks.get.mockResolvedValue({
       'codex-api-key': [
@@ -96,10 +274,94 @@ describe('providersApi auth-index preservation', () => {
     mocks.get.mockRejectedValue(new Error('forbidden'));
     mocks.put.mockResolvedValue({});
 
-    await providersApi.saveGeminiKeys([{ apiKey: '', authIndex: 'auth-3' }]);
+    await providersApi.saveGeminiKeys([{ apiKey: 'gemini-key', authIndex: 'runtime-only-index' }]);
 
-    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [{ 'auth-index': 'auth-3' }]);
+    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [{ 'api-key': 'gemini-key' }]);
   });
+});
+
+describe('providersApi compatible field normalization', () => {
+  it.each([
+    ['kebab-case', 'force-mapping', 'input-modalities', 'output-modalities'],
+    ['camelCase', 'forceMapping', 'inputModalities', 'outputModalities'],
+    ['snake_case', 'force_mapping', 'input_modalities', 'output_modalities'],
+  ])(
+    'normalizes %s model metadata spellings',
+    async (_style, forceMappingField, inputModalitiesField, outputModalitiesField) => {
+      mocks.get.mockResolvedValue({
+        'openai-compatibility': [
+          {
+            name: 'openai-compatible',
+            'base-url': 'https://api.example.com/v1',
+            'api-key-entries': [],
+            'disable-cooling': false,
+            models: [
+              {
+                name: 'multimodal-model',
+                [forceMappingField]: true,
+                [inputModalitiesField]: ['text', 'image'],
+                [outputModalitiesField]: ['image'],
+              },
+            ],
+          },
+        ],
+      });
+
+      const providers = await providersApi.getOpenAIProviders();
+
+      expect(providers[0]?.models).toEqual([
+        {
+          name: 'multimodal-model',
+          forceMapping: true,
+          inputModalities: ['text', 'image'],
+          outputModalities: ['image'],
+        },
+      ]);
+    }
+  );
+
+  it.each([
+    ['kebab-case', 'rebuild-mid-system-message'],
+    ['camelCase', 'rebuildMidSystemMessage'],
+    ['snake_case', 'rebuild_mid_system_message'],
+  ])('normalizes %s Claude rebuild field spelling', async (_style, rebuildField) => {
+    mocks.get.mockResolvedValue({
+      'claude-api-key': [
+        {
+          'api-key': 'claude-key',
+          [rebuildField]: true,
+        },
+      ],
+    });
+
+    const providers = await providersApi.getClaudeConfigs();
+
+    expect(providers[0]).toMatchObject({
+      apiKey: 'claude-key',
+      rebuildMidSystemMessage: true,
+    });
+  });
+
+  it.each(['interactions-api-key', 'interactionsApiKey', 'interactionsApiKeys'])(
+    'reads Interactions keys from the %s section spelling',
+    async (section) => {
+      mocks.get.mockResolvedValue({
+        [section]: [
+          {
+            'api-key': 'interactions-key',
+            'base-url': 'https://generativelanguage.googleapis.com',
+          },
+        ],
+      });
+
+      await expect(providersApi.getInteractionsKeys()).resolves.toEqual([
+        expect.objectContaining({
+          apiKey: 'interactions-key',
+          baseUrl: 'https://generativelanguage.googleapis.com',
+        }),
+      ]);
+    }
+  );
 });
 
 describe('providersApi v1.16 provider fields', () => {
@@ -258,12 +520,14 @@ describe('providersApi v1.16 provider fields', () => {
         authIndex: 'auth-4',
         disableCooling: true,
         experimentalCchSigning: true,
+        rebuildMidSystemMessage: true,
         cloak: { mode: 'auto', cacheUserId: true },
         models: [
           {
             name: 'claude-sonnet',
             alias: 'sonnet',
             image: true,
+            forceMapping: true,
             thinking: { budget_tokens: 1024 },
           },
         ],
@@ -276,6 +540,7 @@ describe('providersApi v1.16 provider fields', () => {
         'auth-index': 'auth-4',
         'disable-cooling': true,
         'experimental-cch-signing': true,
+        'rebuild-mid-system-message': true,
         cloak: {
           'raw-cloak-field': 'keep-cloak',
           mode: 'auto',
@@ -287,6 +552,7 @@ describe('providersApi v1.16 provider fields', () => {
             name: 'claude-sonnet',
             alias: 'sonnet',
             image: true,
+            'force-mapping': true,
             thinking: { budget_tokens: 1024 },
           },
         ],
@@ -312,7 +578,16 @@ describe('providersApi v1.16 provider fields', () => {
         baseUrl: 'https://api.example.com/v1',
         disableCooling: true,
         apiKeyEntries: [],
-        models: [{ name: 'gpt-image', image: true, thinking: { mode: 'auto' } }],
+        models: [
+          {
+            name: 'gpt-image',
+            image: true,
+            forceMapping: true,
+            inputModalities: ['text', 'image'],
+            outputModalities: ['image'],
+            thinking: { mode: 'auto' },
+          },
+        ],
       },
     ]);
 
@@ -322,7 +597,16 @@ describe('providersApi v1.16 provider fields', () => {
         'base-url': 'https://api.example.com/v1',
         'api-key-entries': [],
         'disable-cooling': true,
-        models: [{ name: 'gpt-image', image: true, thinking: { mode: 'auto' } }],
+        models: [
+          {
+            name: 'gpt-image',
+            image: true,
+            'force-mapping': true,
+            'input-modalities': ['text', 'image'],
+            'output-modalities': ['image'],
+            thinking: { mode: 'auto' },
+          },
+        ],
       },
     ]);
   });
@@ -440,7 +724,16 @@ describe('providersApi v1.16 provider fields', () => {
           'base-url': 'https://api.example.com/v1',
           'api-key-entries': [],
           'disable-cooling': true,
-          models: [{ name: 'openai-model', image: true, thinking: { effort: 'medium' } }],
+          models: [
+            {
+              name: 'openai-model',
+              image: true,
+              'force-mapping': true,
+              'input-modalities': ['text', 'image'],
+              'output-modalities': ['text'],
+              thinking: { effort: 'medium' },
+            },
+          ],
         },
       ],
     });
@@ -465,7 +758,60 @@ describe('providersApi v1.16 provider fields', () => {
             name: 'openai-model',
             alias: 'openai-alias',
             image: true,
+            'force-mapping': true,
+            'input-modalities': ['text', 'image'],
+            'output-modalities': ['text'],
             thinking: { effort: 'medium' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('lets explicit empty modality arrays clear preserved raw values', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [{ 'api-key': 'test-key' }],
+          models: [
+            {
+              name: 'openai-model',
+              'input-modalities': ['text', 'image'],
+              'output-modalities': ['image'],
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [{ apiKey: 'test-key' }],
+        models: [
+          {
+            name: 'openai-model',
+            inputModalities: [],
+            outputModalities: [],
+          },
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [{ 'api-key': 'test-key' }],
+        models: [
+          {
+            name: 'openai-model',
+            'input-modalities': [],
+            'output-modalities': [],
           },
         ],
       },
