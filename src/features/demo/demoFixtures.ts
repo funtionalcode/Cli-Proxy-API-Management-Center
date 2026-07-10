@@ -6,6 +6,7 @@ import type {
   CodexInspectionRunsResponse,
   DashboardSummaryResponse,
   ManagerConfigResponse,
+  ModelPriceUsageSummaryResponse,
   ModelPricesResponse,
   MonitoringAnalyticsRequest,
   MonitoringAnalyticsResponse,
@@ -611,6 +612,18 @@ const demoModelPrices: ModelPricesResponse = {
     'deepseek-chat': { prompt: 0.27, completion: 1.1, cache: 0.07, source: 'demo' },
     'grok-4-fast': { prompt: 0.2, completion: 0.8, cache: 0.05, source: 'demo' },
   },
+};
+
+const demoModelPriceUsageSummary: ModelPriceUsageSummaryResponse = {
+  sampled_events: 1_638,
+  total_events: 1_638,
+  truncated: false,
+  models: [
+    { model: 'gpt-4.1-mini', calls: 520, requested_calls: 520, resolved_calls: 0 },
+    { model: 'claude-sonnet-4-5', calls: 416, requested_calls: 416, resolved_calls: 0 },
+    { model: 'gemini-2.5-pro', calls: 384, requested_calls: 384, resolved_calls: 0 },
+    { model: 'gpt-4.1', calls: 318, requested_calls: 318, resolved_calls: 0 },
+  ],
 };
 
 const demoApiAliases: ApiKeyAlias[] = [
@@ -2515,6 +2528,7 @@ export const getDemoDashboardSummary = () => clone(dashboardBase());
 export const getDemoMonitoringAnalytics = (request?: MonitoringAnalyticsRequest) =>
   clone(buildMonitoringAnalytics(undefined, request));
 export const getDemoModelPrices = () => clone(demoModelPrices);
+export const getDemoModelPriceUsageSummary = () => clone(demoModelPriceUsageSummary);
 export const getDemoUsagePayload = () => {
   const dashboard = dashboardBase();
   return {

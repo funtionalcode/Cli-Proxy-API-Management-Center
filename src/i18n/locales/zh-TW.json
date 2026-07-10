@@ -2241,7 +2241,8 @@
     "load_more_events": "載入更多事件",
     "no_more_events": "沒有更多事件",
     "events_loaded_summary": "已載入 {{loaded}} / 共 {{total}} 筆",
-    "events_all_loaded": "已載入全部 {{total}} 筆"
+    "events_all_loaded": "已載入全部 {{total}} 筆",
+    "events_retention_limited": "僅保留最新 {{loaded}} / 共 {{total}} 筆事件"
   },
   "logs": {
     "title": "記錄檢視",

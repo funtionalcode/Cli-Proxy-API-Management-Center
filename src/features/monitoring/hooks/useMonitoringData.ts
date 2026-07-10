@@ -99,7 +99,8 @@ export {
 } from '../model/rowBuilders';
 
 const MONITORING_EVENTS_PAGE_LIMIT = 500;
-const MONITORING_PRESENTATION_CACHE_LIMIT = 24;
+export const MONITORING_EVENTS_RETENTION_LIMIT = 2_000;
+const MONITORING_PRESENTATION_CACHE_LIMIT = 4;
 const EMPTY_MONITORING_ANALYTICS_EVENT_ROWS: MonitoringAnalyticsEventRow[] = [];
 type MonitoringAnalyticsGranularity = 'hour' | 'day';
 
@@ -151,6 +152,7 @@ export type MonitoringPresentationSnapshot = Pick<
   | 'filteredRows'
   | 'eventsHasMore'
   | 'eventsLoadingMore'
+  | 'eventsRetentionLimited'
   | 'eventsTotalCount'
   | 'eventsLoadedCount'
   | 'lastRefreshedAt'
@@ -220,13 +222,31 @@ export const mergeMonitoringEventsPageItems = (
   requestBeforeMs: number | null
 ) => {
   if (requestBeforeMs) {
-    return mergeAnalyticsEventItems(previousItems, pageItems);
+    return mergeAnalyticsEventItems(previousItems, pageItems).slice(
+      0,
+      MONITORING_EVENTS_RETENTION_LIMIT
+    );
   }
   if (previousItems.length === 0) {
-    return pageItems;
+    return pageItems.slice(0, MONITORING_EVENTS_RETENTION_LIMIT);
   }
-  return mergeAnalyticsEventItems(pageItems, previousItems);
+  return mergeAnalyticsEventItems(pageItems, previousItems).slice(
+    0,
+    MONITORING_EVENTS_RETENTION_LIMIT
+  );
 };
+
+export const withoutMonitoringSnapshotEvents = (
+  snapshot: MonitoringPresentationSnapshot
+): MonitoringPresentationSnapshot => ({
+  ...snapshot,
+  filteredRows: [],
+  eventsHasMore: false,
+  eventsLoadingMore: false,
+  eventsRetentionLimited: false,
+  eventsTotalCount: 0,
+  eventsLoadedCount: 0,
+});
 
 const uniqueOptionValues = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean))).sort(
@@ -514,10 +534,16 @@ export function useMonitoringData({
       eventsBeforeMs,
     ]
   );
-  const displayEventsHasMore = currentEventsAnalyticsData?.events?.has_more ?? eventsHasMore;
   const eventsLoadedCount = displayEventItems.length;
   const displayEventsTotalCount =
     currentEventsAnalyticsData?.events?.total_count ?? eventsLoadedCount;
+  const eventsRetentionLimited =
+    eventsLoadedCount >= MONITORING_EVENTS_RETENTION_LIMIT &&
+    (Boolean(currentEventsAnalyticsData?.events?.has_more) ||
+      eventsHasMore ||
+      displayEventsTotalCount > MONITORING_EVENTS_RETENTION_LIMIT);
+  const displayEventsHasMore =
+    !eventsRetentionLimited && (currentEventsAnalyticsData?.events?.has_more ?? eventsHasMore);
 
   useEffect(() => {
     const page = currentEventsAnalyticsData?.events;
@@ -537,12 +563,13 @@ export function useMonitoringData({
         const base =
           previous.scopeKey === eventsScopeKey ? previous : createEventsPageState(eventsScopeKey);
         if (base.lastPageKey === pageKey) return base;
+        const items = mergeMonitoringEventsPageItems(base.items, page.items, requestBeforeMs);
         return {
           scopeKey: eventsScopeKey,
           beforeMs: requestBeforeMs,
           beforeId: requestBeforeId,
-          items: mergeMonitoringEventsPageItems(base.items, page.items, requestBeforeMs),
-          hasMore: page.has_more,
+          items,
+          hasMore: page.has_more && items.length < MONITORING_EVENTS_RETENTION_LIMIT,
           loadingMore: false,
           lastPageKey: pageKey,
         };
@@ -569,7 +596,13 @@ export function useMonitoringData({
   }, [eventsAnalytics.error]);
 
   const loadMoreEvents = useCallback(() => {
-    if (eventsAnalytics.loading || eventsLoadingMore || !eventsHasMore) return;
+    if (
+      eventsAnalytics.loading ||
+      eventsLoadingMore ||
+      !eventsHasMore ||
+      eventItems.length >= MONITORING_EVENTS_RETENTION_LIMIT
+    )
+      return;
     const nextBeforeMs = currentEventsAnalyticsData?.events?.next_before_ms;
     if (!nextBeforeMs) return;
     const nextBeforeId = currentEventsAnalyticsData?.events?.next_before_id ?? null;
@@ -582,6 +615,7 @@ export function useMonitoringData({
   }, [
     currentEventsAnalyticsData?.events?.next_before_ms,
     currentEventsAnalyticsData?.events?.next_before_id,
+    eventItems.length,
     eventsAnalytics.loading,
     eventsScopeKey,
     eventsHasMore,
@@ -816,6 +850,7 @@ export function useMonitoringData({
       filteredRows,
       eventsHasMore: displayEventsHasMore,
       eventsLoadingMore,
+      eventsRetentionLimited,
       eventsTotalCount: displayEventsTotalCount,
       eventsLoadedCount,
       lastRefreshedAt: analytics.lastRefreshedAt,
@@ -829,6 +864,7 @@ export function useMonitoringData({
       displayEventsTotalCount,
       eventsLoadedCount,
       eventsLoadingMore,
+      eventsRetentionLimited,
       failureSourceRows,
       filterOptions,
       filteredRows,
@@ -858,8 +894,10 @@ export function useMonitoringData({
           return previous;
         }
 
+        const cachedSnapshot = withoutMonitoringSnapshotEvents(computedPresentationSnapshot);
         const cachedSnapshots = new Map(previous.cachedSnapshots);
-        cachedSnapshots.set(eventsScopeKey, computedPresentationSnapshot);
+        cachedSnapshots.delete(eventsScopeKey);
+        cachedSnapshots.set(eventsScopeKey, cachedSnapshot);
         while (cachedSnapshots.size > MONITORING_PRESENTATION_CACHE_LIMIT) {
           const oldestKey = cachedSnapshots.keys().next().value;
           if (oldestKey === undefined) break;
@@ -867,7 +905,7 @@ export function useMonitoringData({
         }
         return {
           cachedSnapshots,
-          lastStableSnapshot: computedPresentationSnapshot,
+          lastStableSnapshot: cachedSnapshot,
         };
       });
     });
@@ -940,6 +978,7 @@ export function useMonitoringData({
     filteredRows: presentationSnapshot.filteredRows,
     eventsHasMore: presentationSnapshot.eventsHasMore,
     eventsLoadingMore: presentationSnapshot.eventsLoadingMore,
+    eventsRetentionLimited: presentationSnapshot.eventsRetentionLimited,
     eventsTotalCount: presentationSnapshot.eventsTotalCount,
     eventsLoadedCount: presentationSnapshot.eventsLoadedCount,
     lastRefreshedAt: presentationSnapshot.lastRefreshedAt,

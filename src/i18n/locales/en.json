@@ -2241,7 +2241,8 @@
     "load_more_events": "Load more events",
     "no_more_events": "No more events",
     "events_loaded_summary": "Loaded {{loaded}} of {{total}} events",
-    "events_all_loaded": "All {{total}} events loaded"
+    "events_all_loaded": "All {{total}} events loaded",
+    "events_retention_limited": "Kept the newest {{loaded}} of {{total}} events"
   },
   "logs": {
     "title": "Logs Viewer",

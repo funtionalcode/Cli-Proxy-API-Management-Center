@@ -9,6 +9,7 @@ import {
   getDemoDashboardSummary,
   getDemoHeaderSnapshots,
   getDemoManagerConfig,
+  getDemoModelPriceUsageSummary,
   getDemoModelPrices,
   getDemoMonitoringAnalytics,
   getDemoQuotaCooldowns,
@@ -301,6 +302,20 @@ export interface CodexInspectionActionsResponse {
 
 export interface ModelPricesResponse {
   prices: Record<string, ModelPrice>;
+}
+
+export interface ModelPriceUsageStat {
+  model: string;
+  calls: number;
+  requested_calls: number;
+  resolved_calls: number;
+}
+
+export interface ModelPriceUsageSummaryResponse {
+  sampled_events: number;
+  total_events: number;
+  truncated: boolean;
+  models: ModelPriceUsageStat[];
 }
 
 export interface ModelPriceSyncCandidate {
@@ -1710,6 +1725,28 @@ export const usageServiceApi = {
     });
   },
 
+  getModelPriceUsageSummary: async (
+    base: string,
+    managementKey?: string,
+    signal?: AbortSignal
+  ): Promise<ModelPriceUsageSummaryResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return getDemoModelPriceUsageSummary();
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.get<ModelPriceUsageSummaryResponse>(
+        buildUrl(base, '/v0/management/model-prices/usage-summary'),
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+
   saveModelPrices: async (
     base: string,
     prices: Record<string, ModelPrice>,
@@ -2054,7 +2091,8 @@ export const monitoringAnalyticsApi = {
   getAnalytics: async (
     base: string,
     managementKey: string | undefined,
-    request: MonitoringAnalyticsRequest
+    request: MonitoringAnalyticsRequest,
+    signal?: AbortSignal
   ): Promise<MonitoringAnalyticsResponse> => {
     if (__DEMO_SITE__ && isDemoMode()) {
       return getDemoMonitoringAnalytics(request);
@@ -2067,6 +2105,7 @@ export const monitoringAnalyticsApi = {
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
+          signal,
         }
       );
       return response.data;

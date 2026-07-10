@@ -1,6 +1,7 @@
 import { collectUsageDetailsWithEndpoint, type ModelPrice } from '@/utils/usage';
 import type {
   MonitoringAnalyticsModelStat,
+  ModelPriceUsageSummaryResponse,
   ModelPriceSyncCandidate,
   ModelPriceSyncCandidateSet,
 } from '@/services/api/usageService';
@@ -87,6 +88,19 @@ export const buildSyncPriceModelsFromUsage = (
     .sort((left, right) => left.localeCompare(right));
 };
 
+export const buildSyncPriceModelsFromSummary = (
+  summary: ModelPriceUsageSummaryResponse | null,
+  prices: Record<string, ModelPrice>
+) => {
+  const models = new Set<string>(Object.keys(prices));
+  summary?.models?.forEach((item) => {
+    if (item.model) models.add(item.model);
+  });
+  return Array.from(models)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+};
+
 export const buildSyncPriceModelsFromModelStats = (
   modelStats: Array<
     Pick<MonitoringAnalyticsModelStat, 'model'> &
@@ -113,7 +127,7 @@ export const buildCandidateMap = (candidateSets: ModelPriceSyncCandidateSet[] = 
 };
 
 export const buildModelPriceRows = (
-  usage: UsagePayload | null,
+  source: UsagePayload | ModelPriceUsageSummaryResponse | null,
   prices: Record<string, ModelPrice>,
   candidateSets: ModelPriceSyncCandidateSet[] = []
 ): ModelPriceRow[] => {
@@ -140,18 +154,30 @@ export const buildModelPriceRows = (
   Object.keys(prices).forEach(ensureRow);
   candidateMap.forEach((_candidates, model) => ensureRow(model));
 
-  collectUsageDetailsWithEndpoint(usage).forEach((detail) => {
-    if (detail.__modelName) {
-      const row = ensureRow(detail.__modelName);
-      row.calls += 1;
-      row.requestedCalls += 1;
-    }
-    if (detail.__resolvedModel && detail.__resolvedModel !== detail.__modelName) {
-      const row = ensureRow(detail.__resolvedModel);
-      row.calls += 1;
-      row.resolvedCalls += 1;
-    }
-  });
+  const summary =
+    source && 'sampled_events' in source ? (source as ModelPriceUsageSummaryResponse) : null;
+  if (summary) {
+    summary.models?.forEach((item) => {
+      if (!item.model) return;
+      const row = ensureRow(item.model);
+      row.calls += Number(item.calls) || 0;
+      row.requestedCalls += Number(item.requested_calls) || 0;
+      row.resolvedCalls += Number(item.resolved_calls) || 0;
+    });
+  } else {
+    collectUsageDetailsWithEndpoint(source as UsagePayload | null).forEach((detail) => {
+      if (detail.__modelName) {
+        const row = ensureRow(detail.__modelName);
+        row.calls += 1;
+        row.requestedCalls += 1;
+      }
+      if (detail.__resolvedModel && detail.__resolvedModel !== detail.__modelName) {
+        const row = ensureRow(detail.__resolvedModel);
+        row.calls += 1;
+        row.resolvedCalls += 1;
+      }
+    });
+  }
 
   return Array.from(rowMap.values()).sort(
     (left, right) =>

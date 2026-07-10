@@ -34,6 +34,7 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'monitoring.no_more_events': 'No more events',
     'monitoring.events_loaded_summary': 'Loaded {{loaded}} of {{total}} events',
     'monitoring.events_all_loaded': 'All {{total}} events loaded',
+    'monitoring.events_retention_limited': 'Kept the newest {{loaded}} of {{total}} events',
     'monitoring.reasoning_effort': 'Effort',
     'monitoring.reasoning_effort_short': 'Effort',
     'monitoring.recent_failures': 'Failures',
@@ -71,6 +72,7 @@ type PanelOverrides = {
   accountDisplayMode?: AccountDisplayMode;
   eventsHasMore?: boolean;
   eventsLoadingMore?: boolean;
+  eventsRetentionLimited?: boolean;
   eventsTotalCount?: number;
   eventsLoadedCount?: number;
 };
@@ -142,6 +144,7 @@ const renderPanel = (row: PanelRow, overrides: PanelOverrides = {}) =>
       failedOnlyActive={false}
       eventsHasMore={overrides.eventsHasMore ?? false}
       eventsLoadingMore={overrides.eventsLoadingMore ?? false}
+      eventsRetentionLimited={overrides.eventsRetentionLimited ?? false}
       eventsTotalCount={overrides.eventsTotalCount ?? 1}
       eventsLoadedCount={overrides.eventsLoadedCount ?? 1}
       overallLoading={false}
@@ -372,6 +375,18 @@ describe('RealtimeEventsPanel', () => {
     });
 
     expect(markup).toContain('All 8000 events loaded');
+    expect(markup).not.toContain('Load more');
+  });
+
+  it('shows the retention limit without a load-more action at the memory cap', () => {
+    const markup = renderPanel(baseRow(), {
+      eventsHasMore: false,
+      eventsRetentionLimited: true,
+      eventsLoadedCount: 2000,
+      eventsTotalCount: 8000,
+    });
+
+    expect(markup).toContain('Kept the newest 2000 of 8000 events');
     expect(markup).not.toContain('Load more');
   });
 

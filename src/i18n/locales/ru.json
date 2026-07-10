@@ -2240,7 +2240,8 @@
     "load_more_events": "Загрузить ещё события",
     "no_more_events": "Больше событий нет",
     "events_loaded_summary": "Загружено {{loaded}} из {{total}} событий",
-    "events_all_loaded": "Все {{total}} событий загружены"
+    "events_all_loaded": "Все {{total}} событий загружены",
+    "events_retention_limited": "Сохранены последние {{loaded}} из {{total}} событий"
   },
   "logs": {
     "title": "Просмотр журналов",
