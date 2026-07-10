@@ -710,10 +710,11 @@ branch paths = 108
 missing upstream paths = 0
 documented local extras = 16
 upstream stat = 5,318 additions / 648 deletions
-tests = 98 files / 849 passed
+tests = 98 files / 850 passed
 type-check = passed
 lint = 0 errors / 3 warnings
 build = passed; dist/management.html is non-empty and contains all xAI markers
+independent review = GPT-5.6 configured-zero localStorage round trip fixed in 761eb5be
 ```
 
 Exact sorted extras:

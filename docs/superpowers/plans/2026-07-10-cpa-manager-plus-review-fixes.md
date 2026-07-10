@@ -260,4 +260,4 @@ documented local extras = 16
 upstream stat = 5,318 additions / 648 deletions
 ```
 
-The final verification passed `98` test files and `849` tests, type-check, ESLint with zero errors, whitespace checks, and the single-file production build. The local FIFO Provider queue, stable identities, model-price retry/fallback, bounded monitoring, xAI requests, plugin gate, auth/proxy/OAuth workflows, `.claude/**` exclusion, and `dist/management.html` output remain present. The exact extras list is recorded in the full upstream-sync plan's final addendum.
+The final verification passed `98` test files and `850` tests, type-check, ESLint with zero errors, whitespace checks, and the single-file production build. Independent review found and closed the GPT-5.6 configured-zero localStorage round-trip gap in `761eb5be`. The local FIFO Provider queue, stable identities, model-price retry/fallback, bounded monitoring, xAI requests, plugin gate, auth/proxy/OAuth workflows, `.claude/**` exclusion, and `dist/management.html` output remain present. The exact extras list is recorded in the full upstream-sync plan's final addendum.

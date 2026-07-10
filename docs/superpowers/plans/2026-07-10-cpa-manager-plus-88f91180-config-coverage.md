@@ -18,7 +18,7 @@
 - Incremental web delta from `88f91180`: 15 files, 692 additions, 42 deletions.
 - Complete web delta from shared baseline `cc63954`: 92 files, 5,318 additions, 648 deletions.
 - Expected final tracked branch diff: 108 paths, with all 92 upstream paths represented and exactly 16 documented local extras.
-- Tasks 1-5 are complete in commits `19ff024b`, `1f238f42`, `6abcdc2d`, `e7ffc7c`, and `de0bfa1c`; Task 6 is complete in `5844fb90`, Task 7 in `4cc0af35`, and Task 8 is closed by the final audit-document commit.
+- Tasks 1-5 are complete in commits `19ff024b`, `1f238f42`, `6abcdc2d`, `e7ffc7c`, and `de0bfa1c`; Task 6 is complete in `0caad4ae`, Task 7 in `66d544dd`, and the independent-review persistence fix in `761eb5be`.
 - Preserve the untracked `pnpm-workspace.yaml`; never modify, stage, or delete it.
 - Preserve local Provider `weight`, FIFO writes, stable-identity relocation, queued `loadConfigs`, OpenAI PATCH ordering, partial-success health notifications, auth/proxy/OAuth workflows, `.claude/**` test exclusion, monitoring bounded-memory behavior, and single-file `dist/management.html` output.
 
@@ -493,7 +493,9 @@ rg -n 'billing\?format=credits|x-xai-token-auth|x-grok-client-version' dist/mana
 
 Expected: zero test failures, zero TypeScript errors, zero ESLint errors, a successful single-file build, and all xAI markers present. Do not use pnpm and do not touch `pnpm-workspace.yaml`.
 
-Execution evidence: `npm install --package-lock-only` left `package-lock.json` unchanged; `npm ci` succeeded; Vitest passed `98` files and `849/849` tests; type-check passed; ESLint exited zero with no errors and three `no-explicit-any` warnings in synchronized provider/auth API tests; `git diff --check` passed; the build produced non-empty `dist/management.html` containing all three xAI markers.
+Execution evidence: `npm install --package-lock-only` left `package-lock.json` unchanged; `npm ci` succeeded; Vitest passed `98` files and `850/850` tests after the independent-review fix; type-check passed; ESLint exited zero with no errors and three `no-explicit-any` warnings in synchronized provider/auth API tests; `git diff --check` passed; the build produced non-empty `dist/management.html` containing all three xAI markers.
+
+Independent review found that localStorage normalization dropped the four configured-price flags. Commit `761eb5be` restores real boolean flags and adds a save/load/calculateCost round-trip test, preserving GPT-5.6 explicit zeroes when Manager Server fallback storage is used.
 
 - [x] **Step 4: Audit preservation and authorship**
 
