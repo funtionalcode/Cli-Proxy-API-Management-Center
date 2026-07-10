@@ -34,6 +34,7 @@ import {
   getAccountStatusLabel,
   getAccountStatusTone,
   getSuccessRateClassName,
+  type AccountQuotaEntry,
   type AccountQuotaState,
   type AccountQuotaWindow,
   type AccountSummaryMetric,
@@ -137,10 +138,13 @@ function AccountQuotaPanel({
 }) {
   const quotaEntries = quotaState?.entries ?? [];
   const quotaLoading = quotaState?.status === 'loading';
-  const lastQuotaSync =
+  const lastQuotaSyncMs =
     quotaState?.lastRefreshedAt && Number.isFinite(quotaState.lastRefreshedAt)
-      ? new Date(quotaState.lastRefreshedAt).toLocaleString(locale)
-      : '';
+      ? quotaState.lastRefreshedAt
+      : undefined;
+  const lastQuotaSync = lastQuotaSyncMs
+    ? new Date(lastQuotaSyncMs).toLocaleString(locale)
+    : '';
   const singleQuotaEntry = quotaEntries.length === 1 ? quotaEntries[0] : null;
   const lastSyncLabel = shortLabel(t, 'monitoring.last_sync_short', 'monitoring.last_sync');
   const quotaMetaText = [
@@ -150,7 +154,60 @@ function AccountQuotaPanel({
     .filter(Boolean)
     .join(' · ');
 
-  const renderQuotaWindows = (windows: AccountQuotaWindow[]) => (
+  const buildQuotaInfoRows = (entry: AccountQuotaEntry) => {
+    const fromUsageHeaders = entry.observedFromUsageHeaders === true;
+    const timestampMs = fromUsageHeaders
+      ? entry.observedAtMs
+      : (entry.fetchedAtMs ?? lastQuotaSyncMs);
+    const formattedTime =
+      timestampMs && Number.isFinite(timestampMs)
+        ? new Date(timestampMs).toLocaleString(locale)
+        : '--';
+
+    return [
+      {
+        key: 'source',
+        label: t('codex_quota.tooltip_source_label'),
+        value: fromUsageHeaders
+          ? t('codex_quota.tooltip_source_header')
+          : t('codex_quota.tooltip_source_api'),
+      },
+      {
+        key: 'fetched-at',
+        label: t('codex_quota.tooltip_fetched_at_label'),
+        value: formattedTime,
+      },
+    ];
+  };
+
+  const renderQuotaInfo = (entry: AccountQuotaEntry, windowLabel: string) => {
+    const rows = buildQuotaInfoRows(entry);
+
+    return (
+      <span
+        className={styles.quotaInfoTrigger}
+        tabIndex={0}
+        aria-label={t('codex_quota.tooltip_label', { label: windowLabel })}
+      >
+        <IconInfo
+          size={14}
+          className={styles.quotaInfoIcon}
+          aria-hidden="true"
+          focusable={false}
+        />
+        <span className={styles.quotaInfoTooltip} role="tooltip">
+          {rows.map((row) => (
+            <span key={row.key} className={styles.quotaInfoTooltipRow}>
+              <span className={styles.quotaInfoTooltipLabel}>{row.label}</span>
+              <span className={styles.quotaInfoTooltipValue}>{row.value}</span>
+            </span>
+          ))}
+        </span>
+      </span>
+    );
+  };
+
+  const renderQuotaWindows = (windows: AccountQuotaWindow[], entry: AccountQuotaEntry) => (
     <div className={styles.quotaWindowList}>
       {windows.map((window) => {
         const percentLabel =
@@ -163,7 +220,10 @@ function AccountQuotaPanel({
         return (
           <div key={window.id} className={styles.quotaWindowRow}>
             <div className={styles.quotaWindowHeader}>
-              <span>{window.label}</span>
+              <span className={styles.quotaWindowLabel}>
+                <span>{window.label}</span>
+                {renderQuotaInfo(entry, window.label)}
+              </span>
               <strong>{percentLabel}</strong>
             </div>
             <div className={styles.quotaProgressTrack}>
@@ -261,7 +321,7 @@ function AccountQuotaPanel({
             true
           )
         ) : singleQuotaEntry.windows.length > 0 ? (
-          renderQuotaWindows(singleQuotaEntry.windows)
+          renderQuotaWindows(singleQuotaEntry.windows, singleQuotaEntry)
         ) : (
           renderStateMessage(
             singleQuotaEntry.emptyMessage ?? t('monitoring.account_quota_empty'),
@@ -291,7 +351,7 @@ function AccountQuotaPanel({
                       true
                     )
                   : entry.windows.length > 0
-                    ? renderQuotaWindows(entry.windows)
+                    ? renderQuotaWindows(entry.windows, entry)
                     : renderStateMessage(
                         entry.emptyMessage ?? t('monitoring.account_quota_empty'),
                         t('monitoring.account_quota_idle')
