@@ -42,7 +42,7 @@ Implementation will run in an isolated Git worktree on `codex/sync-cpa-manager-p
 
 Set the configured `upstream` remote explicitly to `seakee/CPA-Manager-Plus`, fetch `main`, and pin the authoritative commits in `refs/cpa-plus/base` and `refs/cpa-plus/target`.
 
-The final 2026-07-10 verification resolved the remote `refs/heads/main`, local `upstream/main`, and `refs/cpa-plus/target` to `05174f662660e488e5e5a338ab5070a79e4bc79d`, kept `refs/cpa-plus/base` at `cc63954dfeb5fda2d6f9f7b37437613432630a80`, and reproduced an `apps/web` manifest of 46 files with 3,043 additions and 464 deletions. `git diff --quiet 2337f76..05174f66 -- apps/web` exits successfully, proving that `2337f76` remains the latest web-changing checkpoint. The earlier 30-file, 2,616-addition, 300-deletion manifest belongs only to the intermediate `629d085` checkpoint.
+The final 2026-07-10 verification resolved the remote `refs/heads/main`, local `upstream/main`, and `refs/cpa-plus/target` to `05174f662660e488e5e5a338ab5070a79e4bc79d`, kept `refs/cpa-plus/base` at `cc63954dfeb5fda2d6f9f7b37437613432630a80`, and reproduced an `apps/web` manifest of 46 files with 3,043 additions and 464 deletions. `git log --oneline 2337f76..05174f66 -- apps/web` produces no output and `git diff --quiet 2337f76..05174f66 -- apps/web` exits successfully, independently proving that the five later commits do not touch the web tree and that `2337f76` remains the latest web-changing checkpoint. The earlier 30-file, 2,616-addition, 300-deletion manifest belongs only to the intermediate `629d085` checkpoint.
 
 Generate the full binary-safe diff from:
 

@@ -481,13 +481,22 @@ This addendum records the independent batch executed after upstream `main` advan
 - [x] **Step 1: Re-fetch the authoritative remote and repin the target**
 
 ```bash
+set -o pipefail
 git ls-remote upstream refs/heads/main
 git fetch upstream main
 git update-ref refs/cpa-plus/target upstream/main
 git rev-parse refs/cpa-plus/target upstream/main
+git log --oneline 2337f76..05174f66 -- apps/web
+git diff --quiet 2337f76..05174f66 -- apps/web
+git diff --name-status refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
+  | sed 's#apps/web/##' > /tmp/cpa-plus-web-name-status-latest.txt
+git diff --stat refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
+  > /tmp/cpa-plus-web-stat-latest.txt
+test "$(wc -l < /tmp/cpa-plus-web-name-status-latest.txt | tr -d ' ')" -eq 46
+test -s /tmp/cpa-plus-web-stat-latest.txt
 ```
 
-Execution evidence: after the final re-fetch, the remote branch, `upstream/main`, and `refs/cpa-plus/target` resolved to `05174f662660e488e5e5a338ab5070a79e4bc79d`. The new web delta was introduced by `28c045a6` and ends at web checkpoint `2337f76cf54acd8d50de21e2a754abcd9b804c58`; `git diff --quiet 2337f76..05174f66 -- apps/web` confirms that the five later commits are outside `apps/web`.
+Execution evidence: after the final re-fetch, the remote branch, `upstream/main`, and `refs/cpa-plus/target` resolved to `05174f662660e488e5e5a338ab5070a79e4bc79d`. The new web delta was introduced by `28c045a6` and ends at web checkpoint `2337f76cf54acd8d50de21e2a754abcd9b804c58`; the empty scoped log and successful quiet diff confirm that the five later commits are outside `apps/web`. The regenerated final manifest contains 46 paths and its paired stat records 3,043 additions and 464 deletions.
 
 - [x] **Step 2: Import and run the five performance tests before production changes**
 
@@ -529,30 +538,39 @@ Executed commits:
 - [ ] **Step 1: List upstream files not represented in the local branch diff**
 
 ```bash
-sed 's/^[AMD][[:space:]]*//' /tmp/cpa-plus-web-name-status-latest.txt | sort \
-  > /tmp/cpa-plus-upstream-files.txt
-git diff --name-only master...HEAD | sort > /tmp/cpa-plus-local-files.txt
-comm -23 /tmp/cpa-plus-upstream-files.txt /tmp/cpa-plus-local-files.txt
+set -o pipefail
+set -eu
+
+git diff --name-status refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
+  | sed 's#apps/web/##' > /tmp/cpa-plus-web-name-status-latest.txt
+git diff --stat refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
+  > /tmp/cpa-plus-web-stat-latest.txt
+test "$(wc -l < /tmp/cpa-plus-web-name-status-latest.txt | tr -d ' ')" -eq 46
+test -s /tmp/cpa-plus-web-stat-latest.txt
+
+awk -F '\t' '{ print $NF }' /tmp/cpa-plus-web-name-status-latest.txt \
+  | sort > /tmp/cpa-plus-upstream-files-latest.txt
+git diff --name-only master...HEAD \
+  | sort > /tmp/cpa-plus-branch-files-latest.txt
+comm -23 /tmp/cpa-plus-upstream-files-latest.txt /tmp/cpa-plus-branch-files-latest.txt \
+  > /tmp/cpa-plus-missing-files-latest.txt
+comm -13 /tmp/cpa-plus-upstream-files-latest.txt /tmp/cpa-plus-branch-files-latest.txt \
+  > /tmp/cpa-plus-extra-files-latest.txt
+
+test "$(wc -l < /tmp/cpa-plus-upstream-files-latest.txt | tr -d ' ')" -eq 46
+test "$(wc -l < /tmp/cpa-plus-branch-files-latest.txt | tr -d ' ')" -eq 50
+test "$(wc -l < /tmp/cpa-plus-missing-files-latest.txt | tr -d ' ')" -eq 0
+test "$(wc -l < /tmp/cpa-plus-extra-files-latest.txt | tr -d ' ')" -eq 4
+
+expected_extras=$(printf '%s\n' \
+  docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstream-sync.md \
+  docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md \
+  src/features/monitoring/accountOverviewCardMetrics.ts \
+  src/features/monitoring/components/accountOverviewPresentation.test.ts)
+test "$(cat /tmp/cpa-plus-extra-files-latest.txt)" = "$expected_extras"
 ```
 
-Expected final evidence: the repository target is `05174f66`, the latest web-changing checkpoint is `2337f76`, and their `apps/web` diff is empty. The upstream set contains 46 paths, the branch set contains 50 paths, and `comm -23` prints nothing. The four branch-only paths are exactly the two synchronization documents, `src/features/monitoring/accountOverviewCardMetrics.ts`, and `src/features/monitoring/components/accountOverviewPresentation.test.ts`. If the command prints missing paths, verify every printed path already matches the target with this exact audit loop:
-
-```bash
-comm -23 /tmp/cpa-plus-upstream-files.txt /tmp/cpa-plus-local-files.txt \
-  | while IFS= read -r path; do
-      if ! git cat-file -e "HEAD:$path" 2>/dev/null; then
-        printf 'missing local path: %s\n' "$path"
-        continue
-      fi
-      if ! git diff --quiet \
-        "refs/cpa-plus/target:apps/web/$path" \
-        "HEAD:$path"; then
-        printf 'unaccounted upstream delta: %s\n' "$path"
-      fi
-    done
-```
-
-Expected: the audit loop prints nothing.
+Expected final evidence: the repository target is `05174f66`, the latest web-changing checkpoint is `2337f76`, and their `apps/web` diff is empty. The command regenerates the final manifest and stat instead of trusting an earlier shell, fails if either artifact is missing or malformed, asserts 46 upstream paths and 50 branch paths, requires zero missing paths, and requires the four branch-only paths to match the two synchronization documents, `src/features/monitoring/accountOverviewCardMetrics.ts`, and `src/features/monitoring/components/accountOverviewPresentation.test.ts` exactly.
 
 - [ ] **Step 2: Check for unresolved conflicts and accidental upstream-path imports**
 
