@@ -83,12 +83,14 @@ Expected: every command exits 0. If a baseline command fails, record the exact p
 - [ ] **Step 1: Fetch the Plus base and target commits into namespaced refs**
 
 ```bash
-git fetch --no-tags https://github.com/seakee/CPA-Manager-Plus.git \
-  cc63954dfeb5fda2d6f9f7b37437613432630a80:refs/cpa-plus/base \
-  629d08518e963ba7da9f5ee97d4c9e2c059a1c78:refs/cpa-plus/target
+git remote set-url upstream https://github.com/seakee/CPA-Manager-Plus.git
+git fetch --no-tags upstream --prune
+git update-ref refs/cpa-plus/base cc63954dfeb5fda2d6f9f7b37437613432630a80
+git update-ref refs/cpa-plus/target upstream/main
+git rev-parse refs/cpa-plus/base refs/cpa-plus/target upstream/main
 ```
 
-Expected: `git rev-parse refs/cpa-plus/base refs/cpa-plus/target` prints the two authoritative SHAs.
+Expected: `refs/cpa-plus/base` resolves to `cc63954dfeb5fda2d6f9f7b37437613432630a80`, while both `refs/cpa-plus/target` and `upstream/main` resolve to `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`.
 
 - [ ] **Step 2: Generate the complete upstream manifest**
 
@@ -100,6 +102,8 @@ git diff --stat refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
 ```
 
 Expected: the manifest lists 30 files, including the new plugin release-version module and tests.
+
+Execution verification on 2026-07-10 confirmed the configured Plus remote, `upstream/main` at `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`, and a 30-file manifest with 2,616 additions and 300 deletions.
 
 - [ ] **Step 3: Build a test-only upstream patch**
 

@@ -38,7 +38,9 @@ Implementation will run in an isolated Git worktree on `codex/sync-cpa-manager-p
 
 ### 2. Reconstruct the upstream delta
 
-Fetch the two authoritative CPA Manager Plus commits without changing the configured `upstream` remote, which currently points to `seakee/CPA-Manager` rather than `seakee/CPA-Manager-Plus`.
+Set the configured `upstream` remote explicitly to `seakee/CPA-Manager-Plus`, fetch `main`, and pin the authoritative commits in `refs/cpa-plus/base` and `refs/cpa-plus/target`.
+
+The 2026-07-10 verification resolved `upstream/main` and `refs/cpa-plus/target` to `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`, kept `refs/cpa-plus/base` at `cc63954dfeb5fda2d6f9f7b37437613432630a80`, and reproduced an `apps/web` manifest of 30 files with 2,616 additions and 300 deletions.
 
 Generate the full binary-safe diff from:
 
