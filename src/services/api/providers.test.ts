@@ -117,6 +117,124 @@ describe('providersApi auth-index preservation', () => {
     ]);
   });
 
+  it('preserves unknown Interactions fields when the management endpoint returns a bare array', async () => {
+    mocks.get.mockResolvedValueOnce([
+      {
+        'api-key': 'interactions-key',
+        'raw-provider-field': 'keep-provider',
+        models: [{ name: 'image-model', 'raw-model-field': 'keep-model' }],
+      },
+    ]);
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveInteractionsKeys([
+      {
+        apiKey: 'interactions-key',
+        models: [{ name: 'image-model', alias: 'image-alias' }],
+      },
+    ]);
+
+    expect(mocks.get).toHaveBeenCalledWith('/interactions-api-key');
+    expect(mocks.put).toHaveBeenCalledWith('/interactions-api-key', [
+      {
+        'raw-provider-field': 'keep-provider',
+        'api-key': 'interactions-key',
+        models: [
+          {
+            'raw-model-field': 'keep-model',
+            name: 'image-model',
+            alias: 'image-alias',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('keeps raw Interactions provider fields with their identity when a provider is prepended', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'interactions-api-key': [
+        {
+          'api-key': 'old-key',
+          'auth-index': 'runtime-old-index',
+          'raw-provider-field': 'keep-old-provider',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveInteractionsKeys([{ apiKey: 'new-key' }, { apiKey: 'old-key' }]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/interactions-api-key', [
+      { 'api-key': 'new-key' },
+      {
+        'raw-provider-field': 'keep-old-provider',
+        'api-key': 'old-key',
+      },
+    ]);
+  });
+
+  it('keeps raw Gemini fields with their API key when runtime auth indexes are omitted', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'gemini-api-key': [
+        {
+          'api-key': 'old-gemini-key',
+          'auth-index': 'runtime-old-index',
+          'raw-provider-field': 'keep-old-gemini',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveGeminiKeys([{ apiKey: 'new-gemini-key' }, { apiKey: 'old-gemini-key' }]);
+
+    expect(mocks.get).toHaveBeenCalledWith('/config');
+    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [
+      { 'api-key': 'new-gemini-key' },
+      {
+        'raw-provider-field': 'keep-old-gemini',
+        'api-key': 'old-gemini-key',
+      },
+    ]);
+  });
+
+  it('keeps raw Interactions model fields with their identity when a model is prepended', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'interactions-api-key': [
+        {
+          'api-key': 'interactions-key',
+          models: [
+            {
+              name: 'old-model',
+              'raw-model-field': 'keep-old-model',
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveInteractionsKeys([
+      {
+        apiKey: 'interactions-key',
+        models: [{ name: 'new-model' }, { name: 'old-model', alias: 'old-alias' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/interactions-api-key', [
+      {
+        'api-key': 'interactions-key',
+        models: [
+          { name: 'new-model' },
+          {
+            'raw-model-field': 'keep-old-model',
+            name: 'old-model',
+            alias: 'old-alias',
+          },
+        ],
+      },
+    ]);
+  });
+
   it('updates an Interactions key without leaking its runtime auth index', async () => {
     mocks.patch.mockResolvedValue({});
 

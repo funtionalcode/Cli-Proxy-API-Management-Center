@@ -16,6 +16,7 @@ export const CONFIG_SECTION_KEYS: RawConfigSection[] = [
   'routing/strategy',
   'api-keys',
   'gemini-api-key',
+  'interactions-api-key',
   'codex-api-key',
   'claude-api-key',
   'vertex-api-key',
@@ -61,6 +62,8 @@ export const extractConfigSectionValue = (
       return config.apiKeys;
     case 'gemini-api-key':
       return config.geminiApiKeys;
+    case 'interactions-api-key':
+      return config.interactionsApiKeys;
     case 'codex-api-key':
       return config.codexApiKeys;
     case 'claude-api-key':

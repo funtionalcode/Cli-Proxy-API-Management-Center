@@ -57,6 +57,9 @@ const CLAUDE_KEY_FIELDS = [
   'experimental-cch-signing',
   'experimentalCchSigning',
   'experimental_cch_signing',
+  'rebuild-mid-system-message',
+  'rebuildMidSystemMessage',
+  'rebuild_mid_system_message',
 ] as const;
 const GEMINI_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
 const VERTEX_KEY_FIELDS = COMMON_PROVIDER_KEY_FIELDS.filter((field) => field !== 'weight');
@@ -99,6 +102,15 @@ const MODEL_ALIAS_FIELDS = [
   'testModel',
   'test_model',
   'image',
+  'force-mapping',
+  'forceMapping',
+  'force_mapping',
+  'input-modalities',
+  'inputModalities',
+  'input_modalities',
+  'output-modalities',
+  'outputModalities',
+  'output_modalities',
   'thinking',
 ] as const;
 
@@ -132,6 +144,7 @@ const CLOAK_FIELDS = [
 
 const RAW_SECTION_ALIASES: Record<string, readonly string[]> = {
   'gemini-api-key': ['gemini-api-key', 'geminiApiKey', 'geminiApiKeys'],
+  'interactions-api-key': ['interactions-api-key', 'interactionsApiKey', 'interactionsApiKeys'],
   'codex-api-key': ['codex-api-key', 'codexApiKey', 'codexApiKeys'],
   'claude-api-key': ['claude-api-key', 'claudeApiKey', 'claudeApiKeys'],
   'vertex-api-key': ['vertex-api-key', 'vertexApiKey', 'vertexApiKeys'],
@@ -148,13 +161,16 @@ const getStringField = (record: Record<string, unknown>, keys: readonly string[]
   return '';
 };
 
-const providerKeyIdentity = (record: Record<string, unknown>) => {
-  const authIndex = getStringField(record, AUTH_INDEX_FIELDS);
-  if (authIndex) return `auth-index\u0000${authIndex}`;
+const apiKeyProviderIdentity = (record: Record<string, unknown>) => {
   const apiKey = getStringField(record, ['api-key', 'apiKey']);
   if (!apiKey) return '';
   const baseUrl = getStringField(record, ['base-url', 'baseUrl', 'base_url']);
   return `${apiKey}\u0000${baseUrl}`;
+};
+
+const providerKeyIdentity = (record: Record<string, unknown>) => {
+  const authIndex = getStringField(record, AUTH_INDEX_FIELDS);
+  return authIndex ? `auth-index\u0000${authIndex}` : apiKeyProviderIdentity(record);
 };
 
 const openAIProviderIdentity = (record: Record<string, unknown>) =>
@@ -207,32 +223,38 @@ const preserveOmittedRawField = (
   }
 };
 
-const findRawRecord = (
+const alignRawRecords = (
   rawRecords: Array<Record<string, unknown> | undefined>,
-  usedIndexes: Set<number>,
-  payload: Record<string, unknown>,
-  index: number,
+  payloads: Record<string, unknown>[],
   getIdentity: (record: Record<string, unknown>) => string
 ) => {
-  const identity = getIdentity(payload);
-  if (identity) {
-    for (let i = 0; i < rawRecords.length; i += 1) {
-      const candidate = rawRecords[i];
-      if (!candidate || usedIndexes.has(i)) continue;
-      if (getIdentity(candidate) === identity) {
-        usedIndexes.add(i);
-        return candidate;
-      }
-    }
-  }
+  const aligned = new Array<Record<string, unknown> | undefined>(payloads.length).fill(undefined);
+  const claimedRawIndexes = new Set<number>();
 
-  const fallback = rawRecords[index];
-  if (fallback && !usedIndexes.has(index)) {
-    usedIndexes.add(index);
-    return fallback;
-  }
+  payloads.forEach((payload, payloadIndex) => {
+    const identity = getIdentity(payload);
+    if (!identity) return;
 
-  return undefined;
+    const rawIndex = rawRecords.findIndex((candidate, candidateIndex) => {
+      if (!candidate || claimedRawIndexes.has(candidateIndex)) return false;
+      return getIdentity(candidate) === identity;
+    });
+    if (rawIndex < 0) return;
+
+    aligned[payloadIndex] = rawRecords[rawIndex];
+    claimedRawIndexes.add(rawIndex);
+  });
+
+  payloads.forEach((_, payloadIndex) => {
+    if (aligned[payloadIndex]) return;
+    const fallback = rawRecords[payloadIndex];
+    if (!fallback || claimedRawIndexes.has(payloadIndex)) return;
+
+    aligned[payloadIndex] = fallback;
+    claimedRawIndexes.add(payloadIndex);
+  });
+
+  return aligned;
 };
 
 const mergeKnownRecordList = (
@@ -244,15 +266,16 @@ const mergeKnownRecordList = (
   const rawRecords = Array.isArray(rawItems)
     ? rawItems.map((item) => (isRecord(item) ? item : undefined))
     : [];
-  const usedIndexes = new Set<number>();
+  const alignedRawRecords = alignRawRecords(rawRecords, payloadItems, getIdentity);
 
   return payloadItems.map((payload, index) => {
-    const raw = findRawRecord(rawRecords, usedIndexes, payload, index, getIdentity);
+    const raw = alignedRawRecords[index];
     return mergeKnownFields(raw, payload, knownFields);
   });
 };
 
 const getRawSectionList = (rawConfig: unknown, section: string) => {
+  if (Array.isArray(rawConfig)) return rawConfig;
   if (!isRecord(rawConfig)) return [];
   const aliases = RAW_SECTION_ALIASES[section] ?? [section];
   for (const alias of aliases) {
@@ -270,12 +293,27 @@ const mergeModelPayloads = (raw: unknown, models: unknown) =>
         const rawRecords = Array.isArray(rawItems)
           ? rawItems.map((item) => (isRecord(item) ? item : undefined))
           : [];
-        const usedIndexes = new Set<number>();
+        const alignedRawRecords = alignRawRecords(rawRecords, payloadItems, modelIdentity);
 
         return payloadItems.map((payload, index) => {
-          const rawModel = findRawRecord(rawRecords, usedIndexes, payload, index, modelIdentity);
+          const rawModel = alignedRawRecords[index];
           const next = mergeKnownFields(rawModel, payload, MODEL_ALIAS_FIELDS);
           preserveOmittedRawField(rawModel, payload, next, ['image']);
+          preserveOmittedRawField(rawModel, payload, next, [
+            'force-mapping',
+            'forceMapping',
+            'force_mapping',
+          ]);
+          preserveOmittedRawField(rawModel, payload, next, [
+            'input-modalities',
+            'inputModalities',
+            'input_modalities',
+          ]);
+          preserveOmittedRawField(rawModel, payload, next, [
+            'output-modalities',
+            'outputModalities',
+            'output_modalities',
+          ]);
           preserveOmittedRawField(rawModel, payload, next, ['thinking']);
           return next;
         });
@@ -293,6 +331,11 @@ const mergeProviderKeyPayload = (
     'experimental-cch-signing',
     'experimentalCchSigning',
     'experimental_cch_signing',
+  ]);
+  preserveOmittedRawField(raw, payload, next, [
+    'rebuild-mid-system-message',
+    'rebuildMidSystemMessage',
+    'rebuild_mid_system_message',
   ]);
   const models = mergeModelPayloads(raw, payload.models);
   if (models) next.models = models;
@@ -334,13 +377,14 @@ const buildPreservedList = async <T>(
   configs: T[],
   serialize: (item: T) => Record<string, unknown>,
   mergePayload: (raw: unknown, payload: Record<string, unknown>) => Record<string, unknown>,
-  getIdentity: (record: Record<string, unknown>) => string
+  getIdentity: (record: Record<string, unknown>) => string,
+  sourceEndpoint = '/config'
 ) => {
   const payloads = configs.map((item) => serialize(item));
 
   let rawConfig: unknown;
   try {
-    rawConfig = await apiClient.get('/config');
+    rawConfig = await apiClient.get(sourceEndpoint);
   } catch {
     return payloads;
   }
@@ -349,10 +393,10 @@ const buildPreservedList = async <T>(
   const rawRecords = Array.isArray(rawItems)
     ? rawItems.map((item) => (isRecord(item) ? item : undefined))
     : [];
-  const usedIndexes = new Set<number>();
+  const alignedRawRecords = alignRawRecords(rawRecords, payloads, getIdentity);
 
   return payloads.map((payload, index) => {
-    const raw = findRawRecord(rawRecords, usedIndexes, payload, index, getIdentity);
+    const raw = alignedRawRecords[index];
     return mergePayload(raw, payload);
   });
 };
@@ -360,7 +404,12 @@ const buildPreservedList = async <T>(
 const extractArrayPayload = (data: unknown, key: string): unknown[] => {
   if (Array.isArray(data)) return data;
   if (!isRecord(data)) return [];
-  const candidate = data[key] ?? data.items ?? data.data ?? data;
+  const aliases = RAW_SECTION_ALIASES[key] ?? [key];
+  for (const alias of aliases) {
+    const candidate = data[alias];
+    if (Array.isArray(candidate)) return candidate;
+  }
+  const candidate = data.items ?? data.data;
   return Array.isArray(candidate) ? candidate : [];
 };
 
@@ -435,6 +484,15 @@ const serializeModelAliases = (models?: ModelAlias[]) =>
           if (model.image !== undefined) {
             payload.image = model.image;
           }
+          if (model.forceMapping !== undefined) {
+            payload['force-mapping'] = model.forceMapping;
+          }
+          if (model.inputModalities !== undefined) {
+            payload['input-modalities'] = model.inputModalities;
+          }
+          if (model.outputModalities !== undefined) {
+            payload['output-modalities'] = model.outputModalities;
+          }
           if (isRecord(model.thinking)) {
             payload.thinking = model.thinking;
           }
@@ -477,6 +535,9 @@ const serializeProviderKey = (config: ProviderKeyConfig) => {
   if (config.disableCooling !== undefined) payload['disable-cooling'] = config.disableCooling;
   if (config.experimentalCchSigning !== undefined) {
     payload['experimental-cch-signing'] = config.experimentalCchSigning;
+  }
+  if (config.rebuildMidSystemMessage !== undefined) {
+    payload['rebuild-mid-system-message'] = config.rebuildMidSystemMessage;
   }
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
   const headers = serializeHeaders(config.headers);
@@ -541,10 +602,12 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
 const serializeGeminiKey = (config: GeminiKeyConfig) => {
   const payload: Record<string, unknown> = {};
   const apiKey = config.apiKey?.trim();
-  if (apiKey) payload['api-key'] = apiKey;
-  const authIndex = serializeAuthIndex(config.authIndex);
-  if (authIndex) payload['auth-index'] = authIndex;
+  if (!apiKey) {
+    throw new Error('API key is required for Gemini and Interactions providers');
+  }
+  payload['api-key'] = apiKey;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
@@ -597,7 +660,7 @@ export const providersApi = {
         configs,
         serializeGeminiKey,
         (raw, payload) => mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS),
-        providerKeyIdentity
+        apiKeyProviderIdentity
       )
     ),
 
@@ -606,6 +669,31 @@ export const providersApi = {
 
   deleteGeminiKey: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/gemini-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
+
+  async getInteractionsKeys(): Promise<GeminiKeyConfig[]> {
+    const data = await apiClient.get('/interactions-api-key');
+    const list = extractArrayPayload(data, 'interactions-api-key');
+    return list.map((item) => normalizeGeminiKeyConfig(item)).filter(Boolean) as GeminiKeyConfig[];
+  },
+
+  saveInteractionsKeys: async (configs: GeminiKeyConfig[]) =>
+    apiClient.put(
+      '/interactions-api-key',
+      await buildPreservedList(
+        'interactions-api-key',
+        configs,
+        serializeGeminiKey,
+        (raw, payload) => mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS),
+        apiKeyProviderIdentity,
+        '/interactions-api-key'
+      )
+    ),
+
+  updateInteractionsKey: (index: number, value: GeminiKeyConfig) =>
+    apiClient.patch('/interactions-api-key', { index, value: serializeGeminiKey(value) }),
+
+  deleteInteractionsKey: (apiKey: string, baseUrl?: string) =>
+    apiClient.delete(`/interactions-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getCodexConfigs(): Promise<ProviderKeyConfig[]> {
     const data = await apiClient.get('/codex-api-key');

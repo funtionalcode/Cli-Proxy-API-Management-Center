@@ -4,11 +4,7 @@
  */
 
 // OAuth 提供商类型
-export type OAuthProvider =
-  | 'codex'
-  | 'anthropic'
-  | 'antigravity'
-  | 'kimi';
+export type OAuthProvider = 'codex' | 'anthropic' | 'antigravity' | 'kimi';
 
 // OAuth 流程状态
 export interface OAuthFlow {
@@ -38,6 +34,7 @@ export interface OAuthModelAliasEntry {
   name: string;
   alias: string;
   fork?: boolean;
+  forceMapping?: boolean;
 }
 
 export type OAuthModelAlias = Record<string, OAuthModelAliasEntry[]>;

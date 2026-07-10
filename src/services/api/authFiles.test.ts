@@ -73,6 +73,38 @@ describe('authFilesApi OAuth model alias normalization', () => {
     }
   );
 
+  it('keeps false and omitted forceMapping aliases distinct during deduplication', async () => {
+    mocks.get.mockResolvedValue({
+      'oauth-model-alias': {
+        codex: [
+          {
+            name: 'gpt-5-codex',
+            alias: 'team-codex',
+            'force-mapping': false,
+          },
+          {
+            name: 'gpt-5-codex',
+            alias: 'team-codex',
+          },
+        ],
+      },
+    });
+
+    await expect(authFilesApi.getOauthModelAlias()).resolves.toEqual({
+      codex: [
+        {
+          name: 'gpt-5-codex',
+          alias: 'team-codex',
+          forceMapping: false,
+        },
+        {
+          name: 'gpt-5-codex',
+          alias: 'team-codex',
+        },
+      ],
+    });
+  });
+
   it('serializes forceMapping using the CPA force-mapping field', async () => {
     mocks.patch.mockResolvedValue({ status: 'ok' });
 
@@ -91,6 +123,29 @@ describe('authFilesApi OAuth model alias normalization', () => {
           name: 'gpt-5-codex',
           alias: 'team-codex',
           'force-mapping': true,
+        },
+      ],
+    });
+  });
+
+  it('serializes false forceMapping using the CPA force-mapping field', async () => {
+    mocks.patch.mockResolvedValue({ status: 'ok' });
+
+    await authFilesApi.saveOauthModelAlias('codex', [
+      {
+        name: 'gpt-5-codex',
+        alias: 'team-codex',
+        forceMapping: false,
+      },
+    ]);
+
+    expect(mocks.patch).toHaveBeenCalledWith('/oauth-model-alias', {
+      channel: 'codex',
+      aliases: [
+        {
+          name: 'gpt-5-codex',
+          alias: 'team-codex',
+          'force-mapping': false,
         },
       ],
     });
