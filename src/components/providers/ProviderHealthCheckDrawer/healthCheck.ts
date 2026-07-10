@@ -43,11 +43,15 @@ export interface ProviderHealthCheckSummary {
 }
 
 type ProviderHealthCheckTarget =
-  | { kind: 'gemini'; config: GeminiKeyConfig }
+  | { kind: 'gemini' | 'interactions'; config: GeminiKeyConfig }
   | { kind: 'codex' | 'claude' | 'vertex'; config: ProviderKeyConfig }
   | { kind: 'openai'; config: OpenAIProviderConfig; keyIndex: number };
 
 export const getProviderHealthCheckProviderKey = (row: ProviderRow): string => {
+  if (row.kind === 'gemini' || row.kind === 'interactions') {
+    return JSON.stringify([row.kind, 'api-key', row.raw.apiKey, row.raw.baseUrl ?? '']);
+  }
+
   const authIndex = normalizeAuthIndex(row.raw.authIndex);
   if (authIndex) {
     return JSON.stringify([row.kind, 'auth-index', authIndex]);
@@ -170,7 +174,7 @@ const joinProviderLabel = (kindLabel: string, identity: string): string => {
 };
 
 const getKeyProviderDisplay = (
-  row: Extract<ProviderRow, { kind: 'gemini' | 'codex' | 'claude' | 'vertex' }>
+  row: Extract<ProviderRow, { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }>
 ): Pick<ProviderHealthCheckItem, 'providerLabel' | 'providerSubtitle'> => {
   const kindLabel = PROVIDER_KIND_LABELS[row.kind];
   const identity =
@@ -215,7 +219,7 @@ const requireCredential = (
 };
 
 const buildKeyProviderItem = (
-  row: Extract<ProviderRow, { kind: 'gemini' | 'codex' | 'claude' | 'vertex' }>
+  row: Extract<ProviderRow, { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }>
 ): ProviderHealthCheckItem => {
   const providerKey = getProviderHealthCheckProviderKey(row);
   const providerDisplay = getKeyProviderDisplay(row);
@@ -417,7 +421,7 @@ export const runProviderHealthCheckItem = async (
 
   try {
     let modelCount = 0;
-    if (target.kind === 'gemini') {
+    if (target.kind === 'gemini' || target.kind === 'interactions') {
       requireCredential(target.config.apiKey, target.config.authIndex, target.config.headers);
       const models = await modelsApi.fetchGeminiModelsViaApiCall(
         target.config.baseUrl ?? '',

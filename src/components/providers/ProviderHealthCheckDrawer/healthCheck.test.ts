@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { modelsApi } from '@/services/api';
-import type { OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+import type { GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
 import { buildProviderRows } from '../ProviderTable/rowData';
 import type { ProviderRecentUsageMap } from '../utils';
 import {
@@ -141,6 +141,96 @@ describe('provider health check model', () => {
       expect(targetRow).toBeDefined();
       expect(Array.from(actions.keys())).toEqual([getProviderHealthCheckProviderKey(targetRow!)]);
       expect(actions.get(getProviderHealthCheckProviderKey(targetRow!))).toBe('enable');
+    } finally {
+      fetchModels.mockRestore();
+    }
+  });
+
+  it('keeps Gemini and Interactions health checks separate for identical credentials', async () => {
+    const gemini: GeminiKeyConfig = {
+      apiKey: 'shared-google-key',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      headers: { 'x-provider-kind': 'gemini' },
+    };
+    const interactions: GeminiKeyConfig = {
+      ...gemini,
+      headers: { 'x-provider-kind': 'interactions' },
+    };
+    const rows = buildProviderRows({
+      gemini: [gemini],
+      interactions: [interactions],
+      codex: [],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const items = buildProviderHealthCheckItems(rows);
+    const interactionsItem = items.find((item) => item.providerKind === 'interactions');
+    const fetchModels = vi
+      .spyOn(modelsApi, 'fetchGeminiModelsViaApiCall')
+      .mockResolvedValue([{ name: 'interaction-model' }]);
+
+    try {
+      expect(items.map((item) => item.providerKind)).toEqual(['gemini', 'interactions']);
+      expect(items[0].providerKey).not.toBe(items[1].providerKey);
+      expect(interactionsItem).toBeDefined();
+
+      const result = await runProviderHealthCheckItem(rows, interactionsItem!);
+      const actions = getProviderHealthCheckApplyActions([result]);
+
+      expect(result).toMatchObject({
+        providerKind: 'interactions',
+        status: 'success',
+        modelCount: 1,
+      });
+      expect(fetchModels).toHaveBeenCalledWith(
+        interactions.baseUrl,
+        interactions.apiKey,
+        interactions.headers,
+        undefined
+      );
+      expect(Array.from(actions.keys())).toEqual([interactionsItem!.providerKey]);
+    } finally {
+      fetchModels.mockRestore();
+    }
+  });
+
+  it('keeps Interactions health checks bound when the runtime auth index changes', async () => {
+    const baseConfig: GeminiKeyConfig = {
+      apiKey: 'stable-interactions-key',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+    };
+    const buildRows = (authIndex: string) =>
+      buildProviderRows({
+        gemini: [],
+        interactions: [{ ...baseConfig, authIndex }],
+        codex: [],
+        claude: [],
+        vertex: [],
+        openai: [],
+        usageByProvider: emptyUsageByProvider,
+      });
+    const item = buildProviderHealthCheckItems(buildRows('runtime-old'))[0];
+    const refreshedRows = buildRows('runtime-new');
+    const fetchModels = vi
+      .spyOn(modelsApi, 'fetchGeminiModelsViaApiCall')
+      .mockResolvedValue([{ name: 'interaction-model' }]);
+
+    try {
+      const result = await runProviderHealthCheckItem(refreshedRows, item);
+
+      expect(result).toMatchObject({
+        providerKind: 'interactions',
+        status: 'success',
+        modelCount: 1,
+      });
+      expect(fetchModels).toHaveBeenCalledWith(
+        baseConfig.baseUrl,
+        baseConfig.apiKey,
+        {},
+        'runtime-new'
+      );
     } finally {
       fetchModels.mockRestore();
     }

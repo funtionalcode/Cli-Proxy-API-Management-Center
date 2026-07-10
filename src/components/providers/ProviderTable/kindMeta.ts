@@ -9,6 +9,7 @@ import type { ProviderKind } from './rowData';
 /** 品牌名，无需 i18n */
 export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   gemini: 'Gemini',
+  interactions: 'Interactions',
   codex: 'Codex',
   claude: 'Claude',
   vertex: 'Vertex',
@@ -17,6 +18,7 @@ export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
 
 const KIND_ICONS: Record<Exclude<ProviderKind, 'openai'>, string> = {
   gemini: iconGemini,
+  interactions: iconGemini,
   codex: iconCodex,
   claude: iconClaude,
   vertex: iconVertex,

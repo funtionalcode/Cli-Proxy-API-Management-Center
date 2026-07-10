@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createProviderWriteQueue,
   enqueueLatestProviderListEntryWrite,
+  enqueueLatestProviderListUpsert,
   enqueueLatestProviderListWrite,
 } from './providerWriteQueue';
 
@@ -370,5 +371,72 @@ describe('enqueueLatestProviderListEntryWrite', () => {
     expect(result).toBe(false);
     expect(applyCount).toBe(0);
     expect(saveCount).toBe(0);
+  });
+});
+
+describe('enqueueLatestProviderListUpsert', () => {
+  it('appends to the latest list after a queued refresh replaces the original snapshot', async () => {
+    const gate = createDeferred<void>();
+    const queue = createProviderWriteQueue();
+    let current = [{ id: 'server', priority: 1 }];
+    const saved: Array<typeof current> = [];
+
+    const blocker = queue.enqueue(() => gate.promise);
+    const write = enqueueLatestProviderListUpsert(queue, {
+      getCurrent: () => current,
+      apply: (next) => {
+        current = next;
+      },
+      value: { id: 'added', priority: 3 },
+      save: async (next) => {
+        saved.push(next);
+      },
+    });
+
+    current = [...current, { id: 'refreshed', priority: 2 }];
+    gate.resolve();
+
+    await blocker;
+    await expect(write).resolves.toBe(true);
+    expect(current).toEqual([
+      { id: 'server', priority: 1 },
+      { id: 'refreshed', priority: 2 },
+      { id: 'added', priority: 3 },
+    ]);
+    expect(saved).toEqual([current]);
+  });
+
+  it('relocates the original entry before replacing it with an edited value', async () => {
+    const gate = createDeferred<void>();
+    const queue = createProviderWriteQueue();
+    let current = [
+      { id: 'target', priority: 1 },
+      { id: 'other', priority: 2 },
+    ];
+    const saved: Array<typeof current> = [];
+
+    const blocker = queue.enqueue(() => gate.promise);
+    const write = enqueueLatestProviderListUpsert(queue, {
+      getCurrent: () => current,
+      apply: (next) => {
+        current = next;
+      },
+      locate: (list) => list.findIndex((item) => item.id === 'target'),
+      value: { id: 'target', priority: 9 },
+      save: async (next) => {
+        saved.push(next);
+      },
+    });
+
+    current = [current[1], current[0]];
+    gate.resolve();
+
+    await blocker;
+    await expect(write).resolves.toBe(true);
+    expect(current).toEqual([
+      { id: 'other', priority: 2 },
+      { id: 'target', priority: 9 },
+    ]);
+    expect(saved).toEqual([current]);
   });
 });

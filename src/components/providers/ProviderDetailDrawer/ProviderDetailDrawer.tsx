@@ -137,7 +137,8 @@ export function ProviderDetailDrawer({
   };
 
   const renderCloak = () => {
-    if (!row || row.kind === 'gemini' || row.kind === 'openai') return null;
+    if (!row || row.kind === 'gemini' || row.kind === 'interactions' || row.kind === 'openai')
+      return null;
     const cloak = row.raw.cloak;
     if (!cloak) return null;
 

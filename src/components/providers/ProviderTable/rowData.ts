@@ -14,10 +14,11 @@ import {
   type ProviderRecentUsageMap,
 } from '../utils';
 
-export type ProviderKind = 'gemini' | 'codex' | 'claude' | 'vertex' | 'openai';
+export type ProviderKind = 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' | 'openai';
 
 export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'gemini',
+  'interactions',
   'codex',
   'claude',
   'vertex',
@@ -52,11 +53,13 @@ interface ProviderRowBase {
 
 export type ProviderRow =
   | (ProviderRowBase & { kind: 'gemini'; raw: GeminiKeyConfig })
+  | (ProviderRowBase & { kind: 'interactions'; raw: GeminiKeyConfig })
   | (ProviderRowBase & { kind: 'codex' | 'claude' | 'vertex'; raw: ProviderKeyConfig })
   | (ProviderRowBase & { kind: 'openai'; raw: OpenAIProviderConfig });
 
 export interface BuildProviderRowsInput {
   gemini: GeminiKeyConfig[];
+  interactions?: GeminiKeyConfig[];
   codex: ProviderKeyConfig[];
   claude: ProviderKeyConfig[];
   vertex: ProviderKeyConfig[];
@@ -83,7 +86,7 @@ const getKeyConfigSortName = (config: GeminiKeyConfig | ProviderKeyConfig): stri
     .find(Boolean) ?? '';
 
 function buildKeyConfigRow(
-  kind: 'gemini' | 'codex' | 'claude' | 'vertex',
+  kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex',
   config: GeminiKeyConfig | ProviderKeyConfig,
   originalIndex: number,
   usageByProvider: ProviderRecentUsageMap
@@ -157,6 +160,7 @@ function buildOpenAIRow(
 
 export function buildProviderRows({
   gemini,
+  interactions = [],
   codex,
   claude,
   vertex,
@@ -165,6 +169,9 @@ export function buildProviderRows({
 }: BuildProviderRowsInput): ProviderRow[] {
   return [
     ...gemini.map((config, index) => buildKeyConfigRow('gemini', config, index, usageByProvider)),
+    ...interactions.map((config, index) =>
+      buildKeyConfigRow('interactions', config, index, usageByProvider)
+    ),
     ...codex.map((config, index) => buildKeyConfigRow('codex', config, index, usageByProvider)),
     ...claude.map((config, index) => buildKeyConfigRow('claude', config, index, usageByProvider)),
     ...vertex.map((config, index) => buildKeyConfigRow('vertex', config, index, usageByProvider)),

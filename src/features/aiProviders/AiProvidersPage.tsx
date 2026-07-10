@@ -45,6 +45,7 @@ import styles from './AiProvidersPage.module.scss';
 import {
   createProviderWriteQueue,
   enqueueLatestProviderListEntryWrite,
+  enqueueLatestProviderListUpsert,
   type ProviderWriteQueue,
 } from './providerWriteQueue';
 
@@ -64,13 +65,25 @@ type ProviderKeyIdentity =
   | { type: 'auth-index'; authIndex: string }
   | { type: 'composite'; apiKey: string; baseUrl: string; proxyUrl: string };
 
+type ApiKeyProviderIdentity = { apiKey: string; baseUrl: string };
+
 type OpenAIProviderIdentity =
   | { type: 'auth-index'; authIndex: string }
   | { type: 'composite'; name: string; baseUrl: string; prefix: string };
 
 type ProviderEnabledTarget =
   | {
-      kind: Exclude<ProviderKind, 'openai'>;
+      kind: 'gemini';
+      identity: ApiKeyProviderIdentity;
+      enabled: boolean;
+    }
+  | {
+      kind: 'interactions';
+      identity: ApiKeyProviderIdentity;
+      enabled: boolean;
+    }
+  | {
+      kind: 'codex' | 'claude' | 'vertex';
       identity: ProviderKeyIdentity;
       enabled: boolean;
     }
@@ -87,6 +100,19 @@ const getProviderKeyIdentity = (
         baseUrl: config.baseUrl ?? '',
         proxyUrl: config.proxyUrl ?? '',
       };
+
+const getApiKeyProviderIdentity = (config: GeminiKeyConfig): ApiKeyProviderIdentity => ({
+  apiKey: config.apiKey,
+  baseUrl: config.baseUrl ?? '',
+});
+
+const findApiKeyProviderIndex = (
+  configs: GeminiKeyConfig[],
+  identity: ApiKeyProviderIdentity
+): number =>
+  configs.findIndex(
+    (config) => config.apiKey === identity.apiKey && (config.baseUrl ?? '') === identity.baseUrl
+  );
 
 const findProviderKeyIndex = <T extends GeminiKeyConfig | ProviderKeyConfig>(
   configs: T[],
@@ -141,6 +167,9 @@ export function AiProvidersPage() {
   const [geminiKeys, setGeminiKeys] = useState<GeminiKeyConfig[]>(
     () => config?.geminiApiKeys || []
   );
+  const [interactionsKeys, setInteractionsKeys] = useState<GeminiKeyConfig[]>(
+    () => config?.interactionsApiKeys || []
+  );
   const [codexConfigs, setCodexConfigs] = useState<ProviderKeyConfig[]>(
     () => config?.codexApiKeys || []
   );
@@ -154,6 +183,7 @@ export function AiProvidersPage() {
     () => config?.openaiCompatibility || []
   );
   const geminiKeysRef = useRef(geminiKeys);
+  const interactionsKeysRef = useRef(interactionsKeys);
   const codexConfigsRef = useRef(codexConfigs);
   const claudeConfigsRef = useRef(claudeConfigs);
   const vertexConfigsRef = useRef(vertexConfigs);
@@ -203,6 +233,11 @@ export function AiProvidersPage() {
     setGeminiKeys(next);
   }, []);
 
+  const syncInteractionsKeys = useCallback((next: GeminiKeyConfig[]) => {
+    interactionsKeysRef.current = next;
+    setInteractionsKeys(next);
+  }, []);
+
   const syncCodexConfigs = useCallback((next: ProviderKeyConfig[]) => {
     codexConfigsRef.current = next;
     setCodexConfigs(next);
@@ -230,6 +265,15 @@ export function AiProvidersPage() {
       clearCache('gemini-api-key');
     },
     [clearCache, syncGeminiKeys, updateConfigValue]
+  );
+
+  const applyInteractionsKeys = useCallback(
+    (next: GeminiKeyConfig[]) => {
+      syncInteractionsKeys(next);
+      updateConfigValue('interactions-api-key', next);
+      clearCache('interactions-api-key');
+    },
+    [clearCache, syncInteractionsKeys, updateConfigValue]
   );
 
   const applyCodexConfigs = useCallback(
@@ -289,6 +333,7 @@ export function AiProvidersPage() {
 
           const data = configResult.value;
           syncGeminiKeys(data?.geminiApiKeys || []);
+          syncInteractionsKeys(data?.interactionsApiKeys || []);
           syncCodexConfigs(data?.codexApiKeys || []);
           syncClaudeConfigs(data?.claudeApiKeys || []);
           syncVertexConfigs(data?.vertexApiKeys || []);
@@ -317,6 +362,7 @@ export function AiProvidersPage() {
       syncClaudeConfigs,
       syncCodexConfigs,
       syncGeminiKeys,
+      syncInteractionsKeys,
       syncOpenaiProviders,
       syncVertexConfigs,
       t,
@@ -336,12 +382,14 @@ export function AiProvidersPage() {
 
   useEffect(() => {
     if (config?.geminiApiKeys) syncGeminiKeys(config.geminiApiKeys);
+    if (config?.interactionsApiKeys) syncInteractionsKeys(config.interactionsApiKeys);
     if (config?.codexApiKeys) syncCodexConfigs(config.codexApiKeys);
     if (config?.claudeApiKeys) syncClaudeConfigs(config.claudeApiKeys);
     if (config?.vertexApiKeys) syncVertexConfigs(config.vertexApiKeys);
     if (config?.openaiCompatibility) syncOpenaiProviders(config.openaiCompatibility);
   }, [
     config?.geminiApiKeys,
+    config?.interactionsApiKeys,
     config?.codexApiKeys,
     config?.claudeApiKeys,
     config?.vertexApiKeys,
@@ -349,6 +397,7 @@ export function AiProvidersPage() {
     syncClaudeConfigs,
     syncCodexConfigs,
     syncGeminiKeys,
+    syncInteractionsKeys,
     syncOpenaiProviders,
     syncVertexConfigs,
   ]);
@@ -379,13 +428,22 @@ export function AiProvidersPage() {
     () =>
       buildProviderRows({
         gemini: geminiKeys,
+        interactions: interactionsKeys,
         codex: codexConfigs,
         claude: claudeConfigs,
         vertex: vertexConfigs,
         openai: openaiProviders,
         usageByProvider,
       }),
-    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, usageByProvider, vertexConfigs]
+    [
+      claudeConfigs,
+      codexConfigs,
+      geminiKeys,
+      interactionsKeys,
+      openaiProviders,
+      usageByProvider,
+      vertexConfigs,
+    ]
   );
 
   const allModelNames = useMemo(() => {
@@ -439,6 +497,7 @@ export function AiProvidersPage() {
     const counts: Record<ProviderKindFilter, number> = {
       all: rows.length,
       gemini: 0,
+      interactions: 0,
       codex: 0,
       claude: 0,
       vertex: 0,
@@ -469,7 +528,7 @@ export function AiProvidersPage() {
   };
 
   const enqueueGeminiListEntryWrite = (
-    identity: ProviderKeyIdentity,
+    identity: ApiKeyProviderIdentity,
     buildNext: (current: GeminiKeyConfig[], index: number) => GeminiKeyConfig[] | null,
     onSuccess?: () => void,
     onError: (error: unknown) => void = showUpdateFailure
@@ -477,7 +536,7 @@ export function AiProvidersPage() {
     enqueueLatestProviderListEntryWrite(providerWriteQueue, {
       getCurrent: () => geminiKeysRef.current,
       apply: applyGeminiKeys,
-      locate: (current) => findProviderKeyIndex(current, identity),
+      locate: (current) => findApiKeyProviderIndex(current, identity),
       buildNext,
       save: async (next) => {
         await providersApi.saveGeminiKeys(next);
@@ -485,6 +544,54 @@ export function AiProvidersPage() {
       onSuccess,
       onError,
     });
+
+  const enqueueInteractionsListEntryWrite = (
+    identity: ApiKeyProviderIdentity,
+    buildNext: (current: GeminiKeyConfig[], index: number) => GeminiKeyConfig[] | null,
+    onSuccess?: () => void,
+    onError: (error: unknown) => void = showUpdateFailure,
+    save: (next: GeminiKeyConfig[], index: number) => Promise<void> = async (next) => {
+      await providersApi.saveInteractionsKeys(next);
+    }
+  ) =>
+    enqueueLatestProviderListEntryWrite(providerWriteQueue, {
+      getCurrent: () => interactionsKeysRef.current,
+      apply: applyInteractionsKeys,
+      locate: (current) => findApiKeyProviderIndex(current, identity),
+      buildNext,
+      save,
+      onSuccess,
+      onError,
+    });
+
+  const saveInteractionsFromDrawer = useCallback(
+    async (payload: GeminiKeyConfig, original?: GeminiKeyConfig) => {
+      let saveError: unknown;
+      const sharedOptions = {
+        getCurrent: () => interactionsKeysRef.current,
+        apply: applyInteractionsKeys,
+        value: payload,
+        save: async (next: GeminiKeyConfig[]) => {
+          await providersApi.saveInteractionsKeys(next);
+        },
+        onError: (error: unknown) => {
+          saveError = error;
+        },
+      };
+      const result = original
+        ? await enqueueLatestProviderListUpsert(providerWriteQueue, {
+            ...sharedOptions,
+            locate: (current) =>
+              findApiKeyProviderIndex(current, getApiKeyProviderIdentity(original)),
+          })
+        : await enqueueLatestProviderListUpsert(providerWriteQueue, sharedOptions);
+
+      if (result) return;
+      if (saveError) throw saveError;
+      throw new Error(t('common.invalid_provider_index'));
+    },
+    [applyInteractionsKeys, providerWriteQueue, t]
+  );
 
   const enqueueProviderKeyListEntryWrite = (
     provider: 'codex' | 'claude' | 'vertex',
@@ -552,6 +659,8 @@ export function AiProvidersPage() {
       const enabled = action === 'enable';
       if (row.kind === 'openai') {
         targets.push({ kind: row.kind, identity: getOpenAIProviderIdentity(row.raw), enabled });
+      } else if (row.kind === 'gemini' || row.kind === 'interactions') {
+        targets.push({ kind: row.kind, identity: getApiKeyProviderIdentity(row.raw), enabled });
       } else {
         targets.push({ kind: row.kind, identity: getProviderKeyIdentity(row.raw), enabled });
       }
@@ -600,15 +709,19 @@ export function AiProvidersPage() {
         );
       };
 
-      return target.kind === 'gemini'
-        ? enqueueGeminiListEntryWrite(target.identity, buildNext, undefined, onError)
-        : enqueueProviderKeyListEntryWrite(
-            target.kind,
-            target.identity,
-            buildNext,
-            undefined,
-            onError
-          );
+      if (target.kind === 'gemini') {
+        return enqueueGeminiListEntryWrite(target.identity, buildNext, undefined, onError);
+      }
+      if (target.kind === 'interactions') {
+        return enqueueInteractionsListEntryWrite(target.identity, buildNext, undefined, onError);
+      }
+      return enqueueProviderKeyListEntryWrite(
+        target.kind,
+        target.identity,
+        buildNext,
+        undefined,
+        onError
+      );
     });
 
     const results = await Promise.all(writes);
@@ -636,7 +749,7 @@ export function AiProvidersPage() {
 
   const setConfigEnabled = (
     provider: Exclude<ProviderKind, 'openai'>,
-    identity: ProviderKeyIdentity,
+    identity: ProviderKeyIdentity | ApiKeyProviderIdentity,
     enabled: boolean
   ) => {
     const onSuccess = () =>
@@ -659,10 +772,23 @@ export function AiProvidersPage() {
     };
 
     if (provider === 'gemini') {
-      return enqueueGeminiListEntryWrite(identity, buildNext, onSuccess);
+      return enqueueGeminiListEntryWrite(identity as ApiKeyProviderIdentity, buildNext, onSuccess);
     }
 
-    return enqueueProviderKeyListEntryWrite(provider, identity, buildNext, onSuccess);
+    if (provider === 'interactions') {
+      return enqueueInteractionsListEntryWrite(
+        identity as ApiKeyProviderIdentity,
+        buildNext,
+        onSuccess
+      );
+    }
+
+    return enqueueProviderKeyListEntryWrite(
+      provider,
+      identity as ProviderKeyIdentity,
+      buildNext,
+      onSuccess
+    );
   };
 
   const setOpenAIProviderEnabled = (identity: OpenAIProviderIdentity, enabled: boolean) =>
@@ -740,9 +866,11 @@ export function AiProvidersPage() {
     );
 
   const setProviderDisableCoolingEnabled = (row: ProviderRow, enabled: boolean) => {
-    if (row.kind === 'gemini') {
-      const identity = getProviderKeyIdentity(row.raw);
-      return enqueueGeminiListEntryWrite(
+    if (row.kind === 'gemini' || row.kind === 'interactions') {
+      const identity = getApiKeyProviderIdentity(row.raw);
+      const enqueueWrite =
+        row.kind === 'gemini' ? enqueueGeminiListEntryWrite : enqueueInteractionsListEntryWrite;
+      return enqueueWrite(
         identity,
         (current, index) => {
           const item = current[index];
@@ -751,7 +879,15 @@ export function AiProvidersPage() {
             itemIndex === index ? { ...entry, disableCooling: enabled } : entry
           );
         },
-        () => showNotification(t('notification.gemini_key_updated'), 'success')
+        () =>
+          showNotification(
+            t(
+              row.kind === 'gemini'
+                ? 'notification.gemini_key_updated'
+                : 'notification.interactions_key_updated'
+            ),
+            'success'
+          )
       );
     }
 
@@ -809,10 +945,19 @@ export function AiProvidersPage() {
       );
     };
 
-    if (row.kind === 'gemini') {
-      const identity = getProviderKeyIdentity(row.raw);
-      return enqueueGeminiListEntryWrite(identity, buildNext, () =>
-        showNotification(t('notification.gemini_key_updated'), 'success')
+    if (row.kind === 'gemini' || row.kind === 'interactions') {
+      const identity = getApiKeyProviderIdentity(row.raw);
+      const enqueueWrite =
+        row.kind === 'gemini' ? enqueueGeminiListEntryWrite : enqueueInteractionsListEntryWrite;
+      return enqueueWrite(identity, buildNext, () =>
+        showNotification(
+          t(
+            row.kind === 'gemini'
+              ? 'notification.gemini_key_updated'
+              : 'notification.interactions_key_updated'
+          ),
+          'success'
+        )
       );
     }
 
@@ -862,6 +1007,32 @@ export function AiProvidersPage() {
           const message = getErrorMessage(err);
           showNotification(`${t('notification.delete_failed')}: ${message}`, 'error');
         }
+      },
+    });
+  };
+
+  const deleteInteractions = (index: number) => {
+    const entry = interactionsKeys[index];
+    if (!entry) return;
+    const identity = getApiKeyProviderIdentity(entry);
+    showConfirmation({
+      title: t('ai_providers.interactions_delete_title'),
+      message: t('ai_providers.interactions_delete_confirm'),
+      variant: 'danger',
+      confirmText: t('common.confirm'),
+      onConfirm: async () => {
+        await enqueueInteractionsListEntryWrite(
+          identity,
+          (current, currentIndex) => current.filter((_, itemIndex) => itemIndex !== currentIndex),
+          () => showNotification(t('notification.interactions_key_deleted'), 'success'),
+          (err) => {
+            const message = getErrorMessage(err);
+            showNotification(`${t('notification.delete_failed')}: ${message}`, 'error');
+          },
+          async () => {
+            await providersApi.deleteInteractionsKey(identity.apiKey, identity.baseUrl);
+          }
+        );
       },
     });
   };
@@ -946,6 +1117,8 @@ export function AiProvidersPage() {
   const handleRowToggle = (row: ProviderRow, enabled: boolean) => {
     if (row.kind === 'openai') {
       void setOpenAIProviderEnabled(getOpenAIProviderIdentity(row.raw), enabled);
+    } else if (row.kind === 'gemini' || row.kind === 'interactions') {
+      void setConfigEnabled(row.kind, getApiKeyProviderIdentity(row.raw), enabled);
     } else {
       void setConfigEnabled(row.kind, getProviderKeyIdentity(row.raw), enabled);
     }
@@ -964,6 +1137,7 @@ export function AiProvidersPage() {
   const handleRowDisableCoolingToggle = (row: ProviderRow, enabled: boolean) => {
     if (
       row.kind !== 'gemini' &&
+      row.kind !== 'interactions' &&
       row.kind !== 'codex' &&
       row.kind !== 'claude' &&
       row.kind !== 'openai'
@@ -986,6 +1160,8 @@ export function AiProvidersPage() {
     setDetailRowKey(null);
     if (row.kind === 'gemini') {
       deleteGemini(row.originalIndex);
+    } else if (row.kind === 'interactions') {
+      deleteInteractions(row.originalIndex);
     } else if (row.kind === 'codex' || row.kind === 'claude') {
       deleteProviderEntry(row.kind, row.originalIndex);
     } else if (row.kind === 'vertex') {
@@ -1156,6 +1332,15 @@ export function AiProvidersPage() {
         disabled={actionsDisabled}
         onClose={closeEditorDrawer}
         onSaved={handleDrawerSaved}
+      />
+      <GeminiEditDrawer
+        open={editDrawerKind === 'interactions'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+        onSave={saveInteractionsFromDrawer}
+        providerKind="interactions"
       />
       <CodexEditDrawer
         open={editDrawerKind === 'codex'}

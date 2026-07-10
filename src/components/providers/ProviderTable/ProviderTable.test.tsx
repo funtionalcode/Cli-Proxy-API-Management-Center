@@ -364,6 +364,51 @@ describe('ProviderTable', () => {
     expect(getText(renderedRows[0])).toContain('42');
   });
 
+  it('keeps Interactions row actions bound to its own list entry', () => {
+    const rows = buildProviderRows({
+      ...emptyInput,
+      interactions: [
+        {
+          apiKey: 'interactions-key',
+          baseUrl: 'https://generativelanguage.googleapis.com',
+          priority: 13,
+          weight: 34,
+        },
+      ],
+    });
+    const onEdit = vi.fn();
+    const onToggle = vi.fn();
+    const onPriorityChange = vi.fn();
+    const renderer = renderTable(rows, { onEdit, onToggle, onPriorityChange });
+    const row = getRows(renderer)[0];
+
+    expect(getText(row)).toContain('Interactions');
+    expect(getText(row)).toContain('34');
+
+    const editButton = row
+      .findAllByType(Button)
+      .find((button) => button.props['aria-label'] === 'common.edit');
+    expect(editButton).toBeTruthy();
+    clickButton(editButton!);
+    toggleSwitch(row.findByType(ToggleSwitch), false);
+
+    const priorityInput = openPriorityEditor(renderer);
+    changeInput(priorityInput, '17');
+    blurInput(priorityInput);
+
+    expect(onEdit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'interactions', originalIndex: 0 })
+    );
+    expect(onToggle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'interactions', originalIndex: 0 }),
+      false
+    );
+    expect(onPriorityChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'interactions', originalIndex: 0 }),
+      17
+    );
+  });
+
   it('shows a placeholder instead of the status bar for zero-traffic rows', () => {
     const usageByProvider: ProviderRecentUsageMap = new Map([
       [
