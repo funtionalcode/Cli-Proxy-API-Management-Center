@@ -47,6 +47,31 @@ type ProviderHealthCheckTarget =
   | { kind: 'codex' | 'claude' | 'vertex'; config: ProviderKeyConfig }
   | { kind: 'openai'; config: OpenAIProviderConfig; keyIndex: number };
 
+export const getProviderHealthCheckProviderKey = (row: ProviderRow): string => {
+  const authIndex = normalizeAuthIndex(row.raw.authIndex);
+  if (authIndex) {
+    return JSON.stringify([row.kind, 'auth-index', authIndex]);
+  }
+
+  if (row.kind === 'openai') {
+    return JSON.stringify([
+      row.kind,
+      'composite',
+      row.raw.name,
+      row.raw.baseUrl ?? '',
+      row.raw.prefix ?? '',
+    ]);
+  }
+
+  return JSON.stringify([
+    row.kind,
+    'composite',
+    row.raw.apiKey,
+    row.raw.baseUrl ?? '',
+    row.raw.proxyUrl ?? '',
+  ]);
+};
+
 const EMPTY_MODELS_ERROR = 'No models returned';
 const VERTEX_STANDARD_MODELS_ERROR = 'No standard model discovery endpoint responded';
 
@@ -54,7 +79,11 @@ class HealthCheckError extends Error {
   messageKey: string;
   messageValues?: Record<string, string | number>;
 
-  constructor(message: string, messageKey: string, messageValues?: Record<string, string | number>) {
+  constructor(
+    message: string,
+    messageKey: string,
+    messageValues?: Record<string, string | number>
+  ) {
     super(message);
     this.messageKey = messageKey;
     this.messageValues = messageValues;
@@ -167,11 +196,13 @@ const getOpenAIProviderDisplay = (
 };
 
 const getConfiguredModelNames = (models?: Array<{ name: string }>): string[] =>
-  (models ?? [])
-    .map((model) => String(model?.name ?? '').trim())
-    .filter(Boolean);
+  (models ?? []).map((model) => String(model?.name ?? '').trim()).filter(Boolean);
 
-const requireCredential = (apiKey?: string, authIndex?: string, headers?: Record<string, string>) => {
+const requireCredential = (
+  apiKey?: string,
+  authIndex?: string,
+  headers?: Record<string, string>
+) => {
   if (String(apiKey ?? '').trim()) return;
   if (normalizeAuthIndex(authIndex)) return;
   if (hasHeader(headers, 'authorization')) return;
@@ -186,12 +217,13 @@ const requireCredential = (apiKey?: string, authIndex?: string, headers?: Record
 const buildKeyProviderItem = (
   row: Extract<ProviderRow, { kind: 'gemini' | 'codex' | 'claude' | 'vertex' }>
 ): ProviderHealthCheckItem => {
+  const providerKey = getProviderHealthCheckProviderKey(row);
   const providerDisplay = getKeyProviderDisplay(row);
   const keyLabel = getKeyLabel(row.raw.apiKey, row.raw.authIndex);
   const credentialDetail = getCredentialDetailLabel(row.raw.apiKey, row.raw.authIndex);
   return {
-    id: `${row.key}:key`,
-    providerKey: row.key,
+    id: `${providerKey}:key`,
+    providerKey,
     providerKind: row.kind,
     providerIndex: row.originalIndex,
     providerLabel: providerDisplay.providerLabel,
@@ -211,13 +243,14 @@ const buildKeyProviderItem = (
 const buildOpenAIProviderItems = (
   row: Extract<ProviderRow, { kind: 'openai' }>
 ): ProviderHealthCheckItem[] => {
+  const providerKey = getProviderHealthCheckProviderKey(row);
   const providerDisplay = getOpenAIProviderDisplay(row);
   const entries = row.raw.apiKeyEntries ?? [];
   if (!entries.length) {
     return [
       {
-        id: `${row.key}:empty`,
-        providerKey: row.key,
+        id: `${providerKey}:empty`,
+        providerKey,
         providerKind: 'openai',
         providerIndex: row.originalIndex,
         providerLabel: providerDisplay.providerLabel,
@@ -238,8 +271,8 @@ const buildOpenAIProviderItems = (
   return entries.map((entry, keyIndex) => {
     const credentialDetail = getCredentialDetailLabel(entry.apiKey, entry.authIndex);
     return {
-      id: `${row.key}:key:${keyIndex}`,
-      providerKey: row.key,
+      id: `${providerKey}:key:${keyIndex}`,
+      providerKey,
       providerKind: 'openai',
       providerIndex: row.originalIndex,
       providerLabel: providerDisplay.providerLabel,
@@ -301,7 +334,9 @@ export const getProviderHealthCheckApplyActions = (
   const actions = new Map<string, ProviderHealthCheckApplyAction>();
   grouped.forEach((groupItems, providerKey) => {
     const hasSuccess = groupItems.some((item) => item.status === 'success');
-    const hasCompleted = groupItems.some((item) => item.status === 'success' || item.status === 'error');
+    const hasCompleted = groupItems.some(
+      (item) => item.status === 'success' || item.status === 'error'
+    );
     if (!hasCompleted) return;
     actions.set(providerKey, hasSuccess ? 'enable' : 'disable');
   });
@@ -312,7 +347,9 @@ const getTargetForItem = (
   rows: ProviderRow[],
   item: ProviderHealthCheckItem
 ): ProviderHealthCheckTarget | null => {
-  const row = rows.find((candidate) => candidate.key === item.providerKey);
+  const row = rows.find(
+    (candidate) => getProviderHealthCheckProviderKey(candidate) === item.providerKey
+  );
   if (!row) return null;
   if (row.kind === 'openai') {
     const keyIndex = item.openAIKeyIndex ?? 0;
@@ -323,10 +360,7 @@ const getTargetForItem = (
 
 const ensureNonEmptyModels = (models: Array<{ name: string }>) => {
   if (models.length === 0) {
-    throw new HealthCheckError(
-      EMPTY_MODELS_ERROR,
-      'ai_providers.health_check_error_empty_models'
-    );
+    throw new HealthCheckError(EMPTY_MODELS_ERROR, 'ai_providers.health_check_error_empty_models');
   }
   return models.length;
 };
@@ -416,7 +450,8 @@ export const runProviderHealthCheckItem = async (
       modelCount = await testVertexByStandardModelsEndpoints(target.config);
     } else if (target.kind === 'openai') {
       const entry = target.config.apiKeyEntries?.[target.keyIndex];
-      const authIndex = normalizeAuthIndex(entry?.authIndex ?? target.config.authIndex) ?? undefined;
+      const authIndex =
+        normalizeAuthIndex(entry?.authIndex ?? target.config.authIndex) ?? undefined;
       requireCredential(entry?.apiKey, authIndex, {
         ...(target.config.headers ?? {}),
         ...(entry?.headers ?? {}),

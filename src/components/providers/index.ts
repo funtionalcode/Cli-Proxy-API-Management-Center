@@ -4,6 +4,7 @@ export * from './ProviderTable';
 export { ProviderToolbar } from './ProviderToolbar';
 export { ProviderDetailDrawer } from './ProviderDetailDrawer';
 export { ProviderHealthCheckDrawer } from './ProviderHealthCheckDrawer';
+export { getProviderHealthCheckProviderKey } from './ProviderHealthCheckDrawer';
 export type {
   ProviderHealthCheckApplyAction,
   ProviderHealthCheckItem,

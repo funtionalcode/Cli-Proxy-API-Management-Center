@@ -8,6 +8,7 @@ import type { ProviderRow } from '../ProviderTable/rowData';
 import {
   buildProviderHealthCheckItems,
   getProviderHealthCheckApplyActions,
+  getProviderHealthCheckProviderKey,
   runProviderHealthCheckItem,
   summarizeProviderHealthCheckItems,
   type ProviderHealthCheckApplyAction,
@@ -142,7 +143,7 @@ export function ProviderHealthCheckDrawer({
   const providerEnabledByKey = useMemo(() => {
     const map = new Map<string, boolean>();
     rows.forEach((row) => {
-      map.set(row.key, row.enabled);
+      map.set(getProviderHealthCheckProviderKey(row), row.enabled);
     });
     return map;
   }, [rows]);
@@ -219,9 +220,7 @@ export function ProviderHealthCheckDrawer({
         size="sm"
         onClick={() => void handleApplyResults()}
         loading={applying}
-        disabled={
-          actionsDisabled || running || applying || !complete || resultActions.size === 0
-        }
+        disabled={actionsDisabled || running || applying || !complete || resultActions.size === 0}
       >
         {t('ai_providers.health_check_apply_results')}
       </Button>
@@ -291,15 +290,11 @@ export function ProviderHealthCheckDrawer({
                       </div>
                       <div className={styles.groupSummary}>
                         <span>
-                          {groupSummary.success}
-                          {' '}
-                          {t('ai_providers.health_check_status_success')}
+                          {groupSummary.success} {t('ai_providers.health_check_status_success')}
                         </span>
                         {groupSummary.error > 0 && (
                           <span className={styles.groupFailureCount}>
-                            {groupSummary.error}
-                            {' '}
-                            {t('ai_providers.health_check_status_error')}
+                            {groupSummary.error} {t('ai_providers.health_check_status_error')}
                           </span>
                         )}
                       </div>

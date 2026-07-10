@@ -6,6 +6,7 @@ import {
   CodexEditDrawer,
   filterAndSortProviderRows,
   GeminiEditDrawer,
+  getProviderHealthCheckProviderKey,
   OpenAIEditDrawer,
   PROVIDER_KIND_LABELS,
   ProviderDetailDrawer,
@@ -542,7 +543,7 @@ export function AiProvidersPage() {
   ) => {
     if (actions.size === 0) return;
 
-    const rowByKey = new Map(rows.map((row) => [row.key, row]));
+    const rowByKey = new Map(rows.map((row) => [getProviderHealthCheckProviderKey(row), row]));
     const targets: ProviderEnabledTarget[] = [];
     actions.forEach((action, providerKey) => {
       const row = rowByKey.get(providerKey);

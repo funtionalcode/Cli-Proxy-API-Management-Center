@@ -323,6 +323,32 @@ describe('enqueueLatestProviderListEntryWrite', () => {
     ]);
   });
 
+  it('does not roll back a saved entry list when onSuccess throws', async () => {
+    const queue = createProviderWriteQueue();
+    const notificationFailure = new Error('notification failed');
+    let current = [{ id: 'target', priority: 1 }];
+    const applied: Array<typeof current> = [];
+
+    const result = enqueueLatestProviderListEntryWrite(queue, {
+      getCurrent: () => current,
+      apply: (next) => {
+        current = next;
+        applied.push(next);
+      },
+      locate: (list) => list.findIndex((item) => item.id === 'target'),
+      buildNext: (list, index) =>
+        list.map((item, itemIndex) => (itemIndex === index ? { ...item, priority: 9 } : item)),
+      save: async () => {},
+      onSuccess: () => {
+        throw notificationFailure;
+      },
+    });
+
+    await expect(result).rejects.toBe(notificationFailure);
+    expect(current).toEqual([{ id: 'target', priority: 9 }]);
+    expect(applied).toEqual([[{ id: 'target', priority: 9 }]]);
+  });
+
   it('does not apply or save when the captured entry no longer exists', async () => {
     const queue = createProviderWriteQueue();
     const current = [{ id: 'other', priority: 1 }];

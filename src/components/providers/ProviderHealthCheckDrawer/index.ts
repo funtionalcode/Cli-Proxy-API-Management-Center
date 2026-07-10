@@ -2,6 +2,7 @@ export { ProviderHealthCheckDrawer } from './ProviderHealthCheckDrawer';
 export {
   buildProviderHealthCheckItems,
   getProviderHealthCheckApplyActions,
+  getProviderHealthCheckProviderKey,
   runProviderHealthCheckItem,
   summarizeProviderHealthCheckItems,
   type ProviderHealthCheckApplyAction,
