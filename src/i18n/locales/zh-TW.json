@@ -773,6 +773,7 @@
     "health_check_disable_all": "全部停用",
     "health_check_apply_results": "按結果套用",
     "health_check_apply_success": "測活結果已套用",
+    "health_check_apply_partial": "已套用 {{success}} 項變更，{{failed}} 項失敗",
     "health_check_no_changes": "沒有需要變更的設定",
     "health_check_auth_index_label": "auth-index: {{index}}",
     "health_check_configured_credential": "已設定憑據",

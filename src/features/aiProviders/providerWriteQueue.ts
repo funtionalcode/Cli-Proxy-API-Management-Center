@@ -11,6 +11,16 @@ export interface LatestProviderListWriteOptions<T> {
   onError?: (error: unknown) => void;
 }
 
+export interface LatestProviderListEntryWriteOptions<T> {
+  getCurrent: () => T[];
+  apply: (next: T[]) => void;
+  locate: (current: T[]) => number;
+  buildNext: (current: T[], index: number) => T[] | null;
+  save: (next: T[], index: number) => Promise<void>;
+  onSuccess?: () => void;
+  onError?: (error: unknown) => void;
+}
+
 export const createProviderWriteQueue = (
   onPendingChange?: (pending: number) => void
 ): ProviderWriteQueue => {
@@ -55,11 +65,37 @@ export const enqueueLatestProviderListWrite = <T>(
     options.apply(next);
     try {
       await options.save(next);
-      options.onSuccess?.();
-      return true;
     } catch (error: unknown) {
       options.apply(previous);
       options.onError?.(error);
       return false;
     }
+
+    options.onSuccess?.();
+    return true;
+  });
+
+export const enqueueLatestProviderListEntryWrite = <T>(
+  queue: ProviderWriteQueue,
+  options: LatestProviderListEntryWriteOptions<T>
+): Promise<boolean> =>
+  queue.enqueue(async () => {
+    const previous = options.getCurrent();
+    const index = options.locate(previous);
+    if (index < 0) return false;
+
+    const next = options.buildNext(previous, index);
+    if (next === null) return false;
+
+    options.apply(next);
+    try {
+      await options.save(next, index);
+    } catch (error: unknown) {
+      options.apply(previous);
+      options.onError?.(error);
+      return false;
+    }
+
+    options.onSuccess?.();
+    return true;
   });

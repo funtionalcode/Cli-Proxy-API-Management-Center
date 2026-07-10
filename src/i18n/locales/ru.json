@@ -773,6 +773,7 @@
     "health_check_disable_all": "Отключить все",
     "health_check_apply_results": "Применить результаты",
     "health_check_apply_success": "Результаты проверки применены",
+    "health_check_apply_partial": "Применено изменений: {{success}}; не удалось: {{failed}}",
     "health_check_no_changes": "Изменения конфигурации не требуются",
     "health_check_auth_index_label": "Индекс входа: {{index}}",
     "health_check_configured_credential": "Учётные данные настроены",

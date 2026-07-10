@@ -773,6 +773,7 @@
     "health_check_disable_all": "Disable All",
     "health_check_apply_results": "Apply Results",
     "health_check_apply_success": "Health check results applied",
+    "health_check_apply_partial": "Applied {{success}} changes; {{failed}} failed",
     "health_check_no_changes": "No configuration changes needed",
     "health_check_auth_index_label": "auth-index: {{index}}",
     "health_check_configured_credential": "Credential configured",

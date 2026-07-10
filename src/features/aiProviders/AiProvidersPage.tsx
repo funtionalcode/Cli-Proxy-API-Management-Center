@@ -43,7 +43,7 @@ import type {
 import styles from './AiProvidersPage.module.scss';
 import {
   createProviderWriteQueue,
-  enqueueLatestProviderListWrite,
+  enqueueLatestProviderListEntryWrite,
   type ProviderWriteQueue,
 } from './providerWriteQueue';
 
@@ -58,6 +58,68 @@ const DEFAULT_CLOAK_CONFIG: CloakConfig = {
 
 const isProviderKeyEnabled = (config: { excludedModels?: string[] }) =>
   !hasDisableAllModelsRule(config.excludedModels);
+
+type ProviderKeyIdentity =
+  | { type: 'auth-index'; authIndex: string }
+  | { type: 'composite'; apiKey: string; baseUrl: string; proxyUrl: string };
+
+type OpenAIProviderIdentity =
+  | { type: 'auth-index'; authIndex: string }
+  | { type: 'composite'; name: string; baseUrl: string; prefix: string };
+
+type ProviderEnabledTarget =
+  | {
+      kind: Exclude<ProviderKind, 'openai'>;
+      identity: ProviderKeyIdentity;
+      enabled: boolean;
+    }
+  | { kind: 'openai'; identity: OpenAIProviderIdentity; enabled: boolean };
+
+const getProviderKeyIdentity = (
+  config: GeminiKeyConfig | ProviderKeyConfig
+): ProviderKeyIdentity =>
+  config.authIndex?.trim()
+    ? { type: 'auth-index', authIndex: config.authIndex }
+    : {
+        type: 'composite',
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl ?? '',
+        proxyUrl: config.proxyUrl ?? '',
+      };
+
+const findProviderKeyIndex = <T extends GeminiKeyConfig | ProviderKeyConfig>(
+  configs: T[],
+  identity: ProviderKeyIdentity
+): number =>
+  configs.findIndex((config) =>
+    identity.type === 'auth-index'
+      ? config.authIndex === identity.authIndex
+      : config.apiKey === identity.apiKey &&
+        (config.baseUrl ?? '') === identity.baseUrl &&
+        (config.proxyUrl ?? '') === identity.proxyUrl
+  );
+
+const getOpenAIProviderIdentity = (provider: OpenAIProviderConfig): OpenAIProviderIdentity =>
+  provider.authIndex?.trim()
+    ? { type: 'auth-index', authIndex: provider.authIndex }
+    : {
+        type: 'composite',
+        name: provider.name,
+        baseUrl: provider.baseUrl ?? '',
+        prefix: provider.prefix ?? '',
+      };
+
+const findOpenAIProviderIndex = (
+  providers: OpenAIProviderConfig[],
+  identity: OpenAIProviderIdentity
+): number =>
+  providers.findIndex((provider) =>
+    identity.type === 'auth-index'
+      ? provider.authIndex === identity.authIndex
+      : provider.name === identity.name &&
+        (provider.baseUrl ?? '') === identity.baseUrl &&
+        (provider.prefix ?? '') === identity.prefix
+  );
 
 export function AiProvidersPage() {
   const { t } = useTranslation();
@@ -205,55 +267,60 @@ export function AiProvidersPage() {
     [clearCache, syncOpenaiProviders, updateConfigValue]
   );
 
-  const loadConfigs = useCallback(async () => {
-    const hasValidCache = isCacheValid();
-    if (!hasValidCache) {
-      setLoading(true);
-    }
-    setError('');
-    try {
-      const [configResult, vertexResult, openaiResult] = await Promise.allSettled([
-        fetchConfig(),
-        providersApi.getVertexConfigs(),
-        providersApi.getOpenAIProviders(),
-      ]);
+  const loadConfigs = useCallback(
+    () =>
+      providerWriteQueue.enqueue(async () => {
+        const hasValidCache = isCacheValid();
+        if (!hasValidCache) {
+          setLoading(true);
+        }
+        setError('');
+        try {
+          const [configResult, vertexResult, openaiResult] = await Promise.allSettled([
+            fetchConfig(),
+            providersApi.getVertexConfigs(),
+            providersApi.getOpenAIProviders(),
+          ]);
 
-      if (configResult.status !== 'fulfilled') {
-        throw configResult.reason;
-      }
+          if (configResult.status !== 'fulfilled') {
+            throw configResult.reason;
+          }
 
-      const data = configResult.value;
-      syncGeminiKeys(data?.geminiApiKeys || []);
-      syncCodexConfigs(data?.codexApiKeys || []);
-      syncClaudeConfigs(data?.claudeApiKeys || []);
-      syncVertexConfigs(data?.vertexApiKeys || []);
-      syncOpenaiProviders(data?.openaiCompatibility || []);
+          const data = configResult.value;
+          syncGeminiKeys(data?.geminiApiKeys || []);
+          syncCodexConfigs(data?.codexApiKeys || []);
+          syncClaudeConfigs(data?.claudeApiKeys || []);
+          syncVertexConfigs(data?.vertexApiKeys || []);
+          syncOpenaiProviders(data?.openaiCompatibility || []);
 
-      if (vertexResult.status === 'fulfilled') {
-        applyVertexConfigs(vertexResult.value || []);
-      }
+          if (vertexResult.status === 'fulfilled') {
+            applyVertexConfigs(vertexResult.value || []);
+          }
 
-      if (openaiResult.status === 'fulfilled') {
-        applyOpenaiProviders(openaiResult.value || []);
-      }
-    } catch (err: unknown) {
-      const message = getErrorMessage(err) || t('notification.refresh_failed');
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    applyOpenaiProviders,
-    applyVertexConfigs,
-    fetchConfig,
-    isCacheValid,
-    syncClaudeConfigs,
-    syncCodexConfigs,
-    syncGeminiKeys,
-    syncOpenaiProviders,
-    syncVertexConfigs,
-    t,
-  ]);
+          if (openaiResult.status === 'fulfilled') {
+            applyOpenaiProviders(openaiResult.value || []);
+          }
+        } catch (err: unknown) {
+          const message = getErrorMessage(err) || t('notification.refresh_failed');
+          setError(message);
+        } finally {
+          setLoading(false);
+        }
+      }),
+    [
+      applyOpenaiProviders,
+      applyVertexConfigs,
+      fetchConfig,
+      isCacheValid,
+      providerWriteQueue,
+      syncClaudeConfigs,
+      syncCodexConfigs,
+      syncGeminiKeys,
+      syncOpenaiProviders,
+      syncVertexConfigs,
+      t,
+    ]
+  );
 
   useEffect(() => {
     if (hasMounted.current) return;
@@ -400,13 +467,32 @@ export function AiProvidersPage() {
     showNotification(`${t('notification.update_failed')}: ${message}`, 'error');
   };
 
-  const enqueueProviderKeyListWrite = (
-    provider: 'codex' | 'claude' | 'vertex',
-    buildNext: (current: ProviderKeyConfig[]) => ProviderKeyConfig[] | null,
+  const enqueueGeminiListEntryWrite = (
+    identity: ProviderKeyIdentity,
+    buildNext: (current: GeminiKeyConfig[], index: number) => GeminiKeyConfig[] | null,
     onSuccess?: () => void,
     onError: (error: unknown) => void = showUpdateFailure
   ) =>
-    enqueueLatestProviderListWrite(providerWriteQueue, {
+    enqueueLatestProviderListEntryWrite(providerWriteQueue, {
+      getCurrent: () => geminiKeysRef.current,
+      apply: applyGeminiKeys,
+      locate: (current) => findProviderKeyIndex(current, identity),
+      buildNext,
+      save: async (next) => {
+        await providersApi.saveGeminiKeys(next);
+      },
+      onSuccess,
+      onError,
+    });
+
+  const enqueueProviderKeyListEntryWrite = (
+    provider: 'codex' | 'claude' | 'vertex',
+    identity: ProviderKeyIdentity,
+    buildNext: (current: ProviderKeyConfig[], index: number) => ProviderKeyConfig[] | null,
+    onSuccess?: () => void,
+    onError: (error: unknown) => void = showUpdateFailure
+  ) =>
+    enqueueLatestProviderListEntryWrite(providerWriteQueue, {
       getCurrent: () =>
         provider === 'codex'
           ? codexConfigsRef.current
@@ -419,6 +505,7 @@ export function AiProvidersPage() {
           : provider === 'claude'
             ? applyClaudeConfigs
             : applyVertexConfigs,
+      locate: (current) => findProviderKeyIndex(current, identity),
       buildNext,
       save: async (next) => {
         if (provider === 'codex') {
@@ -433,171 +520,109 @@ export function AiProvidersPage() {
       onError,
     });
 
+  const enqueueOpenAIListEntryWrite = (
+    identity: OpenAIProviderIdentity,
+    buildNext: (current: OpenAIProviderConfig[], index: number) => OpenAIProviderConfig[] | null,
+    save: (next: OpenAIProviderConfig[], index: number) => Promise<void>,
+    onSuccess?: () => void,
+    onError: (error: unknown) => void = showUpdateFailure
+  ) =>
+    enqueueLatestProviderListEntryWrite(providerWriteQueue, {
+      getCurrent: () => openaiProvidersRef.current,
+      apply: applyOpenaiProviders,
+      locate: (current) => findOpenAIProviderIndex(current, identity),
+      buildNext,
+      save,
+      onSuccess,
+      onError,
+    });
+
   const applyProviderEnabledActions = async (
     actions: Map<string, ProviderHealthCheckApplyAction>
   ) => {
     if (actions.size === 0) return;
 
     const rowByKey = new Map(rows.map((row) => [row.key, row]));
-    const targets = Array.from(actions, ([providerKey, action]) => {
+    const targets: ProviderEnabledTarget[] = [];
+    actions.forEach((action, providerKey) => {
       const row = rowByKey.get(providerKey);
-      return row
-        ? { kind: row.kind, index: row.originalIndex, enabled: action === 'enable' }
-        : null;
-    }).filter(
-      (target): target is { kind: ProviderKind; index: number; enabled: boolean } => target !== null
-    );
+      if (!row) return;
+
+      const enabled = action === 'enable';
+      if (row.kind === 'openai') {
+        targets.push({ kind: row.kind, identity: getOpenAIProviderIdentity(row.raw), enabled });
+      } else {
+        targets.push({ kind: row.kind, identity: getProviderKeyIdentity(row.raw), enabled });
+      }
+    });
     if (targets.length === 0) {
       showNotification(t('ai_providers.health_check_no_changes'), 'success');
       return;
     }
 
-    let failed = false;
+    let failedCount = 0;
     let firstError: unknown;
     const onError = (error: unknown) => {
-      if (!failed) firstError = error;
-      failed = true;
+      if (failedCount === 0) firstError = error;
+      failedCount += 1;
     };
-    const writes: Array<Promise<boolean>> = [];
-    const geminiTargets = targets.filter((target) => target.kind === 'gemini');
-    const codexTargets = targets.filter((target) => target.kind === 'codex');
-    const claudeTargets = targets.filter((target) => target.kind === 'claude');
-    const vertexTargets = targets.filter((target) => target.kind === 'vertex');
-    const openaiTargets = targets.filter((target) => target.kind === 'openai');
+    const writes = targets.map((target) => {
+      if (target.kind === 'openai') {
+        return enqueueOpenAIListEntryWrite(
+          target.identity,
+          (current, index) => {
+            const item = current[index];
+            if (!item || Boolean(item.disabled) === !target.enabled) return null;
+            return current.map((entry, itemIndex) =>
+              itemIndex === index ? { ...entry, disabled: !target.enabled } : entry
+            );
+          },
+          async (_next, index) => {
+            await providersApi.updateOpenAIProviderDisabled(index, !target.enabled);
+          },
+          undefined,
+          onError
+        );
+      }
 
-    if (geminiTargets.length > 0) {
-      writes.push(
-        enqueueLatestProviderListWrite(providerWriteQueue, {
-          getCurrent: () => geminiKeysRef.current,
-          apply: applyGeminiKeys,
-          buildNext: (current) => {
-            let changed = false;
-            let next = current;
-            geminiTargets.forEach((target) => {
-              const item = next[target.index];
-              if (!item || isProviderKeyEnabled(item) === target.enabled) return;
-              const excludedModels = target.enabled
-                ? withoutDisableAllModelsRule(item.excludedModels)
-                : withDisableAllModelsRule(item.excludedModels);
-              next = next.map((entry, index) =>
-                index === target.index ? { ...entry, excludedModels } : entry
-              );
-              changed = true;
-            });
-            return changed ? next : null;
-          },
-          save: async (next) => {
-            await providersApi.saveGeminiKeys(next);
-          },
-          onError,
-        })
-      );
-    }
-    if (codexTargets.length > 0) {
-      writes.push(
-        enqueueProviderKeyListWrite(
-          'codex',
-          (current) => {
-            let changed = false;
-            let next = current;
-            codexTargets.forEach((target) => {
-              const item = next[target.index];
-              if (!item || isProviderKeyEnabled(item) === target.enabled) return;
-              const excludedModels = target.enabled
-                ? withoutDisableAllModelsRule(item.excludedModels)
-                : withDisableAllModelsRule(item.excludedModels);
-              next = next.map((entry, index) =>
-                index === target.index ? { ...entry, excludedModels } : entry
-              );
-              changed = true;
-            });
-            return changed ? next : null;
-          },
-          undefined,
-          onError
-        )
-      );
-    }
-    if (claudeTargets.length > 0) {
-      writes.push(
-        enqueueProviderKeyListWrite(
-          'claude',
-          (current) => {
-            let changed = false;
-            let next = current;
-            claudeTargets.forEach((target) => {
-              const item = next[target.index];
-              if (!item || isProviderKeyEnabled(item) === target.enabled) return;
-              const excludedModels = target.enabled
-                ? withoutDisableAllModelsRule(item.excludedModels)
-                : withDisableAllModelsRule(item.excludedModels);
-              next = next.map((entry, index) =>
-                index === target.index ? { ...entry, excludedModels } : entry
-              );
-              changed = true;
-            });
-            return changed ? next : null;
-          },
-          undefined,
-          onError
-        )
-      );
-    }
-    if (vertexTargets.length > 0) {
-      writes.push(
-        enqueueProviderKeyListWrite(
-          'vertex',
-          (current) => {
-            let changed = false;
-            let next = current;
-            vertexTargets.forEach((target) => {
-              const item = next[target.index];
-              if (!item || isProviderKeyEnabled(item) === target.enabled) return;
-              const excludedModels = target.enabled
-                ? withoutDisableAllModelsRule(item.excludedModels)
-                : withDisableAllModelsRule(item.excludedModels);
-              next = next.map((entry, index) =>
-                index === target.index ? { ...entry, excludedModels } : entry
-              );
-              changed = true;
-            });
-            return changed ? next : null;
-          },
-          undefined,
-          onError
-        )
-      );
-    }
-    if (openaiTargets.length > 0) {
-      writes.push(
-        enqueueLatestProviderListWrite(providerWriteQueue, {
-          getCurrent: () => openaiProvidersRef.current,
-          apply: applyOpenaiProviders,
-          buildNext: (current) => {
-            let changed = false;
-            let next = current;
-            openaiTargets.forEach((target) => {
-              const item = next[target.index];
-              if (!item || Boolean(item.disabled) === !target.enabled) return;
-              next = next.map((entry, index) =>
-                index === target.index ? { ...entry, disabled: !target.enabled } : entry
-              );
-              changed = true;
-            });
-            return changed ? next : null;
-          },
-          save: async (next) => {
-            await providersApi.saveOpenAIProviders(next);
-          },
-          onError,
-        })
-      );
-    }
+      const buildNext = <T extends GeminiKeyConfig | ProviderKeyConfig>(
+        current: T[],
+        index: number
+      ) => {
+        const item = current[index];
+        if (!item || isProviderKeyEnabled(item) === target.enabled) return null;
+        const excludedModels = target.enabled
+          ? withoutDisableAllModelsRule(item.excludedModels)
+          : withDisableAllModelsRule(item.excludedModels);
+        return current.map((entry, itemIndex) =>
+          itemIndex === index ? { ...entry, excludedModels } : entry
+        );
+      };
+
+      return target.kind === 'gemini'
+        ? enqueueGeminiListEntryWrite(target.identity, buildNext, undefined, onError)
+        : enqueueProviderKeyListEntryWrite(
+            target.kind,
+            target.identity,
+            buildNext,
+            undefined,
+            onError
+          );
+    });
 
     const results = await Promise.all(writes);
-    if (failed) {
+    const successCount = results.filter(Boolean).length;
+    if (successCount > 0 && failedCount > 0) {
+      showNotification(
+        t('ai_providers.health_check_apply_partial', {
+          success: successCount,
+          failed: failedCount,
+        }),
+        'warning'
+      );
+    } else if (failedCount > 0) {
       showUpdateFailure(firstError);
-    } else if (results.some(Boolean)) {
+    } else if (successCount > 0) {
       showNotification(t('ai_providers.health_check_apply_success'), 'success');
     } else {
       showNotification(t('ai_providers.health_check_no_changes'), 'success');
@@ -610,7 +635,7 @@ export function AiProvidersPage() {
 
   const setConfigEnabled = (
     provider: Exclude<ProviderKind, 'openai'>,
-    index: number,
+    identity: ProviderKeyIdentity,
     enabled: boolean
   ) => {
     const onSuccess = () =>
@@ -618,7 +643,10 @@ export function AiProvidersPage() {
         enabled ? t('notification.config_enabled') : t('notification.config_disabled'),
         'success'
       );
-    const buildNext = <T extends GeminiKeyConfig | ProviderKeyConfig>(current: T[]) => {
+    const buildNext = <T extends GeminiKeyConfig | ProviderKeyConfig>(
+      current: T[],
+      index: number
+    ) => {
       const item = current[index];
       if (!item || isProviderKeyEnabled(item) === enabled) return null;
       const excludedModels = enabled
@@ -630,51 +658,41 @@ export function AiProvidersPage() {
     };
 
     if (provider === 'gemini') {
-      return enqueueLatestProviderListWrite(providerWriteQueue, {
-        getCurrent: () => geminiKeysRef.current,
-        apply: applyGeminiKeys,
-        buildNext,
-        save: async (next) => {
-          await providersApi.saveGeminiKeys(next);
-        },
-        onSuccess,
-        onError: showUpdateFailure,
-      });
+      return enqueueGeminiListEntryWrite(identity, buildNext, onSuccess);
     }
 
-    return enqueueProviderKeyListWrite(provider, buildNext, onSuccess);
+    return enqueueProviderKeyListEntryWrite(provider, identity, buildNext, onSuccess);
   };
 
-  const setOpenAIProviderEnabled = (index: number, enabled: boolean) =>
-    enqueueLatestProviderListWrite(providerWriteQueue, {
-      getCurrent: () => openaiProvidersRef.current,
-      apply: applyOpenaiProviders,
-      buildNext: (current) => {
+  const setOpenAIProviderEnabled = (identity: OpenAIProviderIdentity, enabled: boolean) =>
+    enqueueOpenAIListEntryWrite(
+      identity,
+      (current, index) => {
         const item = current[index];
         if (!item || Boolean(item.disabled) === !enabled) return null;
         return current.map((entry, itemIndex) =>
           itemIndex === index ? { ...entry, disabled: !enabled } : entry
         );
       },
-      save: async () => {
+      async (_next, index) => {
         await providersApi.updateOpenAIProviderDisabled(index, !enabled);
       },
-      onSuccess: () =>
+      () =>
         showNotification(
           enabled ? t('notification.config_enabled') : t('notification.config_disabled'),
           'success'
-        ),
-      onError: showUpdateFailure,
-    });
+        )
+    );
 
   const setProviderWebsocketsEnabled = (
     provider: 'codex' | 'claude',
-    index: number,
+    identity: ProviderKeyIdentity,
     enabled: boolean
   ) =>
-    enqueueProviderKeyListWrite(
+    enqueueProviderKeyListEntryWrite(
       provider,
-      (current) => {
+      identity,
+      (current, index) => {
         const item = current[index];
         if (!item || item.websockets === enabled) return null;
         return current.map((entry, itemIndex) =>
@@ -692,10 +710,15 @@ export function AiProvidersPage() {
         )
     );
 
-  const setProviderCloakEnabled = (provider: 'codex' | 'claude', index: number, enabled: boolean) =>
-    enqueueProviderKeyListWrite(
+  const setProviderCloakEnabled = (
+    provider: 'codex' | 'claude',
+    identity: ProviderKeyIdentity,
+    enabled: boolean
+  ) =>
+    enqueueProviderKeyListEntryWrite(
       provider,
-      (current) => {
+      identity,
+      (current, index) => {
         const item = current[index];
         if (!item || Boolean(item.cloak) === enabled) return null;
         const nextItem: ProviderKeyConfig = enabled
@@ -715,52 +738,45 @@ export function AiProvidersPage() {
         )
     );
 
-  const setProviderDisableCoolingEnabled = (
-    provider: 'gemini' | 'codex' | 'claude' | 'openai',
-    index: number,
-    enabled: boolean
-  ) => {
-    if (provider === 'gemini') {
-      return enqueueLatestProviderListWrite(providerWriteQueue, {
-        getCurrent: () => geminiKeysRef.current,
-        apply: applyGeminiKeys,
-        buildNext: (current) => {
+  const setProviderDisableCoolingEnabled = (row: ProviderRow, enabled: boolean) => {
+    if (row.kind === 'gemini') {
+      const identity = getProviderKeyIdentity(row.raw);
+      return enqueueGeminiListEntryWrite(
+        identity,
+        (current, index) => {
           const item = current[index];
           if (!item || item.disableCooling === enabled) return null;
           return current.map((entry, itemIndex) =>
             itemIndex === index ? { ...entry, disableCooling: enabled } : entry
           );
         },
-        save: async (next) => {
-          await providersApi.saveGeminiKeys(next);
-        },
-        onSuccess: () => showNotification(t('notification.gemini_key_updated'), 'success'),
-        onError: showUpdateFailure,
-      });
+        () => showNotification(t('notification.gemini_key_updated'), 'success')
+      );
     }
 
-    if (provider === 'openai') {
-      return enqueueLatestProviderListWrite(providerWriteQueue, {
-        getCurrent: () => openaiProvidersRef.current,
-        apply: applyOpenaiProviders,
-        buildNext: (current) => {
+    if (row.kind === 'openai') {
+      const identity = getOpenAIProviderIdentity(row.raw);
+      return enqueueOpenAIListEntryWrite(
+        identity,
+        (current, index) => {
           const item = current[index];
           if (!item || item.disableCooling === enabled) return null;
           return current.map((entry, itemIndex) =>
             itemIndex === index ? { ...entry, disableCooling: enabled } : entry
           );
         },
-        save: async (next) => {
+        async (next) => {
           await providersApi.saveOpenAIProviders(next);
         },
-        onSuccess: () => showNotification(t('notification.openai_provider_updated'), 'success'),
-        onError: showUpdateFailure,
-      });
+        () => showNotification(t('notification.openai_provider_updated'), 'success')
+      );
     }
 
-    return enqueueProviderKeyListWrite(
-      provider,
-      (current) => {
+    const identity = getProviderKeyIdentity(row.raw);
+    return enqueueProviderKeyListEntryWrite(
+      row.kind,
+      identity,
+      (current, index) => {
         const item = current[index];
         if (!item || item.disableCooling === enabled) return null;
         return current.map((entry, itemIndex) =>
@@ -770,7 +786,7 @@ export function AiProvidersPage() {
       () =>
         showNotification(
           t(
-            provider === 'codex'
+            row.kind === 'codex'
               ? 'notification.codex_config_updated'
               : 'notification.claude_config_updated'
           ),
@@ -782,42 +798,37 @@ export function AiProvidersPage() {
   const setProviderPriority = (row: ProviderRow, priority: number) => {
     const nextPriority = Math.trunc(priority);
     const buildNext = <T extends GeminiKeyConfig | ProviderKeyConfig | OpenAIProviderConfig>(
-      current: T[]
+      current: T[],
+      index: number
     ) => {
-      const item = current[row.originalIndex];
+      const item = current[index];
       if (!item || item.priority === nextPriority) return null;
-      return current.map((entry, index) =>
-        index === row.originalIndex ? { ...entry, priority: nextPriority } : entry
+      return current.map((entry, itemIndex) =>
+        itemIndex === index ? { ...entry, priority: nextPriority } : entry
       );
     };
 
     if (row.kind === 'gemini') {
-      return enqueueLatestProviderListWrite(providerWriteQueue, {
-        getCurrent: () => geminiKeysRef.current,
-        apply: applyGeminiKeys,
-        buildNext,
-        save: async (next) => {
-          await providersApi.saveGeminiKeys(next);
-        },
-        onSuccess: () => showNotification(t('notification.gemini_key_updated'), 'success'),
-        onError: showUpdateFailure,
-      });
+      const identity = getProviderKeyIdentity(row.raw);
+      return enqueueGeminiListEntryWrite(identity, buildNext, () =>
+        showNotification(t('notification.gemini_key_updated'), 'success')
+      );
     }
 
     if (row.kind === 'openai') {
-      return enqueueLatestProviderListWrite(providerWriteQueue, {
-        getCurrent: () => openaiProvidersRef.current,
-        apply: applyOpenaiProviders,
+      const identity = getOpenAIProviderIdentity(row.raw);
+      return enqueueOpenAIListEntryWrite(
+        identity,
         buildNext,
-        save: async (next) => {
+        async (next) => {
           await providersApi.saveOpenAIProviders(next);
         },
-        onSuccess: () => showNotification(t('notification.openai_provider_updated'), 'success'),
-        onError: showUpdateFailure,
-      });
+        () => showNotification(t('notification.openai_provider_updated'), 'success')
+      );
     }
 
-    return enqueueProviderKeyListWrite(row.kind, buildNext, () =>
+    const identity = getProviderKeyIdentity(row.raw);
+    return enqueueProviderKeyListEntryWrite(row.kind, identity, buildNext, () =>
       showNotification(
         t(
           row.kind === 'codex'
@@ -933,20 +944,20 @@ export function AiProvidersPage() {
   // Row-level callback dispatch.
   const handleRowToggle = (row: ProviderRow, enabled: boolean) => {
     if (row.kind === 'openai') {
-      void setOpenAIProviderEnabled(row.originalIndex, enabled);
+      void setOpenAIProviderEnabled(getOpenAIProviderIdentity(row.raw), enabled);
     } else {
-      void setConfigEnabled(row.kind, row.originalIndex, enabled);
+      void setConfigEnabled(row.kind, getProviderKeyIdentity(row.raw), enabled);
     }
   };
 
   const handleRowWebsocketsToggle = (row: ProviderRow, enabled: boolean) => {
     if (row.kind !== 'codex' && row.kind !== 'claude') return;
-    void setProviderWebsocketsEnabled(row.kind, row.originalIndex, enabled);
+    void setProviderWebsocketsEnabled(row.kind, getProviderKeyIdentity(row.raw), enabled);
   };
 
   const handleRowCloakToggle = (row: ProviderRow, enabled: boolean) => {
     if (row.kind !== 'codex' && row.kind !== 'claude') return;
-    void setProviderCloakEnabled(row.kind, row.originalIndex, enabled);
+    void setProviderCloakEnabled(row.kind, getProviderKeyIdentity(row.raw), enabled);
   };
 
   const handleRowDisableCoolingToggle = (row: ProviderRow, enabled: boolean) => {
@@ -958,7 +969,7 @@ export function AiProvidersPage() {
     ) {
       return;
     }
-    void setProviderDisableCoolingEnabled(row.kind, row.originalIndex, enabled);
+    void setProviderDisableCoolingEnabled(row, enabled);
   };
 
   const handleRowPriorityChange = (row: ProviderRow, priority: number) => {
@@ -1065,52 +1076,52 @@ export function AiProvidersPage() {
             {visibleRows.length > 0 &&
               (visibleRows.length > PROVIDER_TABLE_DEFAULT_PAGE_SIZE ||
                 pageSize !== PROVIDER_TABLE_DEFAULT_PAGE_SIZE) && (
-              <div className={styles.paginationBar}>
-                <div className={styles.paginationInfo}>
-                  {t('monitoring.pagination_info', {
-                    current: currentPage,
-                    total: totalPages,
-                    start: pageStartItem,
-                    end: pageEndItem,
-                    count: visibleRows.length,
-                  })}
-                </div>
-                <div className={styles.paginationControls}>
-                  <div className={styles.pageSizeField}>
-                    <span>{t('monitoring.page_size_label')}</span>
-                    <Select
-                      value={String(pageSize)}
-                      options={PROVIDER_TABLE_PAGE_SIZE_OPTIONS.map((size) => ({
-                        value: String(size),
-                        label: t('monitoring.page_size_option', { count: size }),
-                      }))}
-                      onChange={handlePageSizeChange}
-                      disabled={loading}
-                      fullWidth={false}
-                      ariaLabel={t('monitoring.page_size_label')}
-                      className={styles.pageSizeSelect}
-                      triggerClassName={styles.pageSizeSelectTrigger}
-                    />
+                <div className={styles.paginationBar}>
+                  <div className={styles.paginationInfo}>
+                    {t('monitoring.pagination_info', {
+                      current: currentPage,
+                      total: totalPages,
+                      start: pageStartItem,
+                      end: pageEndItem,
+                      count: visibleRows.length,
+                    })}
                   </div>
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => setPage(Math.max(1, currentPage - 1))}
-                    disabled={loading || currentPage <= 1}
-                  >
-                    {t('monitoring.pagination_prev')}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
-                    disabled={loading || currentPage >= totalPages}
-                  >
-                    {t('monitoring.pagination_next')}
-                  </Button>
+                  <div className={styles.paginationControls}>
+                    <div className={styles.pageSizeField}>
+                      <span>{t('monitoring.page_size_label')}</span>
+                      <Select
+                        value={String(pageSize)}
+                        options={PROVIDER_TABLE_PAGE_SIZE_OPTIONS.map((size) => ({
+                          value: String(size),
+                          label: t('monitoring.page_size_option', { count: size }),
+                        }))}
+                        onChange={handlePageSizeChange}
+                        disabled={loading}
+                        fullWidth={false}
+                        ariaLabel={t('monitoring.page_size_label')}
+                        className={styles.pageSizeSelect}
+                        triggerClassName={styles.pageSizeSelectTrigger}
+                      />
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => setPage(Math.max(1, currentPage - 1))}
+                      disabled={loading || currentPage <= 1}
+                    >
+                      {t('monitoring.pagination_prev')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
+                      disabled={loading || currentPage >= totalPages}
+                    >
+                      {t('monitoring.pagination_next')}
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
           </Card>
         </div>
       </div>
