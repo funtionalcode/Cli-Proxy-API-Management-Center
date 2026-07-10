@@ -1,10 +1,10 @@
-# CPA Manager Plus 88f91180 Configuration Coverage Implementation Plan
+# CPA Manager Plus 79d681c5 Full Web Sync Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Synchronize the complete `apps/web` delta from `05174f662660e488e5e5a338ab5070a79e4bc79d` to `88f91180e359397e5d2b68f516bbf6ae3e991b5c`, including CPA configuration round-trip coverage and Interactions provider support, while preserving every local customization already merged on `codex/sync-cpa-manager-plus-main`.
+**Goal:** Synchronize the complete `apps/web` delta from `05174f662660e488e5e5a338ab5070a79e4bc79d` to `79d681c5771b536d2517a36cdcafb04f3930402e`, including CPA configuration round-trip coverage, Interactions provider support, GPT-5.6 pricing, and active-tab Usage Analytics query shaping, while preserving every local customization already merged on `codex/sync-cpa-manager-plus-main`.
 
-**Architecture:** Treat upstream regression tests as the executable specification, then merge the production changes in four layers: visual YAML round trips, provider/auth API normalization, model metadata/editor controls, and the unified Provider page. The final Provider-page merge must adapt upstream Interactions behavior to the local FIFO/stable-identity write architecture rather than restoring upstream's concurrent index-based writes.
+**Architecture:** Treat upstream regression tests as the executable specification, then merge production changes in six isolated layers: visual YAML round trips, provider/auth API normalization, model metadata/editor controls, the unified Provider page, GPT-5.6 price calculation/editing, and tab-scoped Usage Analytics requests. Provider writes stay on the local FIFO/stable-identity architecture; analytics selectors use an independent stable request scope so tab changes do not reload them.
 
 **Tech Stack:** React 19, TypeScript, Vite, Vitest, react-test-renderer, Zustand, Axios, YAML document editing, SCSS modules, i18next.
 
@@ -13,11 +13,12 @@
 ## Pinned scope and invariants
 
 - Previous repository target: `05174f662660e488e5e5a338ab5070a79e4bc79d`.
-- New repository target: `88f91180e359397e5d2b68f516bbf6ae3e991b5c`.
-- Web-changing commit: `e23a93f19a3b43ff194fbbbb4bfe4ee4c6859b5a`.
-- Incremental web delta: 44 files, 1,594 additions, 153 deletions.
-- Complete web delta from shared baseline `cc63954`: 85 files, 4,626 additions, 606 deletions.
-- Expected final tracked branch diff, if this plan adds no files beyond this document and the upstream paths: 100 paths, with all 85 upstream paths represented and exactly 15 documented local extras.
+- New repository target: `79d681c5771b536d2517a36cdcafb04f3930402e`.
+- Web-changing commits after the previous plan target: `26b8f166` (active-tab analytics scoping) and `43bd407d` (GPT-5.6 pricing).
+- Incremental web delta from `88f91180`: 15 files, 692 additions, 42 deletions.
+- Complete web delta from shared baseline `cc63954`: 92 files, 5,318 additions, 648 deletions.
+- Expected final tracked branch diff: 108 paths, with all 92 upstream paths represented and exactly 16 documented local extras.
+- Tasks 1-5 are complete in commits `19ff024b`, `1f238f42`, `6abcdc2d`, `e7ffc7c`, and `de0bfa1c`; Tasks 6-8 cover the newly advanced upstream target and final acceptance.
 - Preserve the untracked `pnpm-workspace.yaml`; never modify, stage, or delete it.
 - Preserve local Provider `weight`, FIFO writes, stable-identity relocation, queued `loadConfigs`, OpenAI PATCH ordering, partial-success health notifications, auth/proxy/OAuth workflows, `.claude/**` test exclusion, monitoring bounded-memory behavior, and single-file `dist/management.html` output.
 
@@ -256,7 +257,161 @@ git diff --check
 
 Expected: FIFO/stable-identity regressions remain green and Interactions is independently addressable. Commit only Task 5 files.
 
-## Task 6: Refresh the target, manifest, and full acceptance evidence
+## Task 6: Add GPT-5.6 price calculation and editing coverage
+
+**Files:**
+- Modify: `src/utils/usage.test.ts`
+- Modify: `src/utils/usage.ts`
+- Modify: `src/features/monitoring/model/modelPricesPageModel.test.ts`
+- Modify: `src/features/monitoring/model/modelPricesPageModel.ts`
+- Modify: `src/features/monitoring/ModelPricesPage.tsx`
+- Modify: `src/i18n/locales/en.json`
+- Modify: `src/i18n/locales/ru.json`
+- Modify: `src/i18n/locales/zh-CN.json`
+- Modify: `src/i18n/locales/zh-TW.json`
+
+- [ ] **Step 1: Import the upstream GPT-5.6 tests and verify RED**
+
+Use `apply_patch` to import the `43bd407d` test hunks. The cost tests must assert the official prices, the 272,000-token boundary, long-context input/output multipliers, resolved-model behavior, Priority/Fast multiplier `2`, fallback cache-read/cache-creation ratios, and explicit configured zeroes. The draft-model tests must include:
+
+```ts
+expect(
+  buildPriceFromDraft({
+    model: 'gpt-5.6-sol',
+    prompt: '0',
+    completion: '0',
+    cache: '',
+    cacheRead: '0',
+    cacheCreation: '0',
+  })
+).toMatchObject({
+  prompt: 0,
+  completion: 0,
+  cacheRead: 0,
+  cacheCreation: 0,
+  promptConfigured: true,
+  completionConfigured: true,
+  cacheReadConfigured: true,
+  cacheCreationConfigured: true,
+});
+```
+
+Run:
+
+```bash
+npx vitest run src/utils/usage.test.ts src/features/monitoring/model/modelPricesPageModel.test.ts --reporter=dot
+```
+
+Expected: FAIL only because GPT-5.6 fallback/configured-price behavior and the two draft fields do not exist yet.
+
+- [ ] **Step 2: Implement the price contract minimally**
+
+Extend `ModelPrice` with the four `*Configured` flags and recognize cache-write token aliases. Normalize provider-prefixed model names before family matching. Add these official prices:
+
+```ts
+const OFFICIAL_GPT_56_PRICES = {
+  'gpt-5.6-sol': { prompt: 5, completion: 30, cacheRead: 0.5, cacheCreation: 6.25 },
+  'gpt-5.6-terra': { prompt: 2.5, completion: 15, cacheRead: 0.25, cacheCreation: 3.125 },
+  'gpt-5.6-luna': { prompt: 1, completion: 6, cacheRead: 0.1, cacheCreation: 1.25 },
+};
+```
+
+For the behavior model (`resolvedModel || requestedModel`), apply Priority/Fast multiplier `2`; above `272_000` total input tokens multiply input charges by `2` and completion charges by `1.5`. Missing GPT-5.6 cache read/creation values derive from prompt price at `0.1` and `1.25`; a corresponding configured flag preserves an explicit `0`. The resolved model controls family behavior even when the requested alias supplies the configured price.
+
+- [ ] **Step 3: Add cache read/creation fields to the editor**
+
+Extend `PriceDraft` and its empty/edit/build conversions with `cacheRead` and `cacheCreation`. Use configured flags to distinguish blank from zero. Add the two inputs and table columns in `ModelPricesPage`, and add these four-language keys:
+
+```text
+model_prices.optional_price_placeholder
+usage_stats.model_price_cache_read
+usage_stats.model_price_cache_creation
+```
+
+- [ ] **Step 4: Verify and commit Task 6**
+
+Run:
+
+```bash
+npx vitest run src/utils/usage.test.ts src/features/monitoring/model/modelPricesPageModel.test.ts --reporter=dot
+npm run type-check
+npx eslint src/utils/usage.ts src/utils/usage.test.ts src/features/monitoring/ModelPricesPage.tsx src/features/monitoring/model/modelPricesPageModel.ts src/features/monitoring/model/modelPricesPageModel.test.ts --report-unused-disable-directives
+git diff --check
+```
+
+Expected: both focused suites pass, TypeScript/ESLint are clean, and existing model-price retry/fallback behavior is unchanged. Stage only Task 6 files and commit as `feat(monitoring): 支持 GPT-5.6 分层缓存定价` with the required Chinese body and verification trailers.
+
+## Task 7: Scope Usage Analytics requests to the active tab
+
+**Files:**
+- Create: `src/features/usage-analytics/useUsageAnalytics.test.tsx`
+- Modify: `src/features/usage-analytics/usageAnalyticsModel.test.ts`
+- Modify: `src/features/usage-analytics/usageAnalyticsModel.ts`
+- Modify: `src/features/usage-analytics/useUsageAnalytics.ts`
+- Modify: `src/features/usage-analytics/UsageAnalyticsPage.tsx`
+- Modify: `src/services/api/usageService.ts`
+
+- [ ] **Step 1: Import the upstream request-orchestration tests and verify RED**
+
+Import the `26b8f166` test hunks. `buildUsageAnalyticsInclude` must be asserted with these exact shapes:
+
+```ts
+overview:    summary/comparison/timeline/model/channel/api-key/anomaly
+trends:      summary/comparison/timeline/model/api-key/anomaly
+models:      summary/timeline/model/api-key
+apiKeys:     summary/api-key
+credentials: summary/credential/credential_timeline
+heatmap:     summary/heatmap
+```
+
+The new hook test must assert that the main `dataScopeKey` contains `activeTab`, the selector scope does not, a tab switch keeps the selector scope stable, selector errors do not become the page error, and manual refresh invokes both request refresh functions.
+
+Run:
+
+```bash
+npx vitest run src/features/usage-analytics/usageAnalyticsModel.test.ts src/features/usage-analytics/useUsageAnalytics.test.tsx --reporter=dot
+```
+
+Expected: FAIL because the include builder is not tab-aware and no independent selector request exists.
+
+- [ ] **Step 2: Build the tab-scoped include and selector contract**
+
+Change the include builder signature and add the independent selector include:
+
+```ts
+buildUsageAnalyticsInclude(
+  activeTab: UsageAnalyticsTab,
+  granularity: UsageAnalyticsResolvedGranularity,
+  drilldownPreview?: { fromMs: number; toMs: number; limit?: number } | null
+): MonitoringAnalyticsInclude;
+
+buildUsageAnalyticsFilterSelectorsInclude(): MonitoringAnalyticsInclude {
+  return { filter_options: true, filter_selectors: true };
+}
+```
+
+Only overview/trends may include `drilldown_preview`. Extend `MonitoringAnalyticsInclude` with `filter_selectors?: boolean` and `MonitoringAnalyticsFilterOptions` with lightweight `models?: string[]` and `api_key_hashes?: string[]`.
+
+- [ ] **Step 3: Orchestrate stable selector loading and merge options**
+
+Pass `activeTabState` into the main include and main `dataScopeKey`. Add a second `useMonitoringAnalytics` request whose scope contains bounds/search but not `activeTab`. Ignore its error when returning the page error, refresh it from the manual refresh handler, and expose `filterSelectorsData?.filter_options ?? adapted.filterOptions`.
+
+In `UsageAnalyticsPage`, merge lightweight `models` and `api_key_hashes` into the existing stable option caches before rendering filter controls, preserving existing labels/aliases and deduplication.
+
+- [ ] **Step 4: Verify and commit Task 7**
+
+Run:
+
+```bash
+npx vitest run src/features/usage-analytics/usageAnalyticsModel.test.ts src/features/usage-analytics/useUsageAnalytics.test.tsx src/features/usage-analytics/UsageAnalyticsPage.test.tsx --reporter=dot
+npm run type-check
+npx eslint src/features/usage-analytics/UsageAnalyticsPage.tsx src/features/usage-analytics/usageAnalyticsModel.ts src/features/usage-analytics/usageAnalyticsModel.test.ts src/features/usage-analytics/useUsageAnalytics.ts src/features/usage-analytics/useUsageAnalytics.test.tsx src/services/api/usageService.ts --report-unused-disable-directives
+git diff --check
+```
+
+Expected: focused suites pass; switching tabs changes only the main request scope; selector failure remains isolated. Stage only Task 7 files and commit as `perf(analytics): 按活动标签裁剪统计请求` with the required Chinese body and verification trailers.
+
+## Task 8: Refresh the target, manifest, and full acceptance evidence
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md`
@@ -271,25 +426,25 @@ Run:
 
 ```bash
 git ls-remote upstream refs/heads/main
-git update-ref refs/cpa-plus/target 88f91180e359397e5d2b68f516bbf6ae3e991b5c
+git update-ref refs/cpa-plus/target 79d681c5771b536d2517a36cdcafb04f3930402e
 git rev-parse refs/cpa-plus/base refs/cpa-plus/target upstream/main
 ```
 
-Expected: remote, tracking branch, and target all equal `88f91180`; base remains `cc63954`.
+Expected: remote, tracking branch, and target all equal `79d681c5`; base remains `cc63954`. If the remote has advanced again, do not update the target ref; audit the new delta and revise this plan first.
 
 - [ ] **Step 2: Regenerate the complete manifest**
 
-Regenerate from `cc63954..88f91180` and assert:
+Regenerate from `cc63954..79d681c5` and assert:
 
 ```text
-upstream paths = 85
-branch paths = 100
+upstream paths = 92
+branch paths = 108
 missing upstream paths = 0
-documented local extras = 15
-upstream stat = 4,626 additions / 606 deletions
+documented local extras = 16
+upstream stat = 5,318 additions / 648 deletions
 ```
 
-The 15 extras must be exact and sorted; they are the four synchronization documents (design, full plan, review-fix plan, this plan), three local Provider health support files not present upstream, `src/components/providers/index.ts`, two Provider queue files, `ModelPricesPage.module.scss`, two local monitoring adaptation files, and two model-price summary hook files.
+The 16 extras must be exact, sorted, and copied into the final audit document from the manifest command output rather than inferred from prose.
 
 - [ ] **Step 3: Restore locked dependencies and run full verification**
 
