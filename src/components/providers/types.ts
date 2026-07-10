@@ -7,6 +7,11 @@ export interface ModelEntry {
   priority?: number;
   testModel?: string;
   image?: boolean;
+  forceMapping?: boolean;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  inputModalitiesDraft?: string;
+  outputModalitiesDraft?: string;
   thinking?: Record<string, unknown>;
 }
 

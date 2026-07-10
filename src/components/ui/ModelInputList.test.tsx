@@ -49,13 +49,15 @@ describe('ModelInputList', () => {
     });
 
     const input = getRenderer().root.findByProps({ 'aria-label': 'Input modalities' });
+    expect(input.type).toBe('textarea');
     act(() => {
-      input.props.onChange({ target: { value: 'text, audio' } });
+      input.props.onChange({ target: { value: 'text,\n audio, ' } });
     });
     expect(entries[0]?.inputModalities).toEqual(['text', 'audio']);
+    expect(entries[0]?.inputModalitiesDraft).toBe('text,\n audio, ');
     expect(entries[0]?.outputModalities).toEqual(['image']);
     expect(getRenderer().root.findByProps({ 'aria-label': 'Input modalities' }).props.value).toBe(
-      'text, audio'
+      'text,\n audio, '
     );
 
     const updatedInput = getRenderer().root.findByProps({ 'aria-label': 'Input modalities' });
@@ -146,6 +148,7 @@ describe('ModelInputList', () => {
     expect(labelText.children).toContain(forceMappingLabel);
     expect(labelText.parent?.type).toBe('label');
     const toggle = labelText.parent!.findByProps({ type: 'checkbox' });
+    expect(toggle.props['aria-label']).toBe(forceMappingLabel);
     act(() => {
       toggle.props.onChange({ target: { checked: true } });
     });
@@ -154,5 +157,28 @@ describe('ModelInputList', () => {
       (node) => node.type === 'span' && node.children.includes(forceMappingLabel)
     );
     expect(updatedLabelText.parent!.findByProps({ type: 'checkbox' }).props.checked).toBe(true);
+  });
+
+  it('renders only requested advanced controls and keeps them disabled', () => {
+    act(() => {
+      renderer = create(
+        <ModelInputList
+          entries={[{ name: 'model', alias: '' }]}
+          onChange={() => undefined}
+          showModalities
+          inputModalitiesPlaceholder="Input modalities"
+          outputModalitiesPlaceholder="Output modalities"
+          disabled
+        />
+      );
+    });
+
+    expect(
+      getRenderer().root.findByProps({ 'aria-label': 'Input modalities' }).props.disabled
+    ).toBe(true);
+    expect(
+      getRenderer().root.findByProps({ 'aria-label': 'Output modalities' }).props.disabled
+    ).toBe(true);
+    expect(getRenderer().root.findAllByProps({ type: 'checkbox' })).toHaveLength(0);
   });
 });

@@ -18,10 +18,9 @@ import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
 import { buildApiKeyEntry } from '@/components/providers/utils';
 import {
   areNormalizedOpenAIApiKeyEntriesEqual,
-  buildOpenAIBaseline,
+  buildOpenAIBaseline as buildBaseOpenAIBaseline,
   buildOpenAIProviderPayload,
   normalizeOpenAIApiKeyEntries,
-  normalizeOpenAIModelEntries,
   parseOpenAIWeightInput,
 } from '@/features/aiProviders/model/openaiProviderForm';
 import {
@@ -69,6 +68,23 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+});
+
+const normalizeOpenAIEditorModelEntries = (entries: ModelEntry[]) =>
+  (entries ?? []).reduce<ModelEntry[]>((acc, entry) => {
+    const name = String(entry?.name ?? '').trim();
+    let alias = String(entry?.alias ?? '').trim();
+    if (name && (alias === '' || alias === name)) {
+      alias = '';
+    }
+    if (!name && !alias) return acc;
+    acc.push({ ...entry, name, alias });
+    return acc;
+  }, []);
+
+const buildOpenAIEditorBaseline = (form: OpenAIFormState, testModel = '') => ({
+  ...buildBaseOpenAIBaseline(form, testModel),
+  models: normalizeOpenAIEditorModelEntries(form.modelEntries),
 });
 
 const getErrorMessage = (err: unknown) => {
@@ -266,7 +282,7 @@ export function AiProvidersOpenAIEditLayout() {
         initialData.testModel && available.includes(initialData.testModel)
           ? initialData.testModel
           : available[0] || '';
-      const baseline = buildOpenAIBaseline(seededForm, initialTestModel);
+      const baseline = buildOpenAIEditorBaseline(seededForm, initialTestModel);
       initDraft(draftKey, {
         baseline,
         form: seededForm,
@@ -278,7 +294,7 @@ export function AiProvidersOpenAIEditLayout() {
     } else {
       const emptyForm = buildEmptyForm();
       initDraft(draftKey, {
-        baseline: buildOpenAIBaseline(emptyForm, ''),
+        baseline: buildOpenAIEditorBaseline(emptyForm, ''),
         form: emptyForm,
         testModel: '',
         testStatus: 'idle',
@@ -352,11 +368,11 @@ export function AiProvidersOpenAIEditLayout() {
   const resolvedLoading = !draft?.initialized;
   const baseline = draft?.baseline ?? null;
   const normalizedHeaders = useMemo(
-    () => buildOpenAIBaseline(form, testModel).headers,
+    () => buildOpenAIEditorBaseline(form, testModel).headers,
     [form, testModel]
   );
   const normalizedModels = useMemo(
-    () => normalizeOpenAIModelEntries(form.modelEntries),
+    () => normalizeOpenAIEditorModelEntries(form.modelEntries),
     [form.modelEntries]
   );
   const normalizedApiKeyEntries = useMemo(
@@ -461,7 +477,7 @@ export function AiProvidersOpenAIEditLayout() {
         'success'
       );
       allowNextNavigation();
-      setDraftBaseline(draftKey, buildOpenAIBaseline(form, testModel));
+      setDraftBaseline(draftKey, buildOpenAIEditorBaseline(form, testModel));
       handleBack();
     } catch (err: unknown) {
       showNotification(`${t('notification.update_failed')}: ${getErrorMessage(err)}`, 'error');

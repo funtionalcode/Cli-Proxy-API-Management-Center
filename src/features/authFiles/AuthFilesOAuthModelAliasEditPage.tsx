@@ -19,7 +19,7 @@ type AuthFileModelItem = { id: string; display_name?: string; type?: string; own
 
 type LocationState = { fromAuthFiles?: boolean } | null;
 
-type OAuthModelMappingFormEntry = OAuthModelAliasEntry & { id: string };
+export type OAuthModelMappingFormEntry = OAuthModelAliasEntry & { id: string };
 
 const OAUTH_PROVIDER_PRESETS = [
   'vertex',
@@ -41,9 +41,11 @@ const buildEmptyMappingEntry = (): OAuthModelMappingFormEntry => ({
   name: '',
   alias: '',
   fork: true,
+  forceMapping: false,
 });
 
-const normalizeMappingEntries = (
+// eslint-disable-next-line react-refresh/only-export-components
+export const normalizeMappingEntries = (
   entries?: OAuthModelAliasEntry[]
 ): OAuthModelMappingFormEntry[] => {
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -54,7 +56,33 @@ const normalizeMappingEntries = (
     name: entry.name ?? '',
     alias: entry.alias ?? '',
     fork: Boolean(entry.fork),
+    ...(entry.forceMapping !== undefined ? { forceMapping: entry.forceMapping } : {}),
   }));
+};
+
+// eslint-disable-next-line react-refresh/only-export-components
+export const normalizeMappingsForSave = (
+  entries: OAuthModelMappingFormEntry[]
+): OAuthModelAliasEntry[] => {
+  const seen = new Set<string>();
+  return entries
+    .map((entry) => {
+      const name = String(entry.name ?? '').trim();
+      const alias = String(entry.alias ?? '').trim();
+      if (!name || !alias) return null;
+      const forceMappingKey =
+        entry.forceMapping === undefined ? 'u' : entry.forceMapping ? '1' : '0';
+      const key = `${name.toLowerCase()}::${alias.toLowerCase()}::${entry.fork ? '1' : '0'}::${forceMappingKey}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        name,
+        alias,
+        ...(entry.fork ? { fork: true } : {}),
+        ...(entry.forceMapping !== undefined ? { forceMapping: entry.forceMapping } : {}),
+      };
+    })
+    .filter(Boolean) as OAuthModelAliasEntry[];
 };
 
 export function AuthFilesOAuthModelAliasEditPage() {
@@ -308,18 +336,7 @@ export function AuthFilesOAuthModelAliasEditPage() {
       return;
     }
 
-    const seen = new Set<string>();
-    const normalized = mappings
-      .map((entry) => {
-        const name = String(entry.name ?? '').trim();
-        const alias = String(entry.alias ?? '').trim();
-        if (!name || !alias) return null;
-        const key = `${name.toLowerCase()}::${alias.toLowerCase()}::${entry.fork ? '1' : '0'}`;
-        if (seen.has(key)) return null;
-        seen.add(key);
-        return entry.fork ? { name, alias, fork: true } : { name, alias };
-      })
-      .filter(Boolean) as OAuthModelAliasEntry[];
+    const normalized = normalizeMappingsForSave(mappings);
 
     setSaving(true);
     try {
@@ -458,6 +475,15 @@ export function AuthFilesOAuthModelAliasEditPage() {
                       labelPosition="left"
                       checked={Boolean(entry.fork)}
                       onChange={(value) => updateMappingEntry(index, 'fork', value)}
+                      disabled={disableControls || saving}
+                    />
+                  </div>
+                  <div className={styles.mappingFork}>
+                    <ToggleSwitch
+                      label={t('oauth_model_alias.alias_force_mapping_label')}
+                      labelPosition="left"
+                      checked={Boolean(entry.forceMapping)}
+                      onChange={(value) => updateMappingEntry(index, 'forceMapping', value)}
                       disabled={disableControls || saving}
                     />
                   </div>

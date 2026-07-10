@@ -29,7 +29,7 @@ import {
   parseExcludedModels,
   parseProviderWeightInput,
 } from '@/components/providers/utils';
-import type { GeminiFormState } from '@/components/providers';
+import type { GeminiFormState, ModelEntry } from '@/components/providers';
 import { parseProviderIndexParam } from '@/features/aiProviders/model/routeParams';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 import styles from './AiProvidersPage.module.scss';
@@ -55,15 +55,16 @@ const stripGeminiModelResourceName = (value: string) => {
     .replace(/^\/?models\//i, '');
 };
 
-const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) =>
-  (entries ?? []).reduce<Array<{ name: string; alias: string }>>((acc, entry) => {
+// eslint-disable-next-line react-refresh/only-export-components
+export const normalizeGeminiModelEntries = (entries: ModelEntry[]) =>
+  (entries ?? []).reduce<ModelEntry[]>((acc, entry) => {
     const name = stripGeminiModelResourceName(entry?.name ?? '').trim();
     let alias = String(entry?.alias ?? '').trim();
     if (name && alias === name) {
       alias = '';
     }
     if (!name && !alias) return acc;
-    acc.push({ name, alias });
+    acc.push({ ...entry, name, alias });
     return acc;
   }, []);
 
@@ -77,7 +78,7 @@ type GeminiFormBaseline = {
   proxyUrl: string;
   disableCooling: boolean;
   headers: ReturnType<typeof normalizeHeaderEntries>;
-  models: ReturnType<typeof normalizeModelEntries>;
+  models: ReturnType<typeof normalizeGeminiModelEntries>;
   excludedModels: string[];
 };
 
@@ -94,7 +95,7 @@ const buildGeminiBaseline = (form: GeminiFormState): GeminiFormBaseline => ({
   proxyUrl: String(form.proxyUrl ?? '').trim(),
   disableCooling: Boolean(form.disableCooling),
   headers: normalizeHeaderEntries(form.headers),
-  models: normalizeModelEntries(form.modelEntries),
+  models: normalizeGeminiModelEntries(form.modelEntries),
   excludedModels: parseExcludedModels(form.excludedText ?? ''),
 });
 
@@ -217,7 +218,7 @@ export function AiProvidersGeminiEditPage() {
   const canSave = !disableControls && !saving && !loading && !invalidIndexParam && !invalidIndex;
   const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
   const normalizedModels = useMemo(
-    () => normalizeModelEntries(form.modelEntries),
+    () => normalizeGeminiModelEntries(form.modelEntries),
     [form.modelEntries]
   );
   const normalizedExcludedModels = useMemo(
@@ -709,6 +710,8 @@ export function AiProvidersGeminiEditPage() {
                 removeButtonClassName={styles.modelRowRemoveButton}
                 removeButtonTitle={t('common.delete')}
                 removeButtonAriaLabel={t('common.delete')}
+                showForceMapping
+                forceMappingLabel={t('ai_providers.force_mapping_label')}
               />
             </div>
 

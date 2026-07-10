@@ -28,6 +28,33 @@ beforeEach(() => {
 });
 
 describe('authFilesApi OAuth model alias normalization', () => {
+  it('preserves omitted, false, and true forceMapping through the OAuth editor helpers', async () => {
+    const { normalizeMappingEntries, normalizeMappingsForSave } =
+      await import('@/features/authFiles/AuthFilesOAuthModelAliasEditPage');
+    const loaded = normalizeMappingEntries([
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: false },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: true },
+    ]);
+
+    expect(loaded.map(({ id: _id, ...entry }) => entry)).toEqual([
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: false },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: true },
+    ]);
+
+    expect(
+      normalizeMappingsForSave([
+        ...loaded,
+        ...loaded.map((entry) => ({ ...entry, id: `${entry.id}-duplicate` })),
+      ])
+    ).toEqual([
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: false },
+      { name: 'gpt-5-codex', alias: 'team-codex', fork: true, forceMapping: true },
+    ]);
+  });
+
   it.each(['force-mapping', 'forceMapping', 'force_mapping'])(
     'preserves %s and keeps forceMapping variants distinct during deduplication',
     async (forceMappingField) => {

@@ -63,13 +63,13 @@ const buildEmptyForm = (): ProviderFormState => ({
   excludedText: '',
 });
 
-const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) =>
-  (entries ?? []).reduce<Array<{ name: string; alias: string }>>((acc, entry) => {
+const normalizeModelEntries = (entries: ProviderFormState['modelEntries']) =>
+  (entries ?? []).reduce<ProviderFormState['modelEntries']>((acc, entry) => {
     const name = String(entry?.name ?? '').trim();
     let alias = String(entry?.alias ?? '').trim();
     if (name && alias === name) alias = '';
     if (!name && !alias) return acc;
-    acc.push({ name, alias });
+    acc.push({ ...entry, name, alias });
     return acc;
   }, []);
 
@@ -706,6 +706,8 @@ export function CodexEditDrawer({
                 removeButtonClassName={styles.modelRowRemoveButton}
                 removeButtonTitle={t('common.delete')}
                 removeButtonAriaLabel={t('common.delete')}
+                showForceMapping
+                forceMappingLabel={t('ai_providers.force_mapping_label')}
               />
               <div className={styles.modelTestPanel}>
                 <div className={styles.modelTestMeta}>

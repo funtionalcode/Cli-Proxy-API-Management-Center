@@ -23,8 +23,20 @@ export function areKeyValueEntriesEqual(
 }
 
 export function areModelEntriesEqual(
-  a: readonly { name: string; alias: string }[],
-  b: readonly { name: string; alias: string }[]
+  a: readonly {
+    name: string;
+    alias: string;
+    forceMapping?: boolean;
+    inputModalities?: string[];
+    outputModalities?: string[];
+  }[],
+  b: readonly {
+    name: string;
+    alias: string;
+    forceMapping?: boolean;
+    inputModalities?: string[];
+    outputModalities?: string[];
+  }[]
 ): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -32,8 +44,23 @@ export function areModelEntriesEqual(
     const left = a[i];
     const right = b[i];
     if (!left || !right) return false;
-    if (left.name !== right.name || left.alias !== right.alias) return false;
+    if (
+      left.name !== right.name ||
+      left.alias !== right.alias ||
+      left.forceMapping !== right.forceMapping ||
+      !areOptionalStringArraysEqual(left.inputModalities, right.inputModalities) ||
+      !areOptionalStringArraysEqual(left.outputModalities, right.outputModalities)
+    ) {
+      return false;
+    }
   }
   return true;
 }
 
+function areOptionalStringArraysEqual(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return areStringArraysEqual(a, b);
+}

@@ -20,7 +20,7 @@ import { modelsToEntries } from '@/components/ui/modelInputListUtils';
 import { buildApiKeyEntry, buildOpenAIChatCompletionsEndpoint } from '@/components/providers/utils';
 import {
   areNormalizedOpenAIApiKeyEntriesEqual,
-  buildOpenAIBaseline,
+  buildOpenAIBaseline as buildBaseOpenAIBaseline,
   buildOpenAIProviderPayload,
   parseOpenAIWeightInput,
 } from '@/features/aiProviders/model/openaiProviderForm';
@@ -29,7 +29,7 @@ import {
   removeKeyTestStatusAtIndex,
 } from '@/features/aiProviders/model/keyTestStatuses';
 import type { ModelInfo } from '@/utils/models';
-import type { OpenAIFormState } from '@/components/providers';
+import type { ModelEntry, OpenAIFormState } from '@/components/providers';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
 
 interface OpenAIEditDrawerProps {
@@ -40,7 +40,7 @@ interface OpenAIEditDrawerProps {
   onSaved: () => void;
 }
 
-type OpenAIFormBaseline = ReturnType<typeof buildOpenAIBaseline>;
+type OpenAIFormBaseline = ReturnType<typeof buildOpenAIEditorBaseline>;
 
 const OPENAI_TEST_TIMEOUT_MS = 30_000;
 
@@ -54,6 +54,23 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+});
+
+const normalizeOpenAIEditorModelEntries = (entries: ModelEntry[]) =>
+  (entries ?? []).reduce<ModelEntry[]>((acc, entry) => {
+    const name = String(entry?.name ?? '').trim();
+    let alias = String(entry?.alias ?? '').trim();
+    if (name && (alias === '' || alias === name)) {
+      alias = '';
+    }
+    if (!name && !alias) return acc;
+    acc.push({ ...entry, name, alias });
+    return acc;
+  }, []);
+
+const buildOpenAIEditorBaseline = (form: OpenAIFormState, testModel = '') => ({
+  ...buildBaseOpenAIBaseline(form, testModel),
+  models: normalizeOpenAIEditorModelEntries(form.modelEntries),
 });
 
 const getErrorMessage = (err: unknown) => {
@@ -87,7 +104,7 @@ export function OpenAIEditDrawer({
   const [error, setError] = useState('');
   const [form, setForm] = useState<OpenAIFormState>(buildEmptyForm);
   const [baseline, setBaseline] = useState<OpenAIFormBaseline>(
-    buildOpenAIBaseline(buildEmptyForm())
+    buildOpenAIEditorBaseline(buildEmptyForm())
   );
   const [loaded, setLoaded] = useState(false);
   const [isTestingKeys, setIsTestingKeys] = useState(false);
@@ -170,7 +187,7 @@ export function OpenAIEditDrawer({
         disableCooling: initialData.disableCooling,
       };
       setForm(seededForm);
-      setBaseline(buildOpenAIBaseline(seededForm));
+      setBaseline(buildOpenAIEditorBaseline(seededForm));
       const available = modelEntries.map((e) => e.name.trim()).filter(Boolean);
       const initialTestModel =
         initialData.testModel && available.includes(initialData.testModel)
@@ -180,7 +197,7 @@ export function OpenAIEditDrawer({
     } else {
       const emptyForm = buildEmptyForm();
       setForm(emptyForm);
-      setBaseline(buildOpenAIBaseline(emptyForm));
+      setBaseline(buildOpenAIEditorBaseline(emptyForm));
       setTestModel('');
     }
     setTestStatus('idle');
@@ -201,7 +218,7 @@ export function OpenAIEditDrawer({
   const canSave = !disabled && !loading && !saving && !invalidIndex && !isTestingKeys;
 
   const isDirty = useMemo(() => {
-    const current = buildOpenAIBaseline(form);
+    const current = buildOpenAIEditorBaseline(form);
     return (
       baseline.name !== current.name ||
       baseline.weight !== current.weight ||
@@ -899,6 +916,9 @@ export function OpenAIEditDrawer({
                 removeButtonClassName={styles.modelRowRemoveButton}
                 removeButtonTitle={t('common.delete')}
                 removeButtonAriaLabel={t('common.delete')}
+                showModalities
+                inputModalitiesPlaceholder={t('ai_providers.input_modalities_placeholder')}
+                outputModalitiesPlaceholder={t('ai_providers.output_modalities_placeholder')}
               />
               <div className={styles.modelTestPanel}>
                 <div className={styles.modelTestMeta}>
