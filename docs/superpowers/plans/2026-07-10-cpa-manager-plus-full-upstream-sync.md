@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Merge the complete CPA Manager Plus `apps/web` delta from `cc63954` to repository target `05174f66` into the local standalone frontend while preserving every local customization and rebuilding `dist/management.html`; `2337f76` is the latest checkpoint in that target that changes `apps/web`.
+**Goal:** Merge the complete CPA Manager Plus `apps/web` delta from `cc63954` to repository target `79d681c5` into the local standalone frontend while preserving every local customization and rebuilding `dist/management.html`; `43bd407d` is the latest checkpoint in that target that changes `apps/web`.
 
-**Architecture:** Fetch the authoritative Plus commits into local integration refs, apply upstream test changes before production changes, and integrate production files in behavior-focused batches plus a final upstream-refresh addendum. Resolve three-way conflicts against the current local branch, preserve local-only behavior through the new upstream structures, and audit the final file set against the authoritative upstream delta.
+**Architecture:** Fetch the authoritative Plus commits into local integration refs, apply upstream test changes before production changes, and integrate production files in behavior-focused batches plus upstream-refresh addenda. Resolve three-way conflicts against the current local branch, preserve local-only behavior through the new upstream structures, and audit the final file set against the authoritative upstream delta.
 
 **Tech Stack:** React 19, TypeScript, Vite, Vitest, Zustand, SCSS modules, Git three-way patch application.
 
@@ -12,7 +12,7 @@
 
 ## File Map
 
-The final upstream delta modifies 46 root-web files after stripping the `apps/web/` prefix.
+The final upstream delta modifies 92 root-web files after stripping the `apps/web/` prefix. Earlier task sections retain their checkpoint-specific file counts as execution history; the final addendum below is authoritative.
 
 - Provider controls and layout: `src/components/providers/ProviderTable/*`, `src/features/aiProviders/*`, `src/features/authFiles/AuthFilesPage.module.scss`
 - Quota and monitoring: `src/components/quota/quotaConfigs.ts`, `src/features/monitoring/**`, `src/types/quota.ts`, `src/utils/quota/**`, `src/utils/usageHeaderSnapshots*`
@@ -26,6 +26,7 @@ Local behavior that must survive conflicts is defined in `docs/superpowers/specs
 ### Task 1: Create the isolated integration worktree and establish a green baseline
 
 **Files:**
+
 - Read: `package.json`
 - Read: `package-lock.json`
 - Read: `vite.config.ts`
@@ -73,6 +74,7 @@ Expected: every command exits 0. If a baseline command fails, record the exact p
 ### Task 2: Fetch the authoritative upstream commits and apply upstream tests first
 
 **Files:**
+
 - Modify: `src/components/providers/ProviderTable/ProviderTable.test.tsx`
 - Modify: `src/features/monitoring/accountOverviewCardMetrics.test.ts`
 - Modify: `src/features/monitoring/accountOverviewState.test.ts`
@@ -192,6 +194,7 @@ Expected: the test loads successfully and fails assertions because the scaffold 
 ### Task 3: Integrate provider priority controls and layout fixes while preserving local weight controls
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `src/components/providers/ProviderTable/ProviderTable.module.scss`
 - Modify: `src/components/providers/ProviderTable/ProviderTable.tsx`
@@ -257,6 +260,7 @@ Commit body must record the focused tests and the local weight-preservation cons
 ### Task 4: Integrate the plugin release version picker
 
 **Files:**
+
 - Modify: `src/features/plugins/PluginStorePage.module.scss`
 - Modify: `src/features/plugins/PluginStorePage.tsx`
 - Create: `src/features/plugins/pluginReleaseVersions.ts`
@@ -331,6 +335,7 @@ Commit subject: `feat(plugins): 同步上游插件版本选择功能`
 ### Task 5: Integrate upstream quota, monitoring, and xAI weekly usage behavior
 
 **Files:**
+
 - Modify: `src/components/quota/quotaConfigs.ts`
 - Modify: `src/features/monitoring/accountOverviewCardMetrics.test.ts`
 - Modify: `src/features/monitoring/accountOverviewState.test.ts`
@@ -374,12 +379,10 @@ Expected: three-way conflicts are limited to locally extended types/constants an
 The resolved constants must contain:
 
 ```ts
-export const XAI_BILLING_WEEKLY_URL =
-  'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
+export const XAI_BILLING_WEEKLY_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
 export const XAI_BILLING_MONTHLY_URL = 'https://cli-chat-proxy.grok.com/v1/billing';
 export const XAI_GROK_CLIENT_VERSION = '0.2.91';
-export const XAI_GROK_USER_AGENT =
-  'grok-pager/0.2.91 grok-shell/0.2.91 (macos; aarch64)';
+export const XAI_GROK_USER_AGENT = 'grok-pager/0.2.91 grok-shell/0.2.91 (macos; aarch64)';
 
 export const XAI_REQUEST_HEADERS = {
   Authorization: 'Bearer $TOKEN$',
@@ -458,6 +461,7 @@ Commit subject: `feat(quota): 同步上游额度与监控更新`
 This addendum records the independent batch executed after upstream `main` advanced beyond the intermediate `629d085` checkpoint. It reached the latest `apps/web`-changing checkpoint at `2337f76`; the final repository target later advanced to `05174f66` through five commits outside `apps/web`. It does not replace the earlier feature batches.
 
 **Test-first files:**
+
 - Modify: `src/features/monitoring/components/RealtimeEventsPanel.test.tsx`
 - Modify: `src/features/monitoring/hooks/useMonitoringAnalytics.test.tsx`
 - Modify: `src/features/monitoring/hooks/useMonitoringData.test.ts`
@@ -465,6 +469,7 @@ This addendum records the independent batch executed after upstream `main` advan
 - Modify: `src/features/monitoring/monitoringCenterUiState.test.ts`
 
 **Production and fixture files:**
+
 - Modify: `src/features/demo/demoFixtures.empty.ts`
 - Modify: `src/features/demo/demoFixtures.ts`
 - Modify: `src/features/monitoring/MonitoringCenterPage.tsx`
@@ -532,6 +537,7 @@ Executed commits:
 ### Task 6: Audit completeness against the full upstream delta
 
 **Files:**
+
 - Inspect: `/tmp/cpa-plus-web-name-status-latest.txt`
 - Inspect: all files changed on the integration branch
 
@@ -603,6 +609,7 @@ Expected: the dual monitoring hooks and lazy aggregation, bounded-memory behavio
 ### Task 7: Run full verification and rebuild the deliverable
 
 **Files:**
+
 - Update if generated: `package-lock.json`
 - Generate but do not track: `dist/management.html`
 
@@ -667,6 +674,7 @@ Skip this commit when `package-lock.json` is unchanged. `dist/management.html` i
 ### Task 8: Final completion audit
 
 **Files:**
+
 - Inspect: `docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md`
 - Inspect: `docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstream-sync.md`
 
@@ -675,10 +683,10 @@ Skip this commit when `package-lock.json` is unchanged. `dist/management.html` i
 Record the evidence for:
 
 ```text
-remote, upstream/main, and repository target pinned to 05174f662660e488e5e5a338ab5070a79e4bc79d
-latest apps/web-changing checkpoint recorded as 2337f76cf54acd8d50de21e2a754abcd9b804c58, with no apps/web diff through the repository target
-complete 46-file / 3,043-addition / 464-deletion upstream manifest accounted for
-all 46 upstream paths present in the 50-path branch diff, with exactly four documented local extras
+remote, upstream/main, and repository target pinned to 79d681c5771b536d2517a36cdcafb04f3930402e
+latest apps/web-changing checkpoint recorded as 43bd407de231f1b316122428074b8be1ab6e8b1f, with no apps/web diff through the repository target
+complete 92-file / 5,318-addition / 648-deletion upstream manifest accounted for
+all 92 upstream paths present in the 108-path branch diff, with exactly 16 documented local extras
 local post-sync features preserved
 xAI weekly/monthly/pay-as-you-go/product usage verified by focused tests
 provider priority and local weight controls verified
@@ -687,6 +695,46 @@ monitoring 2,000-event cap, four snapshots, AbortSignal, hidden polling, 30-seco
 full test, type-check, lint, build, and diff checks passing
 management.html containing official xAI weekly markers
 unrelated untracked files untouched
+```
+
+### Final 79d681c5 execution addendum
+
+The 2026-07-11 completion audit supersedes all earlier checkpoint counts:
+
+```text
+base = cc63954dfeb5fda2d6f9f7b37437613432630a80
+remote = upstream/main = target = 79d681c5771b536d2517a36cdcafb04f3930402e
+latest apps/web checkpoint = 43bd407de231f1b316122428074b8be1ab6e8b1f
+upstream paths = 92
+branch paths = 108
+missing upstream paths = 0
+documented local extras = 16
+upstream stat = 5,318 additions / 648 deletions
+tests = 98 files / 849 passed
+type-check = passed
+lint = 0 errors / 3 warnings
+build = passed; dist/management.html is non-empty and contains all xAI markers
+```
+
+Exact sorted extras:
+
+```text
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-88f91180-config-coverage.md
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstream-sync.md
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-review-fixes.md
+docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md
+src/components/providers/ProviderHealthCheckDrawer/ProviderHealthCheckDrawer.tsx
+src/components/providers/ProviderHealthCheckDrawer/healthCheck.test.ts
+src/components/providers/ProviderHealthCheckDrawer/index.ts
+src/components/providers/index.ts
+src/features/aiProviders/AiProvidersGeminiEditPage.tsx
+src/features/aiProviders/providerWriteQueue.test.ts
+src/features/aiProviders/providerWriteQueue.ts
+src/features/monitoring/ModelPricesPage.module.scss
+src/features/monitoring/accountOverviewCardMetrics.ts
+src/features/monitoring/components/accountOverviewPresentation.test.ts
+src/features/monitoring/hooks/useModelPriceUsageSummary.test.tsx
+src/features/monitoring/hooks/useModelPriceUsageSummary.ts
 ```
 
 - [ ] **Step 2: Inspect commits and authorship**

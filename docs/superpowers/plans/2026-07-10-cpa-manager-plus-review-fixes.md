@@ -13,6 +13,7 @@
 ### Task 1: Add the serialized Provider write queue
 
 **Files:**
+
 - Create: `src/features/aiProviders/providerWriteQueue.ts`
 - Test: `src/features/aiProviders/providerWriteQueue.test.ts`
 
@@ -94,6 +95,7 @@ Run the Task 1 Vitest command and require all queue tests to pass.
 ### Task 2: Route Provider list mutations through the queue
 
 **Files:**
+
 - Modify: `src/features/aiProviders/AiProvidersPage.tsx`
 - Test: `src/features/aiProviders/providerWriteQueue.test.ts`
 
@@ -103,7 +105,7 @@ Add `enqueueLatestProviderListWrite` to the test import before it exists. Use th
 
 ```ts
 let current = [{ priority: 1, enabled: true }];
-const saved: typeof current[] = [];
+const saved: (typeof current)[] = [];
 
 const priorityWrite = enqueueLatestProviderListWrite(queue, {
   getCurrent: () => current,
@@ -155,6 +157,7 @@ Expected: all tests pass and rapid priority/toggle writes preserve both fields.
 ### Task 3: Surface model-price summary failures and retry
 
 **Files:**
+
 - Create: `src/features/monitoring/hooks/useModelPriceUsageSummary.ts`
 - Create: `src/features/monitoring/hooks/useModelPriceUsageSummary.test.tsx`
 - Modify: `src/features/monitoring/ModelPricesPage.tsx`
@@ -206,6 +209,7 @@ Run the hook test plus `modelPricesPageModel.test.ts`. Expected: all tests pass.
 ### Task 4: Re-run synchronization acceptance gates
 
 **Files:**
+
 - Inspect: all branch changes
 - Generate but do not track: `dist/management.html`
 
@@ -241,3 +245,19 @@ Update Task 6 in `docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstre
 - [ ] **Step 4: Review and commit**
 
 Inspect `git diff --stat master...HEAD`, `git diff --check master...HEAD`, and `git status --short`. Commit with author `zhengyage <zhengyage@magicpipeline.com>`, a Chinese Conventional Commit subject, Chinese body, and required `Tests:`, `Constraint:`, `Scope-risk:`, and `Confidence:` sections.
+
+## Final target audit addendum (2026-07-11)
+
+The review-fix plan's earlier `46 upstream / 55 branch / 9 extras` checkpoint is historical. The completed synchronization advanced through configuration/Interactions, GPT-5.6 pricing, and active-tab analytics scoping to:
+
+```text
+repository target = 79d681c5771b536d2517a36cdcafb04f3930402e
+latest apps/web checkpoint = 43bd407de231f1b316122428074b8be1ab6e8b1f
+upstream paths = 92
+branch paths = 108
+missing upstream paths = 0
+documented local extras = 16
+upstream stat = 5,318 additions / 648 deletions
+```
+
+The final verification passed `98` test files and `849` tests, type-check, ESLint with zero errors, whitespace checks, and the single-file production build. The local FIFO Provider queue, stable identities, model-price retry/fallback, bounded monitoring, xAI requests, plugin gate, auth/proxy/OAuth workflows, `.claude/**` exclusion, and `dist/management.html` output remain present. The exact extras list is recorded in the full upstream-sync plan's final addendum.

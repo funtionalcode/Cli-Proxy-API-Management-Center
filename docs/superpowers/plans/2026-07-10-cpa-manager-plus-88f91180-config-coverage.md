@@ -18,13 +18,14 @@
 - Incremental web delta from `88f91180`: 15 files, 692 additions, 42 deletions.
 - Complete web delta from shared baseline `cc63954`: 92 files, 5,318 additions, 648 deletions.
 - Expected final tracked branch diff: 108 paths, with all 92 upstream paths represented and exactly 16 documented local extras.
-- Tasks 1-5 are complete in commits `19ff024b`, `1f238f42`, `6abcdc2d`, `e7ffc7c`, and `de0bfa1c`; Tasks 6-8 cover the newly advanced upstream target and final acceptance.
+- Tasks 1-5 are complete in commits `19ff024b`, `1f238f42`, `6abcdc2d`, `e7ffc7c`, and `de0bfa1c`; Task 6 is complete in `5844fb90`, Task 7 in `4cc0af35`, and Task 8 is closed by the final audit-document commit.
 - Preserve the untracked `pnpm-workspace.yaml`; never modify, stage, or delete it.
 - Preserve local Provider `weight`, FIFO writes, stable-identity relocation, queued `loadConfigs`, OpenAI PATCH ordering, partial-success health notifications, auth/proxy/OAuth workflows, `.claude/**` test exclusion, monitoring bounded-memory behavior, and single-file `dist/management.html` output.
 
 ## Task 1: Import the upstream configuration-coverage tests and establish RED
 
 **Files:**
+
 - Create: `src/components/ui/ModelInputList.test.tsx`
 - Create: `src/components/ui/modelInputListUtils.test.ts`
 - Modify: `src/hooks/useVisualConfig.test.ts`
@@ -36,8 +37,9 @@
 Use `apply_patch` to add the upstream assertions for these concrete behaviors:
 
 ```ts
-expect(entriesToModels([{ name: 'image-model', alias: '', inputModalities: [], outputModalities: [] }]))
-  .toEqual([{ name: 'image-model', inputModalities: [], outputModalities: [] }]);
+expect(
+  entriesToModels([{ name: 'image-model', alias: '', inputModalities: [], outputModalities: [] }])
+).toEqual([{ name: 'image-model', inputModalities: [], outputModalities: [] }]);
 
 expect(parsed['remote-management']?.['secret-key']).toBe(existingHash);
 expect(parsed['quota-exceeded']).toEqual({ 'switch-project': true });
@@ -69,6 +71,7 @@ Stage only the five test files and commit with a Chinese Conventional Commit sub
 ## Task 2: Implement visual YAML round-trip coverage
 
 **Files:**
+
 - Modify: `src/types/visualConfig.ts`
 - Modify: `src/hooks/useVisualConfig.ts`
 - Modify: `src/hooks/visualConfigPayloadRules.ts`
@@ -123,6 +126,7 @@ Expected: all visual-config tests pass and no unrelated YAML key is rewritten. C
 ## Task 3: Implement provider/auth API coverage and Interactions normalization
 
 **Files:**
+
 - Modify: `src/types/config.ts`
 - Modify: `src/types/provider.ts`
 - Modify: `src/types/oauth.ts`
@@ -172,6 +176,7 @@ Expected: API round-trip tests pass without losing local weight/proxy/auth/raw f
 ## Task 4: Add model metadata and editor coverage
 
 **Files:**
+
 - Create: `src/components/ui/ModelInputList.module.scss`
 - Modify: `src/components/ui/ModelInputList.tsx`
 - Modify: `src/components/ui/modelInputListUtils.ts`
@@ -216,6 +221,7 @@ Expected: all model metadata tests pass, explicit empty arrays survive, and exis
 ## Task 5: Merge Interactions into the local FIFO Provider workbench
 
 **Files:**
+
 - Modify: `src/components/providers/ProviderTable/kindMeta.ts`
 - Modify: `src/components/providers/ProviderTable/rowData.ts`
 - Modify: `src/components/providers/ProviderDetailDrawer/ProviderDetailDrawer.tsx`
@@ -260,6 +266,7 @@ Expected: FIFO/stable-identity regressions remain green and Interactions is inde
 ## Task 6: Add GPT-5.6 price calculation and editing coverage
 
 **Files:**
+
 - Modify: `src/utils/usage.test.ts`
 - Modify: `src/utils/usage.ts`
 - Modify: `src/features/monitoring/model/modelPricesPageModel.test.ts`
@@ -344,6 +351,7 @@ Expected: both focused suites pass, TypeScript/ESLint are clean, and existing mo
 ## Task 7: Scope Usage Analytics requests to the active tab
 
 **Files:**
+
 - Create: `src/features/usage-analytics/useUsageAnalytics.test.tsx`
 - Modify: `src/features/usage-analytics/usageAnalyticsModel.test.ts`
 - Modify: `src/features/usage-analytics/usageAnalyticsModel.ts`
@@ -356,12 +364,12 @@ Expected: both focused suites pass, TypeScript/ESLint are clean, and existing mo
 Import the `26b8f166` test hunks. `buildUsageAnalyticsInclude` must be asserted with these exact shapes:
 
 ```ts
-overview:    summary/comparison/timeline/model/channel/api-key/anomaly
-trends:      summary/comparison/timeline/model/api-key/anomaly
-models:      summary/timeline/model/api-key
-apiKeys:     summary/api-key
-credentials: summary/credential/credential_timeline
-heatmap:     summary/heatmap
+overview: summary / comparison / timeline / model / channel / api - key / anomaly;
+trends: summary / comparison / timeline / model / api - key / anomaly;
+models: summary / timeline / model / api - key;
+apiKeys: summary / api - key;
+credentials: summary / credential / credential_timeline;
+heatmap: summary / heatmap;
 ```
 
 The new hook test must assert that the main `dataScopeKey` contains `activeTab`, the selector scope does not, a tab switch keeps the selector scope stable, selector errors do not become the page error, and manual refresh invokes both request refresh functions.
@@ -414,13 +422,14 @@ Expected: focused suites pass; switching tabs changes only the main request scop
 ## Task 8: Refresh the target, manifest, and full acceptance evidence
 
 **Files:**
+
 - Modify: `docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md`
 - Modify: `docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstream-sync.md`
 - Modify: `docs/superpowers/plans/2026-07-10-cpa-manager-plus-review-fixes.md`
 - Modify: this plan
 - Generate but do not track: `dist/management.html`
 
-- [ ] **Step 1: Pin the new target only after implementation is green**
+- [x] **Step 1: Pin the new target only after implementation is green**
 
 Run:
 
@@ -432,7 +441,7 @@ git rev-parse refs/cpa-plus/base refs/cpa-plus/target upstream/main
 
 Expected: remote, tracking branch, and target all equal `79d681c5`; base remains `cc63954`. If the remote has advanced again, do not update the target ref; audit the new delta and revise this plan first.
 
-- [ ] **Step 2: Regenerate the complete manifest**
+- [x] **Step 2: Regenerate the complete manifest**
 
 Regenerate from `cc63954..79d681c5` and assert:
 
@@ -444,9 +453,28 @@ documented local extras = 16
 upstream stat = 5,318 additions / 648 deletions
 ```
 
-The 16 extras must be exact, sorted, and copied into the final audit document from the manifest command output rather than inferred from prose.
+Exact sorted extras from the manifest audit:
 
-- [ ] **Step 3: Restore locked dependencies and run full verification**
+```text
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-88f91180-config-coverage.md
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-full-upstream-sync.md
+docs/superpowers/plans/2026-07-10-cpa-manager-plus-review-fixes.md
+docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md
+src/components/providers/ProviderHealthCheckDrawer/ProviderHealthCheckDrawer.tsx
+src/components/providers/ProviderHealthCheckDrawer/healthCheck.test.ts
+src/components/providers/ProviderHealthCheckDrawer/index.ts
+src/components/providers/index.ts
+src/features/aiProviders/AiProvidersGeminiEditPage.tsx
+src/features/aiProviders/providerWriteQueue.test.ts
+src/features/aiProviders/providerWriteQueue.ts
+src/features/monitoring/ModelPricesPage.module.scss
+src/features/monitoring/accountOverviewCardMetrics.ts
+src/features/monitoring/components/accountOverviewPresentation.test.ts
+src/features/monitoring/hooks/useModelPriceUsageSummary.test.tsx
+src/features/monitoring/hooks/useModelPriceUsageSummary.ts
+```
+
+- [x] **Step 3: Restore locked dependencies and run full verification**
 
 Run:
 
@@ -465,10 +493,12 @@ rg -n 'billing\?format=credits|x-xai-token-auth|x-grok-client-version' dist/mana
 
 Expected: zero test failures, zero TypeScript errors, zero ESLint errors, a successful single-file build, and all xAI markers present. Do not use pnpm and do not touch `pnpm-workspace.yaml`.
 
-- [ ] **Step 4: Audit preservation and authorship**
+Execution evidence: `npm install --package-lock-only` left `package-lock.json` unchanged; `npm ci` succeeded; Vitest passed `98` files and `849/849` tests; type-check passed; ESLint exited zero with no errors and three `no-explicit-any` warnings in synchronized provider/auth API tests; `git diff --check` passed; the build produced non-empty `dist/management.html` containing all three xAI markers.
+
+- [x] **Step 4: Audit preservation and authorship**
 
 Run exact searches for `events_page`, `model_stats`, `usage-summary`, `weight`, `priority`, `pluginReleaseVersions`, `x-xai-token-auth`, `.claude/**`, `management.html`, `proxy`, `authIndex`, `OAuth`, `interactions-api-key`, `force-mapping`, `input-modalities`, and `rebuild-mid-system-message`. Check conflict markers, accidental `apps/web` imports, `git status --short`, and every commit author in `master..HEAD`.
 
-- [ ] **Step 5: Commit the final audit documents**
+- [x] **Step 5: Commit the final audit documents**
 
 Stage only the four documentation files. The final status may contain the pre-existing untracked `pnpm-workspace.yaml`; it must not contain any other unexplained path.
