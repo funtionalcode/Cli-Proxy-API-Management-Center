@@ -9,6 +9,7 @@ import {
   buildSyncPriceModelsFromSummary,
   buildSyncPriceModelsFromUsage,
   filterModelPriceRows,
+  shouldFallbackToModelPriceModelStats,
 } from './modelPricesPageModel';
 
 const usage = {
@@ -51,6 +52,20 @@ const usageSummary = {
 };
 
 describe('modelPricesPageModel', () => {
+  it.each([{ status: 404 }, { status: 405 }, { code: 'method_not_allowed' }])(
+    'falls back to model stats when the summary endpoint is unsupported: %j',
+    (error) => {
+      expect(shouldFallbackToModelPriceModelStats(error)).toBe(true);
+    }
+  );
+
+  it.each([{ status: 401 }, { status: 500 }, new Error('network failed')])(
+    'does not fall back to model stats for unrelated errors: %j',
+    (error) => {
+      expect(shouldFallbackToModelPriceModelStats(error)).toBe(false);
+    }
+  );
+
   it('builds sync models from requested, resolved, and saved prices', () => {
     expect(
       buildSyncPriceModelsFromUsage(usage, {

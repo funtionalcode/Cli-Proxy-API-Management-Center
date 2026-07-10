@@ -12,17 +12,21 @@ import {
   type ModelPriceUsageSummaryResponse,
 } from '@/services/api/usageService';
 import { useAuthStore, useNotificationStore } from '@/stores';
+import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import {
   applyCandidatePrice,
   buildModelPriceRows,
+  buildModelPriceRowsFromModelStats,
   buildModelPriceSummary,
   buildPriceFromDraft,
+  buildSyncPriceModelsFromModelStats,
   buildSyncPriceModelsFromSummary,
   createEmptyPriceDraft,
   createPriceDraft,
   filterModelPriceRows,
   formatPriceUnit,
+  shouldFallbackToModelPriceModelStats,
   type ModelPriceFilter,
   type PriceDraft,
 } from '@/features/monitoring/model/modelPricesPageModel';
@@ -50,6 +54,15 @@ export function ModelPricesPage() {
     useUsageData({ loadUsageEvents: false });
   const [usageSummary, setUsageSummary] = useState<ModelPriceUsageSummaryResponse | null>(null);
   const [usageSummaryLoading, setUsageSummaryLoading] = useState(false);
+  const [modelStatsFallbackEnabled, setModelStatsFallbackEnabled] = useState(false);
+  const analyticsToMsRef = useRef(Date.now() + 60_000);
+  const modelStatsAnalytics = useMonitoringAnalytics({
+    fromMs: modelStatsFallbackEnabled ? 1 : null,
+    toMs: modelStatsFallbackEnabled ? analyticsToMsRef.current : null,
+    dataScopeKey: 'model-prices',
+    include: { model_stats: true },
+    throttleMs: 60_000,
+  });
   const initialUiState = useRef(readModelPricesPageUiState());
   const [search, setSearch] = useState(() => initialUiState.current.search);
   const [filter, setFilter] = useState<ModelPriceFilter>(() => initialUiState.current.filter);
@@ -62,15 +75,25 @@ export function ModelPricesPage() {
     ? featureAvailability.managerServiceBase
     : '';
 
+  const modelStats = useMemo(
+    () => modelStatsAnalytics.data?.model_stats ?? [],
+    [modelStatsAnalytics.data?.model_stats]
+  );
   const syncModels = useMemo(
-    () => buildSyncPriceModelsFromSummary(usageSummary, modelPrices),
-    [modelPrices, usageSummary]
+    () =>
+      modelStatsFallbackEnabled
+        ? buildSyncPriceModelsFromModelStats(modelStats, modelPrices)
+        : buildSyncPriceModelsFromSummary(usageSummary, modelPrices),
+    [modelPrices, modelStats, modelStatsFallbackEnabled, usageSummary]
   );
 
   const candidateSets = useMemo(() => syncResult?.candidates ?? [], [syncResult?.candidates]);
   const rows = useMemo(
-    () => buildModelPriceRows(usageSummary, modelPrices, candidateSets),
-    [candidateSets, modelPrices, usageSummary]
+    () =>
+      modelStatsFallbackEnabled
+        ? buildModelPriceRowsFromModelStats(modelStats, modelPrices, candidateSets)
+        : buildModelPriceRows(usageSummary, modelPrices, candidateSets),
+    [candidateSets, modelPrices, modelStats, modelStatsFallbackEnabled, usageSummary]
   );
   const summary = useMemo(() => buildModelPriceSummary(rows), [rows]);
   const visibleRows = useMemo(
@@ -97,22 +120,26 @@ export function ModelPricesPage() {
     if (!modelPriceServiceBase) {
       setUsageSummary(null);
       setUsageSummaryLoading(false);
+      setModelStatsFallbackEnabled(false);
       return () => controller.abort();
     }
 
     setUsageSummaryLoading(true);
+    setModelStatsFallbackEnabled(false);
     void usageServiceApi
       .getModelPriceUsageSummary(modelPriceServiceBase, managementKey, controller.signal)
       .then((response) => {
         if (!controller.signal.aborted) {
           setUsageSummary(response);
+          setModelStatsFallbackEnabled(false);
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!controller.signal.aborted) {
-          // Older Manager Server versions do not expose this lightweight endpoint.
-          // Keep saved prices visible without falling back to the large /usage payload.
+          // Older Manager Server versions may only expose lightweight monitoring model stats.
+          // Never fall back to the large /usage payload.
           setUsageSummary(null);
+          setModelStatsFallbackEnabled(shouldFallbackToModelPriceModelStats(error));
         }
       })
       .finally(() => {
@@ -346,7 +373,9 @@ export function ModelPricesPage() {
           </div>
         ) : null}
 
-        {loading || usageSummaryLoading ? (
+        {loading ||
+        usageSummaryLoading ||
+        (modelStatsFallbackEnabled && modelStatsAnalytics.loading) ? (
           <div className={styles.emptyState}>{t('common.loading')}</div>
         ) : visibleRows.length === 0 ? (
           <div className={styles.emptyState}>{t('model_prices.empty')}</div>

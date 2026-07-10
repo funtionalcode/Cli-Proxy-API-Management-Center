@@ -74,6 +74,16 @@ export const applyCandidatePrice = (
   },
 });
 
+export const shouldFallbackToModelPriceModelStats = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { status?: unknown; code?: unknown };
+  return (
+    candidate.status === 404 ||
+    candidate.status === 405 ||
+    candidate.code === 'method_not_allowed'
+  );
+};
+
 export const buildSyncPriceModelsFromUsage = (
   usage: UsagePayload | null,
   prices: Record<string, ModelPrice>
