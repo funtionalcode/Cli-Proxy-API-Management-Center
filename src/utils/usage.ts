@@ -243,6 +243,9 @@ const readDetailString = (value: unknown): string | undefined => {
   return text || undefined;
 };
 
+const readOptionalBoolean = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
+
 const readResponseHeaderMetadata = (value: unknown): UsageResponseHeaderMetadata | undefined =>
   isRecord(value) ? (value as UsageResponseHeaderMetadata) : undefined;
 
@@ -917,6 +920,10 @@ export function loadModelPrices(): Record<string, ModelPrice> {
         cache,
         cacheRead,
         cacheCreation,
+        promptConfigured: readOptionalBoolean(price.promptConfigured),
+        completionConfigured: readOptionalBoolean(price.completionConfigured),
+        cacheReadConfigured: readOptionalBoolean(price.cacheReadConfigured),
+        cacheCreationConfigured: readOptionalBoolean(price.cacheCreationConfigured),
         source: readDetailString(price.source),
         sourceModelId: readDetailString(price.sourceModelId),
         rawJson: readDetailString(price.rawJson),

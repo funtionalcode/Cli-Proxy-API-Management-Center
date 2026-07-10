@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildCandidateUsageSourceIds,
@@ -9,7 +9,9 @@ import {
   extractTotalTokens,
   formatCompactNumber,
   getServiceTierMultiplier,
+  loadModelPrices,
   normalizeUsageSourceId,
+  saveModelPrices,
 } from './usage';
 import { maskSensitiveText } from './format';
 
@@ -664,5 +666,51 @@ describe('getServiceTierMultiplier', () => {
     expect(getServiceTierMultiplier('gpt-5.3-codex', 'priority')).toBe(2);
     expect(getServiceTierMultiplier('gpt-5.4', 'unknown')).toBe(1);
     expect(getServiceTierMultiplier('unknown-model', 'priority')).toBe(1);
+  });
+});
+
+describe('model price persistence', () => {
+  it('preserves explicitly configured zero prices through local storage', () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    });
+
+    try {
+      saveModelPrices({
+        'gpt-5.6-sol': {
+          prompt: 0,
+          completion: 0,
+          cache: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
+          promptConfigured: true,
+          completionConfigured: true,
+          cacheReadConfigured: true,
+          cacheCreationConfigured: true,
+        },
+      });
+
+      const restored = loadModelPrices();
+      expect(restored['gpt-5.6-sol']).toMatchObject({
+        promptConfigured: true,
+        completionConfigured: true,
+        cacheReadConfigured: true,
+        cacheCreationConfigured: true,
+      });
+      expect(
+        calculateCost(
+          {
+            tokens: { input_tokens: 1_000_000, output_tokens: 100_000 },
+            __modelName: 'gpt-5.6-sol',
+          },
+          restored
+        )
+      ).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
