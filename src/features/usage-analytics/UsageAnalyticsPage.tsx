@@ -2306,6 +2306,10 @@ function UsageAnalyticsPageInner() {
 
   const incomingOptionCache = useMemo<StableUsageOptionCache>(() => {
     const apiKeys = mergeSelectOptions([
+      ...(usage.filterOptions?.api_key_hashes ?? []).map((hash) => ({
+        value: hash,
+        label: resolveUsageApiKeyLabel(hash, usage.apiKeyDisplayMap),
+      })),
       ...(usage.filterOptions?.api_key_stats ?? []).map((row) => {
         const hash = row.api_key_hash || row.id;
         return {
@@ -2321,6 +2325,7 @@ function UsageAnalyticsPageInner() {
 
     return {
       models: buildOptionValues([
+        ...(usage.filterOptions?.models ?? []),
         ...(usage.filterOptions?.model_stats ?? []).map((row) => row.model),
         ...usage.modelRows.map((row) => row.model || row.label),
       ]),
@@ -2340,8 +2345,10 @@ function UsageAnalyticsPageInner() {
     usage.apiKeyDisplayMap,
     usage.apiKeyRows,
     usage.credentialRows,
+    usage.filterOptions?.api_key_hashes,
     usage.filterOptions?.api_key_stats,
     usage.filterOptions?.auth_files,
+    usage.filterOptions?.models,
     usage.filterOptions?.model_stats,
     usage.filterOptions?.providers,
     usage.modelRows,

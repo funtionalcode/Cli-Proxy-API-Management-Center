@@ -15,6 +15,7 @@ import {
   buildProviderRows,
   buildUsageMatrix,
   buildUsageAnalyticsFilters,
+  buildUsageAnalyticsFilterSelectorsInclude,
   buildUsageAnalyticsInclude,
   buildUsageAnomalyCauseKeys,
   buildUsageHeatmapCellDetail,
@@ -66,7 +67,7 @@ describe('usage analytics request model', () => {
     ).toBe('day');
   });
 
-  it('maps model, API key, status, and granularity to analytics request fields', () => {
+  it('maps model, API key, and status filters to analytics request fields', () => {
     expect(
       buildUsageAnalyticsFilters({
         model: 'gpt-4o',
@@ -91,14 +92,66 @@ describe('usage analytics request model', () => {
     ).toEqual({
       failed_only: true,
     });
-    expect(buildUsageAnalyticsInclude('day')).toMatchObject({
+  });
+
+  it('builds the minimum analytics include for each active tab', () => {
+    expect(buildUsageAnalyticsInclude('overview', 'day')).toEqual({
+      summary: true,
+      summary_comparison: true,
+      timeline: true,
+      model_stats: true,
+      channel_share: true,
+      api_key_stats: true,
+      anomaly_points: true,
+      granularity: 'day',
+    });
+    expect(
+      buildUsageAnalyticsInclude('trends', 'hour', {
+        fromMs: 1_000,
+        toMs: 2_000,
+        limit: 8,
+      })
+    ).toEqual({
+      summary: true,
+      summary_comparison: true,
+      timeline: true,
+      model_stats: true,
+      api_key_stats: true,
+      anomaly_points: true,
+      granularity: 'hour',
+      drilldown_preview: { from_ms: 1_000, to_ms: 2_000, limit: 8 },
+    });
+    expect(buildUsageAnalyticsInclude('models', 'day')).toEqual({
       summary: true,
       timeline: true,
       model_stats: true,
       api_key_stats: true,
-      credential_timeline: true,
-      filter_options: true,
       granularity: 'day',
+    });
+    expect(buildUsageAnalyticsInclude('apiKeys', 'day')).toEqual({
+      summary: true,
+      api_key_stats: true,
+      granularity: 'day',
+    });
+    expect(buildUsageAnalyticsInclude('credentials', 'day')).toEqual({
+      summary: true,
+      credential_stats: true,
+      credential_timeline: true,
+      granularity: 'day',
+    });
+    expect(
+      buildUsageAnalyticsInclude('heatmap', 'day', {
+        fromMs: 1_000,
+        toMs: 2_000,
+      })
+    ).toEqual({
+      summary: true,
+      heatmap: true,
+      granularity: 'day',
+    });
+    expect(buildUsageAnalyticsFilterSelectorsInclude()).toEqual({
+      filter_options: true,
+      filter_selectors: true,
     });
   });
 });

@@ -29,6 +29,7 @@ import {
   buildUsageMatrix,
   buildUsageSummaryDelta,
   buildUsageAnalyticsFilters,
+  buildUsageAnalyticsFilterSelectorsInclude,
   buildUsageAnalyticsInclude,
   buildUsageTimeline,
   getUsageRangeBounds,
@@ -93,10 +94,7 @@ export function useUsageAnalytics() {
   );
   const [searchParams, setSearchParams] = useSearchParams();
   const [initialUiState] = useState<UsageAnalyticsUiState>(() =>
-    buildUsageAnalyticsUiStateFromSearchParams(
-      searchParams,
-      readUsageAnalyticsUiState()
-    )
+    buildUsageAnalyticsUiStateFromSearchParams(searchParams, readUsageAnalyticsUiState())
   );
   const [filters, setFiltersState] = useState<UsageAnalyticsFiltersState>(
     () => initialUiState.filters
@@ -251,19 +249,27 @@ export function useUsageAnalytics() {
     };
   }, [resolvedGranularity, selectedBucketMs]);
   const include = useMemo(
-    () => buildUsageAnalyticsInclude(resolvedGranularity, drilldownPreview),
-    [drilldownPreview, resolvedGranularity]
+    () => buildUsageAnalyticsInclude(activeTabState, resolvedGranularity, drilldownPreview),
+    [activeTabState, drilldownPreview, resolvedGranularity]
   );
   const dataScopeKey = useMemo(
     () =>
       JSON.stringify({
+        activeTab: activeTabState,
         bounds,
         drilldownPreview,
         filters: analyticsFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
       }),
-    [analyticsFilters, bounds, debouncedSearchQuery, drilldownPreview, resolvedGranularity]
+    [
+      activeTabState,
+      analyticsFilters,
+      bounds,
+      debouncedSearchQuery,
+      drilldownPreview,
+      resolvedGranularity,
+    ]
   );
 
   const analytics = useMonitoringAnalytics({
@@ -274,6 +280,25 @@ export function useUsageAnalytics() {
     searchQuery: debouncedSearchQuery,
     filters: analyticsFilters,
     include,
+    throttleMs: 0,
+  });
+
+  const filterSelectorsInclude = useMemo(() => buildUsageAnalyticsFilterSelectorsInclude(), []);
+  const filterSelectorsDataScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        bounds,
+        searchQuery: debouncedSearchQuery,
+      }),
+    [bounds, debouncedSearchQuery]
+  );
+  const filterSelectorsAnalytics = useMonitoringAnalytics({
+    fromMs: bounds?.fromMs,
+    toMs: bounds?.toMs,
+    nowMs,
+    dataScopeKey: filterSelectorsDataScopeKey,
+    searchQuery: debouncedSearchQuery,
+    include: filterSelectorsInclude,
     throttleMs: 0,
   });
 
@@ -311,6 +336,9 @@ export function useUsageAnalytics() {
   });
 
   const analyticsData = analytics.dataStale ? null : analytics.data;
+  const filterSelectorsData = filterSelectorsAnalytics.dataStale
+    ? null
+    : filterSelectorsAnalytics.data;
   const adapted = useMemo(
     () =>
       adaptUsageAnalyticsData(
@@ -537,6 +565,7 @@ export function useUsageAnalytics() {
     void loadApiKeyAliases();
     void loadMonitoringMeta();
     void analytics.refresh({ force: true });
+    void filterSelectorsAnalytics.refresh({ force: true });
     if (selectedApiKeyTimelineAnalytics.enabled) {
       void selectedApiKeyTimelineAnalytics.refresh({ force: true });
     }
@@ -545,6 +574,7 @@ export function useUsageAnalytics() {
     }
   }, [
     analytics,
+    filterSelectorsAnalytics,
     heatmapDateAnalytics,
     loadApiKeyAliases,
     loadMonitoringMeta,
@@ -608,7 +638,7 @@ export function useUsageAnalytics() {
     insights,
     anomalyPoints: adapted.anomalyPoints,
     drilldownPreview: adapted.drilldownPreview,
-    filterOptions: adapted.filterOptions,
+    filterOptions: filterSelectorsData?.filter_options ?? adapted.filterOptions,
     selectedBucket,
     selectBucket,
     anomalyAnalysis,

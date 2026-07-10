@@ -703,24 +703,55 @@ export const buildUsageAnalyticsFilters = (
 };
 
 export const buildUsageAnalyticsInclude = (
+  activeTab: UsageAnalyticsTab,
   granularity: UsageAnalyticsResolvedGranularity,
   drilldownPreview?: { fromMs: number; toMs: number; limit?: number } | null
 ): MonitoringAnalyticsInclude => {
   const include: MonitoringAnalyticsInclude = {
     summary: true,
-    summary_comparison: true,
-    timeline: true,
-    model_stats: true,
-    channel_share: true,
-    api_key_stats: true,
-    credential_stats: true,
-    credential_timeline: true,
-    filter_options: true,
-    heatmap: true,
-    anomaly_points: true,
     granularity,
   };
-  if (drilldownPreview) {
+
+  switch (activeTab) {
+    case 'overview':
+      Object.assign(include, {
+        summary_comparison: true,
+        timeline: true,
+        model_stats: true,
+        channel_share: true,
+        api_key_stats: true,
+        anomaly_points: true,
+      });
+      break;
+    case 'trends':
+      Object.assign(include, {
+        summary_comparison: true,
+        timeline: true,
+        model_stats: true,
+        api_key_stats: true,
+        anomaly_points: true,
+      });
+      break;
+    case 'models':
+      Object.assign(include, {
+        timeline: true,
+        model_stats: true,
+        api_key_stats: true,
+      });
+      break;
+    case 'apiKeys':
+      include.api_key_stats = true;
+      break;
+    case 'credentials':
+      include.credential_stats = true;
+      include.credential_timeline = true;
+      break;
+    case 'heatmap':
+      include.heatmap = true;
+      break;
+  }
+
+  if ((activeTab === 'overview' || activeTab === 'trends') && drilldownPreview) {
     include.drilldown_preview = {
       from_ms: drilldownPreview.fromMs,
       to_ms: drilldownPreview.toMs,
@@ -729,6 +760,11 @@ export const buildUsageAnalyticsInclude = (
   }
   return include;
 };
+
+export const buildUsageAnalyticsFilterSelectorsInclude = (): MonitoringAnalyticsInclude => ({
+  filter_options: true,
+  filter_selectors: true,
+});
 
 export const buildUsageSummary = (
   summary?: MonitoringAnalyticsSummary | null
