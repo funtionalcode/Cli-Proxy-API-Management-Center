@@ -6,13 +6,12 @@ import { Input } from '@/components/ui/Input';
 import { IconPencil, IconSearch, IconTrash2, IconX } from '@/components/ui/icons';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
-  usageServiceApi,
   type ModelPriceSyncCandidate,
   type ModelPriceSyncResponse,
-  type ModelPriceUsageSummaryResponse,
 } from '@/services/api/usageService';
 import { useAuthStore, useNotificationStore } from '@/stores';
 import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
+import { useModelPriceUsageSummary } from '@/features/monitoring/hooks/useModelPriceUsageSummary';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import {
   applyCandidatePrice,
@@ -26,14 +25,10 @@ import {
   createPriceDraft,
   filterModelPriceRows,
   formatPriceUnit,
-  shouldFallbackToModelPriceModelStats,
   type ModelPriceFilter,
   type PriceDraft,
 } from '@/features/monitoring/model/modelPricesPageModel';
-import {
-  readModelPricesPageUiState,
-  writeModelPricesPageUiState,
-} from './modelPricesPageUiState';
+import { readModelPricesPageUiState, writeModelPricesPageUiState } from './modelPricesPageUiState';
 import styles from './ModelPricesPage.module.scss';
 
 const FILTERS: ModelPriceFilter[] = ['all', 'missing', 'candidates', 'saved'];
@@ -52,9 +47,16 @@ export function ModelPricesPage() {
   const featureAvailability = usePanelFeatureAvailability();
   const { loading, modelPrices, setModelPrices, syncModelPrices, usageServiceAvailable } =
     useUsageData({ loadUsageEvents: false });
-  const [usageSummary, setUsageSummary] = useState<ModelPriceUsageSummaryResponse | null>(null);
-  const [usageSummaryLoading, setUsageSummaryLoading] = useState(false);
-  const [modelStatsFallbackEnabled, setModelStatsFallbackEnabled] = useState(false);
+  const modelPriceServiceBase = featureAvailability.modelPricesAvailable
+    ? featureAvailability.managerServiceBase
+    : '';
+  const {
+    usageSummary,
+    loading: usageSummaryLoading,
+    error: usageSummaryError,
+    modelStatsFallbackEnabled,
+    retry: retryUsageSummary,
+  } = useModelPriceUsageSummary({ serviceBase: modelPriceServiceBase, managementKey });
   const analyticsToMsRef = useRef(Date.now() + 60_000);
   const modelStatsAnalytics = useMonitoringAnalytics({
     fromMs: modelStatsFallbackEnabled ? 1 : null,
@@ -71,9 +73,8 @@ export function ModelPricesPage() {
   const [selectedCandidates, setSelectedCandidates] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<PriceDraft>(() => createEmptyPriceDraft());
   const [manualEditorOpen, setManualEditorOpen] = useState(false);
-  const modelPriceServiceBase = featureAvailability.modelPricesAvailable
-    ? featureAvailability.managerServiceBase
-    : '';
+  const priceDataError =
+    usageSummaryError || (modelStatsFallbackEnabled ? modelStatsAnalytics.error : '');
 
   const modelStats = useMemo(
     () => modelStatsAnalytics.data?.model_stats ?? [],
@@ -114,42 +115,6 @@ export function ModelPricesPage() {
   useEffect(() => {
     writeModelPricesPageUiState({ search, filter });
   }, [filter, search]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    if (!modelPriceServiceBase) {
-      setUsageSummary(null);
-      setUsageSummaryLoading(false);
-      setModelStatsFallbackEnabled(false);
-      return () => controller.abort();
-    }
-
-    setUsageSummaryLoading(true);
-    setModelStatsFallbackEnabled(false);
-    void usageServiceApi
-      .getModelPriceUsageSummary(modelPriceServiceBase, managementKey, controller.signal)
-      .then((response) => {
-        if (!controller.signal.aborted) {
-          setUsageSummary(response);
-          setModelStatsFallbackEnabled(false);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          // Older Manager Server versions may only expose lightweight monitoring model stats.
-          // Never fall back to the large /usage payload.
-          setUsageSummary(null);
-          setModelStatsFallbackEnabled(shouldFallbackToModelPriceModelStats(error));
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setUsageSummaryLoading(false);
-        }
-      });
-
-    return () => controller.abort();
-  }, [managementKey, modelPriceServiceBase]);
 
   const handleSync = async () => {
     if (syncModels.length === 0) {
@@ -239,6 +204,14 @@ export function ModelPricesPage() {
     setManualEditorOpen(false);
   };
 
+  const handleRetryPriceData = () => {
+    if (usageSummaryError) {
+      retryUsageSummary();
+      return;
+    }
+    void modelStatsAnalytics.refresh({ force: true });
+  };
+
   return (
     <div className={styles.page}>
       <section className={styles.actionBar} aria-label={t('common.action')}>
@@ -317,6 +290,18 @@ export function ModelPricesPage() {
                     })}
               </span>
             ))}
+          </div>
+        ) : null}
+
+        {priceDataError ? (
+          <div className={styles.inlineError} role="alert">
+            <div className={styles.inlineErrorMessage}>
+              <strong>{t('model_prices.load_error')}</strong>
+              <span>{priceDataError}</span>
+            </div>
+            <Button type="button" size="xs" variant="secondary" onClick={handleRetryPriceData}>
+              {t('common.retry')}
+            </Button>
           </div>
         ) : null}
 

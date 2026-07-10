@@ -1484,6 +1484,7 @@
     "candidate_confirmed": "Candidate price confirmed",
     "add_manual": "Add manually",
     "unmatched_title": "Unmatched models",
+    "load_error": "Unable to load model usage",
     "empty": "No matching model prices"
   },
   "usage_stats": {

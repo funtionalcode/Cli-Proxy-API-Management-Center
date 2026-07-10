@@ -1484,6 +1484,7 @@
     "candidate_confirmed": "价格已确认",
     "add_manual": "手动添加",
     "unmatched_title": "未匹配模型",
+    "load_error": "模型用量加载失败",
     "empty": "没有符合条件的模型价格"
   },
   "usage_stats": {
