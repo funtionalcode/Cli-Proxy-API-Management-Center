@@ -486,6 +486,64 @@ describe('fetchXaiQuota', () => {
       )
     ).rejects.toThrow('500 weekly down');
   });
+
+  it('throws the weekly error when monthly billing succeeds without usable data', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 500,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'weekly down',
+        body: null,
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { config: null },
+      });
+
+    await expect(
+      fetchXaiQuota(
+        {
+          name: 'xai.json',
+          type: 'xai',
+          authIndex: 'xai-1',
+        },
+        t
+      )
+    ).rejects.toThrow('500 weekly down');
+  });
+
+  it('throws the monthly error when weekly billing succeeds without usable data', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { config: {} },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 401,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'monthly unauthorized',
+        body: null,
+      });
+
+    await expect(
+      fetchXaiQuota(
+        {
+          name: 'xai.json',
+          type: 'xai',
+          authIndex: 'xai-1',
+        },
+        t
+      )
+    ).rejects.toThrow('401 monthly unauthorized');
+  });
 });
 
 describe('fetchAntigravityQuota', () => {

@@ -42,6 +42,12 @@ export type AccountQuotaState = {
   lastRefreshedAt?: number;
 };
 
+export type AccountQuotaInfoRow = {
+  key: 'source' | 'fetched-at' | 'recorded-at';
+  label: string;
+  value: string;
+};
+
 export type AccountSummaryMetric = {
   key: string;
   label: string;
@@ -51,6 +57,59 @@ export type AccountSummaryMetric = {
 };
 
 export const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
+
+const isFiniteTimestamp = (value: number | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const formatAccountQuotaTimestamp = (value: number | undefined, locale: string): string =>
+  isFiniteTimestamp(value) ? new Date(value).toLocaleString(locale) : '--';
+
+export const buildAccountQuotaInfoRows = (
+  entry: AccountQuotaEntry,
+  locale: string,
+  t: TFunction,
+  fallbackFetchedAtMs?: number
+): AccountQuotaInfoRow[] => {
+  const fromUsageHeaders = entry.observedFromUsageHeaders === true;
+  const hasApiEntryTimestamp = isFiniteTimestamp(entry.fetchedAtMs);
+  const apiTimestampMs = hasApiEntryTimestamp
+    ? entry.fetchedAtMs
+    : fromUsageHeaders
+      ? undefined
+      : fallbackFetchedAtMs;
+  const hasApiSource = !fromUsageHeaders || hasApiEntryTimestamp;
+  const apiSource = t('codex_quota.tooltip_source_api');
+  const headerSource = t('codex_quota.tooltip_source_header');
+  const rows: AccountQuotaInfoRow[] = [
+    {
+      key: 'source',
+      label: t('codex_quota.tooltip_source_label'),
+      value:
+        hasApiSource && fromUsageHeaders
+          ? `${apiSource} + ${headerSource}`
+          : fromUsageHeaders
+            ? headerSource
+            : apiSource,
+    },
+  ];
+
+  if (hasApiSource) {
+    rows.push({
+      key: 'fetched-at',
+      label: t('codex_quota.tooltip_fetched_at_label'),
+      value: formatAccountQuotaTimestamp(apiTimestampMs, locale),
+    });
+  }
+  if (fromUsageHeaders) {
+    rows.push({
+      key: 'recorded-at',
+      label: t('codex_quota.tooltip_recorded_at_label'),
+      value: formatAccountQuotaTimestamp(entry.observedAtMs, locale),
+    });
+  }
+
+  return rows;
+};
 
 const joinShort = (values: string[], limit = 2) => {
   if (values.length <= limit) {

@@ -797,9 +797,10 @@ export const fetchXaiQuota = async (
   const monthlySummary = monthlyResult.status === 'fulfilled' ? monthlyResult.value : null;
   const summary = mergeXaiBillingSummaries(weeklySummary, monthlySummary);
   if (!summary) {
-    if (weeklyResult.status === 'rejected' && monthlyResult.status === 'rejected') {
+    if (weeklyResult.status === 'rejected') {
       throw weeklyResult.reason;
     }
+    if (monthlyResult.status === 'rejected') throw monthlyResult.reason;
     throw new Error(t('xai_quota.empty_data'));
   }
 

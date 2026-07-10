@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { sortAccountOverviewCardMetrics } from './accountOverviewCardMetrics';
+import {
+  selectAccountOverviewTableTokenMetrics,
+  sortAccountOverviewCardMetrics,
+} from './accountOverviewCardMetrics';
 
 describe('accountOverviewCardMetrics', () => {
   it('keeps only token metrics in card-grid order and leaves cost out of the grid', () => {
@@ -18,6 +21,28 @@ describe('accountOverviewCardMetrics', () => {
       'input-tokens',
       'output-tokens',
       'cached-tokens',
+    ]);
+  });
+
+  it('keeps detailed cache metrics only in the expanded table token structure', () => {
+    const metrics = [
+      { key: 'total-calls', label: 'Calls', value: '8' },
+      { key: 'total-tokens', label: 'Total', value: '100' },
+      { key: 'input-tokens', label: 'Input', value: '70' },
+      { key: 'output-tokens', label: 'Output', value: '30' },
+      { key: 'cached-tokens', label: 'Cached', value: '40' },
+      { key: 'cache-creation-tokens', label: 'Cache Create', value: '5' },
+      { key: 'cache-read-tokens', label: 'Cache Read', value: '12' },
+      { key: 'estimated-cost', label: 'Cost', value: '$1.23' },
+      { key: 'latest-request-time', label: 'Latest', value: 'now' },
+    ];
+
+    expect(selectAccountOverviewTableTokenMetrics(metrics).map((metric) => metric.key)).toEqual([
+      'input-tokens',
+      'output-tokens',
+      'cached-tokens',
+      'cache-creation-tokens',
+      'cache-read-tokens',
     ]);
   });
 });

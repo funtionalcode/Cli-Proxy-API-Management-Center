@@ -13,7 +13,10 @@ import {
   IconTimer,
   IconTrendingUp,
 } from '@/components/ui/icons';
-import { sortAccountOverviewCardMetrics } from '@/features/monitoring/accountOverviewCardMetrics';
+import {
+  selectAccountOverviewTableTokenMetrics,
+  sortAccountOverviewCardMetrics,
+} from '@/features/monitoring/accountOverviewCardMetrics';
 import {
   resolveAccountDisplayText,
   type AccountDisplayMode,
@@ -27,6 +30,7 @@ import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import type { StatusBarData } from '@/utils/recentRequests';
 import { MonitoringHealthStatusBar } from './MonitoringHealthStatusBar';
 import {
+  buildAccountQuotaInfoRows,
   buildAccountSecondaryText,
   buildAccountSummaryMetrics,
   formatPercent,
@@ -154,34 +158,8 @@ function AccountQuotaPanel({
     .filter(Boolean)
     .join(' · ');
 
-  const buildQuotaInfoRows = (entry: AccountQuotaEntry) => {
-    const fromUsageHeaders = entry.observedFromUsageHeaders === true;
-    const timestampMs = fromUsageHeaders
-      ? entry.observedAtMs
-      : (entry.fetchedAtMs ?? lastQuotaSyncMs);
-    const formattedTime =
-      timestampMs && Number.isFinite(timestampMs)
-        ? new Date(timestampMs).toLocaleString(locale)
-        : '--';
-
-    return [
-      {
-        key: 'source',
-        label: t('codex_quota.tooltip_source_label'),
-        value: fromUsageHeaders
-          ? t('codex_quota.tooltip_source_header')
-          : t('codex_quota.tooltip_source_api'),
-      },
-      {
-        key: 'fetched-at',
-        label: t('codex_quota.tooltip_fetched_at_label'),
-        value: formattedTime,
-      },
-    ];
-  };
-
   const renderQuotaInfo = (entry: AccountQuotaEntry, windowLabel: string) => {
-    const rows = buildQuotaInfoRows(entry);
+    const rows = buildAccountQuotaInfoRows(entry, locale, t, lastQuotaSyncMs);
 
     return (
       <span
@@ -810,7 +788,10 @@ export function AccountExpandedDetails({
   onRefreshQuota: () => void;
   variant: 'card' | 'table';
 }) {
-  const tokenMetrics = sortAccountOverviewCardMetrics(summaryMetrics);
+  const tokenMetrics =
+    variant === 'table'
+      ? selectAccountOverviewTableTokenMetrics(summaryMetrics)
+      : sortAccountOverviewCardMetrics(summaryMetrics);
 
   if (variant === 'table') {
     return (

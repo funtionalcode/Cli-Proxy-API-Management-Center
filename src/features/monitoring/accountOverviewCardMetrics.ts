@@ -4,6 +4,13 @@ const ACCOUNT_OVERVIEW_CARD_METRIC_KEY_SET = new Set<string>(ACCOUNT_OVERVIEW_CA
 const ACCOUNT_OVERVIEW_CARD_METRIC_ORDER_MAP = new Map<string, number>(
   ACCOUNT_OVERVIEW_CARD_METRIC_KEYS.map((key, index) => [key, index])
 );
+const ACCOUNT_OVERVIEW_TABLE_TOKEN_METRIC_KEY_SET = new Set([
+  'input-tokens',
+  'output-tokens',
+  'cached-tokens',
+  'cache-creation-tokens',
+  'cache-read-tokens',
+]);
 
 export const sortAccountOverviewCardMetrics = <T extends { key: string }>(metrics: T[]) =>
   metrics
@@ -13,3 +20,6 @@ export const sortAccountOverviewCardMetrics = <T extends { key: string }>(metric
         (ACCOUNT_OVERVIEW_CARD_METRIC_ORDER_MAP.get(left.key) ?? Number.MAX_SAFE_INTEGER) -
         (ACCOUNT_OVERVIEW_CARD_METRIC_ORDER_MAP.get(right.key) ?? Number.MAX_SAFE_INTEGER)
     );
+
+export const selectAccountOverviewTableTokenMetrics = <T extends { key: string }>(metrics: T[]) =>
+  metrics.filter((metric) => ACCOUNT_OVERVIEW_TABLE_TOKEN_METRIC_KEY_SET.has(metric.key));
