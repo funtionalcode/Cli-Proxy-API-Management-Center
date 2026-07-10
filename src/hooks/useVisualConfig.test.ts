@@ -1,8 +1,32 @@
-import { act, createElement, createRef, useImperativeHandle, type Ref } from 'react';
-import { create, type ReactTestRenderer } from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import { act, createElement, createRef, useImperativeHandle, useState, type Ref } from 'react';
+import { create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import { VisualConfigEditor } from '@/components/config/VisualConfigEditor';
+import type { VisualConfigValues } from '@/types/visualConfig';
 import { useVisualConfig } from './useVisualConfig';
+
+vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => {} },
+  useTranslation: () => ({
+    t: (key: string) => key,
+  }),
+}));
+
+vi.mock('@/components/common/PageTransitionLayer', () => ({
+  usePageTransitionLayer: () => null,
+}));
+
+vi.mock('@/hooks/useMediaQuery', () => ({
+  useMediaQuery: () => false,
+}));
+
+vi.mock('@/components/config/VisualConfigEditorBlocks', () => ({
+  ApiKeysCardEditor: () => null,
+  PayloadFilterRulesEditor: () => null,
+  PayloadRulesEditor: () => null,
+  PluginStoreAuthEditor: () => null,
+}));
 
 type UseVisualConfigResult = ReturnType<typeof useVisualConfig>;
 
@@ -40,6 +64,12 @@ const mountUseVisualConfig = (): UseVisualConfigHarness => {
     },
   };
 };
+
+function getRenderedText(node: ReactTestInstance): string {
+  return node.children
+    .map((child) => (typeof child === 'string' ? child : getRenderedText(child)))
+    .join('');
+}
 
 describe('useVisualConfig', () => {
   it('loads plugin system state from plugins.enabled', () => {
@@ -342,6 +372,87 @@ describe('useVisualConfig', () => {
     >;
     expect(parsed['quota-exceeded']).toBeUndefined();
     expect(parsed['ws-auth']).toBeUndefined();
+    expect(parsed.pprof).toBeUndefined();
+
+    harness.unmount();
+  });
+
+  it('applies only dirty fields to the latest YAML document', () => {
+    const harness = mountUseVisualConfig();
+    const baselineYaml = [
+      'pprof:',
+      '  enable: false',
+      '  addr: 127.0.0.1:8316',
+      'ws-auth: true',
+      'quota-exceeded:',
+      '  switch-project: false',
+      '  switch-preview-model: false',
+      '  antigravity-credits: false',
+      'debug: false',
+      '',
+    ].join('\n');
+    const latestYaml = [
+      'pprof:',
+      '  enable: true',
+      '  addr: 127.0.0.1:9316',
+      '  future-profile-mode: latest',
+      'ws-auth: false',
+      'quota-exceeded:',
+      '  switch-project: true',
+      '  switch-preview-model: true',
+      '  antigravity-credits: true',
+      '  future-quota-mode: latest',
+      'debug: false',
+      'unknown-root-key: latest',
+      '',
+    ].join('\n');
+
+    act(() => {
+      expect(harness.getCurrent().loadVisualValuesFromYaml(baselineYaml).ok).toBe(true);
+      harness.getCurrent().setVisualValues({ debug: true });
+    });
+
+    const parsed = parseYaml(harness.getCurrent().applyVisualChangesToYaml(latestYaml)) as {
+      pprof?: Record<string, unknown>;
+      'ws-auth'?: boolean;
+      'quota-exceeded'?: Record<string, unknown>;
+      debug?: boolean;
+      'unknown-root-key'?: string;
+    };
+    expect(parsed.pprof).toEqual({
+      enable: true,
+      addr: '127.0.0.1:9316',
+      'future-profile-mode': 'latest',
+    });
+    expect(parsed['ws-auth']).toBe(false);
+    expect(parsed['quota-exceeded']).toEqual({
+      'switch-project': true,
+      'switch-preview-model': true,
+      'antigravity-credits': true,
+      'future-quota-mode': 'latest',
+    });
+    expect(parsed.debug).toBe(true);
+    expect(parsed['unknown-root-key']).toBe('latest');
+
+    harness.unmount();
+  });
+
+  it.each([
+    ['null', 'pprof: null # keep null pprof\ndebug: false\n', null],
+    ['scalar', 'pprof: disabled # keep scalar pprof\ndebug: false\n', 'disabled'],
+  ])('preserves a %s pprof node during unrelated saves', (_name, yaml, expectedPprof) => {
+    const harness = mountUseVisualConfig();
+
+    act(() => {
+      expect(harness.getCurrent().loadVisualValuesFromYaml(yaml).ok).toBe(true);
+      harness.getCurrent().setVisualValues({ debug: true });
+    });
+
+    const savedYaml = harness.getCurrent().applyVisualChangesToYaml(yaml);
+    const parsed = parseYaml(savedYaml) as { pprof?: unknown; debug?: boolean };
+    expect(parsed.pprof).toBe(expectedPprof);
+    expect(savedYaml).toContain('# keep');
+    expect(parsed.debug).toBe(true);
 
     harness.unmount();
   });
@@ -571,5 +682,104 @@ describe('useVisualConfig', () => {
     expect(parsed['normalize-account-env']).toBe(true);
 
     harness.unmount();
+  });
+
+  it('drives management key keep, replace, and clear actions through the editor controls', () => {
+    const originalHash = '$2a$10$existing-secret-hash';
+    const hookHarness = mountUseVisualConfig();
+    const patches: Array<Partial<VisualConfigValues>> = [];
+    act(() => {
+      expect(
+        hookHarness
+          .getCurrent()
+          .loadVisualValuesFromYaml(
+            ['remote-management:', `  secret-key: '${originalHash}'`, ''].join('\n')
+          ).ok
+      ).toBe(true);
+    });
+    const initialValues = hookHarness.getCurrent().visualValues;
+    expect(initialValues.rmSecretKeyConfigured).toBe(true);
+    const editorRef = createRef<{ getValues: () => VisualConfigValues }>();
+    let renderer: ReactTestRenderer | null = null;
+
+    function EditorHarness({
+      harnessRef,
+    }: {
+      harnessRef: Ref<{ getValues: () => VisualConfigValues }>;
+    }) {
+      const [values, setValues] = useState(initialValues);
+      useImperativeHandle(harnessRef, () => ({ getValues: () => values }), [values]);
+      return createElement(VisualConfigEditor, {
+        values,
+        onChange: (patch: Partial<VisualConfigValues>) => {
+          patches.push(patch);
+          setValues((previous) => ({ ...previous, ...patch }));
+        },
+      });
+    }
+
+    act(() => {
+      renderer = create(createElement(EditorHarness, { harnessRef: editorRef }));
+    });
+
+    const getPasswordInput = () =>
+      renderer!.root.find(
+        (node) =>
+          typeof node.type === 'string' && node.type === 'input' && node.props.type === 'password'
+      );
+    const getActionButton = (labelKey: string) =>
+      renderer!.root.findAllByType('button').find((button) => getRenderedText(button) === labelKey);
+
+    expect(getPasswordInput().props.value).toBe('');
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain(originalHash);
+
+    act(() => {
+      getPasswordInput().props.onChange({ target: { value: '  exact replacement  ' } });
+    });
+    expect(patches[patches.length - 1]).toEqual({
+      rmSecretKey: '  exact replacement  ',
+      rmSecretKeyAction: 'replace',
+    });
+    expect(editorRef.current?.getValues().rmSecretKey).toBe('  exact replacement  ');
+    expect(editorRef.current?.getValues().rmSecretKeyAction).toBe('replace');
+
+    act(() => {
+      getPasswordInput().props.onChange({ target: { value: '' } });
+    });
+    expect(patches[patches.length - 1]).toEqual({
+      rmSecretKey: '',
+      rmSecretKeyAction: 'unchanged',
+    });
+    expect(editorRef.current?.getValues().rmSecretKeyAction).toBe('unchanged');
+
+    const clearButton = getActionButton(
+      'config_management.visual.sections.remote.secret_key_clear'
+    );
+    expect(clearButton).toBeDefined();
+    act(() => {
+      clearButton!.props.onClick();
+    });
+    expect(patches[patches.length - 1]).toEqual({
+      rmSecretKey: '',
+      rmSecretKeyAction: 'clear',
+    });
+    expect(editorRef.current?.getValues().rmSecretKeyAction).toBe('clear');
+
+    const keepButton = getActionButton('config_management.visual.sections.remote.secret_key_keep');
+    expect(keepButton).toBeDefined();
+    act(() => {
+      keepButton!.props.onClick();
+    });
+    expect(patches[patches.length - 1]).toEqual({
+      rmSecretKey: '',
+      rmSecretKeyAction: 'unchanged',
+    });
+    expect(editorRef.current?.getValues().rmSecretKey).toBe('');
+    expect(editorRef.current?.getValues().rmSecretKeyAction).toBe('unchanged');
+
+    act(() => {
+      renderer?.unmount();
+    });
+    hookHarness.unmount();
   });
 });
