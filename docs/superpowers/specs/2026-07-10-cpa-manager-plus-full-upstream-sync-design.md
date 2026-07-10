@@ -2,9 +2,11 @@
 
 ## Objective
 
-Synchronize the complete `apps/web` functionality from `seakee/CPA-Manager-Plus` `main` at commit `629d08518e963ba7da9f5ee97d4c9e2c059a1c78` into this repository while preserving all local customizations that were added after the previous Plus synchronization point.
+Synchronize the complete `apps/web` functionality from `seakee/CPA-Manager-Plus` `main` at repository target `05174f662660e488e5e5a338ab5070a79e4bc79d` into this repository while preserving all local customizations that were added after the previous Plus synchronization point. The latest commit in that target that changes `apps/web` is `2337f76cf54acd8d50de21e2a754abcd9b804c58`.
 
-The previous synchronization imported `apps/web` from upstream commit `cc63954dfeb5fda2d6f9f7b37437613432630a80` into this repository root. The synchronization therefore treats `cc63954` as the shared upstream baseline, the current local branch as the local side, and `629d085` as the new upstream side.
+The previous synchronization imported `apps/web` from upstream commit `cc63954dfeb5fda2d6f9f7b37437613432630a80` into this repository root. The synchronization therefore treats `cc63954` as the shared upstream baseline, the current local branch as the local side, and `05174f66` as the final repository target.
+
+The first execution checkpoint pinned `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`. That SHA is an intermediate checkpoint only: upstream `main` advanced during execution, so the integration re-fetched the remote and added the `28c045a6` web performance batch before reaching `2337f76`, the latest `apps/web`-changing checkpoint. Upstream then advanced by five dashboard-rollup backend, configuration, SQLite, and documentation commits to `05174f66`; those commits do not change `apps/web`, so the web manifest remains unchanged.
 
 ## User Experience
 
@@ -16,7 +18,7 @@ The application should continue to build a single `dist/management.html` artifac
 
 ### Included
 
-- The complete upstream change set under `apps/web` from `cc63954` through `629d085`.
+- The complete upstream change set under `apps/web` from `cc63954` through repository target `05174f66`, whose latest `apps/web`-changing checkpoint is `2337f76`.
 - Source code, tests, localization, package metadata, Vite configuration, and frontend assets that correspond to this repository's root web application.
 - Manual resolution of every overlapping change between upstream and local development.
 - Preservation and adaptation of local tests where upstream reorganized the same modules.
@@ -40,14 +42,14 @@ Implementation will run in an isolated Git worktree on `codex/sync-cpa-manager-p
 
 Set the configured `upstream` remote explicitly to `seakee/CPA-Manager-Plus`, fetch `main`, and pin the authoritative commits in `refs/cpa-plus/base` and `refs/cpa-plus/target`.
 
-The 2026-07-10 verification resolved `upstream/main` and `refs/cpa-plus/target` to `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`, kept `refs/cpa-plus/base` at `cc63954dfeb5fda2d6f9f7b37437613432630a80`, and reproduced an `apps/web` manifest of 30 files with 2,616 additions and 300 deletions.
+The final 2026-07-10 verification resolved the remote `refs/heads/main`, local `upstream/main`, and `refs/cpa-plus/target` to `05174f662660e488e5e5a338ab5070a79e4bc79d`, kept `refs/cpa-plus/base` at `cc63954dfeb5fda2d6f9f7b37437613432630a80`, and reproduced an `apps/web` manifest of 46 files with 3,043 additions and 464 deletions. `git diff --quiet 2337f76..05174f66 -- apps/web` exits successfully, proving that `2337f76` remains the latest web-changing checkpoint. The earlier 30-file, 2,616-addition, 300-deletion manifest belongs only to the intermediate `629d085` checkpoint.
 
 Generate the full binary-safe diff from:
 
 ```text
 cc63954dfeb5fda2d6f9f7b37437613432630a80
 ..
-629d08518e963ba7da9f5ee97d4c9e2c059a1c78
+05174f662660e488e5e5a338ab5070a79e4bc79d
 ```
 
 restricted to `apps/web`. Apply it to the repository root with the `apps/web` prefix removed and three-way conflict support enabled.
@@ -75,11 +77,21 @@ The following locally developed areas are explicit preservation requirements:
 - Proxy propagation during OAuth login.
 - Provider priority and weight editing.
 - Formatted and structured log behavior.
-- Plugin management and standalone management-panel output.
+- Plugin management, including the multi-step installation safety gate, and standalone management-panel output.
 - Test exclusion for `.claude/**` worktrees.
 - Vite output naming and single-file `management.html` packaging.
 
 This list is a preservation floor, not an exhaustive list. Any local-only commit after `ebe9ba656b19c3adfdb21c9e35d588a628a1f464` remains in scope for preservation when it overlaps upstream files.
+
+## Bounded Monitoring Performance
+
+The latest `apps/web`-changing checkpoint, `2337f76`, includes the upstream `28c045a6` monitoring memory-usage batch, adapted to the local monitoring architecture:
+
+- Keep the local standalone `events_page` request separate from summary and aggregate `include` requests so event pagination remains a fast path and expensive aggregates remain lazy.
+- Retain only the newest 2,000 realtime events, stop pagination at that cap, and show the localized retention state instead of implying that all upstream events were loaded.
+- Keep at most four presentation snapshots and remove event rows from cached snapshots so changing scopes cannot retain large event arrays.
+- Thread `AbortSignal` through monitoring analytics requests, abort superseded or unmounted requests, suspend automatic polling while the document is hidden, and use 30 seconds as the default polling interval.
+- Use the lightweight model-price usage-summary endpoint instead of expanding the full usage event payload, while preserving saved prices, candidate selection, manual edits, filters, and the local model-price management workflow.
 
 ## xAI Quota Behavior
 
@@ -122,6 +134,9 @@ The generated `dist/management.html` must contain the xAI weekly billing URL and
 - Existing API-call token substitution remains the credential boundary; access tokens must not be exposed to the browser outside the existing management API request flow.
 - Existing provider aliases (`xai`, `x-ai`, and `grok`) remain supported.
 - Localization keys added upstream must be present in all currently shipped locales.
+- If an older Manager Server returns `404`, `405`, or `method_not_allowed` for the model-price usage-summary endpoint, fall back to the existing lightweight `model_stats` analytics include. Do not fall back to the full `/usage` payload, and do not invoke `model_stats` when the summary endpoint succeeds.
+- Preserve the local quota-source presentation correction: API-only, header-only, and mixed API/header entries show the correct source label and their distinct fetched/recorded timestamps.
+- Preserve detailed cache token columns in the expanded account table while keeping the compact account card metric set intentionally smaller.
 
 ## Commit Strategy
 
@@ -135,9 +150,10 @@ Each non-trivial commit includes the required `Tests:`, `Constraint:`, `Scope-ri
 
 ## Acceptance Criteria
 
-- The repository contains the complete `apps/web` delta from `cc63954` to `629d085` or an explicitly documented local equivalent for every upstream change.
+- The repository contains the complete 46-file `apps/web` delta from `cc63954` to repository target `05174f66`, totaling 3,043 additions and 464 deletions, or an explicitly documented local equivalent for every upstream change; `2337f76` is recorded as the latest web-changing checkpoint.
 - No local post-sync customization is silently removed.
 - xAI weekly, monthly, pay-as-you-go, and product usage behavior matches current CPA Manager Plus.
+- Monitoring preserves the dual-request lazy aggregation architecture, the 2,000-event cap, four snapshot cache limit, abort propagation, hidden-page polling suspension, 30-second default refresh, localized retention state, and lightweight summary/model-stats compatibility path.
 - Existing local monitoring and authentication-file workflows remain covered and passing.
 - All final verification commands pass.
 - `dist/management.html` is rebuilt successfully and contains the synchronized xAI weekly functionality.

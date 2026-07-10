@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Merge the complete CPA Manager Plus `apps/web` delta from `cc63954` to `629d085` into the local standalone frontend while preserving every local customization and rebuilding `dist/management.html`.
+**Goal:** Merge the complete CPA Manager Plus `apps/web` delta from `cc63954` to repository target `05174f66` into the local standalone frontend while preserving every local customization and rebuilding `dist/management.html`; `2337f76` is the latest checkpoint in that target that changes `apps/web`.
 
-**Architecture:** Fetch the authoritative Plus commits into local integration refs, apply upstream test changes before production changes, and then integrate production files in three behavior-focused batches. Resolve three-way conflicts against the current local branch, preserve local-only behavior through the new upstream structures, and audit the final file set against the authoritative upstream delta.
+**Architecture:** Fetch the authoritative Plus commits into local integration refs, apply upstream test changes before production changes, and integrate production files in behavior-focused batches plus a final upstream-refresh addendum. Resolve three-way conflicts against the current local branch, preserve local-only behavior through the new upstream structures, and audit the final file set against the authoritative upstream delta.
 
 **Tech Stack:** React 19, TypeScript, Vite, Vitest, Zustand, SCSS modules, Git three-way patch application.
 
@@ -12,12 +12,13 @@
 
 ## File Map
 
-The upstream delta modifies 30 root-web files after stripping the `apps/web/` prefix.
+The final upstream delta modifies 46 root-web files after stripping the `apps/web/` prefix.
 
 - Provider controls and layout: `src/components/providers/ProviderTable/*`, `src/features/aiProviders/*`, `src/features/authFiles/AuthFilesPage.module.scss`
 - Quota and monitoring: `src/components/quota/quotaConfigs.ts`, `src/features/monitoring/**`, `src/types/quota.ts`, `src/utils/quota/**`, `src/utils/usageHeaderSnapshots*`
 - Plugin releases: `src/features/plugins/PluginStorePage*`, `src/features/plugins/pluginReleaseVersions*`
-- Shared localization and scripts: `src/i18n/locales/{en,ru,zh-CN,zh-TW}.json`, `package.json`
+- Latest bounded-monitoring performance batch: `src/features/demo/demoFixtures.empty.ts`, `src/features/demo/demoFixtures.ts`, `src/features/monitoring/MonitoringCenterPage.tsx`, `src/features/monitoring/ModelPricesPage.tsx`, `src/features/monitoring/components/RealtimeEventsPanel*`, `src/features/monitoring/hooks/useMonitoringAnalytics*`, `src/features/monitoring/hooks/useMonitoringData*`, `src/features/monitoring/model/modelPricesPageModel*`, `src/features/monitoring/model/types.ts`, `src/features/monitoring/monitoringCenterUiState*`, and `src/services/api/usageService.ts`
+- Shared localization and scripts: retention and other synchronized keys in `src/i18n/locales/{en,ru,zh-CN,zh-TW}.json`, plus `package.json`
 - Generated artifact: `dist/management.html`
 
 Local behavior that must survive conflicts is defined in `docs/superpowers/specs/2026-07-10-cpa-manager-plus-full-upstream-sync-design.md`.
@@ -90,7 +91,7 @@ git update-ref refs/cpa-plus/target upstream/main
 git rev-parse refs/cpa-plus/base refs/cpa-plus/target upstream/main
 ```
 
-Expected: `refs/cpa-plus/base` resolves to `cc63954dfeb5fda2d6f9f7b37437613432630a80`, while both `refs/cpa-plus/target` and `upstream/main` resolve to `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`.
+Expected after the final refresh: `refs/cpa-plus/base` resolves to `cc63954dfeb5fda2d6f9f7b37437613432630a80`, while the remote `refs/heads/main`, `refs/cpa-plus/target`, and `upstream/main` all resolve to `05174f662660e488e5e5a338ab5070a79e4bc79d`.
 
 - [ ] **Step 2: Generate the complete upstream manifest**
 
@@ -101,9 +102,9 @@ git diff --stat refs/cpa-plus/base..refs/cpa-plus/target -- apps/web \
   > /tmp/cpa-plus-web-stat.txt
 ```
 
-Expected: the manifest lists 30 files, including the new plugin release-version module and tests.
+Expected: the final manifest lists 46 files, including the new plugin release-version module and tests plus the bounded-monitoring performance files.
 
-Execution verification on 2026-07-10 confirmed the configured Plus remote, `upstream/main` at `629d08518e963ba7da9f5ee97d4c9e2c059a1c78`, and a 30-file manifest with 2,616 additions and 300 deletions.
+Execution verification on 2026-07-10 first reached `629d08518e963ba7da9f5ee97d4c9e2c059a1c78` as an intermediate checkpoint. Upstream advanced during execution; the later re-fetch described in Task 5A added the `28c045a6` web performance commit and reached `2337f76cf54acd8d50de21e2a754abcd9b804c58`, the latest `apps/web`-changing checkpoint. Five subsequent dashboard-rollup backend, configuration, SQLite, and documentation commits advanced the final repository target to `05174f662660e488e5e5a338ab5070a79e4bc79d` without changing `apps/web`. The final manifest therefore remains 46 files with 3,043 additions and 464 deletions.
 
 - [ ] **Step 3: Build a test-only upstream patch**
 
@@ -395,6 +396,11 @@ export const XAI_REQUEST_HEADERS = {
 
 Preserve the local request-monitoring model and its pagination/lazy aggregation boundaries. Add upstream weekly and product usage rows to the existing xAI account view, use upstream quota tooltip metadata, and add the cross-workspace guard for Codex usage-header snapshots.
 
+Local preservation corrections applied during this task must also remain in place:
+
+- API-only, usage-header-only, and mixed API/header quota entries expose the correct source tooltip and separate fetched/recorded timestamps.
+- The expanded account table retains cached-token, cache-creation-token, and cache-read-token details while the compact card keeps its intentionally smaller metric set.
+
 The xAI presentation must include:
 
 ```text
@@ -447,22 +453,89 @@ git commit
 
 Commit subject: `feat(quota): 同步上游额度与监控更新`
 
+### Task 5A: Re-fetch upstream and integrate bounded monitoring memory usage (executed addendum)
+
+This addendum records the independent batch executed after upstream `main` advanced beyond the intermediate `629d085` checkpoint. It reached the latest `apps/web`-changing checkpoint at `2337f76`; the final repository target later advanced to `05174f66` through five commits outside `apps/web`. It does not replace the earlier feature batches.
+
+**Test-first files:**
+- Modify: `src/features/monitoring/components/RealtimeEventsPanel.test.tsx`
+- Modify: `src/features/monitoring/hooks/useMonitoringAnalytics.test.tsx`
+- Modify: `src/features/monitoring/hooks/useMonitoringData.test.ts`
+- Modify: `src/features/monitoring/model/modelPricesPageModel.test.ts`
+- Modify: `src/features/monitoring/monitoringCenterUiState.test.ts`
+
+**Production and fixture files:**
+- Modify: `src/features/demo/demoFixtures.empty.ts`
+- Modify: `src/features/demo/demoFixtures.ts`
+- Modify: `src/features/monitoring/MonitoringCenterPage.tsx`
+- Modify: `src/features/monitoring/ModelPricesPage.tsx`
+- Modify: `src/features/monitoring/components/RealtimeEventsPanel.tsx`
+- Modify: `src/features/monitoring/hooks/useMonitoringAnalytics.ts`
+- Modify: `src/features/monitoring/hooks/useMonitoringData.ts`
+- Modify: `src/features/monitoring/model/modelPricesPageModel.ts`
+- Modify: `src/features/monitoring/model/types.ts`
+- Modify: `src/features/monitoring/monitoringCenterUiState.ts`
+- Modify: `src/services/api/usageService.ts`
+- Modify: `src/i18n/locales/{en,ru,zh-CN,zh-TW}.json`
+
+- [x] **Step 1: Re-fetch the authoritative remote and repin the target**
+
+```bash
+git ls-remote upstream refs/heads/main
+git fetch upstream main
+git update-ref refs/cpa-plus/target upstream/main
+git rev-parse refs/cpa-plus/target upstream/main
+```
+
+Execution evidence: after the final re-fetch, the remote branch, `upstream/main`, and `refs/cpa-plus/target` resolved to `05174f662660e488e5e5a338ab5070a79e4bc79d`. The new web delta was introduced by `28c045a6` and ends at web checkpoint `2337f76cf54acd8d50de21e2a754abcd9b804c58`; `git diff --quiet 2337f76..05174f66 -- apps/web` confirms that the five later commits are outside `apps/web`.
+
+- [x] **Step 2: Import and run the five performance tests before production changes**
+
+```bash
+npx vitest run \
+  src/features/monitoring/components/RealtimeEventsPanel.test.tsx \
+  src/features/monitoring/hooks/useMonitoringAnalytics.test.tsx \
+  src/features/monitoring/hooks/useMonitoringData.test.ts \
+  src/features/monitoring/model/modelPricesPageModel.test.ts \
+  src/features/monitoring/monitoringCenterUiState.test.ts \
+  --reporter=dot
+```
+
+The tests define the 2,000-event retention limit, event-free presentation snapshots, request cancellation, lightweight model-price summary, and 30-second default refresh behavior.
+
+- [x] **Step 3: Integrate the bounded-memory production behavior while preserving local monitoring boundaries**
+
+The resolved implementation keeps the standalone `events_page` hook and the separate summary/aggregate include hook, caps retained realtime events at the newest 2,000, caches at most four presentation snapshots without event rows, passes `AbortSignal` through monitoring analytics, pauses automatic polling while the document is hidden, changes the default interval to 30 seconds, adds the localized retention message, and uses the lightweight model-price usage-summary endpoint.
+
+- [x] **Step 4: Add the local old-server compatibility fallback**
+
+When the usage-summary endpoint returns `404`, `405`, or `method_not_allowed`, enable the existing lightweight `model_stats` analytics include with its fixed range and 60-second throttle. Keep this fallback disabled after a successful summary response, and never fall back to the full `/usage` payload.
+
+- [x] **Step 5: Verify and commit the refresh batch**
+
+Verification covered the five focused tests, the complete monitoring test directory, usage-service tests, type checking, focused lint, four-locale JSON/key checks, `npm run build:bundle`, and `git diff --check`.
+
+Executed commits:
+
+- `e6c857ac perf(monitoring): 同步上游内存占用优化`
+- `292de1c5 fix(model-prices): 兼容旧版轻量统计接口`
+
 ### Task 6: Audit completeness against the full upstream delta
 
 **Files:**
-- Inspect: `/tmp/cpa-plus-web-name-status.txt`
+- Inspect: `/tmp/cpa-plus-web-name-status-latest.txt`
 - Inspect: all files changed on the integration branch
 
 - [ ] **Step 1: List upstream files not represented in the local branch diff**
 
 ```bash
-sed 's/^[AMD][[:space:]]*//' /tmp/cpa-plus-web-name-status.txt | sort \
+sed 's/^[AMD][[:space:]]*//' /tmp/cpa-plus-web-name-status-latest.txt | sort \
   > /tmp/cpa-plus-upstream-files.txt
 git diff --name-only master...HEAD | sort > /tmp/cpa-plus-local-files.txt
 comm -23 /tmp/cpa-plus-upstream-files.txt /tmp/cpa-plus-local-files.txt
 ```
 
-Expected: no unexplained output. If the command prints paths, verify every printed path already matches the target with this exact audit loop:
+Expected final evidence: the repository target is `05174f66`, the latest web-changing checkpoint is `2337f76`, and their `apps/web` diff is empty. The upstream set contains 46 paths, the branch set contains 50 paths, and `comm -23` prints nothing. The four branch-only paths are exactly the two synchronization documents, `src/features/monitoring/accountOverviewCardMetrics.ts`, and `src/features/monitoring/components/accountOverviewPresentation.test.ts`. If the command prints missing paths, verify every printed path already matches the target with this exact audit loop:
 
 ```bash
 comm -23 /tmp/cpa-plus-upstream-files.txt /tmp/cpa-plus-local-files.txt \
@@ -495,12 +568,19 @@ Expected: no unresolved files, no imported `apps/web` tree, and no conflict mark
 
 ```bash
 rg -n 'events_page|include.*summary|include.*events' src/features/monitoring
+rg -n '2_000|MONITORING_PRESENTATION_CACHE_LIMIT|AbortController|visibilityState|30000' \
+  src/features/monitoring
+rg -n 'usage-summary|model_stats|method_not_allowed' \
+  src/features/monitoring src/services/api/usageService.ts
 rg -n 'weight|priority' src/components/providers src/features/aiProviders
+rg -n 'pluginReleaseVersions|PluginInstallGateModal|gate_step3_action' src/features/plugins
+rg -n 'x-xai-token-auth|x-grok-client-version' src/utils/quota
 rg -n '\.claude/\*\*' package.json
 rg -n 'management\.html' vite.config.ts
+rg -n 'proxy|authIndex|OAuth' src/features/authFiles src/features/aiProviders src/features/oauth
 ```
 
-Expected: monitoring lazy-loading hooks, weight and priority controls, test exclusion, and single-file output are all still present.
+Expected: the dual monitoring hooks and lazy aggregation, bounded-memory behavior, lightweight summary fallback, weight and priority controls, plugin gate, official xAI headers, test exclusion, single-file output, and local authentication/proxy workflows are all still present.
 
 ### Task 7: Run full verification and rebuild the deliverable
 
@@ -577,11 +657,15 @@ Skip this commit when `package-lock.json` is unchanged. `dist/management.html` i
 Record the evidence for:
 
 ```text
-complete 30-file upstream manifest accounted for
+remote, upstream/main, and repository target pinned to 05174f662660e488e5e5a338ab5070a79e4bc79d
+latest apps/web-changing checkpoint recorded as 2337f76cf54acd8d50de21e2a754abcd9b804c58, with no apps/web diff through the repository target
+complete 46-file / 3,043-addition / 464-deletion upstream manifest accounted for
+all 46 upstream paths present in the 50-path branch diff, with exactly four documented local extras
 local post-sync features preserved
 xAI weekly/monthly/pay-as-you-go/product usage verified by focused tests
 provider priority and local weight controls verified
 plugin version picker verified
+monitoring 2,000-event cap, four snapshots, AbortSignal, hidden polling, 30-second default, retention locales, usage summary, and old-server model_stats fallback verified
 full test, type-check, lint, build, and diff checks passing
 management.html containing official xAI weekly markers
 unrelated untracked files untouched
