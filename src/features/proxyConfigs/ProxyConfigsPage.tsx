@@ -17,11 +17,13 @@ import type {
   ProviderKeyConfig,
 } from '@/types';
 import {
+  DEFAULT_PROXY_CONFIG_ENABLED_FILTER,
   buildProxyConfigRows,
   filterProxyConfigRows,
   maskProxyURL,
   parseProxyURL,
   type ParsedProxyURL,
+  type ProxyConfigEnabledFilter,
   type ProviderProxyKind,
   type ProxyConfigRow,
   type ProxyConfigScope,
@@ -107,6 +109,9 @@ export function ProxyConfigsPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [scopeFilter, setScopeFilter] = useState<ProxyConfigScope | 'all'>('all');
+  const [enabledFilter, setEnabledFilter] = useState<ProxyConfigEnabledFilter>(
+    DEFAULT_PROXY_CONFIG_ENABLED_FILTER
+  );
   const [editingRow, setEditingRow] = useState<ProxyConfigRow | null>(null);
   const [draftProxyUrl, setDraftProxyUrl] = useState('');
   const hasMounted = useRef(false);
@@ -195,8 +200,8 @@ export function ProxyConfigsPage() {
   );
 
   const visibleRows = useMemo(
-    () => filterProxyConfigRows(rows, scopeFilter, search),
-    [rows, scopeFilter, search]
+    () => filterProxyConfigRows(rows, scopeFilter, enabledFilter, search),
+    [enabledFilter, rows, scopeFilter, search]
   );
 
   const summary = useMemo(
@@ -215,6 +220,15 @@ export function ProxyConfigsPage() {
       { value: 'global', label: t('proxy_configs.scope_global') },
       { value: 'provider', label: t('proxy_configs.scope_provider') },
       { value: 'auth-file', label: t('proxy_configs.scope_auth_file') },
+    ],
+    [t]
+  );
+
+  const enabledFilterOptions = useMemo(
+    () => [
+      { value: 'enabled', label: t('proxy_configs.enabled_filter_enabled') },
+      { value: 'disabled', label: t('proxy_configs.enabled_filter_disabled') },
+      { value: 'all', label: t('proxy_configs.enabled_filter_all') },
     ],
     [t]
   );
@@ -396,6 +410,18 @@ export function ProxyConfigsPage() {
             options={scopeOptions}
             onChange={(value) => setScopeFilter(value as ProxyConfigScope | 'all')}
             ariaLabel={t('proxy_configs.scope_filter')}
+          />
+        </div>
+        <div className={styles.scopeField}>
+          <label htmlFor="proxy-config-enabled-state">
+            {t('proxy_configs.enabled_filter_label')}
+          </label>
+          <Select
+            id="proxy-config-enabled-state"
+            value={enabledFilter}
+            options={enabledFilterOptions}
+            onChange={(value) => setEnabledFilter(value as ProxyConfigEnabledFilter)}
+            ariaLabel={t('proxy_configs.enabled_filter_label')}
           />
         </div>
         <Button
