@@ -205,6 +205,10 @@
     "scope_global": "全域",
     "scope_provider": "AI 供應商",
     "scope_auth_file": "驗證檔案",
+    "enabled_filter_label": "狀態",
+    "enabled_filter_enabled": "啟用",
+    "enabled_filter_disabled": "停用",
+    "enabled_filter_all": "全部",
     "status_override": "已設定",
     "status_inherit": "繼承",
     "status_direct": "直連",
@@ -234,7 +238,7 @@
     "masked_url": "遮罩顯示",
     "save_success": "代理設定已儲存",
     "empty_title": "沒有符合的代理設定",
-    "empty_message": "換一個搜尋條件或範圍篩選。"
+    "empty_message": "換一個搜尋條件或調整篩選條件。"
   },
   "account_actions": {
     "eyebrow": "帳號異常",

@@ -205,6 +205,10 @@
     "scope_global": "Global",
     "scope_provider": "AI provider",
     "scope_auth_file": "Auth file",
+    "enabled_filter_label": "Status",
+    "enabled_filter_enabled": "Enabled",
+    "enabled_filter_disabled": "Disabled",
+    "enabled_filter_all": "All",
     "status_override": "Configured",
     "status_inherit": "Inherited",
     "status_direct": "Direct",
@@ -234,7 +238,7 @@
     "masked_url": "Masked preview",
     "save_success": "Proxy config saved",
     "empty_title": "No matching proxy configs",
-    "empty_message": "Try another search term or scope filter."
+    "empty_message": "Try another search term or adjust the filters."
   },
   "account_actions": {
     "eyebrow": "Account issues",

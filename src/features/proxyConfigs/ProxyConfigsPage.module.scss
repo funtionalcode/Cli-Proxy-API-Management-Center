@@ -59,7 +59,7 @@ $table-columns: 92px 128px minmax(220px, 1.35fr) 96px 84px minmax(150px, 0.82fr)
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto;
+  grid-template-columns: minmax(260px, 1fr) minmax(160px, 220px) minmax(160px, 220px) auto;
   align-items: end;
   gap: 10px;
   padding: 12px;

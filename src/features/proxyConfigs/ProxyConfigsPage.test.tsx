@@ -2,6 +2,10 @@ import { act } from 'react';
 import { create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Select } from '@/components/ui/Select';
+import en from '@/i18n/locales/en.json';
+import ru from '@/i18n/locales/ru.json';
+import zhCN from '@/i18n/locales/zh-CN.json';
+import zhTW from '@/i18n/locales/zh-TW.json';
 import { ProxyConfigsPage } from './ProxyConfigsPage';
 
 const { mocks } = vi.hoisted(() => ({
@@ -141,5 +145,14 @@ describe('ProxyConfigsPage enabled-state filter', () => {
     });
     expect(getText(renderer.root)).toContain('enabled.json');
     expect(getText(renderer.root)).toContain('disabled.json');
+  });
+
+  it('provides labels for the enabled-state filter in every supported locale', () => {
+    for (const locale of [en, zhCN, zhTW, ru]) {
+      expect(locale.proxy_configs.enabled_filter_label).toBeTruthy();
+      expect(locale.proxy_configs.enabled_filter_enabled).toBeTruthy();
+      expect(locale.proxy_configs.enabled_filter_disabled).toBeTruthy();
+      expect(locale.proxy_configs.enabled_filter_all).toBeTruthy();
+    }
   });
 });
