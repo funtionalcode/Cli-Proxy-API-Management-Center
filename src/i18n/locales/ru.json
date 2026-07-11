@@ -205,6 +205,10 @@
     "scope_global": "Глобально",
     "scope_provider": "Поставщик AI",
     "scope_auth_file": "Файл входа",
+    "enabled_filter_label": "Статус",
+    "enabled_filter_enabled": "Включено",
+    "enabled_filter_disabled": "Отключено",
+    "enabled_filter_all": "Все",
     "status_override": "Задан",
     "status_inherit": "Наследуется",
     "status_direct": "Direct",
@@ -234,7 +238,7 @@
     "masked_url": "Маскированный вид",
     "save_success": "Прокси сохранён",
     "empty_title": "Нет подходящих прокси",
-    "empty_message": "Измените поиск или область."
+    "empty_message": "Измените поисковый запрос или фильтры."
   },
   "account_actions": {
     "eyebrow": "Проблемы аккаунтов",

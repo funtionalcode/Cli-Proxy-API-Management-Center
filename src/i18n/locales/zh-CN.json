@@ -205,6 +205,10 @@
     "scope_global": "全局",
     "scope_provider": "AI 提供商",
     "scope_auth_file": "认证文件",
+    "enabled_filter_label": "状态",
+    "enabled_filter_enabled": "启用",
+    "enabled_filter_disabled": "禁用",
+    "enabled_filter_all": "全部",
     "status_override": "已配置",
     "status_inherit": "继承",
     "status_direct": "直连",
@@ -234,7 +238,7 @@
     "masked_url": "脱敏展示",
     "save_success": "代理配置已保存",
     "empty_title": "没有匹配的代理配置",
-    "empty_message": "换一个搜索条件或范围筛选。"
+    "empty_message": "换一个搜索条件或调整筛选条件。"
   },
   "account_actions": {
     "eyebrow": "账号异常",

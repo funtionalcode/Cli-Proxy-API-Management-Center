@@ -9,7 +9,11 @@ import type {
 
 export type ProxyConfigScope = 'global' | 'provider' | 'auth-file';
 export type ProxyConfigStatus = 'override' | 'inherit' | 'direct' | 'unset' | 'invalid';
+export type ProxyConfigEnabledState = 'enabled' | 'disabled';
+export type ProxyConfigEnabledFilter = ProxyConfigEnabledState | 'all';
 export type ProviderProxyKind = 'gemini' | 'codex' | 'claude' | 'vertex' | 'openai';
+
+export const DEFAULT_PROXY_CONFIG_ENABLED_FILTER: ProxyConfigEnabledFilter = 'enabled';
 
 export type ProxyConfigTarget =
   | { type: 'global' }
@@ -39,6 +43,7 @@ export type ProxyConfigRow = {
   proxyUrl: string;
   parsed: ParsedProxyURL;
   status: ProxyConfigStatus;
+  enabledState: ProxyConfigEnabledState;
   target: ProxyConfigTarget;
   searchText: string;
 };
@@ -263,6 +268,7 @@ const addProviderRows = <T extends GeminiKeyConfig | ProviderKeyConfig>(
           name: buildIdentity(item, `${providerLabels[provider]} #${index + 1}`),
           detail: item.baseUrl?.trim() || item.prefix?.trim() || '',
           proxyUrl: item.proxyUrl?.trim() || '',
+          enabledState: 'enabled',
           target: { type: 'provider', provider, index },
         },
         hasGlobalProxy
@@ -288,6 +294,7 @@ const addOpenAIRows = (
             name: buildIdentity(entry, `${provider.name || providerLabels.openai} #${entryIndex + 1}`),
             detail: provider.baseUrl?.trim() || '',
             proxyUrl: entry.proxyUrl?.trim() || '',
+            enabledState: provider.disabled === true ? 'disabled' : 'enabled',
             target: { type: 'openai-entry', providerIndex, entryIndex },
           },
           hasGlobalProxy
@@ -336,6 +343,7 @@ const addAuthFileRows = (
           name: file.name,
           detail: [authIndexText, account].filter(Boolean).join(' · '),
           proxyUrl: readAuthFileProxyURL(file),
+          enabledState: file.disabled === true ? 'disabled' : 'enabled',
           target: { type: 'auth-file', name: file.name, authIndex },
         },
         hasGlobalProxy
@@ -362,6 +370,7 @@ export const buildProxyConfigRows = ({
         name: 'config.yaml',
         detail: 'proxy-url',
         proxyUrl: globalProxyURL,
+        enabledState: 'enabled',
         target: { type: 'global' },
       },
       hasGlobalProxy
@@ -381,11 +390,13 @@ export const buildProxyConfigRows = ({
 export const filterProxyConfigRows = (
   rows: ProxyConfigRow[],
   scope: ProxyConfigScope | 'all',
+  enabledFilter: ProxyConfigEnabledFilter,
   search: string
 ): ProxyConfigRow[] => {
   const query = search.trim().toLowerCase();
   return rows.filter((row) => {
     if (scope !== 'all' && row.scope !== scope) return false;
+    if (enabledFilter !== 'all' && row.enabledState !== enabledFilter) return false;
     if (!query) return true;
     return row.searchText.includes(query);
   });
