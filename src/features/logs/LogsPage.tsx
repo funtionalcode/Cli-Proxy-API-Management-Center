@@ -31,16 +31,17 @@ import { copyToClipboard } from '@/utils/clipboard';
 import { downloadBlob } from '@/utils/download';
 import { MANAGEMENT_API_PREFIX } from '@/utils/constants';
 import { formatUnixTimestamp } from '@/utils/format';
-import {
-  HTTP_METHODS,
-  STATUS_GROUPS,
-  resolveStatusGroup,
-  type LogState,
-} from './hooks/logTypes';
+import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
+import { HTTP_METHODS, STATUS_GROUPS, resolveStatusGroup, type LogState } from './hooks/logTypes';
 import { parseLogLine } from './hooks/logParsing';
 import { useLogFilters } from './hooks/useLogFilters';
 import { isNearBottom, useLogScroller } from './hooks/useLogScroller';
 import { isFileLogsAvailable } from './logFeatureAvailability';
+import {
+  DEFAULT_REQUEST_LOG_PAGE_SIZE,
+  normalizeRequestLogPageSize,
+  REQUEST_LOG_PAGE_SIZE_OPTIONS,
+} from './requestLogPagination';
 import styles from './LogsPage.module.scss';
 
 interface ErrorLogItem {
@@ -120,11 +121,21 @@ export function LogsPage() {
     true
   );
   const [errorLogs, setErrorLogs] = useState<ErrorLogItem[]>([]);
+  const [errorLogsPage, setErrorLogsPage] = useState(1);
+  const [errorLogsTotal, setErrorLogsTotal] = useState(0);
+  const [errorLogsTotalPages, setErrorLogsTotalPages] = useState(0);
   const [loadingErrors, setLoadingErrors] = useState(false);
   const [errorLogsError, setErrorLogsError] = useState('');
   const [successLogs, setSuccessLogs] = useState<ErrorLogItem[]>([]);
+  const [successLogsPage, setSuccessLogsPage] = useState(1);
+  const [successLogsTotal, setSuccessLogsTotal] = useState(0);
+  const [successLogsTotalPages, setSuccessLogsTotalPages] = useState(0);
   const [loadingSuccesses, setLoadingSuccesses] = useState(false);
   const [successLogsError, setSuccessLogsError] = useState('');
+  const [requestLogPageSizeSetting, setRequestLogPageSize] = useLocalStorage<number>(
+    'logsPage.requestLogPageSize',
+    DEFAULT_REQUEST_LOG_PAGE_SIZE
+  );
   const [requestLogId, setRequestLogId] = useState<string | null>(null);
   const [requestLogDownloading, setRequestLogDownloading] = useState(false);
 
@@ -161,9 +172,15 @@ export function LogsPage() {
 
   const disableControls = connectionStatus !== 'connected';
   const canLoadFileLogs = activeTab === 'logs' && fileLogsAvailable;
+  const requestLogPageSize = normalizeRequestLogPageSize(requestLogPageSizeSetting);
 
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab);
+    if (tab === 'errors') {
+      setErrorLogsPage(1);
+    } else if (tab === 'success') {
+      setSuccessLogsPage(1);
+    }
     const nextParams = new URLSearchParams(searchParams);
     if (tab === 'logs') {
       nextParams.delete('tab');
@@ -284,7 +301,7 @@ export function LogsPage() {
     showNotification(t('logs.download_success'), 'success');
   };
 
-  const loadErrorLogs = async () => {
+  const loadErrorLogs = async (page = errorLogsPage, pageSize = requestLogPageSize) => {
     if (connectionStatus !== 'connected') {
       setLoadingErrors(false);
       return;
@@ -293,9 +310,19 @@ export function LogsPage() {
     setLoadingErrors(true);
     setErrorLogsError('');
     try {
-      const res = await logsApi.fetchErrorLogs();
-      // API 返回 { files: [...] }
-      setErrorLogs(Array.isArray(res.files) ? res.files : []);
+      const res = await logsApi.fetchErrorLogs({ page, pageSize });
+      const files = Array.isArray(res.files) ? res.files : [];
+      const total = Number.isFinite(res.total) ? Math.max(res.total ?? 0, 0) : files.length;
+      const totalPages = Number.isFinite(res.totalPages)
+        ? Math.max(res.totalPages ?? 0, 0)
+        : total > 0
+          ? Math.ceil(total / pageSize)
+          : 0;
+      const resolvedPage = res.page ?? (totalPages > 0 ? Math.min(page, totalPages) : 1);
+      setErrorLogs(files);
+      setErrorLogsTotal(total);
+      setErrorLogsTotalPages(totalPages);
+      setErrorLogsPage(resolvedPage);
     } catch (err: unknown) {
       console.error('Failed to load error logs:', err);
       setErrorLogs([]);
@@ -308,7 +335,7 @@ export function LogsPage() {
     }
   };
 
-  const loadSuccessLogs = async () => {
+  const loadSuccessLogs = async (page = successLogsPage, pageSize = requestLogPageSize) => {
     if (connectionStatus !== 'connected') {
       setLoadingSuccesses(false);
       return;
@@ -317,8 +344,19 @@ export function LogsPage() {
     setLoadingSuccesses(true);
     setSuccessLogsError('');
     try {
-      const res = await logsApi.fetchSuccessLogs();
-      setSuccessLogs(Array.isArray(res.files) ? res.files : []);
+      const res = await logsApi.fetchSuccessLogs({ page, pageSize });
+      const files = Array.isArray(res.files) ? res.files : [];
+      const total = Number.isFinite(res.total) ? Math.max(res.total ?? 0, 0) : files.length;
+      const totalPages = Number.isFinite(res.totalPages)
+        ? Math.max(res.totalPages ?? 0, 0)
+        : total > 0
+          ? Math.ceil(total / pageSize)
+          : 0;
+      const resolvedPage = res.page ?? (totalPages > 0 ? Math.min(page, totalPages) : 1);
+      setSuccessLogs(files);
+      setSuccessLogsTotal(total);
+      setSuccessLogsTotalPages(totalPages);
+      setSuccessLogsPage(resolvedPage);
     } catch (err: unknown) {
       console.error('Failed to load success logs:', err);
       setSuccessLogs([]);
@@ -331,6 +369,28 @@ export function LogsPage() {
     } finally {
       setLoadingSuccesses(false);
     }
+  };
+
+  const handleRequestLogPageSizeChange = (pageSize: number) => {
+    const nextPageSize = normalizeRequestLogPageSize(pageSize);
+    setRequestLogPageSize(nextPageSize);
+    setErrorLogsPage(1);
+    setSuccessLogsPage(1);
+    if (activeTab === 'errors') {
+      void loadErrorLogs(1, nextPageSize);
+    } else if (activeTab === 'success') {
+      void loadSuccessLogs(1, nextPageSize);
+    }
+  };
+
+  const handleErrorLogsPageChange = (page: number) => {
+    setErrorLogsPage(page);
+    void loadErrorLogs(page);
+  };
+
+  const handleSuccessLogsPageChange = (page: number) => {
+    setSuccessLogsPage(page);
+    void loadSuccessLogs(page);
   };
 
   useHeaderRefresh(() => {
@@ -362,7 +422,7 @@ export function LogsPage() {
       const response = await logsApi.downloadFormattedErrorLog(name);
       downloadBlob({
         filename: getFormattedLogFilename(name),
-        blob: new Blob([response.data], { type: 'text/plain' })
+        blob: new Blob([response.data], { type: 'text/plain' }),
       });
       showNotification(t('logs.formatted_log_download_success'), 'success');
     } catch (err: unknown) {
@@ -393,7 +453,7 @@ export function LogsPage() {
       const response = await logsApi.downloadFormattedSuccessLog(name);
       downloadBlob({
         filename: getFormattedLogFilename(name),
-        blob: new Blob([response.data], { type: 'text/plain' })
+        blob: new Blob([response.data], { type: 'text/plain' }),
       });
       showNotification(t('logs.formatted_log_download_success'), 'success');
     } catch (err: unknown) {
@@ -415,10 +475,7 @@ export function LogsPage() {
     } catch (err: unknown) {
       updateConfigValue('request-log', previous);
       const message = getErrorMessage(err);
-      showNotification(
-        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
-        'error'
-      );
+      showNotification(`${t('notification.save_failed')}${message ? `: ${message}` : ''}`, 'error');
     }
   };
 
@@ -432,10 +489,7 @@ export function LogsPage() {
     } catch (err: unknown) {
       updateConfigValue('success-request-log', previous);
       const message = getErrorMessage(err);
-      showNotification(
-        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
-        'error'
-      );
+      showNotification(`${t('notification.save_failed')}${message ? `: ${message}` : ''}`, 'error');
     }
   };
 
@@ -463,14 +517,14 @@ export function LogsPage() {
   useEffect(() => {
     if (activeTab !== 'errors') return;
     if (connectionStatus !== 'connected') return;
-    void loadErrorLogs();
+    void loadErrorLogs(1, requestLogPageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, connectionStatus, requestLogEnabled]);
 
   useEffect(() => {
     if (activeTab !== 'success') return;
     if (connectionStatus !== 'connected') return;
-    void loadSuccessLogs();
+    void loadSuccessLogs(1, requestLogPageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, connectionStatus, requestLogEnabled, successRequestLogEnabled]);
 
@@ -555,7 +609,7 @@ export function LogsPage() {
     return {
       filteredParsedLines: filteredParsed,
       filteredLines: filteredParsed.map((line) => line.raw),
-      removedCount: Math.max(baseLines.length - filteredParsed.length, 0)
+      removedCount: Math.max(baseLines.length - filteredParsed.length, 0),
     };
   }, [
     baseLines,
@@ -565,7 +619,7 @@ export function LogsPage() {
     filters.methodFilterSet,
     filters.pathFilterSet,
     filters.statusFilterSet,
-    parsedSearchLines
+    parsedSearchLines,
   ]);
 
   const parsedVisibleLines = useMemo(
@@ -582,7 +636,7 @@ export function LogsPage() {
     isSearching,
     filteredLineCount: filteredLines.length,
     hasStructuredFilters: filters.hasStructuredFilters,
-    showRawLogs
+    showRawLogs,
   });
 
   logScrollerRef.current = scroller;
@@ -648,7 +702,7 @@ export function LogsPage() {
       const response = await logsApi.downloadRequestLogById(id);
       downloadBlob({
         filename: `request-${id}.log`,
-        blob: new Blob([response.data], { type: 'text/plain' })
+        blob: new Blob([response.data], { type: 'text/plain' }),
       });
       showNotification(t('logs.request_log_download_success'), 'success');
       setRequestLogId(null);
@@ -969,9 +1023,7 @@ export function LogsPage() {
                   <div className={styles.loadMoreBanner}>
                     <span>{t('logs.load_more_hint')}</span>
                     <div className={styles.loadMoreStats}>
-                      <span>
-                        {t('logs.loaded_lines', { count: filteredLines.length })}
-                      </span>
+                      <span>{t('logs.loaded_lines', { count: filteredLines.length })}</span>
                       {removedCount > 0 && (
                         <span className={styles.loadMoreCount}>
                           {t('logs.filtered_lines', { count: removedCount })}
@@ -1114,7 +1166,7 @@ export function LogsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={loadErrorLogs}
+                onClick={() => void loadErrorLogs()}
                 loading={loadingErrors}
                 disabled={disableControls}
               >
@@ -1127,7 +1179,9 @@ export function LogsPage() {
 
               {requestLogEnabled && (
                 <div>
-                  <div className="status-badge warning">{t('logs.error_logs_request_log_enabled')}</div>
+                  <div className="status-badge warning">
+                    {t('logs.error_logs_request_log_enabled')}
+                  </div>
                 </div>
               )}
 
@@ -1172,6 +1226,18 @@ export function LogsPage() {
                   </div>
                 )}
               </div>
+              <PaginationControls
+                count={errorLogsTotal}
+                currentPage={errorLogsPage}
+                totalPages={errorLogsTotalPages}
+                startItem={errorLogsTotal > 0 ? (errorLogsPage - 1) * requestLogPageSize + 1 : 0}
+                endItem={Math.min(errorLogsPage * requestLogPageSize, errorLogsTotal)}
+                pageSize={requestLogPageSize}
+                pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
+                onPageChange={handleErrorLogsPageChange}
+                onPageSizeChange={handleRequestLogPageSizeChange}
+                t={t}
+              />
             </div>
           </Card>
         )}
@@ -1182,7 +1248,7 @@ export function LogsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={loadSuccessLogs}
+                onClick={() => void loadSuccessLogs()}
                 loading={loadingSuccesses}
                 disabled={disableControls}
               >
@@ -1257,6 +1323,20 @@ export function LogsPage() {
                   </div>
                 )}
               </div>
+              <PaginationControls
+                count={successLogsTotal}
+                currentPage={successLogsPage}
+                totalPages={successLogsTotalPages}
+                startItem={
+                  successLogsTotal > 0 ? (successLogsPage - 1) * requestLogPageSize + 1 : 0
+                }
+                endItem={Math.min(successLogsPage * requestLogPageSize, successLogsTotal)}
+                pageSize={requestLogPageSize}
+                pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
+                onPageChange={handleSuccessLogsPageChange}
+                onPageSizeChange={handleRequestLogPageSizeChange}
+                t={t}
+              />
             </div>
           </Card>
         )}
@@ -1268,7 +1348,11 @@ export function LogsPage() {
         title={t('logs.request_log_download_title')}
         footer={
           <>
-            <Button variant="secondary" onClick={closeRequestLogModal} disabled={requestLogDownloading}>
+            <Button
+              variant="secondary"
+              onClick={closeRequestLogModal}
+              disabled={requestLogDownloading}
+            >
               {t('common.cancel')}
             </Button>
             <Button

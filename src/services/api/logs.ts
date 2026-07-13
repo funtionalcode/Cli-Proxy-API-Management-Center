@@ -26,8 +26,9 @@ export interface ErrorLogFile {
   modified?: number;
 }
 
-export interface ErrorLogsResponse {
-  files?: ErrorLogFile[];
+export interface RequestLogFilesQuery {
+  page?: number;
+  pageSize?: number;
 }
 
 export interface SuccessLogFile {
@@ -36,9 +37,16 @@ export interface SuccessLogFile {
   modified?: number;
 }
 
-export interface SuccessLogsResponse {
-  files?: SuccessLogFile[];
+export interface RequestLogFilesResponse {
+  files: Array<ErrorLogFile | SuccessLogFile>;
+  page?: number;
+  pageSize?: number;
+  total?: number;
+  totalPages?: number;
 }
+
+export type ErrorLogsResponse = RequestLogFilesResponse;
+export type SuccessLogsResponse = RequestLogFilesResponse;
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -61,11 +69,43 @@ const stringValue = (value: unknown): string | undefined => {
 const booleanValue = (value: unknown): boolean =>
   value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
 
+const normalizeRequestLogFile = (value: unknown): ErrorLogFile => {
+  const source = asRecord(value);
+  const file: ErrorLogFile = { name: String(source.name ?? '') };
+  const size = numberValue(source.size);
+  const modified = numberValue(source.modified);
+  if (size !== undefined) file.size = size;
+  if (modified !== undefined) file.modified = modified;
+  return file;
+};
+
+export const normalizeRequestLogFilesResponse = (value: unknown): RequestLogFilesResponse => {
+  const source = asRecord(value);
+  const files = Array.isArray(source.files)
+    ? source.files.map(normalizeRequestLogFile).filter((file) => file.name.length > 0)
+    : [];
+  const page = numberValue(source.page);
+  const pageSize = numberValue(source.pageSize ?? source.page_size);
+  const total = numberValue(source.total);
+  const totalPages = numberValue(source.totalPages ?? source.total_pages);
+  const response: RequestLogFilesResponse = { files };
+  if (page !== undefined) response.page = page;
+  if (pageSize !== undefined) response.pageSize = pageSize;
+  if (total !== undefined) response.total = total;
+  if (totalPages !== undefined) response.totalPages = totalPages;
+  return response;
+};
+
+const requestLogParams = (query: RequestLogFilesQuery = {}) => {
+  const params: Record<string, number> = {};
+  if (query.page !== undefined) params.page = query.page;
+  if (query.pageSize !== undefined) params.page_size = query.pageSize;
+  return params;
+};
+
 export const normalizeLogsResponse = (value: unknown): LogsResponse => {
   const source = asRecord(value);
-  const lines = Array.isArray(source.lines)
-    ? source.lines.map((line) => String(line ?? ''))
-    : [];
+  const lines = Array.isArray(source.lines) ? source.lines.map((line) => String(line ?? '')) : [];
   const lineCount = numberValue(source['line-count'] ?? source.lineCount) ?? lines.length;
   const latestTimestamp = numberValue(source['latest-timestamp'] ?? source.latestTimestamp) ?? 0;
   const rawLatestAfter =
@@ -92,39 +132,51 @@ export const logsApi = {
 
   clearLogs: () => apiClient.delete('/logs'),
 
-  fetchErrorLogs: (): Promise<ErrorLogsResponse> =>
-    apiClient.get('/request-error-logs', { timeout: LOGS_TIMEOUT_MS }),
+  fetchErrorLogs: async (query: RequestLogFilesQuery = {}): Promise<ErrorLogsResponse> => {
+    const params = requestLogParams(query);
+    const data = await apiClient.get('/request-error-logs', {
+      ...(Object.keys(params).length > 0 ? { params } : {}),
+      timeout: LOGS_TIMEOUT_MS,
+    });
+    return normalizeRequestLogFilesResponse(data);
+  },
 
   downloadErrorLog: (filename: string) =>
     apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS
+      timeout: LOGS_TIMEOUT_MS,
     }),
 
   downloadFormattedErrorLog: (filename: string) =>
     apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}/formatted`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS
+      timeout: LOGS_TIMEOUT_MS,
     }),
 
-  fetchSuccessLogs: (): Promise<SuccessLogsResponse> =>
-    apiClient.get('/request-success-logs', { timeout: LOGS_TIMEOUT_MS }),
+  fetchSuccessLogs: async (query: RequestLogFilesQuery = {}): Promise<SuccessLogsResponse> => {
+    const params = requestLogParams(query);
+    const data = await apiClient.get('/request-success-logs', {
+      ...(Object.keys(params).length > 0 ? { params } : {}),
+      timeout: LOGS_TIMEOUT_MS,
+    });
+    return normalizeRequestLogFilesResponse(data);
+  },
 
   downloadSuccessLog: (filename: string) =>
     apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS
+      timeout: LOGS_TIMEOUT_MS,
     }),
 
   downloadFormattedSuccessLog: (filename: string) =>
     apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}/formatted`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS
+      timeout: LOGS_TIMEOUT_MS,
     }),
 
   downloadRequestLogById: (id: string) =>
     apiClient.getRaw(`/request-log-by-id/${encodeURIComponent(id)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS
+      timeout: LOGS_TIMEOUT_MS,
     }),
 };
