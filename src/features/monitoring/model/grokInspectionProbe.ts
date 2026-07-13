@@ -155,6 +155,21 @@ const resolveHighestUsedPercent = (billing: XaiBillingSummary): number | null =>
   return Math.max(...values);
 };
 
+const hasZeroRemainingBalance = (billing: XaiBillingSummary) => {
+  const monthlyExhausted =
+    billing.monthlyLimitCents !== null &&
+    billing.monthlyLimitCents > 0 &&
+    billing.includedUsedCents !== null &&
+    billing.includedUsedCents >= billing.monthlyLimitCents;
+  const onDemandExhausted =
+    billing.onDemandCapCents !== null &&
+    billing.onDemandCapCents > 0 &&
+    billing.onDemandUsedCents !== null &&
+    billing.onDemandUsedCents >= billing.onDemandCapCents;
+
+  return monthlyExhausted || onDemandExhausted;
+};
+
 const inspectGrokError = (
   account: CodexInspectionAccount,
   error: unknown
@@ -233,18 +248,21 @@ export const inspectSingleGrokAccount = async (
     const quotaWindows = buildGrokQuotaWindows(billing);
     const usedPercent = resolveHighestUsedPercent(billing);
     const overThreshold = usedPercent !== null && usedPercent >= settings.usedPercentThreshold;
+    const zeroBalance = hasZeroRemainingBalance(billing);
+    const quotaExhausted = overThreshold || zeroBalance;
+    const quotaReason = zeroBalance && !overThreshold ? 'Grok 余额为 0' : 'Grok 额度达到阈值';
 
-    const action = overThreshold
+    const action = quotaExhausted
       ? account.disabled
         ? 'keep'
         : 'disable'
       : account.disabled
         ? 'enable'
         : 'keep';
-    const actionReason = overThreshold
+    const actionReason = quotaExhausted
       ? account.disabled
-        ? 'Grok 额度达到阈值，但认证文件已禁用'
-        : 'Grok 额度达到阈值，建议禁用认证文件'
+        ? `${quotaReason}，但认证文件已禁用`
+        : `${quotaReason}，建议禁用认证文件`
       : account.disabled
         ? 'Grok 额度仍可用，建议重新启用认证文件'
         : 'Grok 额度仍可用，无需处理';
@@ -259,7 +277,7 @@ export const inspectSingleGrokAccount = async (
       actionReason,
       statusCode: 200,
       usedPercent,
-      isQuota: overThreshold,
+      isQuota: quotaExhausted,
       error: '',
       quotaWindows,
       errorKind: '',

@@ -49,6 +49,10 @@ const baseAccount = toGrokInspectionAccount({
 const createStatusError = (status: number, message: string) =>
   Object.assign(new Error(message), { status });
 
+it('uses a 100 percent default threshold for Grok inspection', () => {
+  expect(DEFAULT_GROK_INSPECTION_SETTINGS.usedPercentThreshold).toBe(100);
+});
+
 describe('inspectSingleGrokAccount', () => {
   beforeEach(() => {
     mockFetchXaiQuota.mockReset();
@@ -85,6 +89,50 @@ describe('inspectSingleGrokAccount', () => {
     expect(result.action).toBe('disable');
     expect(result.actionReason).toBe('Grok 额度达到阈值，建议禁用认证文件');
     expect(result.usedPercent).toBe(92);
+    expect(result.isQuota).toBe(true);
+  });
+
+  it('disables an enabled Grok account when monthly balance is zero', async () => {
+    mockFetchXaiQuota.mockResolvedValue(
+      createBilling({
+        usagePercent: null,
+        productUsage: [],
+        monthlyLimitCents: 10000,
+        usedCents: 10000,
+        includedUsedCents: 10000,
+        usedPercent: null,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+      })
+    );
+
+    const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toBe('Grok 余额为 0，建议禁用认证文件');
+    expect(result.isQuota).toBe(true);
+  });
+
+  it('disables an enabled Grok account when pay-as-you-go balance is zero', async () => {
+    mockFetchXaiQuota.mockResolvedValue(
+      createBilling({
+        usagePercent: null,
+        productUsage: [],
+        monthlyLimitCents: null,
+        usedCents: null,
+        includedUsedCents: null,
+        usedPercent: null,
+        onDemandCapCents: 5000,
+        onDemandUsedCents: 5000,
+        onDemandUsedPercent: null,
+      })
+    );
+
+    const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toBe('Grok 余额为 0，建议禁用认证文件');
     expect(result.isQuota).toBe(true);
   });
 
