@@ -28,6 +28,7 @@ import { MonitoringCenterPage } from '@/pages/MonitoringCenterPage';
 import { AccountActionCandidatesPage } from '@/pages/AccountActionCandidatesPage';
 import { ModelPricesPage } from '@/pages/ModelPricesPage';
 import { CodexInspectionPage } from '@/pages/CodexInspectionPage';
+import { GrokInspectionPage } from '@/pages/GrokInspectionPage';
 import { ServerCodexInspectionPage } from '@/pages/ServerCodexInspectionPage';
 import { ConfigPage } from '@/pages/ConfigPage';
 import { LogsPage } from '@/pages/LogsPage';
@@ -210,6 +211,7 @@ const mainRoutes: RouteObject[] = [
     ),
   },
   { path: '/codex-inspection', element: <CodexInspectionPage /> },
+  { path: '/grok-inspection', element: <GrokInspectionPage /> },
   {
     path: '/codex-inspection/server',
     element: (
@@ -254,6 +256,7 @@ const mainRoutes: RouteObject[] = [
     ),
   },
   { path: '/monitoring/codex-inspection', element: <Navigate to="/codex-inspection" replace /> },
+  { path: '/monitoring/grok-inspection', element: <Navigate to="/grok-inspection" replace /> },
   {
     path: '/monitoring/codex-inspection/server',
     element: (

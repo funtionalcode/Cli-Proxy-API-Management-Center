@@ -13,6 +13,7 @@ type InspectionConfigFieldsProps = {
   draft: SharedInspectionConfigDraft;
   errors: InspectionConfigFieldErrors;
   t: TFunction;
+  hideTargetType?: boolean;
   onFieldChange: (field: SharedInspectionConfigField, value: string) => void;
   onAutoActionModeChange: (mode: CodexInspectionAutoActionMode) => void;
 };
@@ -23,6 +24,7 @@ export function InspectionConfigFields({
   draft,
   errors,
   t,
+  hideTargetType = false,
   onFieldChange,
   onAutoActionModeChange,
 }: InspectionConfigFieldsProps) {
@@ -84,15 +86,17 @@ export function InspectionConfigFields({
           </span>
         </summary>
         <div className={styles.advancedBody}>
-          <div className={styles.serverField}>
-            <Input
-              id="targetType"
-              label={t('monitoring.codex_inspection_settings_target_type_label')}
-              error={errors.targetType}
-              value={draft.targetType}
-              onChange={(event) => onFieldChange('targetType', event.target.value)}
-            />
-          </div>
+          {hideTargetType ? null : (
+            <div className={styles.serverField}>
+              <Input
+                id="targetType"
+                label={t('monitoring.codex_inspection_settings_target_type_label')}
+                error={errors.targetType}
+                value={draft.targetType}
+                onChange={(event) => onFieldChange('targetType', event.target.value)}
+              />
+            </div>
+          )}
           <div className={styles.serverField}>
             <Input
               id="workers"
