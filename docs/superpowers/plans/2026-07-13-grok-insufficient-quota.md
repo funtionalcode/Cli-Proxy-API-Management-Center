@@ -255,6 +255,6 @@ npm run build
 
 Expected: all test files pass and the production build exits with status `0`.
 
-- [ ] **Step 3: Review the final patch**
+- [x] **Step 3: Review the final patch**
 
 Confirm that only the Grok probe, its tests, and approved design/plan documentation changed. Confirm that unrelated untracked files remain untouched.
