@@ -16,7 +16,7 @@
 - Modify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
 - Modify: `src/features/monitoring/model/grokInspectionProbe.ts`
 
-- [ ] **Step 1: Add failing tests for the default threshold and zero balances**
+- [x] **Step 1: Add failing tests for the default threshold and zero balances**
 
 Add assertions that the Grok default threshold is `100`, and add successful billing cases where percentage fields are unavailable but either monthly or pay-as-you-go remaining balance is zero:
 
@@ -70,7 +70,7 @@ it('disables an enabled Grok account when pay-as-you-go balance is zero', async 
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -80,7 +80,7 @@ npm test -- src/features/monitoring/model/grokInspectionProbe.test.ts
 
 Expected: the zero-balance cases fail because the current probe only checks percentages and returns `keep`.
 
-- [ ] **Step 3: Implement explicit zero-balance detection**
+- [x] **Step 3: Implement explicit zero-balance detection**
 
 Add a helper that only treats a balance as exhausted when both a positive limit and a used amount are reported:
 
@@ -103,7 +103,7 @@ const hasZeroRemainingBalance = (billing: XaiBillingSummary) => {
 
 Combine it with the existing configured-threshold check. Use `Grok 余额为 0` in the reason when the explicit balance signal is what triggered the decision, and keep the existing threshold reason otherwise. Already-disabled files must return `keep` with the matching already-disabled reason.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run:
 
@@ -119,7 +119,7 @@ Expected: all Grok probe tests pass.
 - Modify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
 - Modify: `src/features/monitoring/model/grokInspectionProbe.ts`
 
-- [ ] **Step 1: Add failing tests for HTTP 402 and explicit quota text**
+- [x] **Step 1: Add failing tests for HTTP 402 and explicit quota text**
 
 Add cases for an HTTP `402`, a non-402 insufficient-credit message, an already-disabled file, and priority preservation:
 
@@ -148,7 +148,7 @@ it('disables an enabled Grok account for explicit insufficient-credit errors', a
 
 Also assert that `401/403`, `404/410`, and `429` retain their existing actions even when their message includes a quota word.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -158,7 +158,7 @@ npm test -- src/features/monitoring/model/grokInspectionProbe.test.ts
 
 Expected: the new insufficient-quota error cases fail because current error handling returns `keep`.
 
-- [ ] **Step 3: Implement explicit insufficient-quota error handling**
+- [x] **Step 3: Implement explicit insufficient-quota error handling**
 
 Add narrowly scoped case-insensitive patterns and a shared quota result builder:
 
@@ -175,7 +175,7 @@ const isInsufficientQuotaError = (statusCode: number | null, detail: string) =>
 
 Evaluate this after authentication and deletion statuses but before `429` and generic failures. Return `disable` for enabled files, `keep` for already-disabled files, `isQuota: true`, `errorKind: 'quota_exhausted'`, and preserve status and error detail.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run:
 

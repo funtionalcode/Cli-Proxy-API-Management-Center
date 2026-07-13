@@ -175,6 +175,67 @@ describe('inspectSingleGrokAccount', () => {
     expect(result.errorKind).toBe('auth_unavailable');
   });
 
+  it('disables an enabled Grok account when billing returns 402', async () => {
+    mockFetchXaiQuota.mockRejectedValue(createStatusError(402, '402 payment required'));
+
+    const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toBe('Grok 额度不足，建议禁用认证文件');
+    expect(result.isQuota).toBe(true);
+    expect(result.errorKind).toBe('quota_exhausted');
+    expect(result.errorDetail).toContain('payment required');
+  });
+
+  it('disables an enabled Grok account for explicit insufficient-credit errors', async () => {
+    mockFetchXaiQuota.mockRejectedValue(createStatusError(400, 'insufficient credits'));
+
+    const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toBe('Grok 额度不足，建议禁用认证文件');
+    expect(result.isQuota).toBe(true);
+    expect(result.errorKind).toBe('quota_exhausted');
+  });
+
+  it('keeps an already-disabled Grok account when billing reports insufficient quota', async () => {
+    mockFetchXaiQuota.mockRejectedValue(createStatusError(402, 'quota exhausted'));
+
+    const result = await inspectSingleGrokAccount(
+      toGrokInspectionAccount({
+        name: 'xai-disabled.json',
+        type: 'xai',
+        authIndex: 'xai-disabled',
+        disabled: true,
+      }),
+      settings
+    );
+
+    expect(result.action).toBe('keep');
+    expect(result.actionReason).toBe('Grok 额度不足，但认证文件已禁用');
+    expect(result.isQuota).toBe(true);
+    expect(result.errorKind).toBe('quota_exhausted');
+  });
+
+  it.each([
+    [401, 'reauth', 'auth_failed'],
+    [403, 'reauth', 'auth_failed'],
+    [404, 'delete', 'auth_unavailable'],
+    [410, 'delete', 'auth_unavailable'],
+    [429, 'keep', 'http_status'],
+  ] as const)(
+    'keeps status %i decision priority over quota words',
+    async (status, action, errorKind) => {
+      mockFetchXaiQuota.mockRejectedValue(createStatusError(status, 'insufficient credits'));
+
+      const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+      expect(result.action).toBe(action);
+      expect(result.errorKind).toBe(errorKind);
+      expect(result.isQuota).toBe(false);
+    }
+  );
+
   it('keeps Grok files without auth_index', async () => {
     const result = await inspectSingleGrokAccount(
       toGrokInspectionAccount({

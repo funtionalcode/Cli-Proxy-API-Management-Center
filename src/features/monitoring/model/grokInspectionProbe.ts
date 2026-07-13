@@ -20,6 +20,11 @@ import { readString } from './codexInspectionSettings';
 type LogHandler = (level: CodexInspectionLogLevel, message: string) => void;
 
 const MAX_INSPECTION_ERROR_DETAIL_LENGTH = 2048;
+const INSUFFICIENT_QUOTA_PATTERNS = [
+  /insufficient\s+(?:quota|credit|credits|balance)/i,
+  /(?:quota|credit|credits|balance)\s+(?:exhausted|depleted|insufficient)/i,
+  /(?:额度|余额|积分).*(?:不足|耗尽|用完)/,
+];
 
 const fallbackT = ((key: string, params?: Record<string, unknown>) => {
   if (!params) return key;
@@ -170,6 +175,29 @@ const hasZeroRemainingBalance = (billing: XaiBillingSummary) => {
   return monthlyExhausted || onDemandExhausted;
 };
 
+const isInsufficientQuotaError = (statusCode: number | null, detail: string) =>
+  statusCode === 402 || INSUFFICIENT_QUOTA_PATTERNS.some((pattern) => pattern.test(detail));
+
+const buildInsufficientQuotaErrorResult = (
+  account: CodexInspectionAccount,
+  statusCode: number | null,
+  errorMessage: string,
+  errorDetail: string
+): CodexInspectionResultItem => ({
+  ...account,
+  action: account.disabled ? 'keep' : 'disable',
+  actionReason: account.disabled
+    ? 'Grok 额度不足，但认证文件已禁用'
+    : 'Grok 额度不足，建议禁用认证文件',
+  statusCode,
+  usedPercent: null,
+  isQuota: true,
+  error: errorMessage,
+  quotaWindows: [],
+  errorKind: 'quota_exhausted',
+  errorDetail,
+});
+
 const inspectGrokError = (
   account: CodexInspectionAccount,
   error: unknown
@@ -206,6 +234,10 @@ const inspectGrokError = (
       errorKind: 'auth_unavailable',
       errorDetail,
     };
+  }
+
+  if (statusCode !== 429 && isInsufficientQuotaError(statusCode, errorDetail)) {
+    return buildInsufficientQuotaErrorResult(account, statusCode, errorMessage, errorDetail);
   }
 
   return {

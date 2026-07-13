@@ -29,9 +29,10 @@ Status-specific authentication and file-lifecycle decisions take precedence over
 1. Missing `auth_index`: keep the file and report the missing identifier.
 2. HTTP `401` or `403`: recommend reauthentication.
 3. HTTP `404` or `410`: recommend deletion.
-4. HTTP `402` or an explicit insufficient-quota error: recommend disabling an enabled file.
+4. HTTP `402`: recommend disabling an enabled file.
 5. HTTP `429`: keep the file because rate limiting does not prove quota exhaustion.
-6. Other request failures: keep the file and report the probe error.
+6. Other statuses with an explicit insufficient-quota error: recommend disabling an enabled file.
+7. Other request failures: keep the file and report the probe error.
 
 When an insufficient-quota file is already disabled, the result remains `keep` with a reason stating that the file is already disabled. Inspection must not issue a redundant disable action.
 
