@@ -41,7 +41,12 @@ import {
   XAI_REQUEST_HEADERS,
 } from './constants';
 import { buildAntigravityQuotaGroups, buildKimiQuotaRows } from './builders';
-import { createStatusError, formatQuotaResetTime, getStatusFromError } from './formatters';
+import {
+  createStatusError,
+  formatQuotaResetTime,
+  getStatusFromError,
+  isInsufficientQuotaError,
+} from './formatters';
 import {
   normalizeAuthIndex,
   normalizeNumberValue,
@@ -83,6 +88,10 @@ export type AntigravityQuotaData = {
   groups: AntigravityQuotaGroup[];
   subscription?: AntigravityQuotaSubscription | null;
   serverTimeOffsetMs: number | null;
+};
+
+export type XaiQuotaFetchOptions = {
+  rejectOnInsufficientQuota?: boolean;
 };
 
 const antigravitySubscriptionRequests = new Map<
@@ -780,7 +789,8 @@ const requestXaiBilling = async (
 
 export const fetchXaiQuota = async (
   file: AuthFileItem,
-  t: TFunction
+  t: TFunction,
+  options: XaiQuotaFetchOptions = {}
 ): Promise<XaiBillingSummary> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -793,6 +803,14 @@ export const fetchXaiQuota = async (
     requestXaiBilling(authIndex, XAI_BILLING_WEEKLY_URL, requestHeader),
     requestXaiBilling(authIndex, XAI_BILLING_MONTHLY_URL, requestHeader),
   ]);
+  if (options.rejectOnInsufficientQuota) {
+    const insufficientQuotaFailure = [weeklyResult, monthlyResult].find(
+      (result) => result.status === 'rejected' && isInsufficientQuotaError(result.reason)
+    );
+    if (insufficientQuotaFailure?.status === 'rejected') {
+      throw insufficientQuotaFailure.reason;
+    }
+  }
   const weeklySummary = weeklyResult.status === 'fulfilled' ? weeklyResult.value : null;
   const monthlySummary = monthlyResult.status === 'fulfilled' ? monthlyResult.value : null;
   const summary = mergeXaiBillingSummaries(weeklySummary, monthlySummary);

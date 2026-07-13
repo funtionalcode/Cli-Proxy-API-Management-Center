@@ -63,6 +63,9 @@ describe('inspectSingleGrokAccount', () => {
 
     const result = await inspectSingleGrokAccount(baseAccount, settings);
 
+    expect(mockFetchXaiQuota).toHaveBeenCalledWith(baseAccount.raw, expect.any(Function), {
+      rejectOnInsufficientQuota: true,
+    });
     expect(result.action).toBe('keep');
     expect(result.actionReason).toBe('Grok 额度仍可用，无需处理');
     expect(result.statusCode).toBe(200);
@@ -196,6 +199,46 @@ describe('inspectSingleGrokAccount', () => {
     expect(result.actionReason).toBe('Grok 额度不足，建议禁用认证文件');
     expect(result.isQuota).toBe(true);
     expect(result.errorKind).toBe('quota_exhausted');
+  });
+
+  it('does not treat credit-card setup errors as insufficient quota', async () => {
+    mockFetchXaiQuota.mockRejectedValue(createStatusError(400, 'insufficient credit card details'));
+
+    const result = await inspectSingleGrokAccount(baseAccount, settings);
+
+    expect(result.action).toBe('keep');
+    expect(result.isQuota).toBe(false);
+    expect(result.errorKind).toBe('http_status');
+  });
+
+  it('keeps an already-disabled Grok account when monthly balance is zero', async () => {
+    mockFetchXaiQuota.mockResolvedValue(
+      createBilling({
+        usagePercent: null,
+        productUsage: [],
+        monthlyLimitCents: 10000,
+        usedCents: 10000,
+        includedUsedCents: 10000,
+        usedPercent: null,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+      })
+    );
+
+    const result = await inspectSingleGrokAccount(
+      toGrokInspectionAccount({
+        name: 'xai-disabled.json',
+        type: 'xai',
+        authIndex: 'xai-disabled',
+        disabled: true,
+      }),
+      settings
+    );
+
+    expect(result.action).toBe('keep');
+    expect(result.actionReason).toBe('Grok 余额为 0，但认证文件已禁用');
+    expect(result.isQuota).toBe(true);
   });
 
   it('keeps an already-disabled Grok account when billing reports insufficient quota', async () => {

@@ -50,13 +50,14 @@ No new API fields or UI components are required.
 
 ## Implementation Boundary
 
-Keep the behavior inside `grokInspectionProbe.ts` by introducing small pure helpers for:
+Keep the inspection decision inside `grokInspectionProbe.ts` and use a shared pure helper for insufficient-quota error recognition. The implementation includes:
 
 - Detecting zero remaining monthly or pay-as-you-go balance.
 - Detecting explicit insufficient-quota error text.
 - Building the enabled versus already-disabled quota decision.
+- Passing an optional strict quota-error flag to `fetchXaiQuota` so a `402` or explicit quota error from either billing endpoint is not hidden by a successful response from the other endpoint.
 
-The shared xAI billing request and quota-page presentation remain unchanged.
+The strict flag defaults to disabled, so the existing quota-page and monitoring-center partial-data behavior remains unchanged.
 
 ## Testing
 
@@ -70,6 +71,8 @@ Extend `grokInspectionProbe.test.ts` before production changes to cover:
 6. A non-402 error with explicit insufficient-credit text recommends disabling.
 7. An already-disabled file with insufficient quota remains disabled without a redundant action.
 8. Authentication, deletion, rate-limit, and generic-error decisions keep their existing priority.
+9. A quota error from one billing endpoint is preserved when the other endpoint succeeds.
+10. Generic payment setup text such as `insufficient credit card details` is not treated as quota exhaustion.
 
 After implementation, run the focused Grok probe tests, the complete test suite, targeted ESLint, TypeScript/production build, and a patch whitespace check.
 

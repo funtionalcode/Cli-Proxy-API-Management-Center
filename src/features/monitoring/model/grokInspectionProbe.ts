@@ -5,6 +5,7 @@ import {
   formatQuotaResetTime,
   getStatusFromError,
   isDisabledAuthFile,
+  isInsufficientQuotaError,
   resolveAuthProvider,
 } from '@/utils/quota';
 import { normalizeAuthIndex } from '@/utils/usage';
@@ -20,11 +21,6 @@ import { readString } from './codexInspectionSettings';
 type LogHandler = (level: CodexInspectionLogLevel, message: string) => void;
 
 const MAX_INSPECTION_ERROR_DETAIL_LENGTH = 2048;
-const INSUFFICIENT_QUOTA_PATTERNS = [
-  /insufficient\s+(?:quota|credit|credits|balance)/i,
-  /(?:quota|credit|credits|balance)\s+(?:exhausted|depleted|insufficient)/i,
-  /(?:额度|余额|积分).*(?:不足|耗尽|用完)/,
-];
 
 const fallbackT = ((key: string, params?: Record<string, unknown>) => {
   if (!params) return key;
@@ -175,9 +171,6 @@ const hasZeroRemainingBalance = (billing: XaiBillingSummary) => {
   return monthlyExhausted || onDemandExhausted;
 };
 
-const isInsufficientQuotaError = (statusCode: number | null, detail: string) =>
-  statusCode === 402 || INSUFFICIENT_QUOTA_PATTERNS.some((pattern) => pattern.test(detail));
-
 const buildInsufficientQuotaErrorResult = (
   account: CodexInspectionAccount,
   statusCode: number | null,
@@ -236,7 +229,7 @@ const inspectGrokError = (
     };
   }
 
-  if (statusCode !== 429 && isInsufficientQuotaError(statusCode, errorDetail)) {
+  if (statusCode !== 429 && isInsufficientQuotaError(error)) {
     return buildInsufficientQuotaErrorResult(account, statusCode, errorMessage, errorDetail);
   }
 
@@ -276,7 +269,9 @@ export const inspectSingleGrokAccount = async (
   }
 
   try {
-    const billing = await withRetry(settings.retries, () => fetchXaiQuota(account.raw, fallbackT));
+    const billing = await withRetry(settings.retries, () =>
+      fetchXaiQuota(account.raw, fallbackT, { rejectOnInsufficientQuota: true })
+    );
     const quotaWindows = buildGrokQuotaWindows(billing);
     const usedPercent = resolveHighestUsedPercent(billing);
     const overThreshold = usedPercent !== null && usedPercent >= settings.usedPercentThreshold;

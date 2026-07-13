@@ -13,6 +13,7 @@
 ### Task 1: Successful Billing Exhaustion
 
 **Files:**
+
 - Modify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
 - Modify: `src/features/monitoring/model/grokInspectionProbe.ts`
 
@@ -116,6 +117,7 @@ Expected: all Grok probe tests pass.
 ### Task 2: Failed Billing Exhaustion
 
 **Files:**
+
 - Modify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
 - Modify: `src/features/monitoring/model/grokInspectionProbe.ts`
 
@@ -185,13 +187,52 @@ npm test -- src/features/monitoring/model/grokInspectionProbe.test.ts
 
 Expected: all Grok probe tests pass.
 
-### Task 3: Verification
+### Task 3: Partial Billing Failure Preservation
 
 **Files:**
+
+- Modify: `src/utils/quota/formatters.ts`
+- Modify: `src/utils/quota/providerRequests.ts`
+- Modify: `src/utils/quota/providerRequests.test.ts`
+- Modify: `src/features/monitoring/model/grokInspectionProbe.ts`
+- Modify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
+
+- [x] **Step 1: Add failing tests for partial quota errors and false-positive text**
+
+Verify that strict xAI quota fetching rejects an `insufficient_quota` failure from either billing endpoint even when the other endpoint succeeds. Verify that Grok inspection enables strict handling and that `insufficient credit card details` remains a generic error.
+
+- [x] **Step 2: Run focused tests and verify RED**
+
+Run:
+
+```bash
+npm test -- src/utils/quota/providerRequests.test.ts src/features/monitoring/model/grokInspectionProbe.test.ts
+```
+
+Expected: the partial failure resolves instead of rejecting, Grok does not pass the strict option, and credit-card setup text is misclassified.
+
+- [x] **Step 3: Implement strict partial quota-error propagation**
+
+Add shared insufficient-quota recognition, normalize underscore and hyphen separators, exclude singular `credit` from quota terms, and add an optional `rejectOnInsufficientQuota` fetch setting that defaults to `false`. Enable the option only from Grok inspection.
+
+- [x] **Step 4: Run focused tests and verify GREEN**
+
+Run:
+
+```bash
+npm test -- src/utils/quota/providerRequests.test.ts src/features/monitoring/model/grokInspectionProbe.test.ts
+```
+
+Expected: both focused test files pass.
+
+### Task 4: Verification
+
+**Files:**
+
 - Verify: `src/features/monitoring/model/grokInspectionProbe.ts`
 - Verify: `src/features/monitoring/model/grokInspectionProbe.test.ts`
 
-- [ ] **Step 1: Run targeted static checks**
+- [x] **Step 1: Run targeted static checks**
 
 Run:
 
@@ -203,7 +244,7 @@ git diff --check
 
 Expected: all commands exit with status `0`.
 
-- [ ] **Step 2: Run complete automated verification**
+- [x] **Step 2: Run complete automated verification**
 
 Run:
 

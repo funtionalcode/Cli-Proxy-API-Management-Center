@@ -6,6 +6,14 @@ import type { TFunction } from 'i18next';
 import type { CodexUsageWindow } from '@/types';
 import { normalizeNumberValue } from './parsers';
 
+const INSUFFICIENT_QUOTA_PATTERNS = [
+  /\binsufficient\s+(?:quota|credits|balance)\b/i,
+  /\b(?:quota|credits|balance)(?:\s+(?:is|has|been)){0,3}\s+(?:exhausted|depleted|insufficient|exceeded)\b/i,
+  /\bnot\s+enough\s+(?:quota|credits|balance)\b/i,
+  /\b(?:quota|credits|balance)\s+limit\s+(?:reached|exceeded)\b/i,
+  /(?:额度|余额|积分).*(?:不足|耗尽|用完)/,
+];
+
 export function formatQuotaResetTime(value?: string): string {
   if (!value) return '-';
   const date = new Date(value);
@@ -15,7 +23,7 @@ export function formatQuotaResetTime(value?: string): string {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false
+    hour12: false,
   });
 }
 
@@ -28,7 +36,7 @@ export function formatUnixSeconds(value: number | null): string {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false
+    hour12: false,
   });
 }
 
@@ -66,6 +74,14 @@ export function getStatusFromError(err: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+export function isInsufficientQuotaError(err: unknown): boolean {
+  if (getStatusFromError(err) === 402) return true;
+
+  const detail = err instanceof Error ? err.message : String(err ?? '');
+  const normalizedDetail = detail.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return INSUFFICIENT_QUOTA_PATTERNS.some((pattern) => pattern.test(normalizedDetail));
 }
 
 export function formatKimiResetHint(t: TFunction, hint?: string): string {

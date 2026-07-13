@@ -458,6 +458,41 @@ describe('fetchXaiQuota', () => {
     });
   });
 
+  it('rejects a partial insufficient-quota failure when strict quota handling is enabled', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 400,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"code":"insufficient_quota"}',
+        body: null,
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          config: {
+            monthly_limit: 20000,
+            used: 5000,
+          },
+        },
+      });
+
+    await expect(
+      fetchXaiQuota(
+        {
+          name: 'xai.json',
+          type: 'xai',
+          authIndex: 'xai-1',
+        },
+        t,
+        { rejectOnInsufficientQuota: true }
+      )
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
   it('throws the upstream error when weekly and monthly billing both fail', async () => {
     mocks.request
       .mockResolvedValueOnce({
