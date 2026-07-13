@@ -876,6 +876,7 @@
     "delete_filtered_result_partial": "Удаление результатов фильтра завершено: успешных {{success}}, ошибок {{failed}}",
     "delete_filtered_result_none": "Нет файлов авторизации для удаления в текущих результатах фильтра",
     "files_count": "файлов",
+    "loading_progress": "Фоновая загрузка учётных данных: {{loaded}} / {{total}}",
     "pagination_prev": "Предыдущая",
     "pagination_next": "Следующая",
     "pagination_info": "Страница {{current}} / {{total}} · {{count}} файлов",

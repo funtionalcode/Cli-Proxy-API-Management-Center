@@ -876,6 +876,7 @@
     "delete_filtered_result_partial": "篩選結果刪除完成，成功 {{success}} 個，失敗 {{failed}} 個",
     "delete_filtered_result_none": "目前篩選結果中沒有可刪除的驗證檔案",
     "files_count": "個檔案",
+    "loading_progress": "正在背景載入認證檔案：{{loaded}} / {{total}}",
     "pagination_prev": "上一頁",
     "pagination_next": "下一頁",
     "pagination_info": "第 {{current}} / {{total}} 頁 · 共 {{count}} 個檔案",

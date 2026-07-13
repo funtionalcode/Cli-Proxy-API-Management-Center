@@ -519,6 +519,110 @@ describe('useAuthFilesData savePastedAuthJson', () => {
   });
 });
 
+describe('useAuthFilesData paginated loading', () => {
+  it('shows the first page while remaining pages continue loading', async () => {
+    const hook = mountUseAuthFilesData();
+    let resolveSecondPage:
+      | ((value: {
+          files: Array<{ name: string; type: string }>;
+          page: number;
+          pageSize: number;
+          total: number;
+          totalPages: number;
+        }) => void)
+      | undefined;
+    mocks.list
+      .mockResolvedValueOnce({
+        files: [{ name: 'codex-1.json', type: 'codex' }],
+        page: 1,
+        pageSize: 1000,
+        total: 1001,
+        totalPages: 2,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecondPage = resolve;
+          })
+      );
+
+    let loadPromise: Promise<void> | undefined;
+    act(() => {
+      loadPromise = hook.getCurrent().loadFiles();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(hook.getCurrent().files).toEqual([{ name: 'codex-1.json', type: 'codex' }]);
+    expect(hook.getCurrent().loading).toBe(false);
+    expect(hook.getCurrent().loadingMore).toBe(true);
+    expect(hook.getCurrent().totalFiles).toBe(1001);
+    expect(mocks.list).toHaveBeenNthCalledWith(1, {
+      page: 1,
+      pageSize: 1000,
+      includeBalances: false,
+    });
+    expect(mocks.list).toHaveBeenNthCalledWith(2, {
+      page: 2,
+      pageSize: 1000,
+      includeBalances: false,
+    });
+
+    expect(resolveSecondPage).toBeTypeOf('function');
+    resolveSecondPage?.({
+      files: [{ name: 'codex-2.json', type: 'codex' }],
+      page: 2,
+      pageSize: 1000,
+      total: 1001,
+      totalPages: 2,
+    });
+    await act(async () => {
+      await loadPromise;
+    });
+
+    expect(hook.getCurrent().files).toEqual([
+      { name: 'codex-1.json', type: 'codex' },
+      { name: 'codex-2.json', type: 'codex' },
+    ]);
+    expect(hook.getCurrent().loadingMore).toBe(false);
+    hook.unmount();
+  });
+
+  it('ignores a stale response after a newer refresh starts', async () => {
+    const hook = mountUseAuthFilesData();
+    let resolveStale:
+      | ((value: { files: Array<{ name: string; type: string }> }) => void)
+      | undefined;
+    mocks.list
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStale = resolve;
+          })
+      )
+      .mockResolvedValueOnce({ files: [{ name: 'new.json', type: 'codex' }] });
+
+    const stalePromise = hook.getCurrent().loadFiles();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+
+    expect(hook.getCurrent().files).toEqual([{ name: 'new.json', type: 'codex' }]);
+    resolveStale?.({ files: [{ name: 'stale.json', type: 'codex' }] });
+    await act(async () => {
+      await stalePromise;
+    });
+
+    expect(hook.getCurrent().files).toEqual([{ name: 'new.json', type: 'codex' }]);
+    hook.unmount();
+  });
+});
+
 describe('useAuthFilesData handleDeleteAll', () => {
   it('deletes only the provided filtered files for custom result filters', async () => {
     const hook = mountUseAuthFilesData();
@@ -577,6 +681,57 @@ describe('useAuthFilesData handleDeleteAll', () => {
       'auth_files.delete_filtered_result_success',
       'success'
     );
+    hook.unmount();
+  });
+
+  it('decrements the server total by every removed auth-index row', async () => {
+    const hook = mountUseAuthFilesData();
+
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        { name: 'shared-codex.json', type: 'codex', authIndex: 'account-1' },
+        { name: 'shared-codex.json', type: 'codex', authIndex: 'account-2' },
+        { name: 'remaining.json', type: 'codex' },
+      ],
+      total: 3,
+      totalPages: 1,
+    });
+    mocks.deleteFiles.mockResolvedValueOnce({
+      deleted: 1,
+      failed: [],
+      files: ['shared-codex.json'],
+    });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+
+    act(() => {
+      hook.getCurrent().handleDeleteAll({
+        filter: 'all',
+        problemOnly: false,
+        disabledOnly: false,
+        healthyOnly: false,
+        filteredFiles: [
+          { name: 'shared-codex.json', type: 'codex', authIndex: 'account-1' },
+        ],
+        onResetFilterToAll: vi.fn(),
+        onResetProblemOnly: vi.fn(),
+        onResetDisabledOnly: vi.fn(),
+        onResetHealthyOnly: vi.fn(),
+        onResetResultFilters: vi.fn(),
+      });
+    });
+
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void> }
+      | undefined;
+    await act(async () => {
+      await confirmation?.onConfirm?.();
+    });
+
+    expect(hook.getCurrent().files).toEqual([{ name: 'remaining.json', type: 'codex' }]);
+    expect(hook.getCurrent().totalFiles).toBe(1);
     hook.unmount();
   });
 });

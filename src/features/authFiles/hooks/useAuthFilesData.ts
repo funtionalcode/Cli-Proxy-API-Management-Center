@@ -48,9 +48,11 @@ export type AuthFilesBatchPatchResult = {
 
 export type UseAuthFilesDataResult = {
   files: AuthFileItem[];
+  totalFiles: number;
   selectedFiles: Set<string>;
   selectionCount: number;
   loading: boolean;
+  loadingMore: boolean;
   error: string;
   uploading: boolean;
   authJsonPasteSaving: boolean;
@@ -94,6 +96,26 @@ type AuthFilePatchTargetGroup = {
   name: string;
   targets: AuthFilePatchTarget[];
   authIndexes: Array<string | number>;
+};
+
+const AUTH_FILES_FETCH_PAGE_SIZE = 1000;
+const AUTH_FILES_FETCH_CONCURRENCY = 3;
+
+const mergeAuthFilePages = (current: AuthFileItem[], incoming: AuthFileItem[]): AuthFileItem[] => {
+  const merged = [...current];
+  const indexByKey = new Map<string, number>();
+  merged.forEach((file, index) => indexByKey.set(getAuthFileSelectionKey(file), index));
+  incoming.forEach((file) => {
+    const key = getAuthFileSelectionKey(file);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(file);
+      return;
+    }
+    merged[existingIndex] = file;
+  });
+  return merged;
 };
 
 const normalizePatchTargetAuthIndex = (
@@ -171,7 +193,9 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
   const { showNotification, showConfirmation } = useNotificationStore();
 
   const [files, setFiles] = useState<AuthFileItem[]>([]);
+  const [totalFiles, setTotalFiles] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [authJsonPasteSaving, setAuthJsonPasteSaving] = useState(false);
@@ -186,6 +210,8 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const batchStatusPendingRef = useRef(false);
   const batchFieldsPendingRef = useRef(false);
+  const loadGenerationRef = useRef(0);
+  const filesRef = useRef<AuthFileItem[]>([]);
   const selectionCount = selectedFiles.size;
   const toggleSelect = useCallback((key: string) => {
     setSelectedFiles((prev) => {
@@ -239,7 +265,12 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
     if (deletedNames.length === 0) return;
 
     const deletedSet = new Set(deletedNames);
+    const removedCount = filesRef.current.reduce(
+      (count, file) => count + (deletedSet.has(file.name) ? 1 : 0),
+      0
+    );
     setFiles((prev) => prev.filter((file) => !deletedSet.has(file.name)));
+    setTotalFiles((prev) => Math.max(0, prev - removedCount));
     setSelectedFiles((prev) => {
       if (prev.size === 0) return prev;
       let changed = false;
@@ -255,6 +286,17 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
       return changed ? next : prev;
     });
   }, []);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(
+    () => () => {
+      loadGenerationRef.current += 1;
+    },
+    []
+  );
 
   useEffect(() => {
     if (selectedFiles.size === 0) return;
@@ -275,19 +317,68 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
 
   const loadFiles = useCallback(
     async (options?: { throwOnError?: boolean }) => {
+      const generation = ++loadGenerationRef.current;
       setLoading(true);
+      setLoadingMore(false);
       setError('');
       try {
-        const data = await authFilesApi.list();
-        setFiles(data?.files || []);
+        const firstPage = await authFilesApi.list({
+          page: 1,
+          pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
+          includeBalances: false,
+        });
+        if (generation !== loadGenerationRef.current) return;
+
+        let loadedFiles = Array.isArray(firstPage?.files) ? firstPage.files : [];
+        const total =
+          typeof firstPage?.total === 'number' && Number.isFinite(firstPage.total)
+            ? Math.max(0, firstPage.total)
+            : loadedFiles.length;
+        const totalPages =
+          typeof firstPage?.totalPages === 'number' && Number.isFinite(firstPage.totalPages)
+            ? Math.max(1, Math.floor(firstPage.totalPages))
+            : 1;
+        setFiles(loadedFiles);
+        setTotalFiles(total);
+        setLoading(false);
+
+        if (totalPages <= 1) return;
+        setLoadingMore(true);
+        for (let page = 2; page <= totalPages; page += AUTH_FILES_FETCH_CONCURRENCY) {
+          const pages = Array.from(
+            { length: Math.min(AUTH_FILES_FETCH_CONCURRENCY, totalPages - page + 1) },
+            (_, index) => page + index
+          );
+          const responses = await Promise.all(
+            pages.map((currentPage) =>
+              authFilesApi.list({
+                page: currentPage,
+                pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
+                includeBalances: false,
+              })
+            )
+          );
+          if (generation !== loadGenerationRef.current) return;
+          responses.forEach((response) => {
+            loadedFiles = mergeAuthFilePages(
+              loadedFiles,
+              Array.isArray(response?.files) ? response.files : []
+            );
+          });
+          setFiles(loadedFiles);
+        }
       } catch (err: unknown) {
+        if (generation !== loadGenerationRef.current) return;
         const errorMessage = err instanceof Error ? err.message : t('notification.refresh_failed');
         setError(errorMessage);
         if (options?.throwOnError) {
           throw err instanceof Error ? err : new Error(errorMessage);
         }
       } finally {
-        setLoading(false);
+        if (generation === loadGenerationRef.current) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [t]
@@ -880,9 +971,11 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
 
   return {
     files,
+    totalFiles,
     selectedFiles,
     selectionCount,
     loading,
+    loadingMore,
     error,
     uploading,
     authJsonPasteSaving,

@@ -262,9 +262,11 @@ export function AuthFilesPage() {
 
   const {
     files,
+    totalFiles,
     selectedFiles,
     selectionCount,
     loading,
+    loadingMore,
     error,
     uploading,
     authJsonPasteSaving,
@@ -1492,7 +1494,17 @@ export function AuthFilesPage() {
         <div className={styles.filterSection}>
           <div className={styles.filterPanel}>
             <div className={styles.filterPanelHeader}>
-              <div className={styles.filterPanelTags}>{renderFilterTags()}</div>
+              <div className={styles.filterPanelTags}>
+                {renderFilterTags()}
+                {loadingMore && totalFiles > files.length && (
+                  <div className={styles.progressiveLoadStatus}>
+                    {t('auth_files.loading_progress', {
+                      loaded: files.length,
+                      total: totalFiles,
+                    })}
+                  </div>
+                )}
+              </div>
               <div className={styles.headerActions}>
                 <Button
                   variant="secondary"
@@ -1539,7 +1551,7 @@ export function AuthFilesPage() {
                       },
                     })
                   }
-                  disabled={disableControls || loading || deletingAll}
+                  disabled={disableControls || loading || loadingMore || deletingAll}
                   loading={deletingAll}
                 >
                   {deleteAllButtonLabel}

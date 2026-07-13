@@ -876,6 +876,7 @@
     "delete_filtered_result_partial": "Filtered result deletion finished: {{success}} succeeded, {{failed}} failed",
     "delete_filtered_result_none": "No deletable login files in the current filtered results",
     "files_count": "files",
+    "loading_progress": "Loading credentials in the background: {{loaded}} / {{total}}",
     "pagination_prev": "Previous",
     "pagination_next": "Next",
     "pagination_info": "Page {{current}} / {{total}} · {{count}} files",

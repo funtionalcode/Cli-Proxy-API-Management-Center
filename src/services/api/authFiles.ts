@@ -12,6 +12,11 @@ type AuthFileStatusResponse = { status: string; disabled: boolean };
 type AuthFilePatchPayload = { name: string; disabled?: boolean; [key: string]: unknown };
 type AuthFileEntry = AuthFilesResponse['files'][number];
 type AuthFileJsonValue = Record<string, unknown> | Record<string, unknown>[];
+export type AuthFilesListQuery = {
+  page?: number;
+  pageSize?: number;
+  includeBalances?: boolean;
+};
 export type AuthFileFieldsPatch = {
   prefix?: string;
   proxy_url?: string;
@@ -350,11 +355,28 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
     });
   });
 
+  const rawPayload = payload as AuthFilesResponse & Record<string, unknown>;
+  const page = Number(rawPayload.page);
+  const pageSize = Number(rawPayload.pageSize ?? rawPayload.page_size);
+  const serverTotal = Number(rawPayload.total);
+  const totalPages = Number(rawPayload.totalPages ?? rawPayload.total_pages);
+
   return {
     ...payload,
     files: normalizedFiles,
-    total: normalizedFiles.length,
+    total: Number.isFinite(serverTotal) ? serverTotal : normalizedFiles.length,
+    ...(Number.isFinite(page) ? { page } : {}),
+    ...(Number.isFinite(pageSize) ? { pageSize } : {}),
+    ...(Number.isFinite(totalPages) ? { totalPages } : {}),
   };
+};
+
+const buildAuthFilesListParams = (query: AuthFilesListQuery = {}) => {
+  const params: Record<string, number | boolean> = {};
+  if (query.page !== undefined) params.page = query.page;
+  if (query.pageSize !== undefined) params.page_size = query.pageSize;
+  if (query.includeBalances !== undefined) params.include_balances = query.includeBalances;
+  return params;
 };
 
 const parseAuthFileJsonObject = (rawText: string): Record<string, unknown> => {
@@ -634,7 +656,14 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
 
 export const authFilesApi = {
-  list: async () => dedupeAuthFilesResponse(await apiClient.get<AuthFilesResponse>('/auth-files')),
+  list: async (query: AuthFilesListQuery = {}) => {
+    const params = buildAuthFilesListParams(query);
+    const payload =
+      Object.keys(params).length > 0
+        ? await apiClient.get<AuthFilesResponse>('/auth-files', { params })
+        : await apiClient.get<AuthFilesResponse>('/auth-files');
+    return dedupeAuthFilesResponse(payload);
+  },
 
   patchFile: (payload: AuthFilePatchPayload) =>
     apiClient.patch<AuthFileStatusResponse>('/auth-files', payload),

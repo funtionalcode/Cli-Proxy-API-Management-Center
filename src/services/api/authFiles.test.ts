@@ -216,6 +216,28 @@ describe('authFilesApi list normalization', () => {
     expect(result.total).toBe(2);
   });
 
+  it('passes pagination parameters and preserves server totals', async () => {
+    mocks.get.mockResolvedValue({
+      files: [{ name: 'codex-page-2.json', type: 'codex' }],
+      page: 2,
+      page_size: 200,
+      total: 450,
+      total_pages: 3,
+    });
+
+    const result = await authFilesApi.list({ page: 2, pageSize: 200, includeBalances: false });
+
+    expect(mocks.get).toHaveBeenCalledWith('/auth-files', {
+      params: { page: 2, page_size: 200, include_balances: false },
+    });
+    expect(result).toMatchObject({
+      page: 2,
+      pageSize: 200,
+      total: 450,
+      totalPages: 3,
+    });
+  });
+
   it('still merges duplicate same-name rows when authIndex is absent', async () => {
     mocks.get.mockResolvedValue({
       files: [

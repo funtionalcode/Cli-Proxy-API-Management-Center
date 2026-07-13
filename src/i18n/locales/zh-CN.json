@@ -876,6 +876,7 @@
     "delete_filtered_result_partial": "筛选结果删除完成，成功 {{success}} 个，失败 {{failed}} 个",
     "delete_filtered_result_none": "当前筛选结果中没有可删除的认证文件",
     "files_count": "个文件",
+    "loading_progress": "正在后台加载认证文件：{{loaded}} / {{total}}",
     "pagination_prev": "上一页",
     "pagination_next": "下一页",
     "pagination_info": "第 {{current}} / {{total}} 页 · 共 {{count}} 个文件",
