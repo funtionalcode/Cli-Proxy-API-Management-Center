@@ -1,0 +1,7 @@
+packages:
+  - apps/web
+  - apps/docs
+
+allowBuilds:
+  '@parcel/watcher': false
+  esbuild: true
