@@ -1,6 +1,6 @@
 # 二开功能保留清单
 
-更新时间：2026-07-09
+更新时间：2026-07-16
 
 本文记录当前 `master` 中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
@@ -32,10 +32,10 @@
 
 关键位置：
 
-- `src/hooks/usePanelFeatureAvailability.ts`
-- `src/services/api/usageService.ts`
-- `src/features/config/ConfigPage.tsx`
-- `src/features/config/components/ManagerConfigPanel.tsx`
+- `apps/web/src/hooks/usePanelFeatureAvailability.ts`
+- `apps/web/src/services/api/usageService.ts`
+- `apps/web/src/features/config/ConfigPage.tsx`
+- `apps/web/src/features/config/components/ManagerConfigPanel.tsx`
 
 ### 2. 请求监控、用量分析和模型定价
 
@@ -50,11 +50,11 @@
 
 关键位置：
 
-- `src/features/monitoring/`
-- `src/features/usage-analytics/`
-- `src/features/monitoring/ModelPricesPage.tsx`
-- `src/features/monitoring/AccountActionCandidatesPage.tsx`
-- `src/services/api/usageService.ts`
+- `apps/web/src/features/monitoring/`
+- `apps/web/src/features/usage-analytics/`
+- `apps/web/src/features/monitoring/ModelPricesPage.tsx`
+- `apps/web/src/features/monitoring/AccountActionCandidatesPage.tsx`
+- `apps/web/src/services/api/usageService.ts`
 
 ### 3. 日志增强
 
@@ -70,12 +70,12 @@
 
 关键位置：
 
-- `src/features/logs/LogsPage.tsx`
-- `src/features/logs/logFeatureAvailability.ts`
-- `src/features/logs/hooks/logParsing.ts`
-- `src/features/logs/hooks/useLogFilters.ts`
-- `src/services/api/logs.ts`
-- `src/services/api/config.ts`
+- `apps/web/src/features/logs/LogsPage.tsx`
+- `apps/web/src/features/logs/logFeatureAvailability.ts`
+- `apps/web/src/features/logs/hooks/logParsing.ts`
+- `apps/web/src/features/logs/hooks/useLogFilters.ts`
+- `apps/web/src/services/api/logs.ts`
+- `apps/web/src/services/api/config.ts`
 
 ### 4. Provider 配置增强
 
@@ -90,11 +90,11 @@
 
 关键位置：
 
-- `src/features/aiProviders/`
-- `src/components/providers/`
-- `src/services/api/providers.ts`
-- `src/services/api/transformers.ts`
-- `src/types/provider.ts`
+- `apps/web/src/features/aiProviders/`
+- `apps/web/src/components/providers/`
+- `apps/web/src/services/api/providers.ts`
+- `apps/web/src/services/api/transformers.ts`
+- `apps/web/src/types/provider.ts`
 
 ### 5. AuthFiles 认证文件增强
 
@@ -113,10 +113,10 @@
 
 关键位置：
 
-- `src/features/authFiles/`
-- `src/services/api/authFiles.ts`
-- `src/features/authFiles/hooks/useAuthFilesPrefixProxyEditor.ts`
-- `src/features/authFiles/sessionAuthConverter.ts`
+- `apps/web/src/features/authFiles/`
+- `apps/web/src/services/api/authFiles.ts`
+- `apps/web/src/features/authFiles/hooks/useAuthFilesPrefixProxyEditor.ts`
+- `apps/web/src/features/authFiles/sessionAuthConverter.ts`
 
 ### 6. 代理配置总览
 
@@ -128,13 +128,13 @@
 
 关键位置：
 
-- `src/features/proxyConfigs/`
-- `src/pages/ProxyConfigsPage.tsx`
-- `src/router/MainRoutes.tsx`
-- `src/components/layout/MainLayout.tsx`
-- `src/services/api/providers.ts`
-- `src/services/api/authFiles.ts`
-- `src/services/api/config.ts`
+- `apps/web/src/features/proxyConfigs/`
+- `apps/web/src/pages/ProxyConfigsPage.tsx`
+- `apps/web/src/router/MainRoutes.tsx`
+- `apps/web/src/components/layout/MainLayout.tsx`
+- `apps/web/src/services/api/providers.ts`
+- `apps/web/src/services/api/authFiles.ts`
+- `apps/web/src/services/api/config.ts`
 
 ### 7. 额度管理增强
 
@@ -150,13 +150,13 @@
 
 关键位置：
 
-- `src/components/quota/`
-- `src/features/quota/`
-- `src/utils/quota/`
-- `src/services/api/codexQuota.ts`
-- `src/services/api/antigravitySubscription.ts`
-- `src/stores/useQuotaStore.ts`
-- `src/types/quota.ts`
+- `apps/web/src/components/quota/`
+- `apps/web/src/features/quota/`
+- `apps/web/src/utils/quota/`
+- `apps/web/src/services/api/codexQuota.ts`
+- `apps/web/src/services/api/antigravitySubscription.ts`
+- `apps/web/src/stores/useQuotaStore.ts`
+- `apps/web/src/types/quota.ts`
 
 ### 8. OAuth 与重新登录增强
 
@@ -167,9 +167,9 @@
 
 关键位置：
 
-- `src/features/oauth/`
-- `src/services/api/oauth.ts`
-- `src/types/oauth.ts`
+- `apps/web/src/features/oauth/`
+- `apps/web/src/services/api/oauth.ts`
+- `apps/web/src/types/oauth.ts`
 
 ### 9. 插件管理
 
@@ -179,10 +179,10 @@
 
 关键位置：
 
-- `src/features/plugins/`
-- `src/services/api/plugins.ts`
-- `src/types/plugin.ts`
-- `src/router/MainRoutes.tsx`
+- `apps/web/src/features/plugins/`
+- `apps/web/src/services/api/plugins.ts`
+- `apps/web/src/types/plugin.ts`
+- `apps/web/src/router/MainRoutes.tsx`
 
 ### 10. 配置管理和可视化编辑增强
 
@@ -194,26 +194,26 @@
 
 关键位置：
 
-- `src/components/config/`
-- `src/entities/config/sections.ts`
-- `src/hooks/useVisualConfig.ts`
-- `src/hooks/visualConfigPayloadRules.ts`
-- `src/features/config/components/AccountProcessingPolicySection.tsx`
+- `apps/web/src/components/config/`
+- `apps/web/src/entities/config/sections.ts`
+- `apps/web/src/hooks/useVisualConfig.ts`
+- `apps/web/src/hooks/visualConfigPayloadRules.ts`
+- `apps/web/src/features/config/components/AccountProcessingPolicySection.tsx`
 
 ### 11. Dashboard、Demo 和构建输出
 
 - Dashboard 保留用量摘要、请求记录读取状态、健康告警、流量概览、版本信息等卡片。
 - Demo 模式 `/demo` 和演示 fixtures 保留，用于无后端预览。
 - 生产构建输出需要从 `dist/index.html` 改名为 `dist/management.html`。
-- 依赖以 `pnpm-lock.yaml` 为准，构建链路需支持 `pnpm test` 和 `pnpm run build`。
+- 依赖以 `package-lock.json` 为准，构建链路需支持 `npm test` 和 `npm run build`。
 
 关键位置：
 
-- `src/features/dashboard/`
-- `src/features/demo/`
-- `vite.config.ts`
+- `apps/web/src/features/dashboard/`
+- `apps/web/src/features/demo/`
+- `apps/web/vite.config.ts`
 - `package.json`
-- `pnpm-lock.yaml`
+- `package-lock.json`
 
 ## 历史出现但当前需单独复核的功能
 
@@ -221,7 +221,7 @@
 
 - Xiaomi 验证弹窗显示邮箱，并从 API response 传递邮箱。
   - 历史提交：`3cda7eb feat: show email in Xiaomi verification modal and pass email from API response`
-  - 历史文件：`src/components/providers/OpenAISection/XiaomiVerificationModal.tsx`
+  - 历史文件：`apps/web/src/components/providers/OpenAISection/XiaomiVerificationModal.tsx`
 - Xiaomi Provider key 的 token usage 显示。
   - 历史提交：`f64ddee feat: add token usage display for Xiaomi provider keys`
   - 当前只保留了泛化后的 `recentRequests` 状态能力，未确认 Xiaomi 专属 UI。
@@ -248,14 +248,14 @@
 建议验证命令：
 
 ```bash
-pnpm test
-pnpm run build
+npm test
+npm run build
 ```
 
 重点定向测试：
 
 ```bash
-pnpm test \
+npm --workspace apps/web run test -- \
   src/hooks/usePanelFeatureAvailability.test.ts \
   src/features/config/ConfigPage.test.ts \
   src/services/api/logs.test.ts \

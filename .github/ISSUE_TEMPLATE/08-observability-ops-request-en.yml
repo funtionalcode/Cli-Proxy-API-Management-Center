@@ -1,0 +1,111 @@
+name: Observability / Operations Request
+description: Request monitoring, usage export, health checks, backup, cost governance, collector reliability, and diagnostics
+title: "[Ops]: "
+labels: ["enhancement", "needs-triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for operational observability requests: request monitoring, usage analytics, cost governance, health checks, backup and maintenance, collector reliability, exports, and diagnostic reports.
+
+  - type: dropdown
+    id: observability-scenario
+    attributes:
+      label: Observability Scenario
+      description: Which scenario is closest to this request?
+      options:
+        - Request monitoring / Request Events
+        - Usage analytics / cost analytics
+        - Provider / model health check
+        - Auth file / quota / account health
+        - Usage Collector / queue reliability
+        - Export / diagnostic report / redaction
+        - Backup / maintenance / data retention
+        - System health check / Doctor
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Question You Cannot Answer Today
+      description: What do you want this capability to make visible? For example failure reasons, cost attribution, quota state, queue backlog, or backup status.
+      placeholder: "Example: I cannot tell which provider and model caused most failures during a time window."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: dimensions
+    attributes:
+      label: Required Filter / Aggregation Dimensions
+      options:
+        - label: Time range
+        - label: API Key / client
+        - label: AI provider
+        - label: Model
+        - label: Auth file
+        - label: Account
+        - label: Project
+        - label: Cost
+        - label: Token / usage
+        - label: Quota
+        - label: Failure reason / error type
+        - label: Header / response metadata
+        - label: Queue / Collector state
+
+  - type: textarea
+    id: data-source
+    attributes:
+      label: Data Source
+      description: Where does the information come from? Examples include request events, CPA usage queue, provider APIs, response headers, SQLite, or external APIs.
+      placeholder: "Example: CPA usage queue events plus quota information from response headers."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-output
+    attributes:
+      label: Expected Display / Export Result
+      description: What page, fields, chart, export format, or diagnostic conclusion do you expect?
+      placeholder: "Example: Export the current filtered result as CSV with time, provider, model, API key, failure reason, and cost, without raw_json."
+    validations:
+      required: true
+
+  - type: textarea
+    id: scale
+    attributes:
+      label: Data Scale / Performance Context
+      description: If known, provide event volume, time window, refresh frequency, database size, or export scale.
+      placeholder: "Example: About 100k usage events per day; need to export failed requests from the last 7 days."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Security And Privacy
+      options:
+        - label: Results must not include CPA Management Keys, API keys, tokens, or sensitive account information.
+          required: true
+        - label: If export or diagnostic reports are involved, redacted fields should be explicit.
+          required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Expected Acceptance Result
+      description: What result would make this request complete? Please make it verifiable.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing Issues and did not find a duplicate request.
+          required: true
+        - label: I have removed sensitive information such as tokens, keys, and account details.
+          required: true

@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+      - '*-alpha*'
+      - '*-beta*'
+      - '*-rc*'
 
 jobs:
   build-and-release:
@@ -29,7 +32,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
-          cache-dependency-path: usage-service/go.sum
+          cache-dependency-path: apps/manager-server/go.sum
 
       - name: Install dependencies
         run: npm ci
@@ -39,6 +42,9 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
 
+      - name: Check demo isolation
+        run: npm run check:demo-isolation
+
       - name: Build native release packages
         run: bin/release/package-native.sh
         env:
@@ -46,32 +52,62 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          cd dist
+          cd apps/web/dist
+          mv index.html management.html
           ls -lh management.html
 
       - name: Generate release notes
         run: |
           set -euo pipefail
           current_tag="${GITHUB_REF_NAME}"
-          previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
-          if [ -n "${previous_tag}" ]; then
-            range="${previous_tag}..${current_tag}"
+          notes_dir="docs/release-notes"
+
+          # Prefer curated notes: docs/release-notes/<tag>-<lang>.md (zh -> zh-CN -> en)
+          primary=""
+          for lang in zh zh-CN en; do
+            if [ -f "${notes_dir}/${current_tag}-${lang}.md" ]; then
+              primary="${notes_dir}/${current_tag}-${lang}.md"
+              break
+            fi
+          done
+
+          if [ -n "${primary}" ]; then
+            cp "${primary}" release-notes.md
+            echo "Using curated release notes: ${primary}"
           else
-            range="${current_tag}"
+            # Fallback: auto-list commits in range (legacy behavior)
+            previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
+            if [ -n "${previous_tag}" ]; then
+              range="${previous_tag}..${current_tag}"
+            else
+              range="${current_tag}"
+            fi
+
+            : > release-notes.md
+            git log --pretty=format:"- %h %s" "${range}" >> release-notes.md
+            echo "Looked for: ${notes_dir}/${current_tag}-{zh,zh-CN,en}.md"
+            echo "No curated notes for ${current_tag}; fell back to git log"
           fi
 
-          : > release-notes.md
-          git log --pretty=format:"- %h %s" "${range}" >> release-notes.md
+      - name: Detect release type
+        id: release_type
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            dist/management.html
+            apps/web/dist/management.html
             dist/native/*
           body_path: release-notes.md
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -80,9 +116,11 @@ jobs:
 
     permissions:
       contents: read
+      packages: write
 
     env:
-      DOCKERHUB_IMAGE: seakee/cpa-manager
+      DOCKERHUB_IMAGE: seakee/cpa-manager-plus
+      GHCR_IMAGE: ghcr.io/seakee/cpa-manager-plus
 
     steps:
       - name: Checkout code
@@ -94,26 +132,64 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Validate DockerHub configuration
+      - name: Detect Docker release type
+        id: release_type
         run: |
           set -euo pipefail
-          if [ -z "${DOCKERHUB_USERNAME}" ]; then
-            echo "DOCKERHUB_USERNAME secret is required" >&2
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "semver=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "semver=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "stable=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Prepare Docker publish targets
+        id: docker_targets
+        run: |
+          set -euo pipefail
+          if [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager-plus" ]; then
+            echo "Docker image name must be seakee/cpa-manager-plus" >&2
             exit 1
           fi
-          if [ -z "${DOCKERHUB_TOKEN}" ]; then
-            echo "DOCKERHUB_TOKEN secret is required" >&2
+
+          images="${GHCR_IMAGE}"
+          dockerhub_enabled=false
+          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            images="${images}"$'\n'"${DOCKERHUB_IMAGE}"
+            dockerhub_enabled=true
+          else
+            echo "::warning::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not both configured; DockerHub publish will be skipped."
+          fi
+
+          if [ "${dockerhub_enabled}" = "true" ] && [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager-plus" ]; then
+            echo "DockerHub image name must be seakee/cpa-manager-plus" >&2
             exit 1
           fi
-          if [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager" ]; then
-            echo "Docker image name must be seakee/cpa-manager" >&2
-            exit 1
-          fi
+
+          {
+            echo "images<<EOF"
+            echo "${images}"
+            echo "EOF"
+            echo "dockerhub_enabled=${dockerhub_enabled}"
+          } >> "${GITHUB_OUTPUT}"
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Login to Docker Hub
+        if: steps.docker_targets.outputs.dockerhub_enabled == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -123,18 +199,24 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ steps.docker_targets.outputs.images }}
           tags: |
             type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=semver,pattern={{version}},enable=${{ steps.release_type.outputs.semver == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.release_type.outputs.stable == 'true' }}
+            type=raw,value=latest,enable=${{ steps.release_type.outputs.stable == 'true' }}
+          labels: |
+            org.opencontainers.image.title=CPA Manager Plus
+            org.opencontainers.image.description=CPA Manager Plus Manager Server container image
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
 
-      - name: Build and push Usage Service image
+      - name: Build and push Manager Server image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.usage-service
+          file: Dockerfile.manager-server
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -143,10 +225,11 @@ jobs:
             VERSION=${{ github.ref_name }}
 
       - name: Update DockerHub overview
+        if: steps.docker_targets.outputs.dockerhub_enabled == 'true'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: CLI Proxy API Management Center with Dockerized Usage Service
+          short-description: CPA Manager Plus with Dockerized Manager Server
           readme-filepath: ./README.md

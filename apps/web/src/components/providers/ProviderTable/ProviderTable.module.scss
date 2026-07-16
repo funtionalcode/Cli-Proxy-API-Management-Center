@@ -1,0 +1,444 @@
+@use '@/styles/variables.scss' as *;
+@use '@/styles/mixins.scss' as *;
+
+// 类型 / 标识 / 地址 / 模型 / 优先级 / 近期请求 / 启用 / 操作
+$table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(220px, 0.82fr) 68px 112px;
+
+@mixin provider-card-layout {
+  @include narrow-laptop {
+    @content;
+  }
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: $table-columns;
+  align-items: center;
+  gap: 16px;
+  padding: $spacing-sm $spacing-md;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-color);
+
+  @include provider-card-layout {
+    display: none;
+  }
+}
+
+.row {
+  display: grid;
+  grid-template-columns: $table-columns;
+  align-items: center;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px $spacing-md;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background $transition-fast;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--surface-subtle);
+    outline: none;
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  @include provider-card-layout {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'type toggle'
+      'identity identity'
+      'url url'
+      'priority models'
+      'recent recent'
+      'actions actions';
+    column-gap: 10px;
+    row-gap: 6px;
+    padding: $spacing-md;
+    border: 1px solid var(--border-color);
+    border-radius: $radius-md;
+    margin-bottom: $spacing-sm;
+    background: var(--bg-primary);
+  }
+}
+
+// 停用行：仅信息单元格降透明度，开关与操作保持可交互的视觉权重
+.rowDisabled {
+  .cellType,
+  .cellIdentity,
+  .cellUrl,
+  .cellPriority,
+  .cellModels,
+  .cellRecent {
+    opacity: 0.55;
+  }
+}
+
+.cellType {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  @include provider-card-layout {
+    grid-area: type;
+  }
+}
+
+.kindIconFrame {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.kindIcon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.kindIconCodex {
+  transform: scale(1.16);
+}
+
+.kindIconOpenai {
+  transform: scale(0.98);
+}
+
+.kindLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.cellIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+
+  @include provider-card-layout {
+    grid-area: identity;
+  }
+}
+
+.identityMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+
+  @include provider-card-layout {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+}
+
+.identityLabel {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  @include text-ellipsis;
+}
+
+.identityMeta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+
+  @include provider-card-layout {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 100%;
+    @include text-ellipsis;
+  }
+}
+
+.cellUrl {
+  font-size: 12px;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+
+  @include provider-card-layout {
+    grid-area: url;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.cellNumeric {
+  text-align: right;
+
+  @include provider-card-layout {
+    text-align: left;
+  }
+}
+
+.cellPriority,
+.cellModels {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+
+  @include provider-card-layout {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+.cellModelsHeader,
+.cellPriorityHeader {
+  text-align: center;
+}
+
+.cellPriority {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  @include provider-card-layout {
+    grid-area: priority;
+    justify-content: flex-start;
+  }
+}
+
+.priorityControl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+
+  @include provider-card-layout {
+    justify-content: flex-start;
+  }
+}
+
+.priorityValueButton {
+  max-width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+  background: transparent;
+  text-align: center;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 30px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    background $transition-fast,
+    color $transition-fast,
+    box-shadow $transition-fast;
+
+  &:hover:not(:disabled) {
+    background: var(--app-accent-soft);
+    color: var(--primary-color);
+  }
+
+  &:focus {
+    background: var(--focus-bg);
+    color: var(--focus-text);
+    box-shadow: inset 0 0 0 1px var(--focus-inset);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.62;
+  }
+}
+
+.priorityInput {
+  width: 36px;
+  min-width: 36px;
+  height: 30px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+  appearance: textfield;
+  background: transparent;
+  text-align: center;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  transition:
+    background $transition-fast,
+    color $transition-fast,
+    box-shadow $transition-fast;
+
+  &:focus {
+    background: var(--focus-bg);
+    color: var(--focus-text);
+    box-shadow: inset 0 0 0 1px var(--focus-inset);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.62;
+  }
+
+  &::-webkit-outer-spin-button,
+  &::-webkit-inner-spin-button {
+    margin: 0;
+    appearance: none;
+  }
+}
+
+.cellModels {
+  text-align: center;
+
+  @include provider-card-layout {
+    grid-area: models;
+    text-align: left;
+  }
+}
+
+.cellRecentHeader {
+  padding-left: 8px;
+  text-align: left;
+
+  @include provider-card-layout {
+    padding-left: 0;
+  }
+}
+
+// 仅移动端展示的内联字段名
+.cellCaption {
+  display: none;
+
+  @include provider-card-layout {
+    display: inline;
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+}
+
+.cellRecent {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  padding-left: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  @include provider-card-layout {
+    grid-area: recent;
+    width: 100%;
+    max-width: 100%;
+    padding-left: 0;
+  }
+}
+
+// 中和 ProviderStatusBar 默认样式中的纵向留白，保证单行对齐
+.recentBarWrap {
+  flex: 1 1 88px;
+  min-width: 0;
+  max-width: 220px;
+
+  > div {
+    margin-top: 0;
+    padding: 0;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  > div > div:first-child {
+    min-width: 0;
+  }
+
+  > div > div:first-child > div {
+    min-width: 0;
+  }
+
+  > div > span:last-child {
+    flex-shrink: 0;
+  }
+
+  @include provider-card-layout {
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+.noRecent {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.statSuccess {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: $success-color;
+  flex-shrink: 0;
+}
+
+.statFailure {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: $error-color;
+  flex-shrink: 0;
+}
+
+.cellToggle {
+  display: flex;
+  justify-content: flex-start;
+  cursor: default;
+
+  @include provider-card-layout {
+    grid-area: toggle;
+    justify-content: flex-end;
+  }
+}
+
+.cellActions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: default;
+
+  @include provider-card-layout {
+    grid-area: actions;
+    justify-content: flex-end;
+    padding-top: 2px;
+  }
+}
+
+.cellActionsHeader {
+  text-align: center;
+}

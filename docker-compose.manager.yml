@@ -1,0 +1,34 @@
+services:
+  cpa-manager-plus:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager-server
+    image: seakee/cpa-manager-plus:latest
+    restart: unless-stopped
+    ports:
+      - "18317:18317"
+    environment:
+      HTTP_ADDR: "0.0.0.0:18317"
+      USAGE_DB_PATH: "/data/usage.sqlite"
+      CPA_MANAGER_DATA_KEY_PATH: "/data/data.key"
+      # Optional: set CPA_MANAGER_ADMIN_KEY or CPA_MANAGER_ADMIN_KEY_FILE to provide
+      # a stable admin key. If omitted, the first startup log prints a generated key once.
+      # Optional: set CPA_MANAGER_DATA_KEY or CPA_MANAGER_DATA_KEY_FILE only when you
+      # manage this encryption key outside the /data volume.
+      USAGE_COLLECTOR_MODE: "auto"
+      USAGE_RESP_QUEUE: "usage"
+      USAGE_RESP_POP_SIDE: "right"
+      USAGE_BATCH_SIZE: "100"
+      USAGE_POLL_INTERVAL_MS: "500"
+      USAGE_QUERY_LIMIT: "50000"
+      USAGE_CORS_ORIGINS: "*"
+    volumes:
+      - cpa-manager-plus-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18317/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  cpa-manager-plus-data:

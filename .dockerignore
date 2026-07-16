@@ -3,6 +3,6 @@ dist
 .git
 .DS_Store
 npm-debug.log*
-usage-service/*.sqlite
-usage-service/*.sqlite-shm
-usage-service/*.sqlite-wal
+apps/manager-server/*.sqlite
+apps/manager-server/*.sqlite-shm
+apps/manager-server/*.sqlite-wal

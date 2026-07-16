@@ -7,17 +7,36 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈。请尽量完整填写下面信息，否则很难判断是 CPA、CPA-Manager、网络、Docker 还是配置问题。
+        感谢反馈。请尽量完整填写下面信息，否则很难判断是 CPA、CPA Manager Plus、网络、Docker 还是配置问题。
+
+  - type: dropdown
+    id: problem-type
+    attributes:
+      label: 问题类型
+      description: 请选择最接近的问题类型，便于快速分流。
+      options:
+        - 请求监控为空或数据延迟
+        - 用量 / 成本统计不准确
+        - AI 提供商不可用或测活异常
+        - 认证文件 / 配额 / 巡检异常
+        - 自动禁用 / 自动恢复异常
+        - 登录 / 权限 / Management Key
+        - 配置保存或配置读取异常
+        - 前端显示或交互异常
+        - 部署 / 网络 / 反代异常
+        - 其他
+    validations:
+      required: true
 
   - type: dropdown
     id: deploy-mode
     attributes:
       label: 部署方式
-      description: 你现在是如何部署 CPA-Manager 的？
+      description: 你现在是如何部署 CPA Manager Plus 的？
       options:
         - 只配置 CPA 面板仓库地址
         - 完整 Docker 方案
-        - CPA 控制面板 + 外部 Usage Service
+        - CPA 控制面板 + 外部 Manager Server
         - Windows / 非 Docker
         - 其他
     validations:
@@ -34,7 +53,7 @@ body:
   - type: input
     id: manager-version
     attributes:
-      label: CPA-Manager 版本
+      label: CPA Manager Plus 版本
       placeholder: 例如 v1.1.5 / latest / commit hash
     validations:
       required: true
@@ -64,11 +83,11 @@ body:
     id: config
     attributes:
       label: 关键配置
-      description: 请脱敏后粘贴相关配置，例如 Usage Service 地址、CPA 地址、Docker Compose 片段等。
+      description: 请脱敏后粘贴相关配置，例如 Manager Server 地址、CPA 地址、Docker Compose 片段等。
       render: yaml
       placeholder: |
         usage-statistics-enabled: true
-        Usage Service URL: http://...
+        Manager Server URL: http://...
         CPA URL: http://...
     validations:
       required: true
@@ -77,7 +96,7 @@ body:
     id: status
     attributes:
       label: /status 返回内容
-      description: 如果是统计、请求监控、巡检相关问题，请粘贴 Usage Service /status 的返回内容。
+      description: 如果是统计、请求监控、巡检相关问题，请粘贴 Manager Server /status 的返回内容。
       render: json
       placeholder: |
         {
@@ -93,7 +112,7 @@ body:
     id: logs
     attributes:
       label: 日志
-      description: 请粘贴 CPA-Manager / Usage Service / Docker 相关日志。
+      description: 请粘贴 CPA Manager Plus / Manager Server / Docker 相关日志。
       render: shell
     validations:
       required: false

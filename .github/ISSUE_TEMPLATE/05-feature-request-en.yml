@@ -9,12 +9,31 @@ body:
       value: |
         Please describe the real use case instead of only saying "please support xxx".
 
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Page / Module
+      description: Where does this request mainly apply?
+      options:
+        - Request monitoring
+        - Usage analytics / cost analytics
+        - AI providers
+        - Auth files / quota / inspection
+        - API keys / client management
+        - Configuration center
+        - Deployment / Manager Server
+        - Backup / maintenance
+        - README / docs / growth presentation
+        - Not sure / other
+    validations:
+      required: true
+
   - type: textarea
     id: scenario
     attributes:
       label: Use Case
       description: In what situation do you need this feature?
-      placeholder: "Example: I have multiple CPA instances and want to view request statistics from all of them in one CPA-Manager."
+      placeholder: "Example: I have multiple CPA instances and want to view request statistics from all of them in one CPA Manager Plus."
     validations:
       required: true
 
@@ -30,7 +49,35 @@ body:
     id: solution
     attributes:
       label: Expected Solution
-      description: How would you like CPA-Manager to support this?
+      description: How would you like CPA Manager Plus to support this?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: dimensions
+    attributes:
+      label: Relevant Data Dimensions
+      description: If this request involves statistics, filters, display, quota, or export, select the related dimensions.
+      options:
+        - label: API Key / client
+        - label: AI provider
+        - label: Model
+        - label: Auth file
+        - label: Account
+        - label: Project
+        - label: Time range
+        - label: Cost
+        - label: Token / usage
+        - label: Quota
+        - label: Failure reason / error type
+        - label: None of these
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Expected Acceptance Result
+      description: What result would make this request complete? Please make it verifiable.
+      placeholder: "Example: If a provider can return a model list but real requests fail, the health check should show it as unavailable and explain the failure reason."
     validations:
       required: true
 
@@ -39,9 +86,9 @@ body:
     attributes:
       label: Priority
       options:
-        - High: affects the main workflow
-        - Medium: clearly improves usability
-        - Low: nice to have
+        - "High: affects the main workflow"
+        - "Medium: clearly improves usability"
+        - "Low: nice to have"
     validations:
       required: true
 

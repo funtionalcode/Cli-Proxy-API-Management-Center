@@ -24,9 +24,11 @@ jobs:
               "### 部署方式",
               "### 使用场景",
               "### 运行环境",
+              "### 可观测性场景",
               "### Deployment Mode",
               "### Use Case",
-              "### Runtime Environment"
+              "### Runtime Environment",
+              "### Observability Scenario"
             ];
 
             const usesTemplate = requiredMarkers.some((marker) => body.includes(marker));
@@ -74,7 +76,7 @@ jobs:
               labels: [label]
             });
 
-            const commentMarker = "<!-- cpa-manager-template-check -->";
+            const commentMarker = "<!-- cpa-manager-plus-template-check -->";
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -99,10 +101,10 @@ jobs:
                 "这个 Issue 看起来没有使用模板，信息不足，暂时无法排查。",
                 "This issue does not appear to use a required template, so it does not contain enough information for triage.",
                 "",
-                "请重新创建 Issue，并选择对应模板：Bug 反馈、功能需求或部署 / 配置求助。",
-                "Please recreate the issue and choose one of the templates: Bug Report, Feature Request, or Deployment / Configuration Help.",
+                "请重新创建 Issue，并选择对应模板：Bug 反馈、功能需求、部署 / 配置求助或可观测性 / 运维需求。",
+                "Please recreate the issue and choose one of the templates: Bug Report, Feature Request, Deployment / Configuration Help, or Observability / Operations Request.",
                 "",
-                "如果是请求监控为空、Usage Service、Docker 网络相关问题，请务必提供版本、部署方式、关键配置和 `/status` 返回内容。",
-                "For empty request monitoring, Usage Service, or Docker networking issues, include versions, deployment mode, key configuration, and the `/status` response."
+                "如果是请求监控为空、Manager Server、Docker 网络相关问题，请务必提供版本、部署方式、关键配置和 `/status` 返回内容。",
+                "For empty request monitoring, Manager Server, or Docker networking issues, include versions, deployment mode, key configuration, and the `/status` response."
               ].join("\n")
             });

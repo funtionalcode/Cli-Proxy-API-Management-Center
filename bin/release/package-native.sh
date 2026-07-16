@@ -4,8 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${VERSION:-dev}"
 out_dir="${OUT_DIR:-"${repo_root}/dist/native"}"
-web_html="${WEB_HTML:-"${repo_root}/dist/management.html"}"
-binary_name="cpa-manager"
+default_web_html="${repo_root}/apps/web/dist/management.html"
+if [ ! -f "${default_web_html}" ]; then
+  default_web_html="${repo_root}/apps/web/dist/index.html"
+fi
+web_html="${WEB_HTML:-"${default_web_html}"}"
+binary_name="cpa-manager-plus"
+server_src="${repo_root}/apps/manager-server"
+native_script_src="${repo_root}/bin/native"
 
 if [ ! -f "${web_html}" ]; then
   echo "missing ${web_html}; run npm run build first" >&2
@@ -19,8 +25,8 @@ trap 'rm -rf "${work_dir}"' EXIT
 rm -rf "${out_dir}"
 mkdir -p "${out_dir}"
 
-cp -R "${repo_root}/usage-service" "${work_dir}/usage-service"
-cp "${web_html}" "${work_dir}/usage-service/internal/httpapi/web/management.html"
+cp -R "${server_src}" "${work_dir}/manager-server"
+cp "${web_html}" "${work_dir}/manager-server/internal/httpapi/web/management.html"
 
 targets=(
   "linux amd64"
@@ -43,13 +49,20 @@ for target in "${targets[@]}"; do
 
   mkdir -p "${package_dir}"
   (
-    cd "${work_dir}/usage-service"
-    CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags "-s -w" -o "${package_dir}/${exe_name}" ./cmd/cpa-manager
+    cd "${work_dir}/manager-server"
+    CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags "-s -w" -o "${package_dir}/${exe_name}" ./cmd/cpa-manager-plus
   )
 
   cp "${repo_root}/README.md" "${package_dir}/README.md"
   cp "${repo_root}/README_CN.md" "${package_dir}/README_CN.md"
+  cp -R "${repo_root}/docs" "${package_dir}/docs"
   cp "${repo_root}/LICENSE" "${package_dir}/LICENSE"
+  if [ "${goos}" = "windows" ]; then
+    cp "${native_script_src}/cpa-manager-plusctl.ps1" "${package_dir}/cpa-manager-plusctl.ps1"
+  else
+    cp "${native_script_src}/cpa-manager-plusctl.sh" "${package_dir}/cpa-manager-plusctl"
+    chmod 0755 "${package_dir}/cpa-manager-plusctl"
+  fi
 
   if [ "${goos}" = "windows" ]; then
     (

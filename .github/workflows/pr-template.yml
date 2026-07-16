@@ -1,0 +1,66 @@
+name: PR Template
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-template:
+    name: PR Template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          body="${PR_BODY:-}"
+          body="${body//$'\r'/}"
+          required_headers=(
+            "## Summary"
+            "## Scope"
+            "## Changes"
+            "## User Impact"
+            "## Compatibility / Runtime Notes"
+            "## Data / Security Notes"
+            "## Risk / Rollback"
+            "## Verification"
+            "## Screenshots / Recordings"
+            "## Docs"
+            "## Related"
+          )
+
+          missing_headers=()
+          for header in "${required_headers[@]}"; do
+            if ! grep -Fq "$header" <<< "$body"; then
+              missing_headers+=("$header")
+            fi
+          done
+
+          if (( ${#missing_headers[@]} > 0 )); then
+            echo "PR body is missing required template sections:"
+            printf ' - %s\n' "${missing_headers[@]}"
+            exit 1
+          fi
+
+          if ! grep -Eq '^- \[[xX]\] (Frontend panel|Manager Server|CPA panel mode|Full Docker mode|Native packages / release|Docs / Wiki|CI / build / tooling)$' <<< "$body"; then
+            echo "PR body must check at least one item in the Scope section."
+            exit 1
+          fi

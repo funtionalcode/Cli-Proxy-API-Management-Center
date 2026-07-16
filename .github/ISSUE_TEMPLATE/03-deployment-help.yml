@@ -1,5 +1,5 @@
 name: 部署 / 配置求助
-description: Docker、Usage Service、网络、反代、Windows 部署相关问题
+description: Docker、Manager Server、网络、反代、Windows 部署相关问题
 title: "[Deploy]: "
 labels: ["deployment", "needs-triage"]
 
@@ -25,7 +25,7 @@ body:
       options:
         - 只配置 CPA 面板仓库地址
         - 完整 Docker 方案
-        - CPA 控制面板 + 外部 Usage Service
+        - CPA 控制面板 + 外部 Manager Server
         - 不确定
     validations:
       required: true
@@ -48,9 +48,9 @@ body:
       required: true
 
   - type: input
-    id: usage-url
+    id: manager-url
     attributes:
-      label: Usage Service 地址
+      label: Manager Server 地址
       placeholder: http://127.0.0.1:18317
     validations:
       required: false
@@ -62,6 +62,21 @@ body:
       render: shell
     validations:
       required: true
+
+  - type: textarea
+    id: connectivity
+    attributes:
+      label: 连通性检查结果
+      description: 请粘贴已执行的连通性检查结果。注意浏览器能访问不等于容器之间能访问。
+      render: shell
+      placeholder: |
+        curl <CPA 地址>/status
+        curl <Manager Server 地址>/status
+        docker network ls
+        docker compose ps
+        反代路径 / base path：
+    validations:
+      required: false
 
   - type: textarea
     id: tried
