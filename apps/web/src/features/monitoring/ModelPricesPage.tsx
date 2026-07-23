@@ -6,12 +6,10 @@ import { Input } from '@/components/ui/Input';
 import { IconPencil, IconSearch, IconTrash2, IconX } from '@/components/ui/icons';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
-  usageServiceApi,
   type ModelPriceSyncCandidate,
   type ModelPriceSyncResponse,
-  type ModelPriceUsageSummaryResponse,
 } from '@/services/api/usageService';
-import { useAuthStore, useNotificationStore } from '@/stores';
+import { useNotificationStore } from '@/stores';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import {
   applyCandidatePrice,
@@ -41,12 +39,9 @@ const resolveErrorMessage = (error: unknown, fallback: string) => {
 export function ModelPricesPage() {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
-  const managementKey = useAuthStore((state) => state.managementKey);
   const featureAvailability = usePanelFeatureAvailability();
   const { loading, modelPrices, setModelPrices, syncModelPrices, usageServiceAvailable } =
     useUsageData({ loadUsageEvents: false });
-  const [usageSummary, setUsageSummary] = useState<ModelPriceUsageSummaryResponse | null>(null);
-  const [usageSummaryLoading, setUsageSummaryLoading] = useState(false);
   const initialUiState = useRef(readModelPricesPageUiState());
   const [search, setSearch] = useState(() => initialUiState.current.search);
   const [filter, setFilter] = useState<ModelPriceFilter>(() => initialUiState.current.filter);
@@ -55,19 +50,15 @@ export function ModelPricesPage() {
   const [selectedCandidates, setSelectedCandidates] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<PriceDraft>(() => createEmptyPriceDraft());
   const [manualEditorOpen, setManualEditorOpen] = useState(false);
-  const modelPriceServiceBase = featureAvailability.modelPricesAvailable
-    ? featureAvailability.managerServiceBase
-    : '';
-
   const syncModels = useMemo(
-    () => buildSyncPriceModelsFromSummary(usageSummary, modelPrices),
-    [modelPrices, usageSummary]
+    () => buildSyncPriceModelsFromSummary(null, modelPrices),
+    [modelPrices]
   );
 
   const candidateSets = useMemo(() => syncResult?.candidates ?? [], [syncResult?.candidates]);
   const rows = useMemo(
-    () => buildModelPriceRows(usageSummary, modelPrices, candidateSets),
-    [candidateSets, modelPrices, usageSummary]
+    () => buildModelPriceRows(null, modelPrices, candidateSets),
+    [candidateSets, modelPrices]
   );
   const summary = useMemo(() => buildModelPriceSummary(rows), [rows]);
   const visibleRows = useMemo(
@@ -88,38 +79,6 @@ export function ModelPricesPage() {
   useEffect(() => {
     writeModelPricesPageUiState({ search, filter });
   }, [filter, search]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    if (!modelPriceServiceBase) {
-      setUsageSummary(null);
-      setUsageSummaryLoading(false);
-      return () => controller.abort();
-    }
-
-    setUsageSummaryLoading(true);
-    void usageServiceApi
-      .getModelPriceUsageSummary(modelPriceServiceBase, managementKey, controller.signal)
-      .then((response) => {
-        if (!controller.signal.aborted) {
-          setUsageSummary(response);
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          // Older Manager Server versions do not expose this lightweight endpoint.
-          // Keep saved prices visible without falling back to the large /usage payload.
-          setUsageSummary(null);
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setUsageSummaryLoading(false);
-        }
-      });
-
-    return () => controller.abort();
-  }, [managementKey, modelPriceServiceBase]);
 
   const handleSync = async () => {
     if (syncModels.length === 0) {
@@ -363,7 +322,7 @@ export function ModelPricesPage() {
           </div>
         ) : null}
 
-        {loading || usageSummaryLoading ? (
+        {loading ? (
           <div className={styles.emptyState}>{t('common.loading')}</div>
         ) : visibleRows.length === 0 ? (
           <div className={styles.emptyState}>{t('model_prices.empty')}</div>
@@ -373,7 +332,6 @@ export function ModelPricesPage() {
               <thead>
                 <tr>
                   <th>{t('usage_stats.model_name')}</th>
-                  <th>{t('model_prices.calls')}</th>
                   <th>{t('usage_stats.model_price_prompt')}</th>
                   <th>{t('usage_stats.model_price_completion')}</th>
                   <th>{t('usage_stats.model_price_cache')}</th>
@@ -406,7 +364,6 @@ export function ModelPricesPage() {
                           ) : null}
                         </div>
                       </td>
-                      <td>{row.calls}</td>
                       <td>{formatPriceUnit(row.price?.prompt)}</td>
                       <td>{formatPriceUnit(row.price?.completion)}</td>
                       <td>{formatPriceUnit(row.price?.cache)}</td>
