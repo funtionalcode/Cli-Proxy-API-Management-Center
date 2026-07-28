@@ -148,6 +148,75 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null,
 			primary key (bucket_ms, model, billing_model, service_tier)
 		)`,
+		`create table if not exists usage_hourly_aggregate_v1 (
+			bucket_ms integer not null,
+			model text not null,
+			billing_model text not null,
+			service_tier text not null,
+			failed integer not null,
+			calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			latency_sum_ms integer not null default 0,
+			latency_samples integer not null default 0,
+			zero_token_calls integer not null default 0,
+			updated_at_ms integer not null,
+			primary key (bucket_ms, model, billing_model, service_tier, failed)
+		)`,
+		`create table if not exists usage_hourly_aggregate_state (
+			aggregate_name text primary key,
+			schema_version integer not null,
+			status text not null,
+			backfill_last_event_id integer not null default 0,
+			coverage_event_id integer not null default 0,
+			target_event_id integer not null default 0,
+			processed_events integer not null default 0,
+			min_bucket_ms integer,
+			max_bucket_ms integer,
+			last_run_started_at_ms integer,
+			updated_at_ms integer not null default 0,
+			finished_at_ms integer,
+			last_error text
+		)`,
+		`insert or ignore into usage_hourly_aggregate_state (
+			aggregate_name,
+			schema_version,
+			status,
+			backfill_last_event_id,
+			coverage_event_id,
+			target_event_id,
+			processed_events,
+			updated_at_ms
+		) select
+			'hourly_core',
+			1,
+			case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+			0,
+			0,
+			coalesce((select max(id) from usage_events), 0),
+			0,
+			0`,
+		`create table if not exists usage_event_identity_ledger (
+			event_hash text primary key,
+			raw_event_id integer,
+			timestamp_ms integer not null,
+			bucket_ms integer not null,
+			aggregate_schema_version integer not null default 0,
+			first_seen_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_usage_event_identity_ledger_raw_event_id on usage_event_identity_ledger(raw_event_id)`,
+		`create index if not exists idx_usage_event_identity_ledger_bucket on usage_event_identity_ledger(bucket_ms)`,
 		`create table if not exists usage_data_migrations (
 			name text primary key,
 			status text not null,
@@ -262,6 +331,18 @@ func Migrate(db *sql.DB) error {
 		`create index if not exists idx_codex_inspection_runs_started_at on codex_inspection_runs(started_at_ms)`,
 		`create index if not exists idx_codex_inspection_runs_status on codex_inspection_runs(status)`,
 		`create index if not exists idx_codex_inspection_runs_trigger on codex_inspection_runs(trigger_type, trigger_key)`,
+		// A single row is the database-level fencing point for all Manager Server
+		// instances sharing this database. run_id is nullable so an expired lease
+		// can be claimed before the replacement run is inserted in the same tx.
+		`create table if not exists codex_inspection_leases (
+			id integer primary key check (id = 1),
+			run_id integer,
+			owner_id text not null,
+			heartbeat_at_ms integer not null,
+			lease_expires_at_ms integer not null,
+			foreign key(run_id) references codex_inspection_runs(id) on delete set null
+		)`,
+		`create index if not exists idx_codex_inspection_leases_expiry on codex_inspection_leases(lease_expires_at_ms)`,
 		`create table if not exists codex_inspection_results (
 			id integer primary key autoincrement,
 			run_id integer not null,
@@ -319,6 +400,7 @@ func Migrate(db *sql.DB) error {
 			provider text,
 			reason_code text,
 			window_kind text,
+			evidence_json text,
 			recover_at_ms integer not null,
 			owner text not null,
 			event_hash text,
@@ -488,6 +570,7 @@ func ensureQuotaCooldownColumns(db *sql.DB) error {
 	}{
 		{name: "reason_code", definition: "text"},
 		{name: "window_kind", definition: "text"},
+		{name: "evidence_json", definition: "text"},
 	} {
 		if _, ok := existing[column.name]; ok {
 			continue

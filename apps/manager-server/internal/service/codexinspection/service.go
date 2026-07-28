@@ -3,21 +3,27 @@ package codexinspection
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	codexinspectionrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/codexinspection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpa"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
@@ -34,10 +40,24 @@ const (
 	codexMaxMonthWindow       = 31 * 24 * 60 * 60
 	maxStoredBodyText         = 2048
 	maxCPAAPICallResponseSize = 16 * 1024 * 1024
+	criticalWriteTimeout      = 8 * time.Second
+	processLogWriteTimeout    = 750 * time.Millisecond
+	resultWriteTimeout        = 2 * time.Second
+	resultPersistenceTimeout  = 8 * time.Second
+	cancelledPersistTimeout   = 2 * time.Second
+	processLogQueueWait       = 10 * time.Millisecond
+	minimumInspectionLease    = time.Millisecond
+	userCancelRequestReason   = "用户请求取消巡检"
+	userCancelledReason       = "用户主动取消巡检"
 )
 
 var (
 	ErrRunAlreadyActive           = errors.New("codex inspection is already running")
+	ErrRunNotCancellable          = errors.New("codex inspection run cannot be cancelled")
+	ErrServiceStopping            = errors.New("codex inspection service is stopping")
+	ErrRunNotOwned                = errors.New("codex inspection run is owned by another instance")
+	ErrTriggerAlreadyExists       = errors.New("codex inspection trigger already handled")
+	ErrScheduledRunDisabled       = errors.New("scheduled codex inspection is disabled")
 	ErrNotConfigured              = errors.New("usage service is not configured")
 	ErrRunNotFound                = errors.New("codex inspection run not found")
 	ErrRunNotCompleted            = errors.New("codex inspection run is not completed")
@@ -52,8 +72,51 @@ type Service struct {
 	managerConfigService *managerconfig.Service
 	client               *http.Client
 
-	mu      sync.Mutex
-	running bool
+	mu                sync.Mutex
+	cancelMu          sync.Mutex
+	active            *localRun
+	starting          bool
+	startDone         chan struct{}
+	startCancel       context.CancelFunc
+	auxiliaryRunning  bool
+	auxiliaryDone     chan struct{}
+	auxiliaryCancel   context.CancelFunc
+	lifecycleOps      int
+	lifecycleDone     chan struct{}
+	stopping          bool
+	ownerID           string
+	leaseDuration     time.Duration
+	heartbeatInterval time.Duration
+	logMu             sync.Mutex
+	logGate           chan struct{}
+}
+
+type ServiceOptions struct {
+	OwnerID           string
+	LeaseDuration     time.Duration
+	HeartbeatInterval time.Duration
+}
+
+var inspectionOwnerSequence atomic.Uint64
+
+type terminationReason string
+
+const (
+	terminationNone     terminationReason = ""
+	terminationUser     terminationReason = "user_cancel"
+	terminationShutdown terminationReason = "service_shutdown"
+	terminationLease    terminationReason = "lease_lost"
+)
+
+type localRun struct {
+	runID             int64
+	cancel            context.CancelFunc
+	done              chan struct{}
+	leaseHeartbeatAt  time.Time
+	terminationReason terminationReason
+	finalizing        bool
+	result            RunDetail
+	err               error
 }
 
 type RunRequest struct {
@@ -78,14 +141,15 @@ type ManualActionOverride struct {
 }
 
 type ActionOutcome struct {
-	ResultID       int64  `json:"resultId,omitempty"`
-	AccountKey     string `json:"accountKey,omitempty"`
-	FileName       string `json:"fileName"`
-	DisplayAccount string `json:"displayAccount"`
-	Action         string `json:"action"`
-	Status         string `json:"status"`
-	Success        bool   `json:"success"`
-	Error          string `json:"error,omitempty"`
+	ResultID        int64  `json:"resultId,omitempty"`
+	AccountKey      string `json:"accountKey,omitempty"`
+	FileName        string `json:"fileName"`
+	DisplayAccount  string `json:"displayAccount"`
+	Action          string `json:"action"`
+	Status          string `json:"status"`
+	Success         bool   `json:"success"`
+	Error           string `json:"error,omitempty"`
+	CurrentDisabled *bool  `json:"-"`
 }
 
 type ExecuteActionsResult struct {
@@ -185,56 +249,241 @@ func (w codexClassifiedWindows) longWindowLabel(window *codexWindow) string {
 }
 
 func New(st *store.Store, managerConfigService *managerconfig.Service, clients ...*http.Client) *Service {
+	return NewWithOptions(st, managerConfigService, ServiceOptions{}, clients...)
+}
+
+func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service, options ServiceOptions, clients ...*http.Client) *Service {
 	client := &http.Client{Timeout: 30 * time.Second}
 	if len(clients) > 0 && clients[0] != nil {
 		client = clients[0]
+	}
+	ownerID := strings.TrimSpace(options.OwnerID)
+	if ownerID == "" {
+		ownerID = inspectionOwnerID()
+	}
+	leaseDuration := options.LeaseDuration
+	if leaseDuration <= 0 {
+		leaseDuration = 30 * time.Second
+	}
+	if leaseDuration < minimumInspectionLease {
+		leaseDuration = minimumInspectionLease
+	}
+	heartbeatInterval := options.HeartbeatInterval
+	if heartbeatInterval <= 0 || heartbeatInterval >= leaseDuration {
+		heartbeatInterval = leaseDuration / 3
+		if heartbeatInterval <= 0 {
+			heartbeatInterval = time.Nanosecond
+		}
+		if heartbeatInterval >= leaseDuration {
+			heartbeatInterval = leaseDuration - time.Nanosecond
+		}
+	}
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = time.Nanosecond
 	}
 	return &Service{
 		store:                st,
 		managerConfigService: managerConfigService,
 		client:               client,
+		ownerID:              ownerID,
+		leaseDuration:        leaseDuration,
+		heartbeatInterval:    heartbeatInterval,
+		logGate:              make(chan struct{}, 1),
+	}
+}
+
+func inspectionOwnerID() string {
+	var randomBytes [12]byte
+	randomSuffix := "unavailable"
+	if _, err := cryptorand.Read(randomBytes[:]); err != nil {
+		log.Printf("generate codex inspection lease owner random suffix: %v", err)
+	} else {
+		randomSuffix = hex.EncodeToString(randomBytes[:])
+	}
+	host, _ := os.Hostname()
+	return fmt.Sprintf(
+		"%s:%d:%d:%d:%s",
+		strings.TrimSpace(host),
+		os.Getpid(),
+		time.Now().UnixNano(),
+		inspectionOwnerSequence.Add(1),
+		randomSuffix,
+	)
+}
+
+func (s *Service) beginStart(startCancel context.CancelFunc) (chan struct{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping {
+		return nil, ErrServiceStopping
+	}
+	if s.starting || s.active != nil || s.auxiliaryRunning {
+		return nil, ErrRunAlreadyActive
+	}
+	done := make(chan struct{})
+	s.starting = true
+	s.startDone = done
+	s.startCancel = startCancel
+	return done, nil
+}
+
+func (s *Service) finishStart(done chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startDone != done {
+		return
+	}
+	s.starting = false
+	s.startDone = nil
+	s.startCancel = nil
+	close(done)
+}
+
+func (s *Service) finalizeUnstartedRun(run model.CodexInspectionRun, status, reason string) {
+	run.Status = status
+	run.Error = reason
+	run.FinishedAtMS = time.Now().UnixMilli()
+	finalLog := &model.CodexInspectionLog{
+		RunID:   run.ID,
+		Level:   "warning",
+		Message: reason,
+		Detail: map[string]any{
+			"status": status,
+			"reason": "start_aborted",
+		},
+	}
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.Background(), criticalWriteTimeout)
+	defer cancelFinalize()
+	if err := s.finalizeInspectionRunWithContext(finalizeCtx, run, finalLog); err != nil {
+		if fallbackErr := s.forceFinalizeInspectionRunWithContext(finalizeCtx, run, finalLog); fallbackErr != nil {
+			log.Printf("finalize unstarted codex inspection run %d: %v (fallback: %v)", run.ID, err, fallbackErr)
+		} else {
+			log.Printf("finalize unstarted codex inspection run %d via fenced recovery", run.ID)
+		}
 	}
 }
 
 func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
-	if err := s.acquireRun(); err != nil {
-		return RunDetail{}, err
-	}
-	defer s.releaseRun()
-
-	settings, setup, err := s.resolveRuntime(ctx)
+	task, initial, err := s.startRun(ctx, req, false)
 	if err != nil {
 		return RunDetail{}, err
 	}
+	if task == nil {
+		return initial, nil
+	}
+	<-task.done
+	return task.result, task.err
+}
+
+// Start creates a run and returns immediately. The execution context is owned
+// by the service, so an HTTP client disconnect cannot silently abandon a run.
+func (s *Service) Start(ctx context.Context, req RunRequest) (RunDetail, error) {
+	_, initial, err := s.startRun(ctx, req, true)
+	return initial, err
+}
+
+func (s *Service) startRun(ctx context.Context, req RunRequest, detach bool) (*localRun, RunDetail, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	acquireCtx, cancelAcquire := context.WithCancel(ctx)
+	startDone, err := s.beginStart(cancelAcquire)
+	if err != nil {
+		cancelAcquire()
+		return nil, RunDetail{}, err
+	}
+	defer s.finishStart(startDone)
+	defer cancelAcquire()
 
 	triggerType := strings.TrimSpace(req.TriggerType)
 	if triggerType == "" {
 		triggerType = model.CodexInspectionTriggerManual
 	}
-	startedAt := time.Now().UnixMilli()
-	run, err := s.store.CreateCodexInspectionRun(ctx, model.CodexInspectionRun{
+	settings, setup, err := s.resolveRuntime(acquireCtx)
+	if err != nil {
+		return nil, RunDetail{}, err
+	}
+	if triggerType == model.CodexInspectionTriggerScheduled && (settings.Enabled == nil || !*settings.Enabled) {
+		return nil, RunDetail{}, ErrScheduledRunDisabled
+	}
+	triggerKey := strings.TrimSpace(req.TriggerKey)
+	acquired, err := s.store.AcquireCodexInspectionRun(acquireCtx, model.CodexInspectionRun{
 		TriggerType:  triggerType,
-		TriggerKey:   strings.TrimSpace(req.TriggerKey),
+		TriggerKey:   triggerKey,
 		Status:       model.CodexInspectionStatusRunning,
-		StartedAtMS:  startedAt,
 		Settings:     settings,
 		SettingsJSON: model.MarshalCodexInspectionSettings(settings),
-	})
+	}, s.ownerID, s.leaseDuration)
 	if err != nil {
-		return RunDetail{}, err
+		if errors.Is(err, codexinspectionrepo.ErrLeaseAlreadyActive) {
+			return nil, RunDetail{}, ErrRunAlreadyActive
+		}
+		if errors.Is(err, codexinspectionrepo.ErrTriggerAlreadyExists) {
+			return nil, RunDetail{}, ErrTriggerAlreadyExists
+		}
+		return nil, RunDetail{}, err
 	}
+	run := acquired.Run
+	executionCtx := ctx
+	if detach {
+		executionCtx = context.WithoutCancel(ctx)
+	}
+	executionCtx, cancel := context.WithCancel(executionCtx)
+	leaseHeartbeatAt := time.Now()
+	if run.UpdatedAtMS > 0 {
+		leaseHeartbeatAt = time.UnixMilli(run.UpdatedAtMS)
+	}
+	task := &localRun{
+		runID:            run.ID,
+		cancel:           cancel,
+		done:             make(chan struct{}),
+		leaseHeartbeatAt: leaseHeartbeatAt,
+	}
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		cancel()
+		s.finalizeUnstartedRun(run, model.CodexInspectionStatusInterrupted, "服务关闭导致巡检未能启动")
+		return nil, RunDetail{}, ErrServiceStopping
+	}
+	if s.active != nil || s.auxiliaryRunning {
+		s.mu.Unlock()
+		cancel()
+		s.finalizeUnstartedRun(run, model.CodexInspectionStatusInterrupted, "本地巡检状态冲突，任务未能启动")
+		return nil, RunDetail{}, ErrRunAlreadyActive
+	}
+	s.active = task
+	s.mu.Unlock()
+	go s.runTask(task, executionCtx, req, run, settings, setup)
+	initial := RunDetail{
+		Run:     run,
+		Results: []model.CodexInspectionResult{},
+		Logs:    []model.CodexInspectionLog{},
+	}
+	initial.Run.Active = true
+	initial.Run.Cancellable = true
+	return task, initial, nil
+}
+
+func (s *Service) executeRun(ctx context.Context, req RunRequest, run model.CodexInspectionRun, settings model.ManagerCodexInspectionConfig, setup store.Setup) (RunDetail, error) {
 	persistCtx := context.WithoutCancel(ctx)
+	triggerType := run.TriggerType
+	triggerKey := run.TriggerKey
 
 	logger := runLogger{service: s, runID: run.ID}
-	logger.info(ctx, "Codex 巡检开始", map[string]any{
+	logger.info(ctx, "凭证健康巡检开始", map[string]any{
 		"triggerType": triggerType,
-		"triggerKey":  strings.TrimSpace(req.TriggerKey),
-		"targetType":  settings.TargetType,
+		"triggerKey":  triggerKey,
+		"targetTypes": settings.TargetProviders(),
 	})
 
 	files, err := s.fetchAuthFiles(ctx, setup)
 	if err != nil {
 		logger.error(persistCtx, "加载认证文件列表失败", map[string]any{"error": err.Error()})
+		if ctx.Err() != nil {
+			run.Error = err.Error()
+			return RunDetail{Run: run}, err
+		}
 		return s.failRun(persistCtx, run, err)
 	}
 
@@ -246,71 +495,826 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 
 	accounts := make([]account, 0, len(allAccounts))
 	for _, next := range allAccounts {
-		if next.Provider == settings.TargetType {
+		if settings.HasTargetProvider(next.Provider) {
 			accounts = append(accounts, next)
 		}
 	}
 	probeSetCount := len(accounts)
-	sampled := pickSample(accounts, settings.SampleSize)
+	sampled := pickSamplePerProvider(accounts, settings.SampleSize)
 
 	run.TotalFiles = len(files)
 	run.ProbeSetCount = probeSetCount
 	run.SampledCount = len(sampled)
 	run.DisabledCount = countAccounts(sampled, true)
 	run.EnabledCount = len(sampled) - run.DisabledCount
-	_ = s.store.UpdateCodexInspectionRun(persistCtx, run)
+	progressCtx, cancelProgress := context.WithTimeout(persistCtx, criticalWriteTimeout)
+	progressErr := s.store.UpdateCodexInspectionRunProgress(progressCtx, run, s.ownerID)
+	cancelProgress()
+	if progressErr != nil {
+		log.Printf("update codex inspection progress run %d: %v", run.ID, progressErr)
+		if errors.Is(progressErr, codexinspectionrepo.ErrLeaseLost) {
+			return RunDetail{Run: run}, progressErr
+		}
+	}
 
-	logger.info(ctx, "Codex 巡检集合已准备", map[string]any{
+	logger.info(ctx, "凭证健康巡检集合已准备", map[string]any{
 		"totalFiles":    len(files),
 		"probeSetCount": probeSetCount,
 		"sampledCount":  len(sampled),
+		"targetTypes":   settings.TargetProviders(),
 	})
 
-	results := s.inspectAccounts(ctx, setup, settings, run.ID, sampled, logger)
+	results := s.inspectAccounts(ctx, setup, settings, sampled, logger)
 	if err := ctx.Err(); err != nil {
-		for _, result := range results {
-			result.RunID = run.ID
-			_, _ = s.store.InsertCodexInspectionResult(persistCtx, result)
-		}
+		// Persist the partial probe set once, with a bounded budget, before the
+		// lifecycle transition below. Avoid a second full pass here: a large
+		// cancelled run must still reach cancelled/interrupted promptly.
+		resultWriteFailures := s.persistInspectionResults(ctx, run.ID, results, logger)
 		run = summarizeRun(run, results)
-		run.Status = model.CodexInspectionStatusFailed
+		// Keep the persisted row active until runTask performs the lifecycle
+		// transition and lease release atomically. Synchronous callers still
+		// become failed; explicit user/shutdown cancellation gets its own state.
+		run.Status = model.CodexInspectionStatusRunning
 		run.Error = err.Error()
-		run.FinishedAtMS = time.Now().UnixMilli()
-		if err := s.store.UpdateCodexInspectionRun(persistCtx, run); err != nil {
-			return RunDetail{}, err
+		if resultWriteFailures > 0 {
+			run.Error += fmt.Sprintf("；%d 个巡检结果写入失败，详见巡检日志", resultWriteFailures)
 		}
-		logger.warning(persistCtx, "Codex 巡检已取消", map[string]any{"error": run.Error})
-		return s.GetRun(persistCtx, run.ID)
+		logger.warning(persistCtx, "凭证健康巡检已取消", map[string]any{"error": run.Error})
+		detailCtx, cancelDetail := boundedCancelledInspectionContext(persistCtx)
+		detail, detailErr := s.getRunWithResultFallback(detailCtx, run.ID, results, resultWriteFailures > 0)
+		cancelDetail()
+		if detailErr != nil {
+			return RunDetail{}, detailErr
+		}
+		detail.Run = run
+		return detail, nil
+	}
+	initialResultWriteFailures := s.persistInspectionResults(ctx, run.ID, results, logger)
+	if initialResultWriteFailures > 0 {
+		log.Printf("persist initial codex inspection results run %d: %d writes failed", run.ID, initialResultWriteFailures)
 	}
 
 	results = resolveAutoActionResults(settings.AutoActionMode, results)
 	actionOutcomes := s.executeAutoActions(ctx, setup, settings, results, logger)
+	actionSummary := summarizeActionOutcomes(actionOutcomes)
 	results = applyActionOutcomes(results, actionOutcomes)
-	for _, result := range results {
-		result.RunID = run.ID
-		_, _ = s.store.InsertCodexInspectionResult(persistCtx, result)
+	resultWriteFailures := 0
+	hasAutoActionMode := model.NormalizeCodexInspectionAutoActionMode(settings.AutoActionMode, model.CodexInspectionAutoActionNone) != model.CodexInspectionAutoActionNone || settings.AutoRecoverEnabled
+	if hasAutoActionMode || initialResultWriteFailures > 0 {
+		resultWriteFailures = s.persistInspectionResults(ctx, run.ID, results, logger)
 	}
 	run = summarizeRun(run, results)
-	if failed := countFailedOutcomes(actionOutcomes); failed > 0 {
-		run.Error = fmt.Sprintf("%d 个自动处理动作执行失败，详见巡检日志", failed)
+	if err := ctx.Err(); err != nil {
+		run.Status = model.CodexInspectionStatusRunning
+		runErrors := []string{err.Error()}
+		if resultWriteFailures > 0 {
+			runErrors = append(runErrors, fmt.Sprintf("%d 个巡检结果写入失败，详见巡检日志", resultWriteFailures))
+		}
+		run.Error = strings.Join(runErrors, "；")
+		logger.warning(persistCtx, "凭证健康巡检已取消", map[string]any{
+			"error":                  run.Error,
+			"actionSuccessCount":     actionSummary.Success,
+			"actionFailedCount":      actionSummary.Failed,
+			"actionSkippedCount":     actionSummary.Skipped,
+			"actionNeedsReviewCount": actionSummary.NeedsReview,
+			"resultWriteFailedCount": resultWriteFailures,
+		})
+		detailCtx, cancelDetail := boundedCancelledInspectionContext(persistCtx)
+		detail, detailErr := s.getRunWithResultFallback(detailCtx, run.ID, results, resultWriteFailures > 0)
+		cancelDetail()
+		if detailErr != nil {
+			return RunDetail{}, detailErr
+		}
+		detail.Run = run
+		return detail, nil
 	}
+	failedActions := actionSummary.Failed
+	runErrors := make([]string, 0, 2)
+	if failedActions > 0 {
+		runErrors = append(runErrors, fmt.Sprintf("%d 个自动处理动作执行失败，详见巡检日志", failedActions))
+	}
+	if resultWriteFailures > 0 {
+		runErrors = append(runErrors, fmt.Sprintf("%d 个巡检结果写入失败，详见巡检日志", resultWriteFailures))
+	}
+	run.Error = strings.Join(runErrors, "；")
 	run.Status = model.CodexInspectionStatusCompleted
 	run.FinishedAtMS = time.Now().UnixMilli()
-	if err := s.store.UpdateCodexInspectionRun(persistCtx, run); err != nil {
+	completionDetail := map[string]any{
+		"deleteCount":            run.DeleteCount,
+		"disableCount":           run.DisableCount,
+		"enableCount":            run.EnableCount,
+		"reauthCount":            run.ReauthCount,
+		"keepCount":              run.KeepCount,
+		"actionSuccessCount":     actionSummary.Success,
+		"actionFailedCount":      actionSummary.Failed,
+		"actionSkippedCount":     actionSummary.Skipped,
+		"actionNeedsReviewCount": actionSummary.NeedsReview,
+		"actionErrors":           failedActionOutcomes(actionOutcomes),
+		"resultWriteFailedCount": resultWriteFailures,
+	}
+	if failedActions > 0 || actionSummary.NeedsReview > 0 || resultWriteFailures > 0 {
+		logger.warning(persistCtx, "凭证健康巡检完成", completionDetail)
+	} else {
+		logger.success(persistCtx, "凭证健康巡检完成", completionDetail)
+	}
+	detail, detailErr := s.getRunWithResultFallback(persistCtx, run.ID, results, resultWriteFailures > 0)
+	if detailErr != nil {
+		log.Printf("load completed codex inspection run %d before finalization: %v", run.ID, detailErr)
+		return RunDetail{Run: run, Results: results}, nil
+	}
+	detail.Run = run
+	return detail, nil
+}
+
+func (s *Service) runTask(task *localRun, ctx context.Context, req RunRequest, run model.CodexInspectionRun, settings model.ManagerCodexInspectionConfig, setup store.Setup) {
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.WithoutCancel(ctx))
+	heartbeatStopped := make(chan struct{})
+	go s.heartbeatRun(task, heartbeatCtx, heartbeatStopped)
+	var detail RunDetail
+	var runErr error
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				runErr = fmt.Errorf("codex inspection panic: %v", recovered)
+				detail = RunDetail{Run: run}
+			}
+		}()
+		detail, runErr = s.executeRun(ctx, req, run, settings, setup)
+	}()
+	if errors.Is(runErr, codexinspectionrepo.ErrLeaseLost) {
+		s.markLeaseLost(task)
+	}
+	executionCtxErr := ctx.Err()
+	stopHeartbeat()
+	<-heartbeatStopped
+	// Release the execution context after all probe work has stopped. This is
+	// especially important for detached HTTP/scheduler runs, whose parent is
+	// intentionally kept alive past the request.
+	task.cancel()
+
+	s.mu.Lock()
+	task.finalizing = true
+	reason := task.terminationReason
+	s.mu.Unlock()
+	if reason == terminationNone && executionCtxErr != nil {
+		// Synchronous callers retain the historical failed-on-context-cancel
+		// behavior. Detached HTTP/scheduler runs are cancelled through an
+		// explicit reason above and become cancelled/interrupted instead.
+		runErr = nil
+		reason = terminationNone
+	}
+	finalRun := run
+	readTimeout := criticalWriteTimeout
+	if executionCtxErr != nil || reason != terminationNone {
+		// Cancellation/shutdown paths should spend only a short read budget before
+		// entering the single bounded terminal-write budget below.
+		readTimeout = cancelledPersistTimeout
+	}
+	readCtx, cancelRead := context.WithTimeout(context.Background(), readTimeout)
+	persisted, persistedOK, persistedErr := s.store.GetCodexInspectionRun(readCtx, run.ID)
+	cancelRead()
+	persistedStatus := ""
+	persistedError := ""
+	if persistedErr == nil && persistedOK {
+		finalRun = persisted
+		persistedStatus = persisted.Status
+		persistedError = persisted.Error
+	} else if persistedErr != nil {
+		log.Printf("load codex inspection run %d before finalization: %v", run.ID, persistedErr)
+	}
+	if detail.Run.ID > 0 && (!persistedOK || model.IsCodexInspectionRunActive(finalRun.Status)) {
+		// Prefer the in-memory counters while the persisted row is still in an
+		// active state. Once another instance has committed a terminal state,
+		// keep that fenced result instead of allowing a stale worker snapshot
+		// to regress it back to running/failed.
+		finalRun = detail.Run
+		// Preserve a cancellation transition committed by the API. The in-memory
+		// executeRun snapshot can already be completed when the cancellation
+		// transaction wins the race immediately before finalization.
+		if persistedStatus == model.CodexInspectionStatusCancelling {
+			finalRun.Status = persistedStatus
+			finalRun.Error = persistedError
+		}
+	}
+	if detail.Run.Error != "" && finalRun.Error == "" {
+		finalRun.Error = detail.Run.Error
+	}
+	userCancellationCommitted := persistedStatus == model.CodexInspectionStatusCancelling &&
+		(strings.TrimSpace(persistedError) == userCancelRequestReason || strings.TrimSpace(persistedError) == userCancelledReason)
+	if reason == terminationLease {
+		finalRun.Status = model.CodexInspectionStatusInterrupted
+		finalRun.Error = "巡检任务租约丢失，巡检已中断"
+		runErr = nil
+	} else if reason == terminationUser || userCancellationCommitted {
+		finalRun.Status = model.CodexInspectionStatusCancelled
+		finalRun.Error = userCancelledReason
+		runErr = nil
+	} else if reason == terminationShutdown {
+		finalRun.Status = model.CodexInspectionStatusInterrupted
+		finalRun.Error = "服务关闭导致巡检已中断"
+		runErr = nil
+	} else if finalRun.Status == model.CodexInspectionStatusCancelling {
+		// A cancellation request can commit its database transition just
+		// before this goroutine marks itself finalizing. Treat the persisted
+		// cancelling state as authoritative so that race cannot turn a user
+		// cancellation into a synthetic failure.
+		finalRun.Status = model.CodexInspectionStatusCancelled
+		finalRun.Error = userCancelledReason
+		runErr = nil
+	} else if finalRun.Status == "" || model.IsCodexInspectionRunActive(finalRun.Status) {
+		finalRun.Status = model.CodexInspectionStatusFailed
+		if finalRun.Error == "" && runErr != nil {
+			finalRun.Error = runErr.Error()
+		}
+	}
+	finalRun.FinishedAtMS = time.Now().UnixMilli()
+	if finalRun.Error == "" && runErr != nil {
+		finalRun.Error = runErr.Error()
+	}
+	finalRun.Active = false
+	finalRun.Cancellable = false
+	detail.Run = finalRun
+	finalMessage := "凭证健康巡检生命周期已收尾"
+	finalLevel := "info"
+	switch finalRun.Status {
+	case model.CodexInspectionStatusCancelled:
+		finalMessage = "凭证健康巡检已取消"
+		finalLevel = "warning"
+	case model.CodexInspectionStatusInterrupted:
+		finalMessage = "凭证健康巡检已中断"
+		finalLevel = "warning"
+	case model.CodexInspectionStatusFailed:
+		finalLevel = "error"
+	}
+	finalLog := &model.CodexInspectionLog{
+		RunID:   run.ID,
+		Level:   finalLevel,
+		Message: finalMessage,
+		Detail: map[string]any{
+			"status": finalRun.Status,
+			"reason": string(reason),
+			"error":  finalRun.Error,
+		},
+	}
+	// Use one bounded budget for the complete terminal transition. Primary,
+	// optional-log fallback, fenced recovery, and the post-write read must not
+	// each receive a fresh timeout and cumulatively outlive process shutdown.
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.Background(), criticalWriteTimeout)
+	finalizeErr := s.finalizeInspectionRunWithContext(finalizeCtx, finalRun, finalLog)
+	if finalizeErr != nil {
+		fallbackErr := s.forceFinalizeInspectionRunWithContext(finalizeCtx, finalRun, finalLog)
+		if fallbackErr == nil {
+			log.Printf("finalize codex inspection run %d via fenced recovery after primary failure: %v", run.ID, finalizeErr)
+			finalizeErr = nil
+		} else {
+			// Even a fenced/ownership failure must be observable. Another instance
+			// may have reclaimed the lease, but if it did not, startup recovery is
+			// the only remaining path to repair the active row.
+			log.Printf("finalize codex inspection run %d: %v (fallback: %v)", run.ID, finalizeErr, fallbackErr)
+			if runErr == nil && !errors.Is(fallbackErr, codexinspectionrepo.ErrLeaseLost) {
+				runErr = fallbackErr
+			}
+		}
+	}
+	if finalizeErr == nil {
+		if finalized, err := s.GetRun(finalizeCtx, run.ID); err == nil {
+			if len(detail.Results) > 0 {
+				finalized.Results = overlayInspectionResultSnapshots(run.ID, finalized.Results, detail.Results)
+			}
+			detail = finalized
+		} else {
+			log.Printf("load finalized codex inspection run %d: %v", run.ID, err)
+		}
+	} else {
+		// The worker is done even when the database could not accept the terminal
+		// write. Keep the in-memory result terminal and non-cancellable so callers
+		// do not receive a synthetic active task that no goroutine can service.
+		results, logs := detail.Results, detail.Logs
+		detail = RunDetail{Run: finalRun, Results: results, Logs: logs}
+	}
+	cancelFinalize()
+	task.result = detail
+	task.err = runErr
+	s.mu.Lock()
+	if s.active == task {
+		s.active = nil
+	}
+	s.mu.Unlock()
+	close(task.done)
+}
+
+// finalizeInspectionRun first attempts the fully atomic terminal update with
+// its final lifecycle log. If the log insert itself fails, retry the terminal
+// update without that optional log so a logging failure cannot strand the run
+// and lease in an active state. Lease ownership errors are returned unchanged:
+// another instance may already have fenced this worker.
+func (s *Service) finalizeInspectionRun(run model.CodexInspectionRun, finalLog *model.CodexInspectionLog) error {
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.Background(), criticalWriteTimeout)
+	defer cancelFinalize()
+	return s.finalizeInspectionRunWithContext(finalizeCtx, run, finalLog)
+}
+
+func (s *Service) finalizeInspectionRunWithContext(ctx context.Context, run model.CodexInspectionRun, finalLog *model.CodexInspectionLog) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err := s.finalizeInspectionRunAttempt(ctx, run, finalLog)
+	if err == nil || errors.Is(err, codexinspectionrepo.ErrLeaseLost) || finalLog == nil {
+		return err
+	}
+
+	log.Printf("final lifecycle log for codex inspection run %d failed: %v; retrying terminal state without log", run.ID, err)
+	fallbackErr := s.finalizeInspectionRunAttempt(ctx, run, nil)
+	if fallbackErr == nil {
+		log.Printf("codex inspection run %d finalized without lifecycle log", run.ID)
+		return nil
+	}
+	return fmt.Errorf("finalize terminal state after lifecycle log failure: %w (initial log error: %v)", fallbackErr, err)
+}
+
+func (s *Service) finalizeInspectionRunAttempt(ctx context.Context, run model.CodexInspectionRun, finalLog *model.CodexInspectionLog) error {
+	return retryCriticalInspectionWrite(ctx, func() error {
+		return s.store.FinalizeCodexInspectionRun(ctx, run, s.ownerID, finalLog)
+	})
+}
+
+func (s *Service) forceFinalizeInspectionRun(run model.CodexInspectionRun, finalLog *model.CodexInspectionLog) error {
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.Background(), criticalWriteTimeout)
+	defer cancelFinalize()
+	return s.forceFinalizeInspectionRunWithContext(finalizeCtx, run, finalLog)
+}
+
+func (s *Service) forceFinalizeInspectionRunWithContext(ctx context.Context, run model.CodexInspectionRun, finalLog *model.CodexInspectionLog) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return retryCriticalInspectionWrite(ctx, func() error {
+		return s.store.ForceFinalizeCodexInspectionRun(ctx, run, s.ownerID, finalLog)
+	})
+}
+
+func retryCriticalInspectionWrite(ctx context.Context, operation func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = operation()
+		if lastErr == nil || !codexinspectionrepo.IsSQLiteBusyError(lastErr) {
+			return lastErr
+		}
+		if attempt == 2 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			stopTimer(timer)
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func boundedInspectionReadContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), criticalWriteTimeout)
+}
+
+func boundedCancelledInspectionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), cancelledPersistTimeout)
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
+func (s *Service) heartbeatRun(task *localRun, ctx context.Context, stopped chan<- struct{}) {
+	defer close(stopped)
+	monitorInterval := s.heartbeatInterval
+	if leaseCheckInterval := s.leaseDuration / 4; leaseCheckInterval > 0 && leaseCheckInterval < monitorInterval {
+		monitorInterval = leaseCheckInterval
+	}
+	leaseSafetyMargin := monitorInterval * 2
+	if maximumMargin := s.leaseDuration / 2; leaseSafetyMargin > maximumMargin {
+		leaseSafetyMargin = maximumMargin
+	}
+	if leaseSafetyMargin <= 0 {
+		leaseSafetyMargin = time.Nanosecond
+	}
+	ticker := time.NewTicker(monitorInterval)
+	defer ticker.Stop()
+	lastSuccessfulHeartbeat := task.leaseHeartbeatAt
+	if lastSuccessfulHeartbeat.IsZero() {
+		lastSuccessfulHeartbeat = time.Now()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			remainingLease := s.leaseDuration - time.Since(lastSuccessfulHeartbeat)
+			// Stop before the database lease can become reclaimable. Without this
+			// guard, a slow heartbeat call could run past lease expiry while another
+			// instance starts the replacement inspection, briefly executing both.
+			if remainingLease <= leaseSafetyMargin {
+				s.markLeaseLost(task)
+				return
+			}
+			heartbeatTimeout := s.heartbeatInterval
+			if maximumTimeout := remainingLease - leaseSafetyMargin; heartbeatTimeout > maximumTimeout {
+				heartbeatTimeout = maximumTimeout
+			}
+			if heartbeatTimeout <= 0 {
+				s.markLeaseLost(task)
+				return
+			}
+			heartbeatStartedAt := time.Now()
+			heartbeatCtx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
+			err := s.store.HeartbeatCodexInspectionRun(heartbeatCtx, task.runID, s.ownerID, s.leaseDuration)
+			callTimedOut := errors.Is(heartbeatCtx.Err(), context.DeadlineExceeded)
+			cancel()
+			if err == nil {
+				// The repository timestamps the lease when SQLite executes the
+				// statement, which can be later than this call began. Tracking the
+				// call start is conservative and prevents lock wait time from being
+				// mistaken for additional lease lifetime.
+				lastSuccessfulHeartbeat = heartbeatStartedAt
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, codexinspectionrepo.ErrLeaseLost) {
+				s.markLeaseLost(task)
+				return
+			}
+			if time.Since(lastSuccessfulHeartbeat) >= s.leaseDuration {
+				s.markLeaseLost(task)
+				return
+			}
+			if callTimedOut {
+				log.Printf("heartbeat codex inspection run %d timed out; lease has not yet expired", task.runID)
+				continue
+			}
+			log.Printf("heartbeat codex inspection run %d: %v", task.runID, err)
+		}
+	}
+}
+
+func (s *Service) markLeaseLost(task *localRun) {
+	s.mu.Lock()
+	if s.active == task && task.terminationReason == terminationNone {
+		task.terminationReason = terminationLease
+	}
+	s.mu.Unlock()
+	task.cancel()
+}
+
+func (s *Service) CancelRun(ctx context.Context, runID int64) (RunDetail, error) {
+	operationDone, err := s.beginLifecycleOperation()
+	if err != nil {
 		return RunDetail{}, err
 	}
-	logger.success(persistCtx, "Codex 巡检完成", map[string]any{
-		"deleteCount":  run.DeleteCount,
-		"disableCount": run.DisableCount,
-		"enableCount":  run.EnableCount,
-		"keepCount":    run.KeepCount,
-		"actionErrors": failedActionOutcomes(actionOutcomes),
-	})
-	return s.GetRun(persistCtx, run.ID)
+	defer s.finishLifecycleOperation(operationDone)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Once an explicit cancellation request reaches the service, its lifecycle
+	// transition must not be abandoned merely because the HTTP client disconnects.
+	// Keep it bounded so a stuck database still returns control to shutdown.
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), criticalWriteTimeout)
+	defer cancel()
+	return s.cancelRun(cancelCtx, runID)
+}
+
+func (s *Service) cancelRun(ctx context.Context, runID int64) (RunDetail, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	task := s.active
+	starting := s.starting
+	startDone := s.startDone
+	if task == nil || task.runID != runID {
+		s.mu.Unlock()
+		if task == nil && starting && startDone != nil {
+			select {
+			case <-startDone:
+				// The run either became active or the start attempt was
+				// finalized as aborted. Re-evaluate ownership now that the
+				// short acquisition window has closed.
+				return s.cancelRun(ctx, runID)
+			case <-ctx.Done():
+				return RunDetail{}, ctx.Err()
+			}
+		}
+		detail, err := s.GetRun(ctx, runID)
+		if errors.Is(err, ErrRunNotFound) {
+			return RunDetail{}, ErrRunNotFound
+		}
+		if err != nil {
+			return RunDetail{}, err
+		}
+		if detail.Run.Status == model.CodexInspectionStatusCancelled || detail.Run.Status == model.CodexInspectionStatusCancelling {
+			return detail, nil
+		}
+		if model.IsCodexInspectionRunActive(detail.Run.Status) {
+			return RunDetail{}, ErrRunNotOwned
+		}
+		return RunDetail{}, ErrRunNotCancellable
+	}
+	s.mu.Unlock()
+	return s.cancelOwnedRun(ctx, task, runID)
+}
+
+func (s *Service) beginLifecycleOperation() (chan struct{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping {
+		return nil, ErrServiceStopping
+	}
+	if s.lifecycleOps == 0 {
+		s.lifecycleDone = make(chan struct{})
+	}
+	s.lifecycleOps++
+	return s.lifecycleDone, nil
+}
+
+func (s *Service) finishLifecycleOperation(done chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lifecycleOps <= 0 || s.lifecycleDone != done {
+		return
+	}
+	s.lifecycleOps--
+	if s.lifecycleOps == 0 {
+		close(done)
+		s.lifecycleDone = nil
+	}
+}
+
+func (s *Service) cancelOwnedRun(ctx context.Context, task *localRun, runID int64) (RunDetail, error) {
+	// Serialize cancellation requests without holding the service state mutex
+	// across SQLite I/O. This keeps heartbeat, shutdown, and finalization
+	// responsive while a busy database is being retried.
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+
+	s.mu.Lock()
+	if s.active != task || task.runID != runID {
+		s.mu.Unlock()
+		return s.cancelRunFromStore(ctx, runID)
+	}
+	if task.finalizing {
+		s.mu.Unlock()
+		detail, err := s.getRunForLifecycle(runID)
+		if err != nil {
+			return RunDetail{}, err
+		}
+		if detail.Run.Status == model.CodexInspectionStatusCancelling || detail.Run.Status == model.CodexInspectionStatusCancelled {
+			return detail, nil
+		}
+		return RunDetail{}, ErrRunNotCancellable
+	}
+	if task.terminationReason == terminationUser {
+		cancel := task.cancel
+		s.mu.Unlock()
+		cancel()
+		return s.getRunForLifecycle(runID)
+	}
+	if task.terminationReason != terminationNone {
+		s.mu.Unlock()
+		return RunDetail{}, ErrRunNotCancellable
+	}
+	s.mu.Unlock()
+
+	markCtx, cancelMark := context.WithTimeout(ctx, criticalWriteTimeout)
+	defer cancelMark()
+	changed, err := s.store.MarkCodexInspectionRunCancelling(markCtx, runID, s.ownerID, userCancelRequestReason)
+
+	s.mu.Lock()
+	stillOwned := s.active == task && !task.finalizing
+	if errors.Is(err, codexinspectionrepo.ErrLeaseLost) {
+		if stillOwned {
+			task.terminationReason = terminationLease
+		}
+		cancel := task.cancel
+		s.mu.Unlock()
+		cancel()
+		return RunDetail{}, ErrRunNotOwned
+	}
+	if err != nil {
+		s.mu.Unlock()
+		return RunDetail{}, err
+	}
+	if !stillOwned {
+		s.mu.Unlock()
+		return s.cancelRunFromStoreWithBound(runID)
+	}
+	if task.terminationReason != terminationNone {
+		s.mu.Unlock()
+		return RunDetail{}, ErrRunNotCancellable
+	}
+	if !changed {
+		s.mu.Unlock()
+		detail, detailErr := s.cancelRunFromStoreWithBound(runID)
+		if detailErr != nil {
+			return RunDetail{}, detailErr
+		}
+		if detail.Run.Status == model.CodexInspectionStatusCancelled {
+			return detail, nil
+		}
+		if detail.Run.Status != model.CodexInspectionStatusCancelling {
+			// The worker can commit a terminal state between the ownership check
+			// above and the cancelling transition. Do not turn that completed/failed
+			// run into a successful cancellation response.
+			return RunDetail{}, ErrRunNotCancellable
+		}
+		// A previous request may already have committed `cancelling` while
+		// this local task still owns the lease. Complete the same idempotent
+		// cancellation locally instead of returning a spurious conflict.
+		s.mu.Lock()
+		if s.active == task && !task.finalizing && task.terminationReason == terminationNone {
+			task.terminationReason = terminationUser
+			cancel := task.cancel
+			s.mu.Unlock()
+			cancel()
+			return detail, nil
+		}
+		s.mu.Unlock()
+		return detail, nil
+	}
+	task.terminationReason = terminationUser
+	cancel := task.cancel
+	cancel()
+	s.mu.Unlock()
+	detail, err := s.getRunForLifecycle(runID)
+	if err != nil {
+		return RunDetail{}, err
+	}
+	return detail, nil
+}
+
+func (s *Service) cancelRunFromStore(ctx context.Context, runID int64) (RunDetail, error) {
+	detail, err := s.GetRun(ctx, runID)
+	if err != nil {
+		return RunDetail{}, err
+	}
+	if detail.Run.Status == model.CodexInspectionStatusCancelled || detail.Run.Status == model.CodexInspectionStatusCancelling {
+		return detail, nil
+	}
+	if model.IsCodexInspectionRunActive(detail.Run.Status) {
+		return RunDetail{}, ErrRunNotOwned
+	}
+	return RunDetail{}, ErrRunNotCancellable
+}
+
+func (s *Service) cancelRunFromStoreWithBound(runID int64) (RunDetail, error) {
+	readCtx, cancelRead := boundedInspectionReadContext()
+	defer cancelRead()
+	return s.cancelRunFromStore(readCtx, runID)
+}
+
+func (s *Service) getRunForLifecycle(runID int64) (RunDetail, error) {
+	readCtx, cancelRead := boundedInspectionReadContext()
+	defer cancelRead()
+	return s.GetRun(readCtx, runID)
+}
+
+func (s *Service) Recover(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := s.store.RecoverStaleCodexInspectionRuns(ctx, time.Now().UnixMilli(), "服务重启或任务租约过期，巡检已中断")
+	return err
+}
+
+func (s *Service) StopAndWait(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var task *localRun
+	for {
+		s.mu.Lock()
+		s.stopping = true
+		startDone := s.startDone
+		startCancel := s.startCancel
+		auxiliaryDone := s.auxiliaryDone
+		auxiliaryCancel := s.auxiliaryCancel
+		lifecycleDone := s.lifecycleDone
+		task = s.active
+		if task != nil && !task.finalizing && task.terminationReason == terminationNone {
+			task.terminationReason = terminationShutdown
+		}
+		var taskCancel context.CancelFunc
+		if task != nil && !task.finalizing {
+			taskCancel = task.cancel
+		}
+		s.mu.Unlock()
+		if startCancel != nil {
+			startCancel()
+		}
+		if auxiliaryCancel != nil {
+			auxiliaryCancel()
+		}
+		if taskCancel != nil {
+			taskCancel()
+		}
+		if startDone == nil {
+			if auxiliaryDone != nil {
+				select {
+				case <-auxiliaryDone:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			if lifecycleDone != nil {
+				select {
+				case <-lifecycleDone:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			break
+		}
+		select {
+		case <-startDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if task == nil {
+		return nil
+	}
+	task.cancel()
+	select {
+	case <-task.done:
+		return nil
+	case <-ctx.Done():
+		log.Printf("timed out waiting for codex inspection run %d to stop: %v", task.runID, ctx.Err())
+		return ctx.Err()
+	}
+}
+
+func (s *Service) ActiveRunID() (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		return 0, false
+	}
+	return s.active.runID, true
+}
+
+func (s *Service) IsStopping() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopping
+}
+
+func (s *Service) localRunCancellable(runID int64, status string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil || s.active.runID != runID {
+		return false
+	}
+	if s.active.finalizing {
+		// A committed cancellation remains idempotently cancellable while the
+		// worker is performing its final database transaction. This keeps the UI
+		// on the disabled "cancelling" action instead of hiding it mid-transition.
+		return status == model.CodexInspectionStatusCancelling
+	}
+	return s.active.terminationReason == terminationNone || s.active.terminationReason == terminationUser
 }
 
 func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.CodexInspectionRun, error) {
-	return s.store.ListCodexInspectionRuns(ctx, limit)
+	runs, err := s.store.ListCodexInspectionRuns(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	lease, active, err := s.store.GetActiveCodexInspectionLease(ctx, time.Now().UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	for index := range runs {
+		runs[index].Active = active && lease.RunID == runs[index].ID && model.IsCodexInspectionRunActive(runs[index].Status)
+		runs[index].Cancellable = runs[index].Active && lease.OwnerID == s.ownerID && s.localRunCancellable(runs[index].ID, runs[index].Status)
+	}
+	return runs, nil
 }
 
 func (s *Service) GetRun(ctx context.Context, id int64) (RunDetail, error) {
@@ -321,6 +1325,12 @@ func (s *Service) GetRun(ctx context.Context, id int64) (RunDetail, error) {
 	if !ok {
 		return RunDetail{}, ErrRunNotFound
 	}
+	lease, active, err := s.store.GetActiveCodexInspectionLease(ctx, time.Now().UnixMilli())
+	if err != nil {
+		return RunDetail{}, err
+	}
+	run.Active = active && lease.RunID == run.ID && model.IsCodexInspectionRunActive(run.Status)
+	run.Cancellable = run.Active && lease.OwnerID == s.ownerID && s.localRunCancellable(run.ID, run.Status)
 	results, err := s.store.ListCodexInspectionResults(ctx, id)
 	if err != nil {
 		return RunDetail{}, err
@@ -333,10 +1343,12 @@ func (s *Service) GetRun(ctx context.Context, id int64) (RunDetail, error) {
 }
 
 func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req ExecuteActionsRequest) (ExecuteActionsResult, error) {
-	if err := s.acquireRun(); err != nil {
+	operationCtx, err := s.acquireAuxiliaryRun(ctx)
+	if err != nil {
 		return ExecuteActionsResult{}, err
 	}
 	defer s.releaseRun()
+	ctx = operationCtx
 
 	if len(req.ResultIDs) == 0 {
 		return ExecuteActionsResult{}, ErrActionIDsRequired
@@ -353,7 +1365,7 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 	if detail.Run.Status != model.CodexInspectionStatusCompleted {
 		return ExecuteActionsResult{}, ErrRunNotCompleted
 	}
-	if detail.Run.Settings.TargetType != "" {
+	if len(detail.Run.Settings.TargetProviders()) > 0 {
 		settings = detail.Run.Settings
 	}
 
@@ -376,22 +1388,27 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 		return ExecuteActionsResult{}, ErrNoActionableResults
 	}
 
-	persistCtx := context.WithoutCancel(ctx)
+	// Keep lifecycle/result writes independent from a disconnected HTTP request,
+	// but give the whole post-action persistence phase one finite budget so
+	// shutdown cannot wait forever on a locked SQLite writer.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), resultPersistenceTimeout)
+	defer cancelPersist()
 	logger := runLogger{service: s, runID: detail.Run.ID}
 	logger.info(persistCtx, "手动处理账号开始", map[string]any{
 		"requestedCount": len(req.ResultIDs),
 		"actionCount":    len(items),
 	})
-	for _, outcome := range preflightOutcomes {
-		logger.warning(persistCtx, "手动处理账号跳过", map[string]any{
-			"fileName":       outcome.FileName,
-			"displayAccount": outcome.DisplayAccount,
-			"action":         outcome.Action,
-			"reason":         outcome.Error,
-		})
-	}
+	logPreflightActionOutcomes(persistCtx, logger, "手动处理", preflightOutcomes)
 
-	validItems, validationOutcomes, err := s.validateManualActionItems(ctx, persistCtx, setup, items, logger)
+	validItems, validationOutcomes, err := s.validateActionItems(
+		ctx,
+		persistCtx,
+		setup,
+		items,
+		logger,
+		"手动处理",
+		func(item model.CodexInspectionResult) string { return item.Action },
+	)
 	if err != nil {
 		return ExecuteActionsResult{}, err
 	}
@@ -405,26 +1422,41 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 		return ExecuteActionsResult{}, ErrNoActionableResults
 	}
 	nextResults := applyActionOutcomes(detail.Results, outcomes)
-	for _, result := range nextResults {
-		result.RunID = detail.Run.ID
-		_, _ = s.store.InsertCodexInspectionResult(persistCtx, result)
-	}
+	resultWriteFailures := s.persistInspectionResults(persistCtx, detail.Run.ID, nextResults, logger)
 
 	run := summarizeRun(detail.Run, nextResults)
-	if failed := countFailedOutcomes(outcomes); failed > 0 {
-		run.Error = fmt.Sprintf("%d 个手动处理动作执行失败，详见巡检日志", failed)
-	} else {
-		run.Error = ""
+	outcomeSummary := summarizeActionOutcomes(outcomes)
+	failedActions := outcomeSummary.Failed
+	runErrors := make([]string, 0, 2)
+	if failedActions > 0 {
+		runErrors = append(runErrors, fmt.Sprintf("%d 个手动处理动作执行失败，详见巡检日志", failedActions))
 	}
+	if resultWriteFailures > 0 {
+		runErrors = append(runErrors, fmt.Sprintf("%d 个巡检结果写入失败，详见巡检日志", resultWriteFailures))
+	}
+	run.Error = strings.Join(runErrors, "；")
 	if err := s.store.UpdateCodexInspectionRun(persistCtx, run); err != nil {
 		return ExecuteActionsResult{}, err
 	}
-	logger.success(persistCtx, "手动处理账号完成", map[string]any{
-		"successCount": len(outcomes) - countFailedOutcomes(outcomes),
-		"failedCount":  countFailedOutcomes(outcomes),
-	})
+	completionDetail := map[string]any{
+		"successCount":           outcomeSummary.Success,
+		"failedCount":            outcomeSummary.Failed,
+		"skippedCount":           outcomeSummary.Skipped,
+		"needsReviewCount":       outcomeSummary.NeedsReview,
+		"resultWriteFailedCount": resultWriteFailures,
+	}
+	if failedActions > 0 || outcomeSummary.NeedsReview > 0 || resultWriteFailures > 0 {
+		logger.warning(persistCtx, "手动处理账号完成", completionDetail)
+	} else {
+		logger.success(persistCtx, "手动处理账号完成", completionDetail)
+	}
 
-	nextDetail, err := s.GetRun(persistCtx, detail.Run.ID)
+	nextDetail, err := s.getRunWithResultFallback(
+		persistCtx,
+		detail.Run.ID,
+		nextResults,
+		resultWriteFailures > 0,
+	)
 	if err != nil {
 		return ExecuteActionsResult{}, err
 	}
@@ -475,6 +1507,9 @@ func applyManualActionOverrides(
 }
 
 func (s *Service) ResolveConfig(ctx context.Context) (model.ManagerCodexInspectionConfig, bool, error) {
+	if s.managerConfigService == nil {
+		return model.DefaultCodexInspectionConfig(), false, nil
+	}
 	managerCfg, _, ok, err := s.managerConfigService.ResolveManagerConfigWithSource(ctx)
 	if err != nil {
 		return model.ManagerCodexInspectionConfig{}, false, err
@@ -489,23 +1524,47 @@ func (s *Service) ResolveConfig(ctx context.Context) (model.ManagerCodexInspecti
 	), true, nil
 }
 
-func (s *Service) acquireRun() error {
+func (s *Service) acquireAuxiliaryRun(ctx context.Context) (context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running {
-		return ErrRunAlreadyActive
+	if s.stopping {
+		cancel()
+		return nil, ErrServiceStopping
 	}
-	s.running = true
-	return nil
+	if s.starting || s.active != nil || s.auxiliaryRunning {
+		cancel()
+		return nil, ErrRunAlreadyActive
+	}
+	s.auxiliaryRunning = true
+	s.auxiliaryDone = make(chan struct{})
+	s.auxiliaryCancel = cancel
+	return operationCtx, nil
 }
 
 func (s *Service) releaseRun() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.running = false
+	done := s.auxiliaryDone
+	cancel := s.auxiliaryCancel
+	s.auxiliaryDone = nil
+	s.auxiliaryCancel = nil
+	s.auxiliaryRunning = false
+	if done != nil {
+		close(done)
+	}
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *Service) resolveRuntime(ctx context.Context) (model.ManagerCodexInspectionConfig, store.Setup, error) {
+	if s.managerConfigService == nil {
+		return model.ManagerCodexInspectionConfig{}, store.Setup{}, ErrNotConfigured
+	}
 	managerCfg, _, ok, err := s.managerConfigService.ResolveManagerConfigWithSource(ctx)
 	if err != nil {
 		return model.ManagerCodexInspectionConfig{}, store.Setup{}, err
@@ -525,11 +1584,11 @@ func (s *Service) failRun(ctx context.Context, run model.CodexInspectionRun, cau
 	run.Status = model.CodexInspectionStatusFailed
 	run.Error = cause.Error()
 	run.FinishedAtMS = time.Now().UnixMilli()
-	_ = s.store.UpdateCodexInspectionRun(ctx, run)
 	detail, err := s.GetRun(ctx, run.ID)
 	if err != nil {
-		return RunDetail{}, err
+		return RunDetail{Run: run}, cause
 	}
+	detail.Run = run
 	return detail, cause
 }
 
@@ -549,7 +1608,6 @@ func (s *Service) inspectAccounts(
 	ctx context.Context,
 	setup store.Setup,
 	settings model.ManagerCodexInspectionConfig,
-	runID int64,
 	accounts []account,
 	logger runLogger,
 ) []model.CodexInspectionResult {
@@ -569,15 +1627,7 @@ func (s *Service) inspectAccounts(
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				result := s.inspectSingleAccount(ctx, setup, settings, item, logger)
-				result.RunID = runID
-				if _, err := s.store.InsertCodexInspectionResult(ctx, result); err != nil {
-					logger.error(ctx, "写入巡检账号结果失败", map[string]any{
-						"fileName": item.FileName,
-						"error":    err.Error(),
-					})
-				}
-				results <- result
+				results <- s.inspectSingleAccount(ctx, setup, settings, item, logger)
 			}
 		}()
 	}
@@ -707,7 +1757,7 @@ func (s *Service) inspectSingleAccount(
 
 	level := "info"
 	switch decision.Action {
-	case "delete":
+	case "delete", "reauth":
 		level = "error"
 	case "disable":
 		level = "warning"
@@ -844,16 +1894,101 @@ func (s *Service) executeAutoActions(
 	logger runLogger,
 ) []ActionOutcome {
 	mode := model.NormalizeCodexInspectionAutoActionMode(settings.AutoActionMode, model.CodexInspectionAutoActionNone)
-	items, preflightOutcomes := selectAutoActionItems(mode, settings.AutoRecoverEnabled, results)
-	if len(items) == 0 {
-		return preflightOutcomes
+	if mode == model.CodexInspectionAutoActionNone && !settings.AutoRecoverEnabled {
+		return nil
 	}
-	outcomes := make([]ActionOutcome, 0, len(preflightOutcomes)+len(items))
-	outcomes = append(outcomes, preflightOutcomes...)
-	outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, items, logger, "自动处理", true, func(item model.CodexInspectionResult) string {
+	items, preflightOutcomes := selectAutoActionItems(mode, settings.AutoRecoverEnabled, results)
+	logCtx := context.WithoutCancel(ctx)
+	requestedCount := len(items) + len(preflightOutcomes)
+	if requestedCount == 0 {
+		requestedCount = countSuggestedActionResults(results)
+	}
+	if requestedCount == 0 {
+		return nil
+	}
+	logger.info(logCtx, "自动处理账号开始", map[string]any{
+		"requestedCount": requestedCount,
+		"actionCount":    len(items),
+	})
+	logPreflightActionOutcomes(logCtx, logger, "自动处理", preflightOutcomes)
+	actionFor := func(item model.CodexInspectionResult) string {
 		return resolveExecutableAction(mode, item.Action)
-	})...)
+	}
+	validItems, validationOutcomes, validationErr := s.validateActionItems(
+		ctx,
+		logCtx,
+		setup,
+		items,
+		logger,
+		"自动处理",
+		actionFor,
+	)
+	if validationErr != nil {
+		validationOutcomes = completeCanceledActionOutcomes(
+			items,
+			validationOutcomes,
+			actionFor,
+			validationErr,
+			logger,
+			logCtx,
+			"自动处理",
+		)
+		validItems = nil
+	}
+	outcomes := make([]ActionOutcome, 0, len(preflightOutcomes)+len(validationOutcomes)+len(validItems))
+	outcomes = append(outcomes, preflightOutcomes...)
+	outcomes = append(outcomes, validationOutcomes...)
+	if len(validItems) > 0 {
+		outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, validItems, logger, "自动处理", true, actionFor)...)
+	}
+	summary := summarizeActionOutcomes(outcomes)
+	remainingCount := countPendingActionResults(results, outcomes)
+	completionDetail := map[string]any{
+		"successCount":     summary.Success,
+		"failedCount":      summary.Failed,
+		"skippedCount":     summary.Skipped,
+		"needsReviewCount": summary.NeedsReview,
+		"remainingCount":   remainingCount,
+	}
+	if summary.Failed > 0 || summary.NeedsReview > 0 || remainingCount > 0 {
+		logger.warning(logCtx, "自动处理账号完成", completionDetail)
+	} else {
+		logger.success(logCtx, "自动处理账号完成", completionDetail)
+	}
 	return outcomes
+}
+
+func countSuggestedActionResults(results []model.CodexInspectionResult) int {
+	count := 0
+	for _, result := range results {
+		if result.Action != "" && result.Action != "keep" {
+			count++
+		}
+	}
+	return count
+}
+
+func countPendingActionResults(results []model.CodexInspectionResult, outcomes []ActionOutcome) int {
+	terminal := make(map[string]struct{}, len(outcomes))
+	for _, outcome := range outcomes {
+		switch outcome.Status {
+		case model.CodexInspectionActionStatusSuccess,
+			model.CodexInspectionActionStatusSkipped,
+			model.CodexInspectionActionStatusNeedsReview:
+			terminal[outcome.AccountKey] = struct{}{}
+		}
+	}
+	count := 0
+	for _, result := range results {
+		if result.Action == "" || result.Action == "keep" {
+			continue
+		}
+		if _, ok := terminal[result.AccountKey]; ok {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (s *Service) executeActionItems(
@@ -866,6 +2001,7 @@ func (s *Service) executeActionItems(
 	automatic bool,
 	actionFor func(model.CodexInspectionResult) string,
 ) []ActionOutcome {
+	logCtx := context.WithoutCancel(ctx)
 	workers := settings.DeleteWorkers
 	if workers <= 0 {
 		workers = 1
@@ -895,18 +2031,19 @@ func (s *Service) executeActionItems(
 					actionItem := item
 					actionItem.Action = action
 					outcome := ActionOutcome{
-						ResultID:       item.ID,
-						AccountKey:     item.AccountKey,
-						FileName:       item.FileName,
-						DisplayAccount: item.DisplayAccount,
-						Action:         action,
+						ResultID:        item.ID,
+						AccountKey:      item.AccountKey,
+						FileName:        item.FileName,
+						DisplayAccount:  item.DisplayAccount,
+						Action:          action,
+						CurrentDisabled: boolPointer(item.Disabled),
 					}
 					if err := s.executeAction(ctx, setup, actionItem, automatic); err != nil {
 						outcome.Success = false
 						outcome.Status = model.CodexInspectionActionStatusFailed
 						outcome.Error = err.Error()
 						outcomes <- outcome
-						logger.error(ctx, logPrefix+"账号失败", map[string]any{
+						logger.error(logCtx, logPrefix+"账号失败", map[string]any{
 							"fileName":       item.FileName,
 							"displayAccount": item.DisplayAccount,
 							"action":         action,
@@ -917,7 +2054,7 @@ func (s *Service) executeActionItems(
 					outcome.Success = true
 					outcome.Status = model.CodexInspectionActionStatusSuccess
 					outcomes <- outcome
-					logger.success(ctx, logPrefix+"账号成功", map[string]any{
+					logger.success(logCtx, logPrefix+"账号成功", map[string]any{
 						"fileName":       item.FileName,
 						"displayAccount": item.DisplayAccount,
 						"action":         action,
@@ -932,7 +2069,15 @@ func (s *Service) executeActionItems(
 			close(jobs)
 			wg.Wait()
 			close(outcomes)
-			return collectActionOutcomes(outcomes, len(items))
+			return completeCanceledActionOutcomes(
+				items,
+				collectActionOutcomes(outcomes, len(items)),
+				actionFor,
+				ctx.Err(),
+				logger,
+				logCtx,
+				logPrefix,
+			)
 		case jobs <- item:
 		}
 	}
@@ -940,7 +2085,15 @@ func (s *Service) executeActionItems(
 	wg.Wait()
 	close(outcomes)
 
-	return collectActionOutcomes(outcomes, len(items))
+	return completeCanceledActionOutcomes(
+		items,
+		collectActionOutcomes(outcomes, len(items)),
+		actionFor,
+		ctx.Err(),
+		logger,
+		logCtx,
+		logPrefix,
+	)
 }
 
 func collectActionOutcomes(outcomes <-chan ActionOutcome, capacity int) []ActionOutcome {
@@ -955,6 +2108,49 @@ func collectActionOutcomes(outcomes <-chan ActionOutcome, capacity int) []Action
 		return result[i].FileName < result[j].FileName
 	})
 	return result
+}
+
+func completeCanceledActionOutcomes(
+	items []model.CodexInspectionResult,
+	outcomes []ActionOutcome,
+	actionFor func(model.CodexInspectionResult) string,
+	cause error,
+	logger runLogger,
+	logCtx context.Context,
+	logPrefix string,
+) []ActionOutcome {
+	if cause == nil || len(outcomes) >= len(items) {
+		return outcomes
+	}
+	completed := make(map[string]struct{}, len(outcomes))
+	for _, outcome := range outcomes {
+		completed[outcome.AccountKey] = struct{}{}
+	}
+	for _, item := range items {
+		if _, ok := completed[item.AccountKey]; ok {
+			continue
+		}
+		action := item.Action
+		if actionFor != nil {
+			action = actionFor(item)
+		}
+		message := fmt.Sprintf("动作未执行：%v", cause)
+		outcome := failedActionOutcome(item, action, message)
+		outcomes = append(outcomes, outcome)
+		logger.error(logCtx, logPrefix+"账号失败", map[string]any{
+			"fileName":       item.FileName,
+			"displayAccount": item.DisplayAccount,
+			"action":         action,
+			"error":          message,
+		})
+	}
+	sort.Slice(outcomes, func(i, j int) bool {
+		if outcomes[i].FileName == outcomes[j].FileName {
+			return outcomes[i].Action < outcomes[j].Action
+		}
+		return outcomes[i].FileName < outcomes[j].FileName
+	})
+	return outcomes
 }
 
 func (s *Service) executeAction(ctx context.Context, setup store.Setup, item model.CodexInspectionResult, automatic bool) error {
@@ -980,7 +2176,10 @@ func (s *Service) executeAction(ctx context.Context, setup store.Setup, item mod
 		return nil
 	}
 	if actionErr != nil {
-		if restoreErr := s.store.RestoreCodexInspectionDisableOwnership(context.WithoutCancel(ctx), revokedOwnership); restoreErr != nil {
+		restoreCtx, cancelRestore := context.WithTimeout(context.WithoutCancel(ctx), resultPersistenceTimeout)
+		restoreErr := s.store.RestoreCodexInspectionDisableOwnership(restoreCtx, revokedOwnership)
+		cancelRestore()
+		if restoreErr != nil {
 			return fmt.Errorf("%w; restore inspection disable ownership: %v", actionErr, restoreErr)
 		}
 		return actionErr
@@ -1088,12 +2287,39 @@ func (l runLogger) log(ctx context.Context, level string, message string, detail
 	if l.service == nil || l.runID <= 0 {
 		return
 	}
-	_, _ = l.service.store.InsertCodexInspectionLog(ctx, model.CodexInspectionLog{
+	// Keep inspection log writes serialized, but do not let a blocked SQLite
+	// writer make every probe wait behind it. Process logs are best-effort; a
+	// saturated gate drops the ordinary log and leaves lifecycle cleanup free
+	// to continue.
+	releaseGate := func() {}
+	if l.service.logGate != nil {
+		select {
+		case l.service.logGate <- struct{}{}:
+			releaseGate = func() { <-l.service.logGate }
+		case <-time.After(processLogQueueWait):
+			log.Printf("drop codex inspection log run %d: SQLite log writer is busy", l.runID)
+			return
+		}
+	} else {
+		l.service.logMu.Lock()
+		releaseGate = l.service.logMu.Unlock
+	}
+	defer releaseGate()
+	// Keep the write independent from a cancelled probe context and bounded so
+	// a transient database lock cannot stall the inspection indefinitely.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processLogWriteTimeout)
+	defer cancel()
+	if _, err := l.service.store.InsertCodexInspectionLog(logCtx, model.CodexInspectionLog{
 		RunID:   l.runID,
 		Level:   level,
 		Message: message,
 		Detail:  sanitizeDetail(detail),
-	})
+	}); err != nil {
+		log.Printf("write codex inspection log run %d: %v", l.runID, err)
+	}
 }
 
 func resolveProbeAction(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, usedPercent *float64, isQuota bool, threshold float64, planTypes ...string) inspectionDecision {
@@ -1392,7 +2618,12 @@ func (s *Service) applyDisableOwnership(ctx context.Context, accounts []account,
 			disabled = disabled || candidate.Disabled
 		}
 		if !matched || !disabled {
-			_ = s.store.DeleteCodexInspectionDisableOwnership(ctx, item.FileName)
+			if err := s.store.DeleteCodexInspectionDisableOwnership(ctx, item.FileName); err != nil {
+				logger.warning(ctx, "清理巡检禁用所有权失败", map[string]any{
+					"fileName": item.FileName,
+					"error":    err.Error(),
+				})
+			}
 			continue
 		}
 		for index := range accounts {
@@ -1461,19 +2692,42 @@ func isExecutableInspectionAction(action string) bool {
 	return action == "delete" || action == "disable" || action == "enable"
 }
 
-func (s *Service) validateManualActionItems(
+func (s *Service) validateActionItems(
 	ctx context.Context,
 	logCtx context.Context,
 	setup store.Setup,
 	items []model.CodexInspectionResult,
 	logger runLogger,
+	logPrefix string,
+	actionFor func(model.CodexInspectionResult) string,
 ) ([]model.CodexInspectionResult, []ActionOutcome, error) {
 	if len(items) == 0 {
 		return nil, nil, nil
 	}
 	files, err := s.fetchAuthFiles(ctx, setup)
 	if err != nil {
-		return nil, nil, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
+		message := fmt.Sprintf("刷新认证文件失败，已拒绝执行：%v", err)
+		outcomes := make([]ActionOutcome, 0, len(items))
+		for _, item := range items {
+			action := item.Action
+			if actionFor != nil {
+				action = actionFor(item)
+			}
+			outcome := failedActionOutcome(item, action, message)
+			outcomes = append(outcomes, outcome)
+			logger.error(logCtx, logPrefix+"账号校验失败", map[string]any{
+				"fileName":       item.FileName,
+				"displayAccount": item.DisplayAccount,
+				"action":         action,
+				"authIndex":      item.AuthIndex,
+				"accountId":      item.AccountID,
+				"error":          outcome.Error,
+			})
+		}
+		return nil, outcomes, nil
 	}
 	currentByFile := map[string][]account{}
 	for _, file := range files {
@@ -1484,37 +2738,45 @@ func (s *Service) validateManualActionItems(
 	validItems := make([]model.CodexInspectionResult, 0, len(items))
 	outcomes := make([]ActionOutcome, 0)
 	for _, item := range items {
+		action := item.Action
+		if actionFor != nil {
+			action = actionFor(item)
+		}
 		current, ok := matchCurrentAccount(currentByFile[item.FileName], item)
 		if !ok {
-			outcome := failedActionOutcome(item, item.Action, "认证文件不存在或账号标识已变化，已拒绝执行")
+			outcome := failedActionOutcome(item, action, "认证文件不存在或账号标识已变化，已拒绝执行")
 			outcomes = append(outcomes, outcome)
-			logger.warning(logCtx, "手动处理账号校验失败", map[string]any{
+			logger.error(logCtx, logPrefix+"账号校验失败", map[string]any{
 				"fileName":       item.FileName,
 				"displayAccount": item.DisplayAccount,
+				"action":         action,
 				"authIndex":      item.AuthIndex,
 				"accountId":      item.AccountID,
 				"error":          outcome.Error,
 			})
 			continue
 		}
-		if item.Action == "disable" && current.Disabled {
-			outcome := skippedActionOutcome(item, item.Action, "账号已是禁用状态，未重复执行")
+		item.Disabled = current.Disabled
+		if action == "disable" && current.Disabled {
+			outcome := skippedActionOutcome(item, action, "账号已是禁用状态，未重复执行")
+			outcome.CurrentDisabled = boolPointer(current.Disabled)
 			outcomes = append(outcomes, outcome)
-			logger.info(logCtx, "手动处理账号跳过", map[string]any{
+			logger.info(logCtx, logPrefix+"账号跳过", map[string]any{
 				"fileName":       item.FileName,
 				"displayAccount": item.DisplayAccount,
-				"action":         item.Action,
+				"action":         action,
 				"reason":         outcome.Error,
 			})
 			continue
 		}
-		if item.Action == "enable" && !current.Disabled {
-			outcome := skippedActionOutcome(item, item.Action, "账号已是启用状态，未重复执行")
+		if action == "enable" && !current.Disabled {
+			outcome := skippedActionOutcome(item, action, "账号已是启用状态，未重复执行")
+			outcome.CurrentDisabled = boolPointer(current.Disabled)
 			outcomes = append(outcomes, outcome)
-			logger.info(logCtx, "手动处理账号跳过", map[string]any{
+			logger.info(logCtx, logPrefix+"账号跳过", map[string]any{
 				"fileName":       item.FileName,
 				"displayAccount": item.DisplayAccount,
-				"action":         item.Action,
+				"action":         action,
 				"reason":         outcome.Error,
 			})
 			continue
@@ -1602,6 +2864,9 @@ func applyActionOutcomes(results []model.CodexInspectionResult, outcomes []Actio
 		if !ok {
 			continue
 		}
+		if outcome.CurrentDisabled != nil {
+			out[i].Disabled = *outcome.CurrentDisabled
+		}
 		status := model.NormalizeCodexInspectionActionStatus(outcome.Status, out[i].Action)
 		currentStatus := model.NormalizeCodexInspectionActionStatus(out[i].ActionStatus, out[i].Action)
 		if currentStatus == model.CodexInspectionActionStatusSuccess && status == model.CodexInspectionActionStatusSkipped {
@@ -1670,14 +2935,168 @@ func skippedActionOutcome(item model.CodexInspectionResult, action string, messa
 	}
 }
 
-func countFailedOutcomes(outcomes []ActionOutcome) int {
-	count := 0
+type actionOutcomeSummary struct {
+	Success     int
+	Failed      int
+	Skipped     int
+	NeedsReview int
+}
+
+func summarizeActionOutcomes(outcomes []ActionOutcome) actionOutcomeSummary {
+	summary := actionOutcomeSummary{}
 	for _, outcome := range outcomes {
-		if !outcome.Success {
-			count++
+		switch outcome.Status {
+		case model.CodexInspectionActionStatusSuccess:
+			summary.Success++
+		case model.CodexInspectionActionStatusFailed:
+			summary.Failed++
+		case model.CodexInspectionActionStatusSkipped:
+			summary.Skipped++
+		case model.CodexInspectionActionStatusNeedsReview:
+			summary.NeedsReview++
+		default:
+			if outcome.Success {
+				summary.Success++
+			} else {
+				summary.Failed++
+			}
 		}
 	}
-	return count
+	return summary
+}
+
+func logPreflightActionOutcomes(
+	ctx context.Context,
+	logger runLogger,
+	prefix string,
+	outcomes []ActionOutcome,
+) {
+	for _, outcome := range outcomes {
+		level := "info"
+		message := prefix + "账号跳过"
+		if outcome.Status == model.CodexInspectionActionStatusNeedsReview {
+			level = "warning"
+		}
+		if outcome.Status == model.CodexInspectionActionStatusFailed || !outcome.Success {
+			level = "error"
+			message = prefix + "账号失败"
+		}
+		logger.log(ctx, level, message, map[string]any{
+			"fileName":       outcome.FileName,
+			"displayAccount": outcome.DisplayAccount,
+			"action":         outcome.Action,
+			"status":         outcome.Status,
+			"reason":         outcome.Error,
+		})
+	}
+}
+
+func (s *Service) persistInspectionResults(
+	ctx context.Context,
+	runID int64,
+	results []model.CodexInspectionResult,
+	logger runLogger,
+) int {
+	// Probe workers only perform network work. Persist their results serially
+	// here so each account is written once per lifecycle phase and SQLite does
+	// not receive a burst of concurrent upserts.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A cancelled inspection may have a large partial result set. Keep its final
+	// lifecycle transition bounded, but never impose a fixed whole-batch budget
+	// on a healthy run: large successful inspections must persist every result.
+	startedCancelled := ctx.Err() != nil
+	persistCtx := context.WithoutCancel(ctx)
+	persistCancel := func() {}
+	if startedCancelled {
+		persistCtx, persistCancel = context.WithTimeout(persistCtx, cancelledPersistTimeout)
+	}
+	defer persistCancel()
+	failures := 0
+	for index, result := range results {
+		if !startedCancelled && ctx.Err() != nil {
+			remaining := len(results) - index
+			failures += remaining
+			logger.error(ctx, "巡检取消后停止写入剩余账号结果", map[string]any{
+				"remainingCount": remaining,
+				"error":          ctx.Err().Error(),
+			})
+			break
+		}
+		if err := persistCtx.Err(); err != nil {
+			remaining := len(results) - index
+			failures += remaining
+			logger.error(ctx, "巡检结果持久化时间预算已耗尽", map[string]any{
+				"remainingCount": remaining,
+				"error":          err.Error(),
+			})
+			break
+		}
+		result.RunID = runID
+		writeCtx, cancel := context.WithTimeout(persistCtx, resultWriteTimeout)
+		_, err := s.store.InsertCodexInspectionResult(writeCtx, result)
+		cancel()
+		if err != nil {
+			failures++
+			logger.error(ctx, "写入巡检账号结果失败", map[string]any{
+				"fileName":       result.FileName,
+				"displayAccount": result.DisplayAccount,
+				"retryScheduled": true,
+				"error":          err.Error(),
+			})
+		}
+	}
+	return failures
+}
+
+func (s *Service) getRunWithResultFallback(
+	ctx context.Context,
+	runID int64,
+	latestResults []model.CodexInspectionResult,
+	useFallback bool,
+) (RunDetail, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Callers already detach request cancellation where lifecycle persistence
+	// must continue. Preserve any shorter caller deadline so cancellation and
+	// shutdown paths cannot accidentally receive a fresh full read budget here.
+	readCtx, cancelRead := context.WithTimeout(ctx, criticalWriteTimeout)
+	defer cancelRead()
+	detail, err := s.GetRun(readCtx, runID)
+	if err != nil || !useFallback {
+		return detail, err
+	}
+	detail.Results = overlayInspectionResultSnapshots(runID, detail.Results, latestResults)
+	return detail, nil
+}
+
+func overlayInspectionResultSnapshots(
+	runID int64,
+	persisted []model.CodexInspectionResult,
+	latest []model.CodexInspectionResult,
+) []model.CodexInspectionResult {
+	persistedByAccount := make(map[string]model.CodexInspectionResult, len(persisted))
+	for _, result := range persisted {
+		persistedByAccount[result.AccountKey] = result
+	}
+
+	overlaid := make([]model.CodexInspectionResult, len(latest))
+	for index, result := range latest {
+		result.RunID = runID
+		result.ActionStatus = model.NormalizeCodexInspectionActionStatus(result.ActionStatus, result.Action)
+		if stored, ok := persistedByAccount[result.AccountKey]; ok {
+			if result.ID <= 0 {
+				result.ID = stored.ID
+			}
+			if result.CreatedAtMS <= 0 {
+				result.CreatedAtMS = stored.CreatedAtMS
+			}
+		}
+		overlaid[index] = result
+	}
+	return overlaid
 }
 
 func failedActionOutcomes(outcomes []ActionOutcome) []map[string]any {
@@ -1726,6 +3145,32 @@ func pickSample(items []account, sampleSize int) []account {
 		out[i], out[j] = out[j], out[i]
 	})
 	return out[:sampleSize]
+}
+
+// pickSamplePerProvider applies the configured sample size independently to
+// each selected provider. This prevents a combined Codex+xAI run from randomly
+// sampling only one provider and leaving the other without health evidence.
+func pickSamplePerProvider(items []account, sampleSize int) []account {
+	if sampleSize <= 0 {
+		out := make([]account, len(items))
+		copy(out, items)
+		return out
+	}
+
+	groups := make(map[string][]account)
+	providerOrder := make([]string, 0)
+	for _, item := range items {
+		if _, ok := groups[item.Provider]; !ok {
+			providerOrder = append(providerOrder, item.Provider)
+		}
+		groups[item.Provider] = append(groups[item.Provider], item)
+	}
+
+	result := make([]account, 0, len(items))
+	for _, provider := range providerOrder {
+		result = append(result, pickSample(groups[provider], sampleSize)...)
+	}
+	return result
 }
 
 func countAccounts(items []account, disabled bool) int {
@@ -2524,6 +3969,10 @@ func ptrFloat(value float64) *float64 {
 	return &value
 }
 
+func boolPointer(value bool) *bool {
+	return &value
+}
+
 func nullableFloat(value *float64) any {
 	if value == nil {
 		return nil
@@ -2578,6 +4027,9 @@ func redactValue(value any) any {
 
 func isSecretKey(key string) bool {
 	normalized := strings.ToLower(key)
+	if normalized == "triggerkey" {
+		return false
+	}
 	return strings.Contains(normalized, "token") ||
 		strings.Contains(normalized, "secret") ||
 		strings.Contains(normalized, "authorization") ||

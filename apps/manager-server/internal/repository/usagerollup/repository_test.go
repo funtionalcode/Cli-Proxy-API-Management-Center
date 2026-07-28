@@ -237,6 +237,77 @@ func TestCatchUpAccountHistorySerializesConcurrentCalls(t *testing.T) {
 	}
 }
 
+func TestCatchUpAccountHistoryWaitsForConcurrentWriter(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		rollupTestEvent("rollup-lock-contention", 1_700_000_001_000, "gpt-a", "", "lock-test-account", "", "auth-a", false, 1, 2, 0, 0, 0, 0, 3),
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	latestEventID, err := repo.LatestEventID(ctx)
+	if err != nil {
+		t.Fatalf("latest event id: %v", err)
+	}
+	if _, err := db.Exec(`create table rollup_write_lock_test (id integer primary key)`); err != nil {
+		t.Fatalf("create write lock fixture: %v", err)
+	}
+
+	lockingTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin competing write: %v", err)
+	}
+	defer func() {
+		_ = lockingTx.Rollback()
+	}()
+	if _, err := lockingTx.Exec(`insert into rollup_write_lock_test (id) values (1)`); err != nil {
+		t.Fatalf("hold competing write lock: %v", err)
+	}
+
+	type catchUpOutcome struct {
+		result CatchUpResult
+		err    error
+	}
+	catchUpResult := make(chan catchUpOutcome, 1)
+	go func() {
+		result, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000)
+		catchUpResult <- catchUpOutcome{result: result, err: err}
+	}()
+
+	select {
+	case outcome := <-catchUpResult:
+		t.Fatalf("catch-up completed before competing writer released: result=%#v err=%v", outcome.result, outcome.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := lockingTx.Commit(); err != nil {
+		t.Fatalf("commit competing write: %v", err)
+	}
+
+	var outcome catchUpOutcome
+	select {
+	case outcome = <-catchUpResult:
+	case <-time.After(time.Second):
+		t.Fatal("catch-up did not resume after competing writer released")
+	}
+	if outcome.err != nil {
+		t.Fatalf("catch-up after competing writer released: %v", outcome.err)
+	}
+	if outcome.result.Processed != 1 || outcome.result.LastEventID != latestEventID || outcome.result.Pending {
+		t.Fatalf("catch-up result = %#v, latest event id = %d", outcome.result, latestEventID)
+	}
+
+	rows, err := repo.AccountHistoryRows(ctx, []string{"lock-test-account"})
+	if err != nil {
+		t.Fatalf("query account history rows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Calls != 1 || rows[0].TotalTokens != 3 {
+		t.Fatalf("account history rows = %#v", rows)
+	}
+}
+
 func newRollupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))

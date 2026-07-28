@@ -65,7 +65,7 @@ func TestSummaryAggregatesCostsAndWindows(t *testing.T) {
 		t.Fatalf("save prices: %v", err)
 	}
 	_, err := db.InsertEvents(ctx, []usage.Event{
-		dashboardEvent("event-a-1", todayStart+10*60*1000, "gpt-a", false, 1_000_000, 500_000, 0, 250_000, 0, 1_750_000, &latency100),
+		dashboardEvent("event-a-1", todayStart+10*60*1000, "gpt-a", false, 1_000_000, 500_000, 0, 250_000, 0, 1_500_000, &latency100),
 		dashboardEvent("event-b-1", todayStart+50*60*1000, "gpt-b", true, 0, 100, 0, 0, 0, 100, &latency200),
 		dashboardEvent("event-a-2", todayStart+55*60*1000, "gpt-a", false, 0, 0, 0, 0, 0, 0, nil),
 		dashboardEvent("event-outside", nowMS, "gpt-a", false, 10, 10, 0, 0, 0, 20, nil),
@@ -87,7 +87,7 @@ func TestSummaryAggregatesCostsAndWindows(t *testing.T) {
 	if resp.Today.TotalCalls != 3 || resp.Today.SuccessCalls != 2 || resp.Today.FailureCalls != 1 {
 		t.Fatalf("today counts = %#v", resp.Today)
 	}
-	if resp.Today.TotalTokens != 1_750_100 || resp.Today.ZeroTokenCalls != 1 {
+	if resp.Today.TotalTokens != 1_500_100 || resp.Today.ZeroTokenCalls != 1 {
 		t.Fatalf("today tokens = %#v", resp.Today)
 	}
 	if math.Abs(resp.Today.SuccessRate-(2.0/3.0)) > 0.000001 {
@@ -117,7 +117,7 @@ func TestSummaryAggregatesCostsAndWindows(t *testing.T) {
 		t.Fatalf("recent failure details = %#v", resp.RecentFailures[0])
 	}
 	if len(resp.TrafficTimeline) != 24 || resp.TrafficTimeline[0].Calls != 3 ||
-		resp.TrafficTimeline[0].Tokens != 1_750_100 ||
+		resp.TrafficTimeline[0].Tokens != 1_500_100 ||
 		math.Abs(resp.TrafficTimeline[0].FailureRate-(1.0/3.0)) > 0.000001 {
 		t.Fatalf("traffic timeline = %#v", resp.TrafficTimeline)
 	}
@@ -136,16 +136,16 @@ func TestSummaryAggregatesCostsAndWindows(t *testing.T) {
 		t.Fatalf("request health timeline points = %#v", resp.RequestHealth.Points[:8])
 	}
 	if len(resp.TokenMix) != 4 || resp.TokenMix[0].Key != "input" ||
-		resp.TokenMix[0].Tokens != 1_000_000 ||
-		math.Abs(resp.TokenMix[0].Share-(1000000.0/1750100.0)) > 0.000001 {
+		resp.TokenMix[0].Tokens != 750_000 ||
+		math.Abs(resp.TokenMix[0].Share-(750000.0/1500100.0)) > 0.000001 {
 		t.Fatalf("token mix = %#v", resp.TokenMix)
 	}
 	if resp.TokenMix[1].Key != "cached" || resp.TokenMix[1].Tokens != 250_000 ||
-		math.Abs(resp.TokenMix[1].Share-(250000.0/1750100.0)) > 0.000001 {
+		math.Abs(resp.TokenMix[1].Share-(250000.0/1500100.0)) > 0.000001 {
 		t.Fatalf("token mix cached = %#v", resp.TokenMix)
 	}
 	if resp.TokenMix[2].Key != "output" || resp.TokenMix[2].Tokens != 500_100 ||
-		math.Abs(resp.TokenMix[2].Share-(500100.0/1750100.0)) > 0.000001 {
+		math.Abs(resp.TokenMix[2].Share-(500100.0/1500100.0)) > 0.000001 {
 		t.Fatalf("token mix output = %#v", resp.TokenMix)
 	}
 	if resp.TokenMix[3].Key != "reasoning" || resp.TokenMix[3].Tokens != 0 ||
@@ -176,7 +176,7 @@ func TestSummaryAggregatesCostsAndWindows(t *testing.T) {
 
 func TestBuildTokenMixRestoresFourVisibleBuckets(t *testing.T) {
 	mix := buildTokenMix(TodaySummary{
-		InputTokens:         1_000,
+		InputTokens:         1_800,
 		OutputTokens:        200,
 		CachedTokens:        300,
 		CacheReadTokens:     400,
@@ -218,17 +218,37 @@ func TestBuildTokenMixDeduplicatesNestedCacheAndReasoning(t *testing.T) {
 	if len(mix) != 4 {
 		t.Fatalf("token mix length = %d, want 4: %#v", len(mix), mix)
 	}
-	if mix[0].Key != "input" || mix[0].Tokens != 2_310 {
+	if mix[0].Key != "input" || mix[0].Tokens != 2_400 {
 		t.Fatalf("input mix = %#v", mix[0])
 	}
 	if mix[1].Key != "cached" || mix[1].Tokens != 18_300 {
 		t.Fatalf("cached mix = %#v", mix[1])
 	}
-	if mix[2].Key != "output" || mix[2].Tokens != 245 {
+	if mix[2].Key != "output" || mix[2].Tokens != 155 {
 		t.Fatalf("output mix = %#v", mix[2])
 	}
 	if mix[3].Key != "reasoning" || mix[3].Tokens != 90 {
 		t.Fatalf("reasoning mix = %#v", mix[3])
+	}
+}
+
+func TestBuildTokenMixDeduplicatesOnlyNestedReasoning(t *testing.T) {
+	mix := buildTokenMix(TodaySummary{
+		InputTokens:     1_500,
+		OutputTokens:    400,
+		CachedTokens:    500,
+		ReasoningTokens: 150,
+		TotalTokens:     1_950,
+	})
+
+	if mix[0].Tokens != 1_000 || mix[1].Tokens != 500 ||
+		mix[2].Tokens != 300 || mix[3].Tokens != 150 {
+		t.Fatalf("token mix = %#v", mix)
+	}
+	for _, segment := range mix {
+		if math.Abs(segment.Share-float64(segment.Tokens)/1950.0) > 0.000001 {
+			t.Fatalf("token mix share = %#v", segment)
+		}
 	}
 }
 
@@ -460,7 +480,7 @@ func TestSummaryDashboardHourlyRollupKeepsOffsetTimelineCorrect(t *testing.T) {
 	}
 }
 
-func TestSummaryDashboardHourlyRollupFallsBackWhilePending(t *testing.T) {
+func TestSummaryDashboardHourlyRollupMergesPendingRawDelta(t *testing.T) {
 	db := newDashboardTestStore(t)
 	ctx := context.Background()
 	todayStart := int64(1_800_000_000_000)
@@ -476,8 +496,9 @@ func TestSummaryDashboardHourlyRollupFallsBackWhilePending(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert pending event: %v", err)
 	}
-	if _, _, _, ok := New(db).loadTodayMetricsFromRollup(ctx, todayStart, nowMS); ok {
-		t.Fatalf("expected pending checkpoint to force raw fallback")
+	agg, _, timeline, ok := New(db).loadTodayMetricsFromRollup(ctx, todayStart, nowMS)
+	if !ok || agg.TotalCalls != 2 || agg.TotalTokens != 3 || len(timeline) != 2 {
+		t.Fatalf("pending aggregate did not merge raw delta: ok=%v agg=%#v timeline=%#v", ok, agg, timeline)
 	}
 	resp, err := New(db).Summary(ctx, SummaryParams{TodayStartMS: todayStart, NowMS: nowMS})
 	if err != nil {
@@ -515,7 +536,7 @@ func TestSummaryDashboardHourlyRollupCanBeDisabled(t *testing.T) {
 func catchUpDashboardHourlyForTest(t *testing.T, ctx context.Context, db *store.Store) {
 	t.Helper()
 	for {
-		result, err := db.CatchUpDashboardHourlyRollups(ctx, 100, time.Now().UnixMilli())
+		result, err := db.CatchUpUsageHourlyAggregate(ctx, 100, time.Now().UnixMilli())
 		if err != nil {
 			t.Fatalf("catch up dashboard hourly: %v", err)
 		}

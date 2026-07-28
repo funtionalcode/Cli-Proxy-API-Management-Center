@@ -4,6 +4,7 @@ import { buildSourceInfoMap } from '@/utils/sourceResolver';
 import type { UsageRankRow } from './usageAnalyticsModel';
 import {
   analyzeUsageBucket,
+  buildApiKeyTrendSeries,
   buildApiKeyRows,
   buildCredentialRows,
   buildSelectedApiKeyTrendSeries,
@@ -25,6 +26,7 @@ import {
   buildUsageHeatmapRangeContext,
   buildUsageHeatmap,
   buildUsageCredentialTimeline,
+  buildUsageApiKeyTimeline,
   buildUsageTimeline,
   computeCacheHitRate,
   computeRowAverageCostPerCall,
@@ -621,6 +623,82 @@ describe('usage analytics adapters', () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('abcdef1234567890');
     expect(result[0].points.map((point) => point.value)).toEqual([3, 7]);
+  });
+
+  it('builds overview API key trends from exact per-key buckets', () => {
+    const rows: UsageRankRow[] = [
+      {
+        id: 'key-a',
+        label: 'Key A',
+        apiKeyHash: 'key-a',
+        requestCount: 8,
+        successCount: 8,
+        failureCount: 0,
+        successRate: 1,
+        totalTokens: 800,
+        inputTokens: 800,
+        outputTokens: 0,
+        cachedTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        estimatedCost: 0.8,
+        averageLatencyMs: null,
+        share: 0.8,
+      },
+      {
+        id: 'key-b',
+        label: 'Key B',
+        apiKeyHash: 'key-b',
+        requestCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        successRate: 1,
+        totalTokens: 200,
+        inputTokens: 200,
+        outputTokens: 0,
+        cachedTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        estimatedCost: 0.2,
+        averageLatencyMs: null,
+        share: 0.2,
+      },
+    ];
+    const timeline = buildUsageTimeline(
+      [
+        { bucket_ms: NOW_MS, label: '12:00', calls: 5, tokens: 500, success: 5, failure: 0 },
+        {
+          bucket_ms: NOW_MS + HOUR_MS,
+          label: '13:00',
+          calls: 5,
+          tokens: 500,
+          success: 5,
+          failure: 0,
+        },
+      ],
+      'hour'
+    );
+    const apiKeyTimeline = buildUsageApiKeyTimeline(
+      [
+        { api_key_hash: 'key-a', bucket_ms: NOW_MS, calls: 2, tokens: 200, success: 2, failure: 0 },
+        {
+          api_key_hash: 'key-a',
+          bucket_ms: NOW_MS + HOUR_MS,
+          calls: 6,
+          tokens: 600,
+          success: 6,
+          failure: 0,
+        },
+        { api_key_hash: 'key-b', bucket_ms: NOW_MS, calls: 3, tokens: 300, success: 3, failure: 0 },
+      ],
+      'hour'
+    );
+
+    const result = buildApiKeyTrendSeries(rows, timeline, apiKeyTimeline, 'requestCount');
+
+    expect(result).toHaveLength(2);
+    expect(result[0].points.map((point) => point.value)).toEqual([2, 6]);
+    expect(result[1].points.map((point) => point.value)).toEqual([3, 0]);
   });
 
   it('does not render selected API key trend when the filtered timeline is missing', () => {

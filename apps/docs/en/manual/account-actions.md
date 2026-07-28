@@ -1,8 +1,15 @@
-# Account Action Queue
+---
+title: Account Action Queue And Safe Auto-Disable
+description: Review, disable, re-enable, resolve, or delete problem accounts from sanitized credential evidence without treating every 401/403 as invalid credentials.
+---
+
+# Account Action Queue And Safe Auto-Disable
 
 Account Action Queue centralizes auth-related candidates detected from Monitoring. It is not a request-details page. It lists accounts that may need human action.
 
 If you need the failed request itself, start with [Monitoring](./monitoring.md).
+
+Open the [Account Action Queue Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring/account-actions) to inspect fictional candidates and actions.
 
 ## When Candidates Appear
 
@@ -49,7 +56,7 @@ Before deleting, confirm that the same auth file is not used by another model or
 - Need failure details: [Monitoring](./monitoring.md).
 - Need reauth: [OAuth Login](./oauth.md).
 - Need account enable/disable: [Auth Files](./auth-files.md).
-- Need Codex quota or state: [Codex Inspection](./codex-inspection.md).
+- Need Codex/xAI quota or state: [Account Inspection](./codex-inspection.md).
 
 ## Usage Advice
 

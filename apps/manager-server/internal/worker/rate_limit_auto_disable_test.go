@@ -130,25 +130,66 @@ func TestQuotaAutoDisableCandidateAcceptsXAIIncludedFreeUsageExhausted(t *testin
 			if candidate.ReasonCode != quotaReasonXAIFreeUsage || candidate.WindowKind != quotaWindowRolling24H {
 				t.Fatalf("candidate metadata = %#v", candidate)
 			}
+			var evidence usage.ProviderUsageMetadata
+			if err := json.Unmarshal([]byte(candidate.EvidenceJSON), &evidence); err != nil {
+				t.Fatalf("decode evidence: %v", err)
+			}
+			if evidence.Actual == nil || *evidence.Actual != 2_033_137 || evidence.Limit == nil || *evidence.Limit != 2_000_000 || evidence.Overage == nil || *evidence.Overage != 33_137 {
+				t.Fatalf("evidence = %#v", evidence)
+			}
 		})
+	}
+}
+
+func TestQuotaAutoDisableCandidateUsesEventTimestampForXAIEstimate(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eventAt := now.Add(-6 * time.Hour)
+	event := usage.Event{
+		EventHash:        "evt-xai-event-time",
+		TimestampMS:      eventAt.UnixMilli(),
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		FailBody:         `{"code":"subscription:free-usage-exhausted"}`,
+		AuthFileSnapshot: "xai-auth.json",
+		AuthIndex:        "auth-xai-1",
+		Provider:         "xai",
+	}
+	candidate, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now)
+	if !ok {
+		t.Fatal("xAI event should produce a candidate")
+	}
+	want := eventAt.Add(24 * time.Hour)
+	if !candidate.ResetAt.Equal(want) {
+		t.Fatalf("reset time = %s, want event time + 24h %s", candidate.ResetAt, want)
+	}
+	if candidate.ResetAt.Equal(now.Add(24 * time.Hour)) {
+		t.Fatal("reset time was incorrectly based on processing time")
+	}
+
+	stale := event
+	stale.TimestampMS = now.Add(-25 * time.Hour).UnixMilli()
+	if _, ok := quotaAutoDisableCandidateFromEvent(stale, "http://cpa", "key", now); ok {
+		t.Fatal("an already expired event-time estimate must not create a cooldown")
 	}
 }
 
 func TestQuotaAutoDisableCandidatePrefersXAIExplicitResetSignals(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	cases := []struct {
-		name  string
-		event usage.Event
-		want  time.Time
+		name      string
+		event     usage.Event
+		want      time.Time
+		estimated bool
 	}{
 		{
-			name: "retry after header",
+			name: "retry after header ignored for free usage",
 			event: usage.Event{
 				ResponseMetadata: usage.ParseResponseHeaderMetadata(map[string]any{
 					"Retry-After": []any{"90"},
 				}, now),
 			},
-			want: now.Add(90 * time.Second),
+			want:      now.Add(24 * time.Hour),
+			estimated: true,
 		},
 		{
 			name: "billing period end",
@@ -158,7 +199,8 @@ func TestQuotaAutoDisableCandidatePrefersXAIExplicitResetSignals(t *testing.T) {
 					now.Add(6*time.Hour).Unix(),
 				),
 			},
-			want: now.Add(6 * time.Hour),
+			want:      now.Add(6 * time.Hour),
+			estimated: false,
 		},
 		{
 			name: "code and reset split across event fields",
@@ -169,7 +211,27 @@ func TestQuotaAutoDisableCandidatePrefersXAIExplicitResetSignals(t *testing.T) {
 					now.Add(8*time.Hour).Unix(),
 				),
 			},
-			want: now.Add(8 * time.Hour),
+			want:      now.Add(8 * time.Hour),
+			estimated: false,
+		},
+		{
+			name: "absolute reset wins over nested relative reset",
+			event: usage.Event{
+				FailBody: fmt.Sprintf(
+					`{"code":"subscription:free-usage-exhausted","a":{"reset_after_seconds":60},"z":{"billing_period_end":%d}}`,
+					now.Add(10*time.Hour).Unix(),
+				),
+			},
+			want:      now.Add(10 * time.Hour),
+			estimated: false,
+		},
+		{
+			name: "retry after body backoff ignored",
+			event: usage.Event{
+				FailBody: `{"code":"subscription:free-usage-exhausted","retry_after":60}`,
+			},
+			want:      now.Add(24 * time.Hour),
+			estimated: true,
 		},
 	}
 
@@ -193,7 +255,44 @@ func TestQuotaAutoDisableCandidatePrefersXAIExplicitResetSignals(t *testing.T) {
 			if !candidate.ResetAt.Equal(tc.want) {
 				t.Fatalf("reset time = %s, want %s", candidate.ResetAt, tc.want)
 			}
+			var evidence usage.ProviderUsageMetadata
+			if err := json.Unmarshal([]byte(candidate.EvidenceJSON), &evidence); err != nil {
+				t.Fatalf("decode evidence: %v", err)
+			}
+			if evidence.RecoverAtMS != tc.want.UnixMilli() || evidence.RecoverAtEstimated != tc.estimated {
+				t.Fatalf("evidence recovery = %#v, estimated want %v", evidence, tc.estimated)
+			}
 		})
+	}
+}
+
+func TestXAIProviderUsageEvidencePreservesStructuredRecoverySource(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	recoverAt := now.Add(6 * time.Hour)
+	event := usage.Event{
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		AuthFileSnapshot: "xai-auth.json",
+		Provider:         "xai",
+		RawJSON:          `{"response":{"reset_after_seconds":60}}`,
+		ResponseMetadata: &usage.ResponseHeaderMetadata{ProviderUsage: &usage.ProviderUsageMetadata{
+			Provider:    "xai",
+			Kind:        usage.ProviderUsageKindIncludedFree,
+			State:       usage.ProviderUsageStateExhausted,
+			Code:        usage.ProviderUsageCodeXAIFree,
+			RecoverAtMS: recoverAt.UnixMilli(),
+		}},
+	}
+	candidate, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now)
+	if !ok {
+		t.Fatal("structured xAI recovery did not produce a candidate")
+	}
+	var evidence usage.ProviderUsageMetadata
+	if err := json.Unmarshal([]byte(candidate.EvidenceJSON), &evidence); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if evidence.RecoverAtMS != recoverAt.UnixMilli() || evidence.RecoverAtEstimated {
+		t.Fatalf("structured provider recovery source was lost: %#v", evidence)
 	}
 }
 
@@ -218,7 +317,7 @@ func TestXAIResetMatchesSharedFixture(t *testing.T) {
 	}
 	now := time.Unix(1_700_000_000, 0)
 	for _, fixture := range fixtures {
-		if fixture.Expected.Classification != "free_quota_exhausted" || fixture.Expected.RetryAfterSeconds == nil {
+		if fixture.Expected.Classification != "free_quota_exhausted" {
 			continue
 		}
 		body, err := json.Marshal(fixture.Body)
@@ -240,7 +339,10 @@ func TestXAIResetMatchesSharedFixture(t *testing.T) {
 		if !ok {
 			t.Fatalf("fixture %q did not produce reset time", fixture.Name)
 		}
-		want := now.Add(time.Duration(*fixture.Expected.RetryAfterSeconds) * time.Second)
+		// Fixture RetryAfterSeconds is transport backoff only. Free-usage
+		// credential cooldown uses the rolling 24h estimate unless the body
+		// publishes an explicit quota reset field.
+		want := now.Add(xaiFreeUsageCooldown)
 		if !resetAt.Equal(want) {
 			t.Fatalf("fixture %q reset = %s, want %s", fixture.Name, resetAt, want)
 		}
@@ -249,16 +351,27 @@ func TestXAIResetMatchesSharedFixture(t *testing.T) {
 
 func TestQuotaAutoDisableCandidateAcceptsXAIIncludedFreeUsageExhaustedAliasesAndNestedCode(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	for _, provider := range []string{"xai", "x-ai", "grok"} {
-		t.Run(provider, func(t *testing.T) {
+	cases := []struct {
+		name         string
+		provider     string
+		executorType string
+	}{
+		{name: "xai", provider: "xai"},
+		{name: "x-ai", provider: "x-ai"},
+		{name: "grok-with-xai-executor", provider: "grok", executorType: "XAIExecutor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			event := usage.Event{
-				EventHash:        "evt-xai-nested-" + provider,
-				Failed:           true,
-				FailStatusCode:   http.StatusTooManyRequests,
-				FailBody:         `{"error":{"code":"subscription:free-usage-exhausted","message":"rolling 24-hour window"}}`,
-				AuthFileSnapshot: "xai-auth.json",
-				AuthIndex:        "auth-xai-1",
-				Provider:         provider,
+				EventHash:            "evt-xai-nested-" + tc.name,
+				Failed:               true,
+				FailStatusCode:       http.StatusTooManyRequests,
+				FailBody:             `{"error":{"code":"subscription:free-usage-exhausted","message":"rolling 24-hour window"}}`,
+				AuthFileSnapshot:     "xai-auth.json",
+				AuthIndex:            "auth-xai-1",
+				Provider:             tc.provider,
+				ExecutorType:         tc.executorType,
+				AuthProviderSnapshot: tc.provider,
 			}
 			candidate, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now)
 			if !ok {
@@ -268,6 +381,53 @@ func TestQuotaAutoDisableCandidateAcceptsXAIIncludedFreeUsageExhaustedAliasesAnd
 				t.Fatalf("provider = %q, want normalized xai", candidate.Provider)
 			}
 		})
+	}
+}
+
+func TestQuotaAutoDisableCandidateRejectsBareGrokWithoutXAIExecutor(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	event := usage.Event{
+		EventHash:        "evt-grok-proxy",
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		FailBody:         `{"error":{"code":"subscription:free-usage-exhausted","message":"rolling 24-hour window"}}`,
+		AuthFileSnapshot: "grok-proxy.json",
+		AuthIndex:        "auth-1",
+		Provider:         "grok",
+		ExecutorType:     "OpenAICompatExecutor",
+	}
+	if _, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now); ok {
+		t.Fatal("bare grok without xAI executor must not auto-disable")
+	}
+}
+
+func TestQuotaAutoDisableCandidateRejectsExecutorSubstringAndAcceptsNativeSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	base := usage.Event{
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		FailBody:         `{"code":"subscription:free-usage-exhausted"}`,
+		AuthFileSnapshot: "xai-auth.json",
+		Provider:         "grok",
+	}
+
+	rejected := base
+	rejected.ExecutorType = "NotXAIExecutor"
+	if _, ok := quotaAutoDisableCandidateFromEvent(rejected, "http://cpa", "key", now); ok {
+		t.Fatal("executor substring caused false native xAI match")
+	}
+
+	accepted := base
+	accepted.AuthProviderSnapshot = "xai"
+	if _, ok := quotaAutoDisableCandidateFromEvent(accepted, "http://cpa", "key", now); !ok {
+		t.Fatal("native xAI auth snapshot was ignored")
+	}
+
+	conflicting := base
+	conflicting.Provider = "openai-compatible-example"
+	conflicting.ExecutorType = "XAIExecutor"
+	if _, ok := quotaAutoDisableCandidateFromEvent(conflicting, "http://cpa", "key", now); ok {
+		t.Fatal("conflicting provider identity was treated as native xAI")
 	}
 }
 
@@ -289,6 +449,7 @@ func TestQuotaAutoDisableCandidateRejectsUnrelatedXAIErrors(t *testing.T) {
 		{name: "regional permission denied", body: `{"code":"permission-denied","error":"The model grok-4.5 is not available in your region."}`, code: http.StatusForbidden},
 		{name: "bad credentials", body: `{"code":"unauthenticated:bad-credentials","error":"The OAuth2 access token could not be validated."}`, code: http.StatusForbidden},
 		{name: "generic rate limit", body: `{"code":"rate-limited","error":"try again later"}`, code: http.StatusTooManyRequests},
+		{name: "error text only mentions free usage code", body: `{"code":"rate-limited","error":"This is not subscription:free-usage-exhausted."}`, code: http.StatusTooManyRequests},
 	}
 
 	for _, tc := range cases {
@@ -300,6 +461,98 @@ func TestQuotaAutoDisableCandidateRejectsUnrelatedXAIErrors(t *testing.T) {
 				t.Fatal("unrelated xAI error should not create quota cooldown")
 			}
 		})
+	}
+}
+
+func TestExtendExistingCooldownKeepsEvidenceForLaterRecovery(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	now := time.Now()
+	existingRecoverAt := now.Add(12 * time.Hour)
+	existingEvidence := fmt.Sprintf(`{"provider":"xai","kind":"included_free_usage","code":"subscription:free-usage-exhausted","recover_at_ms":%d}`, existingRecoverAt.UnixMilli())
+	if _, err := st.UpsertQuotaCooldown(ctx, store.QuotaCooldownUpsert{
+		AuthFileName: "xai-auth.json",
+		AuthIndex:    "auth-xai-1",
+		Provider:     "xai",
+		RecoverAtMS:  existingRecoverAt.UnixMilli(),
+		Owner:        model.QuotaCooldownOwnerXAIFreeUsage,
+		EvidenceJSON: existingEvidence,
+		DisabledAtMS: now.Add(-time.Hour).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed cooldown: %v", err)
+	}
+
+	worker := NewRateLimitAutoDisableWorker(st)
+	candidate := quotaAutoDisableCandidate{
+		FileName:     "xai-auth.json",
+		AuthIndex:    "auth-xai-1",
+		Provider:     "xai",
+		Owner:        model.QuotaCooldownOwnerXAIFreeUsage,
+		ResetAt:      now.Add(6 * time.Hour),
+		EvidenceJSON: `{"provider":"xai","kind":"included_free_usage","code":"subscription:free-usage-exhausted","recover_at_ms":1}`,
+	}
+	if !worker.extendExistingCooldown(ctx, candidate, authFile{Name: candidate.FileName, AuthIndex: candidate.AuthIndex, Disabled: true}) {
+		t.Fatal("existing cooldown was not extended")
+	}
+
+	active, err := st.QuotaCooldowns.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("list active cooldowns: %v", err)
+	}
+	if len(active) != 1 || active[0].RecoverAtMS != existingRecoverAt.UnixMilli() || active[0].EvidenceJSON != existingEvidence {
+		t.Fatalf("active cooldown = %#v", active)
+	}
+}
+
+func TestMergeXAIProviderUsageEvidenceKeepsPrimaryRecoveryAndFillsUsage(t *testing.T) {
+	primaryRecoverAt := int64(2_000_000_000_000)
+	primary := fmt.Sprintf(
+		`{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted","recover_at_ms":%d,"recover_at_estimated":true}`,
+		primaryRecoverAt,
+	)
+	supplemental := `{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted","actual":1024413,"limit":1000000,"remaining":0,"overage":24413,"recover_at_ms":1900000000000}`
+
+	mergedJSON := mergeXAIProviderUsageEvidence(primary, supplemental, primaryRecoverAt)
+	var merged usage.ProviderUsageMetadata
+	if err := json.Unmarshal([]byte(mergedJSON), &merged); err != nil {
+		t.Fatalf("decode merged evidence: %v", err)
+	}
+	if merged.RecoverAtMS != primaryRecoverAt || !merged.RecoverAtEstimated {
+		t.Fatalf("merged recovery = %#v", merged)
+	}
+	if merged.Actual == nil || *merged.Actual != 1_024_413 || merged.Limit == nil || *merged.Limit != 1_000_000 || merged.Overage == nil || *merged.Overage != 24_413 {
+		t.Fatalf("merged usage = %#v", merged)
+	}
+}
+
+func TestMergeXAIProviderUsageEvidenceMarksUnknownWinningRecoveryEstimated(t *testing.T) {
+	supplemental := `{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted","recover_at_ms":1900000000000,"recover_at_estimated":false}`
+	mergedJSON := mergeXAIProviderUsageEvidence("", supplemental, 2000000000000)
+	var merged usage.ProviderUsageMetadata
+	if err := json.Unmarshal([]byte(mergedJSON), &merged); err != nil {
+		t.Fatalf("decode merged evidence: %v", err)
+	}
+	if merged.RecoverAtMS != 2000000000000 || !merged.RecoverAtEstimated {
+		t.Fatalf("unknown winning recovery was presented as provider-reported: %#v", merged)
+	}
+
+	matchingSupplemental := `{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted","recover_at_ms":2000000000000,"recover_at_estimated":false}`
+	mergedJSON = mergeXAIProviderUsageEvidence(
+		`{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted"}`,
+		matchingSupplemental,
+		2000000000000,
+	)
+	merged = usage.ProviderUsageMetadata{}
+	if err := json.Unmarshal([]byte(mergedJSON), &merged); err != nil {
+		t.Fatalf("decode matching supplemental evidence: %v", err)
+	}
+	if merged.RecoverAtMS != 2000000000000 || merged.RecoverAtEstimated {
+		t.Fatalf("matching supplemental recovery should remain reported: %#v", merged)
 	}
 }
 

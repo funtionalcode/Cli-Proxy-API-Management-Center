@@ -22,6 +22,89 @@ beforeEach(() => {
 });
 
 describe('providersApi auth-index preservation', () => {
+  it('loads and creates xAI API key configs through the native management section', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'xai-api-key': [
+        {
+          'api-key': 'xai-existing',
+          'base-url': 'https://api.x.ai/v1',
+          websockets: true,
+          'raw-field': 'keep',
+        },
+      ],
+    });
+
+    await expect(providersApi.getXAIConfigs()).resolves.toEqual([
+      expect.objectContaining({
+        apiKey: 'xai-existing',
+        baseUrl: 'https://api.x.ai/v1',
+        websockets: true,
+      }),
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'xai-api-key': [
+        {
+          'api-key': 'xai-existing',
+          'base-url': 'https://api.x.ai/v1',
+          'raw-field': 'keep',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.createXAIConfig({
+      apiKey: 'xai-new',
+      baseUrl: 'https://api.x.ai/v1',
+      websockets: true,
+      models: [{ name: 'grok-4.5' }],
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith('/xai-api-key', [
+      {
+        'api-key': 'xai-existing',
+        'base-url': 'https://api.x.ai/v1',
+        'raw-field': 'keep',
+      },
+      {
+        'api-key': 'xai-new',
+        'base-url': 'https://api.x.ai/v1',
+        websockets: true,
+        models: [{ name: 'grok-4.5' }],
+      },
+    ]);
+  });
+
+  it('preserves existing xAI configs from camel-case raw config aliases', async () => {
+    mocks.get.mockResolvedValueOnce({
+      xaiApiKeys: [
+        {
+          'api-key': 'xai-existing',
+          'base-url': 'https://api.x.ai/v1',
+          'future-field': 'keep',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.createXAIConfig({
+      apiKey: 'xai-new',
+      baseUrl: 'https://api.x.ai/v1',
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith('/xai-api-key', [
+      {
+        'api-key': 'xai-existing',
+        'base-url': 'https://api.x.ai/v1',
+        'future-field': 'keep',
+      },
+      {
+        'api-key': 'xai-new',
+        'base-url': 'https://api.x.ai/v1',
+      },
+    ]);
+  });
+
   it('loads and saves native Interactions API keys through their management endpoint', async () => {
     mocks.get.mockResolvedValueOnce({
       'interactions-api-key': [
@@ -150,13 +233,9 @@ describe('providersApi auth-index preservation', () => {
     mocks.get.mockRejectedValue(new Error('forbidden'));
     mocks.put.mockResolvedValue({});
 
-    await providersApi.saveGeminiKeys([
-      { apiKey: 'gemini-key', authIndex: 'runtime-only-index' },
-    ]);
+    await providersApi.saveGeminiKeys([{ apiKey: 'gemini-key', authIndex: 'runtime-only-index' }]);
 
-    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [
-      { 'api-key': 'gemini-key' },
-    ]);
+    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [{ 'api-key': 'gemini-key' }]);
   });
 });
 

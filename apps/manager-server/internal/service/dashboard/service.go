@@ -567,23 +567,30 @@ func requestHealthTone(calls int64, failureRate float64, future bool) string {
 }
 
 func buildTokenMix(today TodaySummary) []TokenMixSegment {
-	inputTokens := max(today.InputTokens, int64(0))
+	totalInputTokens := max(today.InputTokens, int64(0))
 	cachedTokens := max(today.CachedTokens, int64(0)) +
 		max(today.CacheReadTokens, int64(0)) +
 		max(today.CacheCreationTokens, int64(0))
+	// InputTokens is normalized total input, so cache buckets are already included in it.
+	inputTokens := max(totalInputTokens-cachedTokens, int64(0))
 	outputTokens := max(today.OutputTokens, int64(0))
 	reasoningTokens := max(today.ReasoningTokens, int64(0))
 
 	if today.TotalTokens > 0 {
 		overflow := inputTokens + cachedTokens + outputTokens + reasoningTokens - today.TotalTokens
 		if overflow > 0 {
-			inputDeduction := min(inputTokens, overflow)
-			inputTokens -= inputDeduction
-			overflow -= inputDeduction
+			reasoningDeduction := min(min(outputTokens, reasoningTokens), overflow)
+			outputTokens -= reasoningDeduction
+			overflow -= reasoningDeduction
 		}
 		if overflow > 0 {
 			outputDeduction := min(outputTokens, overflow)
 			outputTokens -= outputDeduction
+			overflow -= outputDeduction
+		}
+		if overflow > 0 {
+			inputDeduction := min(inputTokens, overflow)
+			inputTokens -= inputDeduction
 		}
 	}
 

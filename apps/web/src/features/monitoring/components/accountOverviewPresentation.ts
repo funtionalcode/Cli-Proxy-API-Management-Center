@@ -142,18 +142,29 @@ export const getCodexPlanLabel = (
   return planType || normalized;
 };
 
+const isRedundantAccountSecondaryLabel = (candidate: string, primaryText: string) => {
+  if (!candidate || !primaryText || candidate === primaryText) return true;
+  const lowerCandidate = candidate.toLowerCase();
+  const lowerPrimary = primaryText.toLowerCase();
+  return (
+    lowerPrimary.startsWith(`${lowerCandidate} #`) || lowerCandidate.startsWith(`${lowerPrimary} #`)
+  );
+};
+
 export const buildAccountSecondaryText = (row: MonitoringAccountRow) => {
   const primaryText = row.displayAccount || row.account;
-  if (row.account && row.account !== primaryText) {
+  if (row.account && !isRedundantAccountSecondaryLabel(row.account, primaryText)) {
     return row.account;
   }
 
-  const extraAuthLabels = row.authLabels.filter((label) => label && label !== primaryText);
+  const extraAuthLabels = row.authLabels.filter(
+    (label) => label && !isRedundantAccountSecondaryLabel(label, primaryText)
+  );
   if (extraAuthLabels.length > 0) {
     return joinShort(extraAuthLabels, 2);
   }
   const extraChannels = row.channels.filter(
-    (label) => label && label !== '-' && label !== primaryText
+    (label) => label && label !== '-' && !isRedundantAccountSecondaryLabel(label, primaryText)
   );
   if (extraChannels.length > 0) {
     return joinShort(extraChannels, 2);

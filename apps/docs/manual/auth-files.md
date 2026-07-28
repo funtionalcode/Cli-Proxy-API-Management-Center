@@ -1,8 +1,15 @@
-# 认证文件
+---
+title: 认证文件与账号状态
+description: 管理 CPA 认证文件、Sub2API 多账号导入、优先级、配额健康、账号自动化状态和安全批量操作。
+---
+
+# 认证文件与账号状态
 
 认证文件页面用于管理账号凭证和账号状态。它回答的问题是：有哪些账号、账号是否启用、对应哪个 `auth_index`、最近是否有配额或认证异常。
 
 添加新账号的登录流程在 [OAuth 登录](./oauth.md)。本页负责登录之后的日常维护。
+
+打开[认证文件演示](https://seakee.github.io/CPA-Manager-Plus/#/demo/auth-files)可以查看 Codex、Claude、xAI 等虚构账号的配额、巡检和自动化状态。
 
 ## 先看哪些信息
 
@@ -37,13 +44,17 @@
 
 粘贴 JSON 时，选择与来源匹配的格式。不同来源的 JSON 字段可能不同，保存成功不代表一定能服务请求。
 
-直接上传官方 sub2api 账号导出 JSON 时，CPAMP 会在浏览器中识别并转换其中的 OpenAI OAuth 账号，再按账号拆分为独立的 CPA Codex 认证文件逐个上传。粘贴 sub2api JSON 使用相同的转换流程；多账号导入会自动生成每个账号的文件名，不会把顶层 JSON 数组作为一个认证文件保存。
+### Sub2API 多账号导入
+
+直接上传官方 Sub2API 账号导出 JSON 时，CPAMP 会在浏览器中识别并转换其中的 OpenAI OAuth 账号，再按账号拆分为独立的 CPA Codex 认证文件逐个上传。粘贴 Sub2API JSON 使用相同的转换流程；多账号导入会自动生成稳定且不重复的文件名，不会把顶层 JSON 数组作为一个认证文件保存。
+
+转换只接受包含受支持 OpenAI OAuth 账号和 `access_token` 的导出。无账号、字段损坏或部分上传失败会显示明确结果，不会把原始导出误存为普通 CPA 认证文件。
 
 ## 问题账号怎么处理
 
 - **需要重新授权**：进入 [OAuth 登录](./oauth.md)，完成后回到本页确认状态。
 - **额度耗尽或冷却中**：进入 [配额管理](./quota.md) 看恢复时间和冷却来源。
-- **Codex 状态异常**：进入 [Codex 账号巡检](./codex-inspection.md) 查看建议动作。
+- **Codex/xAI 状态异常**：进入 [账号巡检](./codex-inspection.md) 查看 Provider-specific 证据和建议动作。
 - **请求失败但账号看起来正常**：进入 [请求监控](./monitoring.md) 查看失败摘要和实际模型。
 - **账号处理队列有候选项**：进入 [账号处理队列](./account-actions.md) 决定忽略、标记已处理、启用或删除。
 

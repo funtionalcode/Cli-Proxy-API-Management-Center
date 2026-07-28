@@ -66,6 +66,44 @@ func TestWriteCompatibleUsageMatchesBuildPayload(t *testing.T) {
 	}
 }
 
+func TestInsertBatchSelectsServiceTierByProviderSemantics(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := New(db)
+
+	codex := streamTestEvent("codex-tier", 100, "POST /v1/responses", "gpt-5.4")
+	codex.ExecutorType = "codex"
+	codex.RequestServiceTier = "priority"
+	codex.ResponseServiceTier = "default"
+	codex.ServiceTier = "priority"
+	nonCodex := streamTestEvent("openai-tier", 200, "POST /v1/responses", "gpt-5.4")
+	nonCodex.Provider = "openai-compatible"
+	nonCodex.RequestServiceTier = "priority"
+	nonCodex.ResponseServiceTier = "default"
+	nonCodex.ServiceTier = "priority"
+
+	if _, err := repo.InsertBatch(context.Background(), []usage.Event{codex, nonCodex}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	recent, err := repo.ListRecent(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("list recent: %v", err)
+	}
+	byHash := make(map[string]usage.Event, len(recent))
+	for _, event := range recent {
+		byHash[event.EventHash] = event
+	}
+	if event := byHash["codex-tier"]; event.ServiceTier != "priority" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
+		t.Fatalf("codex tiers = %q/%q/%q", event.ServiceTier, event.RequestServiceTier, event.ResponseServiceTier)
+	}
+	if event := byHash["openai-tier"]; event.ServiceTier != "default" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
+		t.Fatalf("non-Codex tiers = %q/%q/%q", event.ServiceTier, event.RequestServiceTier, event.ResponseServiceTier)
+	}
+}
+
 func TestWriteExportJSONLUsesRecentLimitAndAscendingKeysetOrder(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

@@ -388,14 +388,15 @@ export const getFreshAuthFileCodexStatusSources = (
 ): AuthFileCodexStatusSources => ({
   inspection:
     inspection?.provider &&
-    normalizeProviderKey(inspection.provider) !== normalizeProviderKey(file.type ?? file.provider ?? '')
+    normalizeProviderKey(inspection.provider) !==
+      normalizeProviderKey(file.type ?? file.provider ?? '')
       ? undefined
       : shouldSuppressOlderCodexStatusSource(
-    file,
-    quota,
-    inspection?.inspectionAtMs,
-    headerSnapshot?.timestamp_ms
-  )
+            file,
+            quota,
+            inspection?.inspectionAtMs,
+            headerSnapshot?.timestamp_ms
+          )
         ? undefined
         : inspection,
   headerSnapshot: shouldSuppressOlderCodexStatusSource(
@@ -655,6 +656,10 @@ export const getAuthFileCodexStatus = (
     isXai &&
     inspectionErrorKind &&
     inspectionErrorKind !== 'billing_healthy' &&
+    inspectionErrorKind !== 'billing_partial' &&
+    inspectionErrorKind !== 'inference_healthy' &&
+    inspectionErrorKind !== 'identity_healthy' &&
+    inspectionErrorKind !== 'official_api_healthy' &&
     !needsReauth
   ) {
     const issueTitleKey = getXaiProbeIssueKey(inspectionErrorKind);

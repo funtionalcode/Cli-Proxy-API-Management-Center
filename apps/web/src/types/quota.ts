@@ -478,6 +478,13 @@ export interface XaiBillingDiagnostic {
   message: string;
 }
 
+export interface XaiOfficialApiHealth {
+  source: 'api.x.ai/v1/me';
+  userId: string | null;
+  teamId: string | null;
+  teamBlocked: boolean | null;
+}
+
 export interface XaiBillingSummary {
   periodType: XaiBillingPeriodType;
   usagePercent: number | null;
@@ -493,6 +500,7 @@ export interface XaiBillingSummary {
   billingPeriodStart?: string;
   billingPeriodEnd?: string;
   usedPercent: number | null;
+  officialApiHealth?: XaiOfficialApiHealth;
   partial?: boolean;
   diagnostics?: XaiBillingDiagnostic[];
 }

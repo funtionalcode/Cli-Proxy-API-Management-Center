@@ -89,13 +89,18 @@ describe('buildEventRows', () => {
     const [row] = buildRows({
       executor_type: 'codex',
       service_tier: 'priority',
+      request_service_tier: 'priority',
+      response_service_tier: 'default',
       reasoning_effort: 'medium',
     });
 
     expect(row.executorType).toBe('codex');
     expect(row.serviceTier).toBe('priority');
+    expect(row.requestServiceTier).toBe('priority');
+    expect(row.responseServiceTier).toBe('default');
     expect(row.searchText).toContain('codex');
     expect(row.searchText).toContain('priority');
+    expect(row.searchText).toContain('default');
     expect(row.searchText).toContain('medium');
   });
 
@@ -219,5 +224,96 @@ describe('buildEventRows', () => {
     expect(row.sourceKey).toBe('shared:m:sk-s...cdef');
     expect(row.provider).toBe('codex');
     expect(display.primary).toBe('Shared Relay');
+  });
+
+  it('prefers multi-key OpenAI-compatible disambiguation in realtime source cells', () => {
+    const sourceInfoMap = buildSourceInfoMap({
+      openaiCompatibility: [
+        {
+          name: 'kuaileshifu',
+          baseUrl: 'https://api.kuaileshifu.example/v1',
+          apiKeyEntries: [
+            { apiKey: 'sk-openai111111aaaa', authIndex: 'kuai-auth-1' },
+            { apiKey: 'sk-openai222222bbbb', authIndex: 'kuai-auth-2' },
+          ],
+        },
+      ],
+    });
+    const authMetaMap = new Map([
+      [
+        'kuai-auth-1',
+        {
+          authIndex: 'kuai-auth-1',
+          label: 'kuaileshifu',
+          account: 'kuaileshifu',
+          provider: 'openai',
+          status: 'active',
+          disabled: false,
+          unavailable: false,
+          runtimeOnly: false,
+          planType: '-',
+          updatedAt: '',
+        },
+      ],
+    ]);
+    const channelByAuthIndex = new Map([
+      [
+        'kuai-auth-1',
+        {
+          key: 'openai:0',
+          name: 'kuaileshifu',
+          baseUrl: 'https://api.kuaileshifu.example/v1',
+          host: 'api.kuaileshifu.example',
+          disabled: false,
+          authIndices: ['kuai-auth-1', 'kuai-auth-2'],
+          modelNames: [],
+        },
+      ],
+    ]);
+
+    const [row] = buildEventRows(
+      [
+        {
+          timestamp: '2026-05-19T10:00:00Z',
+          source: 'm:sk-o...aaaa',
+          auth_index: 'kuai-auth-1',
+          account_snapshot: 'kuaileshifu',
+          auth_label_snapshot: 'kuaileshifu',
+          auth_provider_snapshot: 'openai',
+          latency_ms: 1500,
+          tokens: {
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+          },
+          failed: false,
+          __modelName: 'gpt-4.1-mini',
+          __endpoint: 'POST /v1/chat/completions',
+          __endpointMethod: 'POST',
+          __endpointPath: '/v1/chat/completions',
+          __timestampMs: Date.parse('2026-05-19T10:00:00Z'),
+        },
+      ],
+      authMetaMap,
+      new Map(),
+      sourceInfoMap,
+      channelByAuthIndex,
+      {},
+      new Map()
+    );
+
+    const t = ((key: string) => {
+      if (key === 'monitoring.filter_provider') return 'Provider';
+      if (key === 'monitoring.column_host') return 'Host';
+      if (key === 'monitoring.source') return 'Source';
+      return key;
+    }) as Parameters<typeof buildRealtimeSourceDisplay>[1];
+    const display = buildRealtimeSourceDisplay(row, t);
+
+    expect(row.source).toBe('kuaileshifu #1');
+    expect(row.sourceMasked).toBe('kuaileshifu #1');
+    expect(row.channel).toBe('kuaileshifu');
+    expect(display.primary).toBe('kuaileshifu #1');
+    expect(display.meta).toBe('Provider: openai');
   });
 });

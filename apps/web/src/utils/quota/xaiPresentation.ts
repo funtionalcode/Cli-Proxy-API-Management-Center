@@ -8,6 +8,8 @@ export type XaiProbeIssueClassification =
   | 'missing_auth_index'
   | 'request_error';
 
+export type XaiProbeIssueSurface = 'billing' | 'inference';
+
 const XAI_PROBE_ISSUE_KEYS = {
   free_quota_exhausted: 'xai_quota.diagnostic_free_quota_exhausted',
   spending_limit: 'xai_quota.diagnostic_spending_limit',
@@ -28,17 +30,40 @@ const XAI_PROBE_ISSUE_KEYS = {
   unknown: 'xai_quota.diagnostic_unknown',
 } satisfies Record<XaiProbeIssueClassification, string>;
 
+const XAI_INFERENCE_PROBE_ISSUE_KEYS = {
+  quota_or_entitlement_unknown: 'xai_quota.diagnostic_inference_quota_or_entitlement_unknown',
+  probe_invalid: 'xai_quota.diagnostic_inference_probe_invalid',
+  protocol_changed: 'xai_quota.diagnostic_inference_protocol_changed',
+  request_error: 'xai_quota.diagnostic_inference_request_error',
+} satisfies Partial<Record<XaiProbeIssueClassification, string>>;
+
 export const XAI_PROBE_ISSUE_CLASSIFICATIONS = Object.keys(
   XAI_PROBE_ISSUE_KEYS
 ) as XaiProbeIssueClassification[];
 
-export const getXaiProbeIssueKey = (classification: string): string | null =>
-  Object.prototype.hasOwnProperty.call(XAI_PROBE_ISSUE_KEYS, classification)
+export const getXaiProbeIssueKey = (
+  classification: string,
+  surface: XaiProbeIssueSurface = 'billing'
+): string | null => {
+  if (
+    surface === 'inference' &&
+    Object.prototype.hasOwnProperty.call(XAI_INFERENCE_PROBE_ISSUE_KEYS, classification)
+  ) {
+    return XAI_INFERENCE_PROBE_ISSUE_KEYS[
+      classification as keyof typeof XAI_INFERENCE_PROBE_ISSUE_KEYS
+    ];
+  }
+  return Object.prototype.hasOwnProperty.call(XAI_PROBE_ISSUE_KEYS, classification)
     ? XAI_PROBE_ISSUE_KEYS[classification as XaiProbeIssueClassification]
     : null;
+};
 
-export const formatXaiProbeIssue = (classification: string, t: TFunction): string | null => {
-  const key = getXaiProbeIssueKey(classification);
+export const formatXaiProbeIssue = (
+  classification: string,
+  t: TFunction,
+  surface: XaiProbeIssueSurface = 'billing'
+): string | null => {
+  const key = getXaiProbeIssueKey(classification, surface);
   return key ? t(key) : null;
 };
 

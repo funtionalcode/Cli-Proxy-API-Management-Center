@@ -70,11 +70,26 @@ describe('AuthFileCard quota cooldown presentation', () => {
         owner: 'cpamp_xai_free_usage',
         disabledAtMs: 1_900_000_000_000,
         recoverAtMs: 2_000_000_000_000,
+        evidence: {
+          provider: 'xai',
+          code: 'subscription:free-usage-exhausted',
+          unit: 'tokens',
+          actual: 1_024_413,
+          limit: 1_000_000,
+          remaining: 0,
+          overage: 24_413,
+          recover_at_ms: 2_000_000_000_000,
+          recover_at_estimated: true,
+        },
       })
     );
 
     expect(textContent(badge)).toContain('auth_files.quota_cooldown_badge_xai');
     expect(badge.props.title).toContain('auth_files.quota_cooldown_badge_title_xai');
+    expect(badge.props.title).toContain('1,024,413 / 1,000,000 tokens');
+    expect(badge.props.title).toContain('provider_usage_remaining');
+    expect(badge.props.title).toContain('24,413');
+    expect(badge.props.title).toContain('provider_usage_estimated');
     expect(badge.props.title).not.toContain('"disabledAt":"Not set"');
   });
 
@@ -104,5 +119,46 @@ describe('AuthFileCard quota cooldown presentation', () => {
     );
 
     expect(badge.props.title).toContain('"disabledAt":"Not set"');
+    expect(badge.props.title).toContain('provider_usage_recovery_unknown');
+  });
+
+  it('does not report a provider recovery source for partial evidence', () => {
+    const badge = findCooldownBadge(
+      renderCard({
+        authFileName: file.name,
+        provider: 'xai',
+        owner: 'cpamp_xai_free_usage',
+        recoverAtMs: 2_000_000_000_000,
+        evidence: {
+          provider: 'xai',
+          code: 'subscription:free-usage-exhausted',
+          actual: 1_000_000,
+          limit: 1_000_000,
+        },
+      })
+    );
+
+    expect(badge.props.title).toContain('provider_usage_recovery_unknown');
+    expect(badge.props.title).not.toContain('provider_usage_reported');
+  });
+
+  it('does not report a recovery source when evidence targets another schedule', () => {
+    const badge = findCooldownBadge(
+      renderCard({
+        authFileName: file.name,
+        provider: 'xai',
+        owner: 'cpamp_xai_free_usage',
+        recoverAtMs: 2_000_000_000_000,
+        evidence: {
+          provider: 'xai',
+          code: 'subscription:free-usage-exhausted',
+          recover_at_ms: 1_900_000_000_000,
+          recover_at_estimated: false,
+        },
+      })
+    );
+
+    expect(badge.props.title).toContain('provider_usage_recovery_unknown');
+    expect(badge.props.title).not.toContain('provider_usage_reported');
   });
 });

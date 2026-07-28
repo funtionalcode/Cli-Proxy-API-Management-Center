@@ -9,10 +9,12 @@ const { mocks } = vi.hoisted(() => {
       list: vi.fn(),
       saveJsonObject: vi.fn(),
       uploadFiles: vi.fn(),
+      deleteAll: vi.fn(),
       deleteFiles: vi.fn(),
       deleteFile: vi.fn(),
       patchFields: vi.fn(),
       patchFieldsForAuthIndexes: vi.fn(),
+      requestCredentialRefresh: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
     },
@@ -50,10 +52,12 @@ vi.mock('@/services/api', () => ({
     list: mocks.list,
     saveJsonObject: mocks.saveJsonObject,
     uploadFiles: mocks.uploadFiles,
+    deleteAll: mocks.deleteAll,
     deleteFiles: mocks.deleteFiles,
     deleteFile: mocks.deleteFile,
     patchFields: mocks.patchFields,
     patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
+    requestCredentialRefresh: mocks.requestCredentialRefresh,
   },
 }));
 
@@ -70,6 +74,7 @@ import {
 type UseAuthFilesDataHarness = {
   getCurrent: () => ReturnType<typeof useAuthFilesData>;
   getSavingHistory: () => boolean[];
+  rerender: (connectionFingerprint?: string) => void;
   unmount: () => void;
 };
 
@@ -88,6 +93,7 @@ const createStorage = () => {
 };
 
 const mountUseAuthFilesData = (connectionFingerprint?: string): UseAuthFilesDataHarness => {
+  let currentConnectionFingerprint = connectionFingerprint;
   let hook: ReturnType<typeof useAuthFilesData> | null = null;
   let lastSavingState: boolean | undefined;
   const savingHistory: boolean[] = [];
@@ -102,7 +108,7 @@ const mountUseAuthFilesData = (connectionFingerprint?: string): UseAuthFilesData
   };
 
   function HookHarness() {
-    captureHook(useAuthFilesData({ connectionFingerprint }));
+    captureHook(useAuthFilesData({ connectionFingerprint: currentConnectionFingerprint }));
     return null;
   }
 
@@ -118,6 +124,13 @@ const mountUseAuthFilesData = (connectionFingerprint?: string): UseAuthFilesData
       return hook;
     },
     getSavingHistory: () => [...savingHistory],
+    rerender: (nextConnectionFingerprint?: string) => {
+      if (!renderer) return;
+      currentConnectionFingerprint = nextConnectionFingerprint;
+      act(() => {
+        renderer?.update(createElement(HookHarness));
+      });
+    },
     unmount: () => {
       if (!renderer) return;
       act(() => {
@@ -131,23 +144,28 @@ beforeEach(() => {
   mocks.list.mockReset();
   mocks.saveJsonObject.mockReset();
   mocks.uploadFiles.mockReset();
+  mocks.deleteAll.mockReset();
   mocks.deleteFiles.mockReset();
   mocks.deleteFile.mockReset();
   mocks.patchFields.mockReset();
   mocks.patchFieldsForAuthIndexes.mockReset();
+  mocks.requestCredentialRefresh.mockReset();
   mocks.showNotification.mockReset();
   mocks.showConfirmation.mockReset();
 
   mocks.list.mockResolvedValue({ files: [] });
   mocks.saveJsonObject.mockResolvedValue(undefined);
   mocks.uploadFiles.mockResolvedValue({ status: 'ok', uploaded: 0, files: [], failed: [] });
+  mocks.deleteAll.mockResolvedValue(undefined);
   mocks.deleteFiles.mockResolvedValue({ deleted: 0, failed: [], files: [] });
   mocks.deleteFile.mockResolvedValue({ deleted: 0, failed: [], files: [] });
   mocks.patchFields.mockResolvedValue(undefined);
   mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
+  mocks.requestCredentialRefresh.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -1065,8 +1083,16 @@ describe('useAuthFilesData handleDelete', () => {
 
     act(() => hook.getCurrent().handleDelete('owned.json'));
     const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
-      | { onConfirm?: () => Promise<void> }
+      | {
+          onConfirm?: () => Promise<void>;
+          secondConfirmation?: { message?: string; confirmText?: string };
+        }
       | undefined;
+    expect(mocks.deleteFile).not.toHaveBeenCalled();
+    expect(confirmation?.secondConfirmation).toMatchObject({
+      message: 'auth_files.delete_second_confirm:owned.json',
+      confirmText: 'auth_files.delete_second_action',
+    });
     await act(async () => confirmation?.onConfirm?.());
 
     expect(Array.from(getCodexInspectionOwnedDisableFileNames('scope-a', [disabledFile]))).toEqual([
@@ -1097,8 +1123,11 @@ describe('useAuthFilesData handleDelete', () => {
 
     act(() => hook.getCurrent().handleDelete('owned.json'));
     const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
-      | { onConfirm?: () => Promise<void> }
+      | { onConfirm?: () => Promise<void>; secondConfirmation?: { message?: string } }
       | undefined;
+    expect(confirmation?.secondConfirmation?.message).toBe(
+      'auth_files.delete_second_confirm:owned.json'
+    );
     await act(async () => confirmation?.onConfirm?.());
 
     expect(getCodexInspectionOwnedDisableFileNames('scope-a', [disabledFile]).size).toBe(0);
@@ -1147,12 +1176,15 @@ describe('useAuthFilesData handleDeleteAll', () => {
     });
 
     const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
-      | { onConfirm?: () => Promise<void> }
+      | { onConfirm?: () => Promise<void>; secondConfirmation?: { message?: string } }
       | undefined;
     expect(confirmation?.onConfirm).toBeTypeOf('function');
     expect(mocks.showConfirmation).toHaveBeenCalledWith(
       expect.objectContaining({
         message: 'auth_files.delete_filtered_result_confirm_file_scope',
+        secondConfirmation: expect.objectContaining({
+          message: 'auth_files.delete_many_second_confirm',
+        }),
       })
     );
 
@@ -1192,13 +1224,7 @@ describe('useAuthFilesData handleDeleteAll', () => {
         onResetHealthyOnly: vi.fn(),
       });
     });
-    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
-      | { onConfirm?: () => Promise<void> }
-      | undefined;
-    await act(async () => {
-      await confirmation?.onConfirm?.();
-    });
-
+    expect(mocks.showConfirmation).not.toHaveBeenCalled();
     expect(mocks.deleteFiles).not.toHaveBeenCalled();
     expect(mocks.showNotification).toHaveBeenCalledWith(
       'auth_files.delete_filtered_result_none',
@@ -1242,6 +1268,250 @@ describe('useAuthFilesData handleDeleteAll', () => {
     });
 
     expect(mocks.deleteFiles).toHaveBeenCalledWith(['shared-xai.json']);
+    hook.unmount();
+  });
+
+  it('keeps the dedicated delete-all API behind the second confirmation', async () => {
+    const hook = mountUseAuthFilesData();
+    mocks.list.mockResolvedValueOnce({
+      files: [
+        { name: 'first.json', type: 'codex' },
+        { name: 'second.json', type: 'gemini' },
+      ],
+    });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    act(() => {
+      hook.getCurrent().handleDeleteAll({
+        filter: 'all',
+        problemOnly: false,
+        disabledOnly: false,
+        healthyOnly: false,
+        onResetFilterToAll: vi.fn(),
+        onResetProblemOnly: vi.fn(),
+        onResetDisabledOnly: vi.fn(),
+        onResetHealthyOnly: vi.fn(),
+      });
+    });
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void>; secondConfirmation?: { message?: string } }
+      | undefined;
+
+    expect(mocks.deleteAll).not.toHaveBeenCalled();
+    expect(confirmation?.secondConfirmation?.message).toBe('auth_files.delete_many_second_confirm');
+    await act(async () => confirmation?.onConfirm?.());
+
+    expect(mocks.deleteAll).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteFiles).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData batchDelete', () => {
+  it('requires a second confirmation for the unique selected file names', async () => {
+    const hook = mountUseAuthFilesData();
+    mocks.deleteFiles.mockResolvedValueOnce({
+      deleted: 2,
+      failed: [],
+      files: ['first.json', 'second.json'],
+    });
+
+    act(() => hook.getCurrent().batchDelete(['first.json', 'first.json', 'second.json']));
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void>; secondConfirmation?: { message?: string } }
+      | undefined;
+
+    expect(mocks.deleteFiles).not.toHaveBeenCalled();
+    expect(confirmation?.secondConfirmation?.message).toBe('auth_files.delete_many_second_confirm');
+
+    await act(async () => confirmation?.onConfirm?.());
+
+    expect(mocks.deleteFiles).toHaveBeenCalledWith(['first.json', 'second.json']);
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData handleCredentialRefresh', () => {
+  it('tracks the exact auth row until CPA confirms the refreshed credential', async () => {
+    let resolveRequest!: () => void;
+    mocks.requestCredentialRefresh.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+    const hook = mountUseAuthFilesData();
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'shared-codex.json',
+      authIndex: 'auth-2',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+      id_token: { plan_type: 'free' },
+    };
+    const refreshedFiles: AuthFileItem[] = [
+      {
+        id: 'codex-runtime-auth-1',
+        name: 'shared-codex.json',
+        authIndex: 'auth-1',
+        type: 'codex',
+        last_refresh: '2026-01-01T00:00:00Z',
+        id_token: { plan_type: 'free' },
+      },
+      {
+        ...file,
+        last_refresh: '2026-01-02T00:00:00Z',
+        id_token: { plan_type: 'plus' },
+      },
+    ];
+    mocks.list.mockResolvedValue({ files: refreshedFiles });
+    const operationKey = 'shared-codex.json\u0000auth-2';
+    let request!: Promise<void>;
+
+    await act(async () => {
+      request = hook.getCurrent().handleCredentialRefresh(file);
+      void hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledWith('codex-runtime-auth-id');
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledTimes(1);
+    expect(hook.getCurrent().credentialRefreshing[operationKey]).toBe(true);
+
+    await act(async () => {
+      resolveRequest();
+      await request;
+    });
+
+    expect(hook.getCurrent().credentialRefreshing[operationKey]).toBeUndefined();
+    expect(hook.getCurrent().files).toEqual(refreshedFiles);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_completed:shared-codex.json',
+      'success'
+    );
+    hook.unmount();
+  });
+
+  it('keeps the request pending when CPA does not confirm the refresh in time', async () => {
+    vi.useFakeTimers();
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'codex-account.json',
+      authIndex: 'auth-1',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+      id_token: { plan_type: 'free' },
+    };
+    mocks.list.mockResolvedValue({ files: [file] });
+    const hook = mountUseAuthFilesData();
+    let request!: Promise<void>;
+
+    await act(async () => {
+      request = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    expect(hook.getCurrent().credentialRefreshing['codex-account.json\u0000auth-1']).toBe(true);
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+      await request;
+    });
+
+    expect(mocks.list).toHaveBeenCalledTimes(15);
+    expect(hook.getCurrent().files).toEqual([file]);
+    expect(
+      hook.getCurrent().credentialRefreshing['codex-account.json\u0000auth-1']
+    ).toBeUndefined();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_pending:codex-account.json',
+      'warning'
+    );
+    hook.unmount();
+  });
+
+  it('does not let an old connection cleanup unlock the same row on a new connection', async () => {
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    mocks.requestCredentialRefresh
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          })
+      );
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'codex-account.json',
+      authIndex: 'auth-1',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+    };
+    mocks.list.mockResolvedValue({
+      files: [{ ...file, last_refresh: '2026-01-02T00:00:00Z' }],
+    });
+    const hook = mountUseAuthFilesData('connection-a');
+    let firstRequest!: Promise<void>;
+    let secondRequest!: Promise<void>;
+
+    await act(async () => {
+      firstRequest = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    hook.rerender('connection-b');
+
+    await act(async () => {
+      secondRequest = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveFirst();
+      await firstRequest;
+    });
+
+    await act(async () => {
+      await hook.getCurrent().handleCredentialRefresh(file);
+    });
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveSecond();
+      await secondRequest;
+    });
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_completed:codex-account.json',
+      'success'
+    );
+    hook.unmount();
+  });
+
+  it('falls back to the file name and reports request failures', async () => {
+    mocks.requestCredentialRefresh.mockRejectedValue(new Error('refresh unavailable'));
+    const hook = mountUseAuthFilesData();
+
+    await act(async () => {
+      await hook.getCurrent().handleCredentialRefresh({
+        name: 'single-codex.json',
+        type: 'codex',
+      });
+    });
+
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledWith('single-codex.json');
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_failed:single-codex.json',
+      'error'
+    );
     hook.unmount();
   });
 });

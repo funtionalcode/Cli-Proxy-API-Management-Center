@@ -30,6 +30,11 @@ const normalizeString = (value: unknown): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+const normalizeStringList = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  return value.map(normalizeString).filter((item): item is string => Boolean(item));
+};
+
 const normalizeNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -418,6 +423,9 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
     config.clean = {
       baseUrl: normalizeString(clean['base_url'] ?? clean.baseUrl ?? clean['base-url']),
       token: normalizeString(clean.token),
+      targetTypes: normalizeStringList(
+        clean['target_types'] ?? clean.targetTypes ?? clean['target-types']
+      ),
       targetType: normalizeString(clean['target_type'] ?? clean.targetType ?? clean['target-type']),
       workers: normalizeNumber(clean.workers),
       deleteWorkers: normalizeNumber(
@@ -426,6 +434,22 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
       timeout: normalizeNumber(clean.timeout),
       retries: normalizeNumber(clean.retries),
       userAgent: normalizeString(clean['user_agent'] ?? clean.userAgent ?? clean['user-agent']),
+      xaiInferenceUserAgent: normalizeString(
+        clean['xai_inference_user_agent'] ??
+          clean.xaiInferenceUserAgent ??
+          clean['xai-inference-user-agent']
+      ),
+      xaiInferenceEnabled: normalizeBoolean(
+        clean['xai_inference_enabled'] ??
+          clean.xaiInferenceEnabled ??
+          clean['xai-inference-enabled']
+      ),
+      xaiInferenceModel: normalizeString(
+        clean['xai_inference_model'] ?? clean.xaiInferenceModel ?? clean['xai-inference-model']
+      ),
+      xaiInferencePrompt: normalizeString(
+        clean['xai_inference_prompt'] ?? clean.xaiInferencePrompt ?? clean['xai-inference-prompt']
+      ),
       usedPercentThreshold: threshold,
       sampleSize: normalizeNumber(clean['sample_size'] ?? clean.sampleSize ?? clean['sample-size']),
     };
@@ -490,6 +514,13 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
   const codexList = raw['codex-api-key'] ?? raw.codexApiKey ?? raw.codexApiKeys;
   if (Array.isArray(codexList)) {
     config.codexApiKeys = codexList
+      .map((item) => normalizeProviderKeyConfig(item))
+      .filter(Boolean) as ProviderKeyConfig[];
+  }
+
+  const xaiList = raw['xai-api-key'] ?? raw.xaiApiKey ?? raw.xaiApiKeys;
+  if (Array.isArray(xaiList)) {
+    config.xaiApiKeys = xaiList
       .map((item) => normalizeProviderKeyConfig(item))
       .filter(Boolean) as ProviderKeyConfig[];
   }

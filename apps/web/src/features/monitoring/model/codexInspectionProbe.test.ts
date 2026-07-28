@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TFunction } from 'i18next';
+import en from '@/i18n/locales/en.json';
 import { requestCodexUsageRaw } from '@/services/api/codexQuota';
 import { DEFAULT_CODEX_INSPECTION_SETTINGS } from './codexInspectionSettings';
 import { inspectSingleAccount, toInspectionAccount } from './codexInspectionProbe';
@@ -22,6 +24,16 @@ const settings = {
   ...DEFAULT_CODEX_INSPECTION_SETTINGS,
   usedPercentThreshold: 100,
 };
+
+const inspectionT = ((key: string, values?: Record<string, unknown>) => {
+  const template = key.split('.').reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[segment];
+  }, en);
+  return String(template ?? key).replace(/{{\s*([^}\s]+)\s*}}/g, (_, name: string) =>
+    String(values?.[name] ?? `{{${name}}}`)
+  );
+}) as TFunction;
 
 const createDisabledAccount = (autoRecoverOwned: boolean) => ({
   ...baseAccount,
@@ -62,6 +74,51 @@ const createUsageResult = (usedPercent: number, extraWindows = {}) => ({
 describe('inspectSingleAccount', () => {
   beforeEach(() => {
     mockRequestCodexUsageRaw.mockReset();
+  });
+
+  it('localizes probe logs and keeps missing-auth diagnostics explicit', async () => {
+    const missingLogs: Array<{
+      level: string;
+      message: string;
+      detail?: Record<string, unknown>;
+    }> = [];
+    await inspectSingleAccount(
+      { ...baseAccount, authIndex: '' },
+      settings,
+      (level, message, detail) => missingLogs.push({ level, message, detail }),
+      inspectionT
+    );
+
+    expect(missingLogs[0]).toMatchObject({ level: 'warning' });
+    expect(missingLogs[0].message).toContain('missing auth_index');
+    expect(missingLogs[0].detail).toEqual({
+      fileName: 'codex-auth.json',
+      displayAccount: 'user@example.test',
+    });
+
+    mockRequestCodexUsageRaw.mockResolvedValue(createUsageResult(5));
+    const resultLogs: Array<{
+      level: string;
+      message: string;
+      detail?: Record<string, unknown>;
+    }> = [];
+    await inspectSingleAccount(
+      baseAccount,
+      settings,
+      (level, message, detail) => resultLogs.push({ level, message, detail }),
+      inspectionT
+    );
+
+    expect(resultLogs[0].message).toContain('Keep');
+    expect(resultLogs[0].message).not.toContain('keep');
+    expect(resultLogs[0].detail).toMatchObject({
+      fileName: 'codex-auth.json',
+      displayAccount: 'user@example.test',
+      action: 'keep',
+      statusCode: 200,
+      usedPercent: 5,
+      isQuota: false,
+    });
   });
 
   it('keeps an enabled account when the monthly Codex quota is still available', async () => {
@@ -183,12 +240,19 @@ describe('inspectSingleAccount', () => {
       },
       payload: null,
     });
+    const logs: Array<{ level: string }> = [];
 
-    const result = await inspectSingleAccount(baseAccount, settings);
+    const result = await inspectSingleAccount(
+      baseAccount,
+      settings,
+      (level) => logs.push({ level }),
+      inspectionT
+    );
 
     expect(result.action).toBe('reauth');
     expect(result.actionReason).toBe('接口返回 401，认证令牌已失效，建议重新登录账号');
     expect(result.errorKind).toBe('http_status');
+    expect(logs[0]?.level).toBe('error');
   });
 
   it('reauthenticates an account for unknown 401 authentication failures', async () => {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,7 @@ type quotaAutoDisableCandidate struct {
 	EventHash      string
 	Reason         string
 	Owner          string
+	EvidenceJSON   string
 }
 
 type authFile = cpaauthfiles.File
@@ -216,6 +218,7 @@ func (w *RateLimitAutoDisableWorker) handleCandidate(ctx context.Context, candid
 		Provider:         strings.ToLower(strings.TrimSpace(candidate.Provider)),
 		ReasonCode:       candidate.ReasonCode,
 		WindowKind:       candidate.WindowKind,
+		EvidenceJSON:     candidate.EvidenceJSON,
 		RecoverAtMS:      candidate.ResetAt.UnixMilli(),
 		Owner:            owner,
 		EventHash:        candidate.EventHash,
@@ -254,6 +257,18 @@ func (w *RateLimitAutoDisableWorker) extendExistingCooldown(ctx context.Context,
 		log.Printf("[quota-auto-disable] active cooldown auth index mismatch for auth file %q: stored=%q current=%q", candidate.FileName, existing.AuthIndex, currentIndex)
 		return false
 	}
+	finalRecoverAtMS := existing.RecoverAtMS
+	primaryEvidence := existing.EvidenceJSON
+	supplementalEvidence := candidate.EvidenceJSON
+	if candidate.ResetAt.UnixMilli() >= finalRecoverAtMS {
+		finalRecoverAtMS = candidate.ResetAt.UnixMilli()
+		primaryEvidence = candidate.EvidenceJSON
+		supplementalEvidence = existing.EvidenceJSON
+	}
+	evidenceJSON := firstNonEmpty(candidate.EvidenceJSON, existing.EvidenceJSON)
+	if owner == model.QuotaCooldownOwnerXAIFreeUsage {
+		evidenceJSON = mergeXAIProviderUsageEvidence(primaryEvidence, supplementalEvidence, finalRecoverAtMS)
+	}
 	_, err = w.store.UpsertQuotaCooldown(ctx, store.QuotaCooldownUpsert{
 		AuthFileName:     candidate.FileName,
 		AuthIndex:        firstNonEmpty(candidate.AuthIndex, existing.AuthIndex, current.AuthIndex),
@@ -261,7 +276,8 @@ func (w *RateLimitAutoDisableWorker) extendExistingCooldown(ctx context.Context,
 		Provider:         strings.ToLower(strings.TrimSpace(firstNonEmpty(candidate.Provider, existing.Provider))),
 		ReasonCode:       firstNonEmpty(candidate.ReasonCode, existing.ReasonCode),
 		WindowKind:       firstNonEmpty(candidate.WindowKind, existing.WindowKind),
-		RecoverAtMS:      candidate.ResetAt.UnixMilli(),
+		EvidenceJSON:     evidenceJSON,
+		RecoverAtMS:      finalRecoverAtMS,
 		Owner:            owner,
 		EventHash:        candidate.EventHash,
 		PreDisabledState: false,
@@ -271,8 +287,99 @@ func (w *RateLimitAutoDisableWorker) extendExistingCooldown(ctx context.Context,
 		log.Printf("[quota-auto-disable] failed to extend active cooldown for auth file %q: %v", candidate.FileName, err)
 		return false
 	}
-	log.Printf("[quota-auto-disable] extended CPAMP-owned auth file %q auto-enable time to %s", candidate.FileName, candidate.ResetAt.Format(time.RFC3339))
+	log.Printf("[quota-auto-disable] updated CPAMP-owned auth file %q auto-enable time to %s", candidate.FileName, time.UnixMilli(finalRecoverAtMS).Format(time.RFC3339))
 	return true
+}
+
+func mergeXAIProviderUsageEvidence(primaryJSON string, supplementalJSON string, recoverAtMS int64) string {
+	primary, primaryOK := decodeXAIProviderUsageEvidence(primaryJSON)
+	supplemental, supplementalOK := decodeXAIProviderUsageEvidence(supplementalJSON)
+	if !primaryOK {
+		if !supplementalOK {
+			return ""
+		}
+		primary = supplemental
+		supplementalOK = false
+	}
+	evidenceRecoverAtMS := primary.RecoverAtMS
+	if supplementalOK {
+		fillMissingXAIProviderUsageEvidence(&primary, supplemental)
+		if evidenceRecoverAtMS == 0 && recoverAtMS > 0 && supplemental.RecoverAtMS == recoverAtMS {
+			// The winning evidence omitted recovery, but the supplemental event
+			// describes the same final schedule, so its source remains valid.
+			primary.RecoverAtEstimated = supplemental.RecoverAtEstimated
+			evidenceRecoverAtMS = supplemental.RecoverAtMS
+		}
+	}
+	if recoverAtMS > 0 {
+		primary.RecoverAtMS = recoverAtMS
+		if evidenceRecoverAtMS != recoverAtMS {
+			// The evidence that owns the final cooldown did not carry this recovery
+			// time. Keep the schedule, but do not present a supplemental event's
+			// reported/estimated source as if it belonged to the winning event.
+			primary.RecoverAtEstimated = true
+		}
+	}
+	normalized := usage.NormalizeProviderUsageMetadata(&primary)
+	if normalized == nil {
+		return ""
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func decodeXAIProviderUsageEvidence(raw string) (usage.ProviderUsageMetadata, bool) {
+	var evidence usage.ProviderUsageMetadata
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &evidence); err != nil {
+		return usage.ProviderUsageMetadata{}, false
+	}
+	normalized := usage.NormalizeProviderUsageMetadata(&evidence)
+	if normalized == nil || normalized.Provider != "xai" || normalized.Code != usage.ProviderUsageCodeXAIFree {
+		return usage.ProviderUsageMetadata{}, false
+	}
+	return *normalized, true
+}
+
+func fillMissingXAIProviderUsageEvidence(target *usage.ProviderUsageMetadata, source usage.ProviderUsageMetadata) {
+	if target == nil {
+		return
+	}
+	if target.Kind == "" {
+		target.Kind = source.Kind
+	}
+	if target.State == "" {
+		target.State = source.State
+	}
+	if target.Model == "" {
+		target.Model = source.Model
+	}
+	if target.Unit == "" {
+		target.Unit = source.Unit
+	}
+	if target.Actual == nil {
+		target.Actual = source.Actual
+	}
+	if target.Limit == nil {
+		target.Limit = source.Limit
+	}
+	if target.Remaining == nil {
+		target.Remaining = source.Remaining
+	}
+	if target.Overage == nil {
+		target.Overage = source.Overage
+	}
+	if target.WindowKind == "" {
+		target.WindowKind = source.WindowKind
+	}
+	if target.ObservedAtMS == 0 {
+		target.ObservedAtMS = source.ObservedAtMS
+	}
+	if target.Source == "" {
+		target.Source = source.Source
+	}
 }
 
 func (w *RateLimitAutoDisableWorker) enableDue(ctx context.Context, now time.Time) {
@@ -356,6 +463,7 @@ func quotaAutoDisableCandidateFromEvent(event usage.Event, baseURL string, manag
 			EventHash:      event.EventHash,
 			Reason:         event.FailSummary,
 			Owner:          model.QuotaCooldownOwnerXAIFreeUsage,
+			EvidenceJSON:   xaiProviderUsageEvidenceJSON(event, resetAt, now),
 		}, true
 	}
 	resetAt, ok := codexUsageLimitResetTimeFromEvent(event, now)
@@ -387,11 +495,28 @@ func xaiFreeUsageResetTimeFromEvent(event usage.Event, now time.Time) (time.Time
 	if !event.Failed || (event.FailStatusCode != http.StatusPaymentRequired && event.FailStatusCode != http.StatusTooManyRequests) {
 		return time.Time{}, false
 	}
-	provider := normalizeQuotaProvider(firstNonEmpty(event.Provider, event.AuthProviderSnapshot))
-	if provider != "xai" {
+	if !isXAIFreeUsageProvider(event) {
 		return time.Time{}, false
 	}
+	observedAt := xaiFreeUsageObservedAt(event, now)
 	texts := []string{event.FailBody, event.RawJSON, event.FailSummary}
+	if providerUsage := xaiProviderUsageFromEvent(event, now); providerUsage != nil && strings.EqualFold(providerUsage.Code, usage.ProviderUsageCodeXAIFree) {
+		// Free-usage recovery is quota-window based. Transport Retry-After only
+		// describes short request backoff and must not drive credential cooldown.
+		if providerUsage.RecoverAtMS > 0 && !providerUsage.RecoverAtEstimated {
+			resetAt := time.UnixMilli(providerUsage.RecoverAtMS)
+			return resetAt, resetAt.After(now)
+		}
+		if resetAt, ok := xaiFreeUsageResetTimeFromTexts(texts, observedAt); ok {
+			return resetAt, resetAt.After(now)
+		}
+		if providerUsage.RecoverAtMS > 0 {
+			resetAt := time.UnixMilli(providerUsage.RecoverAtMS)
+			return resetAt, resetAt.After(now)
+		}
+		resetAt := observedAt.Add(xaiFreeUsageCooldown)
+		return resetAt, resetAt.After(now)
+	}
 	matched := false
 	for _, text := range texts {
 		forEachJSONValue(text, func(decoded any) bool {
@@ -406,86 +531,167 @@ func xaiFreeUsageResetTimeFromEvent(event usage.Event, now time.Time) (time.Time
 		}
 	}
 	if matched {
-		if resetAt, ok := xaiFreeUsageResetTimeFromHeaders(event, now); ok {
-			return resetAt, true
+		if resetAt, ok := xaiFreeUsageResetTimeFromTexts(texts, observedAt); ok {
+			return resetAt, resetAt.After(now)
 		}
-		for _, text := range texts {
-			if resetAt, ok := xaiFreeUsageResetTimeFromJSONText(text, now); ok {
-				return resetAt, true
-			}
-		}
-		return now.Add(xaiFreeUsageCooldown), true
+		resetAt := observedAt.Add(xaiFreeUsageCooldown)
+		return resetAt, resetAt.After(now)
 	}
 	return time.Time{}, false
 }
 
-func xaiFreeUsageResetTimeFromHeaders(event usage.Event, now time.Time) (time.Time, bool) {
+func xaiFreeUsageObservedAt(event usage.Event, fallback time.Time) time.Time {
+	if event.TimestampMS > 0 {
+		return time.UnixMilli(event.TimestampMS)
+	}
+	return fallback
+}
+
+func xaiProviderUsageFromEvent(event usage.Event, now time.Time) *usage.ProviderUsageMetadata {
 	metadata := event.ResponseMetadata
 	if metadata == nil && event.ResponseMetadataJSON != "" {
 		metadata = usage.ResponseHeaderMetadataFromJSON(event.ResponseMetadataJSON)
 	}
-	if metadata == nil || metadata.Errors == nil || metadata.Errors.RetryAfterRecoverAtMS <= 0 {
-		return time.Time{}, false
+	if metadata != nil && metadata.ProviderUsage != nil {
+		return metadata.ProviderUsage
 	}
-	resetAt := time.UnixMilli(metadata.Errors.RetryAfterRecoverAtMS)
-	return resetAt, resetAt.After(now)
+	base := xaiFreeUsageObservedAt(event, now)
+	if event.RawJSON != "" {
+		if parsed := usage.ParseResponseHeaderMetadataFromRawJSON(event.RawJSON, base); parsed != nil && parsed.ProviderUsage != nil {
+			return parsed.ProviderUsage
+		}
+	}
+	record := map[string]any{
+		"provider":               firstNonEmpty(event.Provider, event.AuthProviderSnapshot),
+		"auth_provider_snapshot": event.AuthProviderSnapshot,
+		"executor_type":          event.ExecutorType,
+		"fail": map[string]any{
+			"status_code": event.FailStatusCode,
+			"body":        event.FailBody,
+		},
+	}
+	return usage.ProviderUsageMetadataFromRecord(record, base)
 }
 
-func xaiFreeUsageResetTimeFromJSONText(text string, now time.Time) (time.Time, bool) {
+func xaiProviderUsageEvidenceJSON(event usage.Event, resetAt time.Time, now time.Time) string {
+	providerUsage := xaiProviderUsageFromEvent(event, now)
+	if providerUsage == nil {
+		providerUsage = &usage.ProviderUsageMetadata{
+			Provider:     "xai",
+			Kind:         usage.ProviderUsageKindIncludedFree,
+			State:        usage.ProviderUsageStateExhausted,
+			Code:         usage.ProviderUsageCodeXAIFree,
+			Unit:         "tokens",
+			WindowKind:   usage.ProviderUsageWindowRolling24H,
+			ObservedAtMS: xaiFreeUsageObservedAt(event, now).UnixMilli(),
+		}
+		if model := strings.TrimSpace(event.Model); model != "" && model != "-" {
+			providerUsage.Model = model
+		}
+	}
+	evidence := *providerUsage
+	if !resetAt.IsZero() {
+		evidence.RecoverAtMS = resetAt.UnixMilli()
+		switch {
+		case xaiFreeUsageHasExplicitReset(event, now):
+			evidence.RecoverAtEstimated = false
+		case providerUsage.RecoverAtMS == evidence.RecoverAtMS:
+			// Preserve recovery provenance carried by structured metadata when the
+			// raw response body is no longer available on an imported event.
+			evidence.RecoverAtEstimated = providerUsage.RecoverAtEstimated
+		default:
+			evidence.RecoverAtEstimated = true
+		}
+	}
+	normalized := usage.NormalizeProviderUsageMetadata(&evidence)
+	if normalized == nil {
+		return ""
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func xaiFreeUsageHasExplicitReset(event usage.Event, now time.Time) bool {
+	base := xaiFreeUsageObservedAt(event, now)
+	_, ok := xaiFreeUsageResetTimeFromTexts([]string{event.FailBody, event.RawJSON, event.FailSummary}, base)
+	return ok
+}
+
+func xaiFreeUsageResetTimeFromJSONText(text string, base time.Time) (time.Time, bool) {
+	if resetAt, ok := xaiResetTimeFromJSONText(text, base, xaiAbsoluteResetKeys, false); ok {
+		return resetAt, true
+	}
+	return xaiResetTimeFromJSONText(text, base, xaiRelativeResetKeys, true)
+}
+
+var (
+	xaiAbsoluteResetKeys = []string{
+		"reset_at", "resetAt", "resets_at", "resetsAt",
+		"period_end", "periodEnd", "billing_period_end", "billingPeriodEnd",
+	}
+	xaiRelativeResetKeys = []string{"reset_after_seconds", "resetAfterSeconds"}
+)
+
+func xaiFreeUsageResetTimeFromTexts(texts []string, base time.Time) (time.Time, bool) {
+	for _, candidate := range []struct {
+		keys     []string
+		relative bool
+	}{
+		{keys: xaiAbsoluteResetKeys},
+		{keys: xaiRelativeResetKeys, relative: true},
+	} {
+		for _, text := range texts {
+			if resetAt, ok := xaiResetTimeFromJSONText(text, base, candidate.keys, candidate.relative); ok {
+				return resetAt, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func xaiResetTimeFromJSONText(text string, base time.Time, keys []string, relative bool) (time.Time, bool) {
 	var resetAt time.Time
 	found := false
 	forEachJSONValue(text, func(decoded any) bool {
-		if at, ok := xaiExplicitResetTime(decoded, now); ok {
+		if at, ok := xaiResetTimeByKeys(decoded, base, keys, relative); ok {
 			resetAt = at
 			found = true
 			return true
 		}
 		return false
 	})
-	return resetAt, found && resetAt.After(now)
+	return resetAt, found && resetAt.After(base)
 }
 
-func xaiExplicitResetTime(value any, now time.Time) (time.Time, bool) {
+func xaiResetTimeByKeys(value any, base time.Time, keys []string, relative bool) (time.Time, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
-		for _, key := range []string{
-			"reset_at",
-			"resetAt",
-			"resets_at",
-			"resetsAt",
-			"period_end",
-			"periodEnd",
-			"billing_period_end",
-			"billingPeriodEnd",
-		} {
+		for _, key := range keys {
 			if raw, ok := typed[key]; ok {
-				if resetAt, ok := parseResetValue(raw, now, false); ok {
+				if resetAt, ok := parseResetValue(raw, base, relative); ok {
 					return resetAt, true
 				}
 			}
 		}
-		for _, key := range []string{
-			"retry_after",
-			"retryAfter",
-			"retry_after_seconds",
-			"retryAfterSeconds",
-			"reset_after_seconds",
-			"resetAfterSeconds",
-		} {
-			if raw, ok := typed[key]; ok {
-				if resetAt, ok := parseResetValue(raw, now, true); ok {
-					return resetAt, true
-				}
-			}
+		childKeys := make([]string, 0, len(typed))
+		for key := range typed {
+			childKeys = append(childKeys, key)
 		}
-		for _, child := range typed {
-			if resetAt, ok := xaiExplicitResetTime(child, now); ok {
+		sort.Strings(childKeys)
+		for _, key := range childKeys {
+			if isResponseHeaderContainer(key) {
+				continue
+			}
+			if resetAt, ok := xaiResetTimeByKeys(typed[key], base, keys, relative); ok {
 				return resetAt, true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if resetAt, ok := xaiExplicitResetTime(child, now); ok {
+			if resetAt, ok := xaiResetTimeByKeys(child, base, keys, relative); ok {
 				return resetAt, true
 			}
 		}
@@ -493,10 +699,16 @@ func xaiExplicitResetTime(value any, now time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func isResponseHeaderContainer(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.NewReplacer("-", "_", " ", "_").Replace(normalized)
+	return normalized == "headers" || normalized == "response_headers" || normalized == "responseheaders"
+}
+
 func xaiFreeUsageCode(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
-		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(typed["code"])), "subscription:free-usage-exhausted") {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(typed["code"])), usage.ProviderUsageCodeXAIFree) {
 			return true
 		}
 		for _, child := range typed {
@@ -514,15 +726,10 @@ func xaiFreeUsageCode(value any) bool {
 	return false
 }
 
-func normalizeQuotaProvider(value string) string {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	switch normalized {
-	case "x-ai", "grok":
-		return "xai"
-	default:
-		return normalized
-	}
+// isXAIFreeUsageProvider requires a native xAI identity. Bare "grok" alone can
+// name openai-compatible proxies and must not trigger free-usage cooldown.
+func isXAIFreeUsageProvider(event usage.Event) bool {
+	return usage.IsNativeXAIProvider(event.Provider, event.AuthProviderSnapshot, event.ExecutorType)
 }
 
 func codexUsageLimitResetTimeFromEvent(event usage.Event, now time.Time) (time.Time, bool) {

@@ -1,50 +1,50 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { CodexInspectionAutoActionEditor } from './CodexInspectionAutoActionEditor';
 
 const t = ((key: string) => key) as never;
 
+const renderEditor = (value: 'none' | 'delete', autoRecoverEnabled = false) => {
+  let renderer: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      <CodexInspectionAutoActionEditor
+        value={value}
+        autoRecoverEnabled={autoRecoverEnabled}
+        t={t}
+        onChange={() => undefined}
+        onAutoRecoverChange={() => undefined}
+      />
+    );
+  });
+  return renderer!;
+};
+
 describe('CodexInspectionAutoActionEditor', () => {
-  it('enables safe recovery when auto execution is enabled without another strategy', () => {
-    const onChange = vi.fn();
-    const onAutoRecoverChange = vi.fn();
-    let renderer: ReactTestRenderer;
+  it('only shows the active option descriptions', () => {
+    const renderer = renderEditor('none');
+    const text = renderer.root
+      .findAllByType('small')
+      .map((node) => node.children.join(''));
 
-    act(() => {
-      renderer = create(
-        <CodexInspectionAutoActionEditor
-          value="none"
-          autoRecoverEnabled={false}
-          t={t}
-          onChange={onChange}
-          onAutoRecoverChange={onAutoRecoverChange}
-        />
-      );
-    });
-
-    const buttons = renderer!.root.findAllByType('button');
-    act(() => buttons[1].props.onClick());
-
-    expect(onAutoRecoverChange).toHaveBeenCalledWith(true);
-    expect(onChange).toHaveBeenCalledWith('enable');
+    expect(text).toEqual([
+      'monitoring.codex_inspection_settings_auto_execution_off_desc',
+    ]);
   });
 
-  it('treats legacy enable mode without recovery as disabled automation', () => {
-    let renderer: ReactTestRenderer;
-    act(() => {
-      renderer = create(
-        <CodexInspectionAutoActionEditor
-          value="enable"
-          autoRecoverEnabled={false}
-          t={t}
-          onChange={vi.fn()}
-          onAutoRecoverChange={vi.fn()}
-        />
-      );
-    });
+  it('keeps the selected execution, problem-action and recovery descriptions', () => {
+    const renderer = renderEditor('delete');
+    const text = renderer.root
+      .findAllByType('small')
+      .map((node) => node.children.join(''));
 
-    const buttons = renderer!.root.findAllByType('button');
-    expect(buttons[0].props['aria-pressed']).toBe(true);
-    expect(buttons[1].props['aria-pressed']).toBe(false);
+    expect(text).toEqual(
+      expect.arrayContaining([
+        'monitoring.codex_inspection_settings_auto_execution_on_desc',
+        'monitoring.codex_inspection_settings_problem_action_delete_desc',
+        'monitoring.codex_inspection_settings_auto_recover_off_desc',
+      ])
+    );
+    expect(text).not.toContain('monitoring.codex_inspection_settings_problem_action_none_desc');
   });
 });

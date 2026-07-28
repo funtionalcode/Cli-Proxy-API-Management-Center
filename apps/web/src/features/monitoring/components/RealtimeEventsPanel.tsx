@@ -281,6 +281,8 @@ const buildHeaderDiagnosticParts = (
   locale: string
 ): string[] => {
   const parts: string[] = [];
+  const formatCount = (value: number): string =>
+    new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
   const compactSignal = (label: string, value: string | number | null | undefined, limit = 42) => {
     const normalized =
       typeof value === 'number'
@@ -297,9 +299,56 @@ const buildHeaderDiagnosticParts = (
       `${t('monitoring.header_error')}: ${[errorKind, errorCode].filter(Boolean).join(' / ')}`
     );
   }
+  const shouldRetry = row.responseMetadata?.errors?.should_retry;
+  if (typeof shouldRetry === 'boolean') {
+    parts.push(
+      `${t('monitoring.header_should_retry', { defaultValue: 'Should retry' })}: ${shouldRetry ? t('common.yes', { defaultValue: 'Yes' }) : t('common.no', { defaultValue: 'No' })}`
+    );
+  }
   const traceId = row.headerTraceId || row.responseMetadata?.trace?.primary_trace_id || '';
   if (traceId) {
     parts.push(`${t('monitoring.header_trace')}: ${truncateText(traceId, 42)}`);
+  }
+  const traceparent = row.responseMetadata?.trace?.traceparent || '';
+  if (traceparent && traceparent !== traceId) {
+    parts.push(`traceparent: ${truncateText(traceparent, 64)}`);
+  }
+  const providerUsage = row.responseMetadata?.provider_usage;
+  if (
+    providerUsage?.provider === 'xai' &&
+    providerUsage.kind === 'included_free_usage' &&
+    providerUsage.state === 'exhausted'
+  ) {
+    const usageParts: string[] = [];
+    if (providerUsage.model) usageParts.push(providerUsage.model);
+    if (typeof providerUsage.actual === 'number' && typeof providerUsage.limit === 'number') {
+      usageParts.push(
+        `${formatCount(providerUsage.actual)} / ${formatCount(providerUsage.limit)} ${providerUsage.unit || 'tokens'}`
+      );
+    }
+    if (typeof providerUsage.remaining === 'number') {
+      usageParts.push(
+        `${t('monitoring.provider_usage_remaining', { defaultValue: 'Remaining' })} ${formatCount(providerUsage.remaining)}`
+      );
+    }
+    if (typeof providerUsage.overage === 'number' && providerUsage.overage > 0) {
+      usageParts.push(
+        `${t('monitoring.provider_usage_overage', { defaultValue: 'Overage' })} ${formatCount(providerUsage.overage)}`
+      );
+    }
+    if (providerUsage.window_kind === 'rolling_24h') {
+      usageParts.push(
+        t('monitoring.provider_usage_rolling_24h', { defaultValue: 'Rolling 24-hour window' })
+      );
+    }
+    if (providerUsage.recover_at_ms) {
+      usageParts.push(
+        `${providerUsage.recover_at_estimated ? t('monitoring.provider_usage_estimated_recovery', { defaultValue: 'Estimated recovery' }) : t('monitoring.header_recover_at')} ${formatHeaderRecoverAt(providerUsage.recover_at_ms, locale)}`
+      );
+    }
+    parts.push(
+      `${t('monitoring.provider_usage_xai_exhausted', { defaultValue: 'xAI included free usage exhausted' })}${usageParts.length > 0 ? `: ${usageParts.join(' · ')}` : ''}`
+    );
   }
   const quotaParts: string[] = [];
   const planType =
@@ -322,6 +371,32 @@ const buildHeaderDiagnosticParts = (
   }
   if (quotaParts.length > 0) {
     parts.push(`${t('monitoring.header_quota')}: ${quotaParts.join(' · ')}`);
+  }
+  const rateLimit = row.responseMetadata?.rate_limit;
+  const rateLimitParts = [
+    rateLimit?.requests?.limit !== undefined || rateLimit?.requests?.remaining !== undefined
+      ? `${t('monitoring.provider_rate_limit_requests', { defaultValue: 'Requests' })} ${rateLimit.requests?.remaining ?? '-'} / ${rateLimit.requests?.limit ?? '-'}`
+      : '',
+    rateLimit?.tokens?.limit !== undefined || rateLimit?.tokens?.remaining !== undefined
+      ? `${t('monitoring.provider_rate_limit_tokens', { defaultValue: 'Tokens' })} ${rateLimit.tokens?.remaining ?? '-'} / ${rateLimit.tokens?.limit ?? '-'}`
+      : '',
+  ].filter(Boolean);
+  if (rateLimitParts.length > 0) {
+    parts.push(
+      `${t('monitoring.provider_rate_limit', { defaultValue: 'API rate limit' })}: ${rateLimitParts.join(' · ')}`
+    );
+  }
+  const dataPolicy = row.responseMetadata?.data_policy;
+  const dataPolicyParts = [
+    dataPolicy?.retention_mode || '',
+    typeof dataPolicy?.zero_retention === 'boolean'
+      ? `${t('monitoring.provider_zero_retention', { defaultValue: 'Zero retention' })}: ${dataPolicy.zero_retention ? t('common.yes', { defaultValue: 'Yes' }) : t('common.no', { defaultValue: 'No' })}`
+      : '',
+  ].filter(Boolean);
+  if (dataPolicyParts.length > 0) {
+    parts.push(
+      `${t('monitoring.provider_data_policy', { defaultValue: 'Data policy' })}: ${dataPolicyParts.join(' · ')}`
+    );
   }
   const routing = row.responseMetadata?.routing;
   const routingParts = [
@@ -363,15 +438,16 @@ const buildHeaderDiagnosticParts = (
   return parts;
 };
 
-const buildFailureMetaText = (row: MonitoringEventRow, t: TFunction, locale: string) => {
-  if (!row.failed) return '';
+const buildRequestDiagnosticMetaText = (row: MonitoringEventRow, t: TFunction, locale: string) => {
   const parts: string[] = [];
-  if (row.failStatusCode) {
+  if (row.failed && row.failStatusCode) {
     parts.push(
       `${shortLabel(t, 'monitoring.fail_status_code_short', 'monitoring.fail_status_code')} ${row.failStatusCode}`
     );
+  } else {
+    parts.push(t(row.failed ? 'monitoring.result_failed' : 'monitoring.result_success'));
   }
-  const body = maskSensitiveText(row.failSummary || '');
+  const body = row.failed ? maskSensitiveText(row.failSummary || '') : '';
   if (body) {
     parts.push(truncateText(body, 96));
   }
@@ -379,28 +455,32 @@ const buildFailureMetaText = (row: MonitoringEventRow, t: TFunction, locale: str
   return parts.join(' · ');
 };
 
-const buildFailureDetails = (row: MonitoringEventRow, t: TFunction, locale: string) => {
-  if (!row.failed) return null;
-  const summary = maskSensitiveText(row.failSummary || '');
+const buildRequestDiagnosticDetails = (row: MonitoringEventRow, t: TFunction, locale: string) => {
+  const summary = row.failed ? maskSensitiveText(row.failSummary || '') : '';
   const diagnostics = buildHeaderDiagnosticParts(row, t, locale);
-  if (!row.failStatusCode && !summary && diagnostics.length === 0) return null;
-  const statusText = row.failStatusCode
-    ? `${shortLabel(t, 'monitoring.fail_status_code_short', 'monitoring.fail_status_code')} ${row.failStatusCode}`
-    : '';
+  if (!row.failed && diagnostics.length === 0) return null;
+  if (row.failed && !row.failStatusCode && !summary && diagnostics.length === 0) return null;
+  const statusText =
+    row.failed && row.failStatusCode
+      ? `${shortLabel(t, 'monitoring.fail_status_code_short', 'monitoring.fail_status_code')} ${row.failStatusCode}`
+      : t(row.failed ? 'monitoring.result_failed' : 'monitoring.result_success');
   return {
+    failed: row.failed,
     statusCode: row.failStatusCode,
     statusText,
     summary,
     diagnostics,
-    label: buildFailureMetaText(row, t, locale),
+    label: buildRequestDiagnosticMetaText(row, t, locale),
     copyText: [statusText, summary, ...diagnostics].filter(Boolean).join('\n'),
   };
 };
 
-type RealtimeFailureDetails = NonNullable<ReturnType<typeof buildFailureDetails>>;
+type RealtimeRequestDiagnosticDetails = NonNullable<
+  ReturnType<typeof buildRequestDiagnosticDetails>
+>;
 
-type RealtimeFailureStatusProps = {
-  details: RealtimeFailureDetails;
+type RealtimeRequestDiagnosticStatusProps = {
+  details: RealtimeRequestDiagnosticDetails;
   tooltipId: string;
   t: TFunction;
   onCopy: (text: string) => void;
@@ -411,7 +491,12 @@ const isNodeInside = (element: HTMLElement | null, target: EventTarget | null) =
   return element.contains(target);
 };
 
-function RealtimeFailureStatus({ details, tooltipId, t, onCopy }: RealtimeFailureStatusProps) {
+function RealtimeRequestDiagnosticStatus({
+  details,
+  tooltipId,
+  t,
+  onCopy,
+}: RealtimeRequestDiagnosticStatusProps) {
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
@@ -509,6 +594,7 @@ function RealtimeFailureStatus({ details, tooltipId, t, onCopy }: RealtimeFailur
   const placement = tooltipPosition?.placement ?? 'below';
   const tooltipClassName = [
     styles.realtimeFailureTooltip,
+    !details.failed ? styles.realtimeSuccessDiagnosticTooltip : '',
     placement === 'above' ? styles.realtimeFailureTooltipAbove : styles.realtimeFailureTooltipBelow,
     open ? styles.realtimeFailureTooltipOpen : '',
   ]
@@ -539,9 +625,7 @@ function RealtimeFailureStatus({ details, tooltipId, t, onCopy }: RealtimeFailur
       >
         <IconCopy size={13} />
       </button>
-      {details.statusCode ? (
-        <span className={styles.realtimeFailureTooltipStatus}>{details.statusText}</span>
-      ) : null}
+      <span className={styles.realtimeFailureTooltipStatus}>{details.statusText}</span>
       {details.summary ? (
         <span className={styles.realtimeFailureTooltipBody}>{details.summary}</span>
       ) : null}
@@ -566,8 +650,12 @@ function RealtimeFailureStatus({ details, tooltipId, t, onCopy }: RealtimeFailur
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
     >
-      <span className={`${styles.realtimeRequestStatus} ${styles.realtimeRequestStatusBad}`}>
-        {t('monitoring.result_failed')}
+      <span
+        className={`${styles.realtimeRequestStatus} ${
+          details.failed ? styles.realtimeRequestStatusBad : styles.realtimeRequestStatusGood
+        }`}
+      >
+        {t(details.failed ? 'monitoring.result_failed' : 'monitoring.result_success')}
       </span>
       {!isBrowser ? tooltip : null}
       {isBrowser && open ? createPortal(tooltip, document.body) : null}
@@ -813,9 +901,11 @@ export function RealtimeEventsPanel({
                 row.resolvedModel.trim() !== row.model;
               const reasoningEffort = formatOptionalText(row.reasoningEffort);
               const serviceTier = formatOptionalText(row.serviceTier);
-              const failureDetails = buildFailureDetails(row, t, locale);
-              const failureTooltipId = failureDetails
-                ? `${tooltipIdPrefix}-failure-tooltip-${row.id}`
+              const requestServiceTier = formatOptionalText(row.requestServiceTier);
+              const responseServiceTier = formatOptionalText(row.responseServiceTier);
+              const requestDiagnosticDetails = buildRequestDiagnosticDetails(row, t, locale);
+              const requestDiagnosticTooltipId = requestDiagnosticDetails
+                ? `${tooltipIdPrefix}-request-diagnostic-tooltip-${row.id}`
                 : undefined;
               const timeParts = formatRealtimeDateParts(row.timestampMs, locale);
               const hasTtftMs = row.ttftMs !== null && row.ttftMs !== undefined;
@@ -861,8 +951,13 @@ export function RealtimeEventsPanel({
                       ) : (
                         <span className={styles.mutedCell}>-</span>
                       )}
-                      {serviceTier !== '-' ? (
+                      {requestServiceTier !== '-' ? (
+                        <small>{`${t('monitoring.request_service_tier_short')}: ${requestServiceTier}`}</small>
+                      ) : serviceTier !== '-' ? (
                         <small>{`${shortLabel(t, 'monitoring.service_tier_short', 'monitoring.service_tier')}: ${serviceTier}`}</small>
+                      ) : null}
+                      {responseServiceTier !== '-' ? (
+                        <small>{`${t('monitoring.response_service_tier_short')}: ${responseServiceTier}`}</small>
                       ) : null}
                     </div>
                   </td>
@@ -873,10 +968,13 @@ export function RealtimeEventsPanel({
                   </td>
                   <td>
                     <div className={styles.primaryCell}>
-                      {failureDetails ? (
-                        <RealtimeFailureStatus
-                          details={failureDetails}
-                          tooltipId={failureTooltipId ?? `${tooltipIdPrefix}-failure-tooltip`}
+                      {requestDiagnosticDetails ? (
+                        <RealtimeRequestDiagnosticStatus
+                          details={requestDiagnosticDetails}
+                          tooltipId={
+                            requestDiagnosticTooltipId ??
+                            `${tooltipIdPrefix}-request-diagnostic-tooltip`
+                          }
                           t={t}
                           onCopy={handleCopyFailureDetails}
                         />
@@ -997,11 +1095,11 @@ export function RealtimeEventsPanel({
                   total: eventsTotalCount,
                 })
               : eventsHasMore
-              ? t('monitoring.events_loaded_summary', {
-                  loaded: eventsLoadedCount,
-                  total: eventsTotalCount,
-                })
-              : t('monitoring.events_all_loaded', { total: eventsTotalCount })}
+                ? t('monitoring.events_loaded_summary', {
+                    loaded: eventsLoadedCount,
+                    total: eventsTotalCount,
+                  })
+                : t('monitoring.events_all_loaded', { total: eventsTotalCount })}
           </span>
           {eventsHasMore ? (
             <Button

@@ -31,7 +31,7 @@ export function getQuotaCooldownPresentation(
       badgeDefault: 'xAI auto cooldown until {{recoverAt}}',
       titleKey: 'auth_files.quota_cooldown_badge_title_xai',
       titleDefault:
-        'A real xAI request reported included free usage exhaustion. CPAMP temporarily disabled this credential and plans to restore it at {{recoverAt}}. Disabled at: {{disabledAt}}. This is event-driven credential automation, not an active inspection.',
+        'A real xAI request reported included free usage exhaustion. Usage evidence: {{usage}}. CPAMP temporarily disabled this credential and plans to restore it at {{recoverAt}} ({{recoveryKind}}). Disabled at: {{disabledAt}}. This is event-driven credential automation, not an active inspection.',
       providerLabel: 'xAI',
       sourceLabelKey: 'auth_files.quota_cooldown_source_xai',
       sourceLabelDefault: 'xAI free-usage exhaustion request event',

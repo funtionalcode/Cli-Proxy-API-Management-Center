@@ -1,6 +1,22 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+type recordingInspectionStopper struct {
+	calls       int
+	firstErr    error
+	hasDeadline bool
+}
+
+func (s *recordingInspectionStopper) StopAndWait(ctx context.Context) error {
+	s.calls++
+	_, s.hasDeadline = ctx.Deadline()
+	return s.firstErr
+}
 
 func TestNewPprofServer(t *testing.T) {
 	tests := []struct {
@@ -30,5 +46,21 @@ func TestNewPprofServer(t *testing.T) {
 				t.Fatalf("newPprofServer(%q) = nil", tt.addr)
 			}
 		})
+	}
+}
+
+func TestStopCodexInspectionWorkerRemainsBoundedAfterTimeout(t *testing.T) {
+	stopper := &recordingInspectionStopper{firstErr: context.DeadlineExceeded}
+	stopCodexInspectionWorker(stopper, time.Millisecond)
+	if stopper.calls != 1 || !stopper.hasDeadline {
+		t.Fatalf("stop calls = %d hasDeadline=%v, want one bounded stop", stopper.calls, stopper.hasDeadline)
+	}
+}
+
+func TestStopCodexInspectionWorkerDoesNotDrainAfterCleanStop(t *testing.T) {
+	stopper := &recordingInspectionStopper{}
+	stopCodexInspectionWorker(stopper, time.Millisecond)
+	if stopper.calls != 1 {
+		t.Fatalf("stop calls = %d, want 1", stopper.calls)
 	}
 }

@@ -16,11 +16,70 @@ import (
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	codexinspectionrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/codexinspection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
+
+const xaiCompletedInferenceAPICallResponse = `{"status_code":200,"body":{"object":"response","status":"completed","error":null,"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}}`
+
+type failAfterInsertCodexInspectionRepository struct {
+	codexinspectionrepo.Repository
+	failAfter         int
+	successfulInserts int
+}
+
+func (r *failAfterInsertCodexInspectionRepository) InsertResult(
+	ctx context.Context,
+	result model.CodexInspectionResult,
+) (model.CodexInspectionResult, error) {
+	if r.successfulInserts >= r.failAfter {
+		return model.CodexInspectionResult{}, errors.New("forced result write failure")
+	}
+	inserted, err := r.Repository.InsertResult(ctx, result)
+	if err == nil {
+		r.successfulInserts++
+	}
+	return inserted, err
+}
+
+type failFirstInsertCodexInspectionRepository struct {
+	codexinspectionrepo.Repository
+	failed bool
+}
+
+func (r *failFirstInsertCodexInspectionRepository) InsertResult(
+	ctx context.Context,
+	result model.CodexInspectionResult,
+) (model.CodexInspectionResult, error) {
+	if !r.failed {
+		r.failed = true
+		return model.CodexInspectionResult{}, errors.New("forced live result write failure")
+	}
+	return r.Repository.InsertResult(ctx, result)
+}
+
+func requireInspectionLog(t *testing.T, logs []model.CodexInspectionLog, message string) model.CodexInspectionLog {
+	t.Helper()
+	for _, entry := range logs {
+		if entry.Message == message {
+			return entry
+		}
+	}
+	t.Fatalf("inspection log %q not found in %#v", message, logs)
+	return model.CodexInspectionLog{}
+}
+
+func requireInspectionLogDetail(t *testing.T, entry model.CodexInspectionLog) map[string]any {
+	t.Helper()
+	detail, ok := entry.Detail.(map[string]any)
+	if !ok {
+		t.Fatalf("inspection log detail = %#v, want object", entry.Detail)
+	}
+	return detail
+}
 
 func TestXAIClassificationMatchesSharedFixtures(t *testing.T) {
 	type fixtureCase struct {
@@ -108,10 +167,14 @@ func TestRunPersistsLogsResultsAndDetail(t *testing.T) {
 	}
 	foundStart := false
 	for _, logEntry := range result.Logs {
-		if logEntry.Message == "Codex 巡检开始" {
+		if logEntry.Message == "凭证健康巡检开始" {
 			foundStart = true
 			if logEntry.Detail == nil {
 				t.Fatalf("start log detail is nil: %#v", logEntry)
+			}
+			detail := requireInspectionLogDetail(t, logEntry)
+			if detail["triggerKey"] != "manual" {
+				t.Fatalf("start log triggerKey = %#v, want manual", detail["triggerKey"])
 			}
 			break
 		}
@@ -121,32 +184,215 @@ func TestRunPersistsLogsResultsAndDetail(t *testing.T) {
 	}
 }
 
-func TestRunXAIUsesBillingEndpointsInsteadOfCodexUsage(t *testing.T) {
+func TestRunLogsPostActionResultWriteFailures(t *testing.T) {
+	var deleteCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodDelete:
+			deleteCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	if err := db.SaveManagerConfig(context.Background(), newCodexInspectionManagerConfig(upstream.URL)); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	db.CodexInspections = &failAfterInsertCodexInspectionRepository{
+		Repository: db.CodexInspections,
+		failAfter:  1,
+	}
+	svc := newCodexInspectionTestService(t, db)
+
+	result, err := svc.Run(context.Background(), RunRequest{TriggerType: "manual", TriggerKey: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if !deleteCalled {
+		t.Fatal("automatic delete was not executed")
+	}
+	if !strings.Contains(result.Run.Error, "1 个巡检结果写入失败") {
+		t.Fatalf("run error = %q, want result write failure", result.Run.Error)
+	}
+	if len(result.Results) != 1 || result.Results[0].ActionStatus != model.CodexInspectionActionStatusSuccess || result.Results[0].ExecutedAction != "delete" {
+		t.Fatalf("returned result lost the successful external action after write failure: %#v", result.Results)
+	}
+	writeFailure := requireInspectionLog(t, result.Logs, "写入巡检账号结果失败")
+	writeFailureDetail := requireInspectionLogDetail(t, writeFailure)
+	if writeFailure.Level != "error" || writeFailureDetail["displayAccount"] != "alice@example.com" {
+		t.Fatalf("result write failure log = level=%q detail=%#v", writeFailure.Level, writeFailureDetail)
+	}
+	completion := requireInspectionLog(t, result.Logs, "凭证健康巡检完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "warning" || completionDetail["resultWriteFailedCount"] != float64(1) {
+		t.Fatalf("completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
+}
+
+func TestRunMarksRecoveredLiveResultWriteForRetry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10},"secondary_window":{"used_percent":20}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	db.CodexInspections = &failFirstInsertCodexInspectionRepository{Repository: db.CodexInspections}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if result.Run.Error != "" || len(result.Results) != 1 {
+		t.Fatalf("recovered live write run=%#v results=%#v", result.Run, result.Results)
+	}
+	writeFailure := requireInspectionLog(t, result.Logs, "写入巡检账号结果失败")
+	writeFailureDetail := requireInspectionLogDetail(t, writeFailure)
+	if writeFailureDetail["retryScheduled"] != true || writeFailureDetail["displayAccount"] != "alice@example.com" {
+		t.Fatalf("live write failure detail = %#v", writeFailureDetail)
+	}
+	completion := requireInspectionLog(t, result.Logs, "凭证健康巡检完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "success" || completionDetail["resultWriteFailedCount"] != float64(0) {
+		t.Fatalf("recovered completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
+}
+
+func TestRunCompletionLogWarnsWhenAutomaticActionFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodDelete:
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	if err := db.SaveManagerConfig(context.Background(), newCodexInspectionManagerConfig(upstream.URL)); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if result.Run.Error == "" || len(result.Results) != 1 || result.Results[0].ActionStatus != model.CodexInspectionActionStatusFailed {
+		t.Fatalf("automatic action failure was not persisted: run=%#v results=%#v", result.Run, result.Results)
+	}
+	completion := requireInspectionLog(t, result.Logs, "凭证健康巡检完成")
+	if completion.Level != "warning" {
+		t.Fatalf("automatic action completion level = %q, want warning", completion.Level)
+	}
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completionDetail["actionFailedCount"] != float64(1) ||
+		completionDetail["actionSuccessCount"] != float64(0) ||
+		completionDetail["actionSkippedCount"] != float64(0) ||
+		completionDetail["actionNeedsReviewCount"] != float64(0) {
+		t.Fatalf("automatic action completion detail = %#v", completionDetail)
+	}
+}
+
+func TestRunXAISkipsInferenceWhenDisabled(t *testing.T) {
 	requestedURLs := make([]string, 0, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
-			_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","account":"xai@example.com","user":{"id":"user-1"}}]}`))
+			_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","auth_kind":"oauth","account":"xai@example.com","user":{"id":"user-1"}}]}`))
 		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
 			var payload struct {
-				URL    string            `json:"url"`
-				Header map[string]string `json:"header"`
+				Method string `json:"method"`
+				URL    string `json:"url"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode api-call payload: %v", err)
 			}
 			requestedURLs = append(requestedURLs, payload.URL)
-			if strings.Contains(payload.URL, "chatgpt.com") {
-				t.Fatalf("xAI inspection called Codex endpoint: %s", payload.URL)
-			}
-			if payload.Header["x-grok-client-version"] != xaiGrokVersion || payload.Header["x-userid"] != "user-1" {
-				t.Fatalf("xAI headers = %#v", payload.Header)
+			if strings.HasSuffix(payload.URL, "/responses") {
+				t.Fatalf("disabled xAI inference requested %s", payload.URL)
 			}
 			if strings.Contains(payload.URL, "format=credits") {
 				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":25,"current_period":{"end":"2026-07-22T00:00:00Z"}}}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"monthly_limit":10000,"used":4000,"billing_period_end":"2026-08-01T00:00:00Z"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.XAIInferenceEnabled = false
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if len(requestedURLs) != 2 {
+		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", requestedURLs)
+	}
+	if len(result.Results) != 1 || result.Results[0].Action != "keep" || result.Results[0].ErrorKind != "billing_healthy" {
+		t.Fatalf("xAI billing-only result = %#v", result.Results)
+	}
+	if result.Results[0].StatusCode == nil || *result.Results[0].StatusCode != http.StatusOK {
+		t.Fatalf("xAI billing-only status code = %#v, want %d", result.Results[0].StatusCode, http.StatusOK)
+	}
+	if result.Results[0].AutoRecoverEligible {
+		t.Fatalf("billing-only inspection enabled auto recovery: %#v", result.Results[0])
+	}
+	logEntry := requireInspectionLog(t, result.Logs, "monitoring.xai_inspection_log_server_complete")
+	if logEntry.Level != "info" {
+		t.Fatalf("xAI billing-only log level = %q, want info", logEntry.Level)
+	}
+	detail := requireInspectionLogDetail(t, logEntry)
+	if detail["inspectionMode"] != "billing" || detail["healthEvidence"] != "billing_healthy" {
+		t.Fatalf("xAI billing-only log detail = %#v", detail)
+	}
+	if detail["inferenceEnabled"] != false {
+		t.Fatalf("xAI billing-only inferenceEnabled = %#v, want false", detail["inferenceEnabled"])
+	}
+	if _, ok := detail["inferenceHealthy"]; ok {
+		t.Fatalf("xAI billing-only log reported inference health: %#v", detail)
+	}
+}
+
+func TestRunXAILogsMissingAuthIndexAsSkippedWarning(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"xai-missing-auth.json","provider":"xai","account":"xai@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			t.Fatal("xAI account without auth_index must not be probed")
 		default:
 			http.NotFound(w, r)
 		}
@@ -165,14 +411,611 @@ func TestRunXAIUsesBillingEndpointsInsteadOfCodexUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run xAI inspection: %v", err)
 	}
+	if len(result.Results) != 1 || result.Results[0].ErrorKind != "missing_auth_index" {
+		t.Fatalf("xAI missing-auth result = %#v", result.Results)
+	}
+	logEntry := requireInspectionLog(t, result.Logs, "monitoring.xai_inspection_log_server_missing_auth_index")
+	if logEntry.Level != "warning" {
+		t.Fatalf("xAI missing-auth log level = %q, want warning", logEntry.Level)
+	}
+	detail := requireInspectionLogDetail(t, logEntry)
+	if detail["inspectionMode"] != "skipped" || detail["healthEvidence"] != "missing_auth_index" {
+		t.Fatalf("xAI missing-auth log detail = %#v", detail)
+	}
+	if detail["billingAvailable"] != false || detail["billingPartial"] != false {
+		t.Fatalf("xAI missing-auth billing detail = %#v, want unavailable/non-partial", detail)
+	}
+	if detail["inferenceEnabled"] != true {
+		t.Fatalf("xAI missing-auth inferenceEnabled = %#v, want true", detail["inferenceEnabled"])
+	}
+	if _, ok := detail["inferenceHealthy"]; ok {
+		t.Fatalf("xAI missing-auth log reported inference health: %#v", detail)
+	}
+}
+
+func TestRunXAIBillingOnlyPrioritizesBlockingFailureOverPartialSummary(t *testing.T) {
+	requestedURLs := make([]string, 0, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","account":"xai@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			requestedURLs = append(requestedURLs, payload.URL)
+			if strings.Contains(payload.URL, "format=credits") {
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":3,"current_period":{"end":"2026-07-29T00:00:00Z"}}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits or need a Grok subscription."}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.XAIInferenceEnabled = false
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
 	if len(requestedURLs) != 2 {
-		t.Fatalf("requested URLs = %#v, want weekly and monthly billing", requestedURLs)
+		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", requestedURLs)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("xAI result = %#v", result.Results)
+	}
+	item := result.Results[0]
+	if item.Action != "disable" || item.ErrorKind != "spending_limit" || item.StatusCode == nil || *item.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("xAI partial blocking result = %#v", item)
+	}
+	if len(item.QuotaWindows) != 1 || item.QuotaWindows[0].ID != "xai-weekly" {
+		t.Fatalf("xAI partial blocking quota windows = %#v", item.QuotaWindows)
+	}
+	logEntry := requireInspectionLog(t, result.Logs, "monitoring.xai_inspection_log_server_complete")
+	if logEntry.Level != "warning" {
+		t.Fatalf("xAI blocking billing log level = %q, want warning", logEntry.Level)
+	}
+	detail := requireInspectionLogDetail(t, logEntry)
+	if detail["inspectionMode"] != "billing" || detail["healthEvidence"] != "spending_limit" {
+		t.Fatalf("xAI blocking billing log detail = %#v", detail)
+	}
+	if _, ok := detail["inferenceHealthy"]; ok {
+		t.Fatalf("xAI blocking billing log reported inference health: %#v", detail)
+	}
+}
+
+func TestResolveXAIBasicInspectionResultClassifiesNonBlockingPartialBilling(t *testing.T) {
+	usage := float64(25)
+	result := resolveXAIBasicInspectionResult(
+		model.CodexInspectionResult{},
+		xaiBillingProbe{
+			Summary:  &xaiBillingSummary{UsagePercent: &usage, HasWeeklyData: true},
+			Failures: []xaiProbeDecision{*xaiDecision(http.StatusServiceUnavailable, "upstream_error", "monthly billing unavailable")},
+			Partial:  true,
+			Healthy:  true,
+		},
+	)
+	if result.Action != "keep" || result.ErrorKind != "billing_partial" || result.ActionReason != "monitoring.xai_inspection_reason_billing_partial" {
+		t.Fatalf("xAI partial billing result = %#v", result)
+	}
+	if level := xaiInspectionLogLevel(result); level != "warning" {
+		t.Fatalf("xAI partial billing log level = %q, want warning", level)
+	}
+}
+
+func TestRunXAIUsesBillingAndInferenceEndpoints(t *testing.T) {
+	const customModel = "grok-custom"
+	const customPrompt = "Return a short health response."
+	const customUserAgent = "xai-custom-agent"
+	requestedURLs := make([]string, 0, 3)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","auth_kind":"oauth","account":"xai@example.com","user":{"id":"user-1"}}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				Method string            `json:"method"`
+				URL    string            `json:"url"`
+				Header map[string]string `json:"header"`
+				Data   string            `json:"data"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			requestedURLs = append(requestedURLs, payload.URL)
+			if strings.Contains(payload.URL, "chatgpt.com") {
+				t.Fatalf("xAI inspection called Codex endpoint: %s", payload.URL)
+			}
+			if payload.Header["x-grok-client-version"] != xaiGrokVersion || payload.Header["x-userid"] != "user-1" {
+				t.Fatalf("xAI headers = %#v", payload.Header)
+			}
+			if strings.Contains(payload.URL, "format=credits") {
+				if payload.Method != http.MethodGet {
+					t.Fatalf("weekly billing method = %q, want GET", payload.Method)
+				}
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":25,"current_period":{"end":"2026-07-22T00:00:00Z"}}}}`))
+				return
+			}
+			if strings.HasSuffix(payload.URL, "/responses") {
+				if payload.Method != http.MethodPost {
+					t.Fatalf("xAI inference method = %q, want POST", payload.Method)
+				}
+				if payload.Header["Accept"] != "application/json" {
+					t.Fatalf("xAI inference accept = %q, want application/json", payload.Header["Accept"])
+				}
+				if payload.Header["User-Agent"] != customUserAgent {
+					t.Fatalf("xAI inference user agent = %q, want %q", payload.Header["User-Agent"], customUserAgent)
+				}
+				var requestData map[string]any
+				if err := json.Unmarshal([]byte(payload.Data), &requestData); err != nil {
+					t.Fatalf("decode xAI inference data: %v", err)
+				}
+				if requestData["model"] != customModel || requestData["stream"] != false {
+					t.Fatalf("xAI inference data = %#v", requestData)
+				}
+				if requestData["input"] != customPrompt {
+					t.Fatalf("xAI inference prompt = %#v", requestData["input"])
+				}
+				_, _ = w.Write([]byte(xaiCompletedInferenceAPICallResponse))
+				return
+			}
+			if payload.Method != http.MethodGet {
+				t.Fatalf("monthly billing method = %q, want GET", payload.Method)
+			}
+			_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"monthly_limit":10000,"used":4000,"billing_period_end":"2026-08-01T00:00:00Z"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.XAIInferenceUserAgent = customUserAgent
+	managerCfg.CodexInspection.XAIInferenceModel = customModel
+	managerCfg.CodexInspection.XAIInferencePrompt = customPrompt
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if len(requestedURLs) != 3 || !strings.HasSuffix(requestedURLs[2], "/responses") {
+		t.Fatalf("requested URLs = %#v, want weekly/monthly billing and inference", requestedURLs)
 	}
 	if len(result.Results) != 1 || result.Results[0].Provider != "xai" || result.Results[0].Action != "keep" {
 		t.Fatalf("xAI result = %#v", result.Results)
 	}
-	if result.Results[0].ErrorKind != "billing_healthy" || len(result.Results[0].QuotaWindows) != 2 {
-		t.Fatalf("xAI billing result = %#v", result.Results[0])
+	if result.Results[0].ErrorKind != "inference_healthy" || len(result.Results[0].QuotaWindows) != 2 {
+		t.Fatalf("xAI inference result = %#v", result.Results[0])
+	}
+	if result.Results[0].PlanType != "" {
+		t.Fatalf("xAI plan type = %q, want empty", result.Results[0].PlanType)
+	}
+	logEntry := requireInspectionLog(t, result.Logs, "monitoring.xai_inspection_log_server_complete")
+	if logEntry.Level != "info" {
+		t.Fatalf("xAI inference log level = %q, want info", logEntry.Level)
+	}
+	detail := requireInspectionLogDetail(t, logEntry)
+	if detail["inspectionMode"] != "inference" || detail["healthEvidence"] != "inference_healthy" || detail["inferenceHealthy"] != true {
+		t.Fatalf("xAI inference log detail = %#v", detail)
+	}
+	if detail["inferenceEnabled"] != true {
+		t.Fatalf("xAI inferenceEnabled = %#v, want true", detail["inferenceEnabled"])
+	}
+}
+
+func TestResolveXAIInferenceURLMatchesRuntimeUsingAPISemantics(t *testing.T) {
+	tests := []struct {
+		name          string
+		file          authFile
+		forceOfficial bool
+		wantURL       string
+		wantCLI       bool
+	}{
+		{
+			name:          "verified official identity forces official api",
+			file:          authFile{},
+			forceOfficial: true,
+			wantURL:       xaiOfficialAPIBaseURL + "/responses",
+			wantCLI:       false,
+		},
+		{
+			name:    "missing auth metadata defaults to cli proxy",
+			file:    authFile{},
+			wantURL: xaiCLIChatProxyBaseURL + "/responses",
+			wantCLI: true,
+		},
+		{
+			name:    "missing auth metadata ignores official default base",
+			file:    authFile{"base_url": xaiOfficialAPIBaseURL},
+			wantURL: xaiCLIChatProxyBaseURL + "/responses",
+			wantCLI: true,
+		},
+		{
+			name:    "oauth defaults to cli proxy",
+			file:    authFile{"auth_kind": "oauth", "base_url": xaiOfficialAPIBaseURL},
+			wantURL: xaiCLIChatProxyBaseURL + "/responses",
+			wantCLI: true,
+		},
+		{
+			name:    "explicit false defaults to cli proxy without auth kind",
+			file:    authFile{"using_api": false, "base_url": xaiOfficialAPIBaseURL},
+			wantURL: xaiCLIChatProxyBaseURL + "/responses",
+			wantCLI: true,
+		},
+		{
+			name:    "api credential defaults to official api",
+			file:    authFile{"auth_kind": "apikey"},
+			wantURL: xaiOfficialAPIBaseURL + "/responses",
+			wantCLI: false,
+		},
+		{
+			name:    "custom base url is preserved",
+			file:    authFile{"using_api": false, "base_url": "https://xai.example.test/v1"},
+			wantURL: "https://xai.example.test/v1/responses",
+			wantCLI: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURL, gotCLI := resolveXAIInferenceURL(tt.file, tt.forceOfficial)
+			if gotURL != tt.wantURL || gotCLI != tt.wantCLI {
+				t.Fatalf("resolveXAIInferenceURL() = %q, %t; want %q, %t", gotURL, gotCLI, tt.wantURL, tt.wantCLI)
+			}
+		})
+	}
+}
+
+func TestRunCombinedTargetsSamplesEachCredentialProvider(t *testing.T) {
+	requestedInference := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"codex.json","auth_index":"codex-1","provider":"codex","account":"codex@example.com"},{"name":"xai-a.json","auth_index":"xai-1","provider":"xai","account":"xai-a@example.com"},{"name":"xai-b.json","auth_index":"xai-2","provider":"xai","account":"xai-b@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			switch {
+			case strings.Contains(payload.URL, "chatgpt.com"):
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000}}}}`))
+			case strings.HasSuffix(payload.URL, "/responses"):
+				requestedInference++
+				_, _ = w.Write([]byte(xaiCompletedInferenceAPICallResponse))
+			case strings.Contains(payload.URL, "/billing"):
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":20,"current_period":{"end":"2026-07-22T00:00:00Z"}}}}`))
+			default:
+				t.Fatalf("unexpected provider URL %q", payload.URL)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetTypes = []string{model.CodexInspectionTargetCodex, model.CodexInspectionTargetXAI}
+	managerCfg.CodexInspection.TargetType = model.CodexInspectionTargetCodex
+	managerCfg.CodexInspection.SampleSize = 1
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	detail, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run combined credential inspection: %v", err)
+	}
+	if detail.Run.ProbeSetCount != 3 || detail.Run.SampledCount != 2 || len(detail.Results) != 2 {
+		t.Fatalf("combined run = %#v, results=%#v", detail.Run, detail.Results)
+	}
+	providers := map[string]bool{}
+	for _, result := range detail.Results {
+		providers[result.Provider] = true
+	}
+	if !providers["codex"] || !providers["xai"] || requestedInference != 1 {
+		t.Fatalf("providers=%#v inference=%d", providers, requestedInference)
+	}
+}
+
+func TestRunXAIFallsBackToOfficialAPIIdentityHealth(t *testing.T) {
+	requestedURLs := make([]string, 0, 3)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com","disabled":true,"user":{"id":"user-1"}}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				Method string            `json:"method"`
+				URL    string            `json:"url"`
+				Header map[string]string `json:"header"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			requestedURLs = append(requestedURLs, payload.URL)
+			if strings.HasSuffix(payload.URL, "/responses") {
+				if payload.Method != http.MethodPost {
+					t.Fatalf("xAI inference method = %q, want POST", payload.Method)
+				}
+				if payload.URL != xaiOfficialAPIBaseURL+"/responses" {
+					t.Fatalf("xAI inference URL = %q, want official API", payload.URL)
+				}
+				if payload.Header["x-xai-token-auth"] != "" || payload.Header["x-grok-client-version"] != "" || payload.Header["x-userid"] != "" {
+					t.Fatalf("xAI official inference headers = %#v", payload.Header)
+				}
+				_, _ = w.Write([]byte(xaiCompletedInferenceAPICallResponse))
+				return
+			}
+			if payload.Method != http.MethodGet {
+				t.Fatalf("xAI billing health method = %q, want GET", payload.Method)
+			}
+			if payload.URL == xaiOfficialAPIMeURL {
+				if payload.Header["Authorization"] != "Bearer $TOKEN$" || payload.Header["x-grok-client-version"] != "" {
+					t.Fatalf("xAI official API headers = %#v", payload.Header)
+				}
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"user_id":"user-1","team_id":"team-1","team_blocked":false}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status_code":403,"body":{"error":"Access denied"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if len(requestedURLs) != 4 || requestedURLs[2] != xaiOfficialAPIMeURL || requestedURLs[3] != xaiOfficialAPIBaseURL+"/responses" {
+		t.Fatalf("requested URLs = %#v, want billing, identity fallback, and inference", requestedURLs)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("xAI result = %#v", result.Results)
+	}
+	item := result.Results[0]
+	if item.Action != "keep" || item.ErrorKind != "inference_healthy" || item.StatusCode == nil || *item.StatusCode != http.StatusOK {
+		t.Fatalf("xAI inference result = %#v", item)
+	}
+	if item.ActionReason != "monitoring.xai_inspection_reason_inference_manual_disable" {
+		t.Fatalf("xAI inference action reason = %q", item.ActionReason)
+	}
+	if item.UsedPercent != nil || len(item.QuotaWindows) != 0 || item.AutoRecoverEligible {
+		t.Fatalf("xAI official API synthesized quota or recovery = %#v", item)
+	}
+}
+
+func TestResolveXAIBasicInspectionResultUsesOfficialAPIHealthyKind(t *testing.T) {
+	result := resolveXAIBasicInspectionResult(
+		model.CodexInspectionResult{},
+		xaiBillingProbe{OfficialAPIHealthy: true},
+	)
+	if result.Action != "keep" || result.ErrorKind != "official_api_healthy" || result.ActionReason != "monitoring.xai_inspection_reason_official_api_healthy" {
+		t.Fatalf("official API health result = %#v", result)
+	}
+}
+
+func TestXAISummaryWindowsSkipsZeroOnDemandCapWithoutUsage(t *testing.T) {
+	zero := float64(0)
+	windows := xaiSummaryWindows(&xaiBillingSummary{OnDemandCapCents: &zero})
+	for _, window := range windows {
+		if window.ID == "xai-on-demand" {
+			t.Fatalf("zero on-demand cap produced quota window: %#v", windows)
+		}
+	}
+}
+
+func TestXAISummaryWindowsDoesNotCreateMonthlyWindowFromOnDemandOnlyData(t *testing.T) {
+	capCents := float64(5000)
+	usedPercent := float64(20)
+	windows := xaiSummaryWindows(&xaiBillingSummary{
+		OnDemandCapCents:    &capCents,
+		OnDemandUsedPercent: &usedPercent,
+		HasMonthlyData:      true,
+		BillingPeriodEnd:    "2026-08-01T00:00:00Z",
+	})
+	if len(windows) != 1 || windows[0].ID != "xai-on-demand" {
+		t.Fatalf("on-demand-only windows = %#v, want on-demand only", windows)
+	}
+}
+
+func TestParseXAIBillingSummaryDoesNotCreateMonthlyWindowFromWeeklyZeroOnDemandData(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type": "USAGE_PERIOD_TYPE_WEEKLY",
+			"end":  "2026-07-29T00:00:00+00:00",
+		},
+		"onDemandCap":      map[string]any{"val": 0},
+		"onDemandUsed":     map[string]any{"val": 0},
+		"billingPeriodEnd": "2026-07-29T00:00:00+00:00",
+	})
+	if summary == nil {
+		t.Fatal("summary is nil")
+	}
+	windows := xaiSummaryWindows(summary)
+	if len(windows) != 1 || windows[0].ID != "xai-weekly" {
+		t.Fatalf("weekly zero on-demand windows = %#v, want weekly only", windows)
+	}
+}
+
+func TestHasCompletedXAIInferenceOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		body any
+		want bool
+	}{
+		{
+			name: "completed output",
+			body: map[string]any{
+				"status": "completed",
+				"error":  nil,
+				"output": []any{map[string]any{
+					"type":    "message",
+					"content": []any{map[string]any{"type": "output_text", "text": "OK"}},
+				}},
+			},
+			want: true,
+		},
+		{name: "empty body", body: nil, want: false},
+		{name: "incomplete status", body: map[string]any{"status": "incomplete"}, want: false},
+		{name: "completed without output", body: map[string]any{"status": "completed", "output": []any{}}, want: false},
+		{name: "completed with error", body: map[string]any{"status": "completed", "error": map[string]any{"message": "failed"}}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := hasCompletedXAIInferenceOutput(tc.body, "")
+			if got != tc.want {
+				t.Fatalf("hasCompletedXAIInferenceOutput() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunXAIDoesNotFallbackToOfficialAPIForExplicitBillingDenials(t *testing.T) {
+	tests := []struct {
+		name           string
+		apiCallBody    string
+		classification string
+		reason         string
+	}{
+		{name: "entitlement denied", apiCallBody: `{"status_code":403,"body":{"error":"Need a Grok subscription"}}`, classification: "entitlement_denied", reason: "monitoring.xai_inspection_reason_entitlement_disable"},
+		{name: "payment required", apiCallBody: `{"status_code":402,"body":{"error":"Payment required"}}`, classification: "quota_or_entitlement_unknown", reason: "monitoring.xai_inspection_reason_inference_quota_unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestedURLs := make([]string, 0, 2)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					var payload struct {
+						URL string `json:"url"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode api-call payload: %v", err)
+					}
+					requestedURLs = append(requestedURLs, payload.URL)
+					_, _ = w.Write([]byte(tc.apiCallBody))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.TargetType = "xai"
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+			if err != nil {
+				t.Fatalf("run xAI inspection: %v", err)
+			}
+			if len(requestedURLs) != 3 || !strings.HasSuffix(requestedURLs[2], "/responses") {
+				t.Fatalf("requested URLs = %#v, want billing requests followed by inference", requestedURLs)
+			}
+			for _, requestedURL := range requestedURLs {
+				if requestedURL == xaiOfficialAPIMeURL {
+					t.Fatalf("explicit billing denial called official API fallback: %#v", requestedURLs)
+				}
+			}
+			if len(result.Results) != 1 || result.Results[0].ErrorKind != tc.classification || result.Results[0].ActionReason != tc.reason {
+				t.Fatalf("xAI result = %#v, want classification=%q reason=%q", result.Results, tc.classification, tc.reason)
+			}
+		})
+	}
+}
+
+func TestRunXAIRejectsInvalidOfficialAPIIdentityPayload(t *testing.T) {
+	tests := []struct {
+		name        string
+		apiCallBody string
+	}{
+		{name: "null team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":"","team_id":"","team_blocked":null}}`},
+		{name: "invalid team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":" ","team_id":"","team_blocked":"unknown"}}`},
+		{name: "numeric team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":"","team_id":"","team_blocked":0}}`},
+		{name: "non-string identity", apiCallBody: `{"status_code":200,"body":{"user_id":false,"team_id":"","team_blocked":null}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestedURLs := make([]string, 0, 3)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					var payload struct {
+						URL string `json:"url"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode api-call payload: %v", err)
+					}
+					requestedURLs = append(requestedURLs, payload.URL)
+					if payload.URL == xaiOfficialAPIMeURL {
+						_, _ = w.Write([]byte(tc.apiCallBody))
+						return
+					}
+					_, _ = w.Write([]byte(`{"status_code":403,"body":{"error":"Access denied"}}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.TargetType = "xai"
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+			if err != nil {
+				t.Fatalf("run xAI inspection: %v", err)
+			}
+			if len(requestedURLs) != 4 || requestedURLs[2] != xaiOfficialAPIMeURL || requestedURLs[3] != xaiCLIChatProxyBaseURL+"/responses" {
+				t.Fatalf("requested URLs = %#v, want billing, rejected identity fallback, and CLI inference", requestedURLs)
+			}
+			if len(result.Results) != 1 || result.Results[0].ErrorKind == "official_api_healthy" {
+				t.Fatalf("invalid official API payload reported healthy: %#v", result.Results)
+			}
+		})
 	}
 }
 
@@ -182,10 +1025,11 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 		apiCallBody    string
 		classification string
 		statusCode     int
+		reason         string
 	}{
-		{name: "rate limited", apiCallBody: `{"status_code":429,"body":{"error":"too many requests"}}`, classification: "rate_limited", statusCode: http.StatusTooManyRequests},
-		{name: "upstream error", apiCallBody: `{"status_code":503,"body":{"error":"service unavailable"}}`, classification: "upstream_error", statusCode: http.StatusServiceUnavailable},
-		{name: "empty payload", apiCallBody: `{"status_code":200,"body":{"config":{}}}`, classification: "protocol_changed"},
+		{name: "rate limited", apiCallBody: `{"status_code":429,"body":{"error":"too many requests"}}`, classification: "rate_limited", statusCode: http.StatusTooManyRequests, reason: "monitoring.xai_inspection_reason_rate_limited"},
+		{name: "upstream error", apiCallBody: `{"status_code":503,"body":{"error":"service unavailable"}}`, classification: "upstream_error", statusCode: http.StatusServiceUnavailable, reason: "monitoring.xai_inspection_reason_upstream_error"},
+		{name: "empty payload", apiCallBody: `{"status_code":200,"body":{"config":{}}}`, classification: "protocol_changed", statusCode: http.StatusOK, reason: "monitoring.xai_inspection_reason_inference_protocol_changed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,8 +1059,9 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 			if err != nil {
 				t.Fatalf("run xAI inspection: %v", err)
 			}
-			if requestCount != 4 {
-				t.Fatalf("billing requests = %d, want 4 across two attempts", requestCount)
+			wantRequestCount := 6
+			if requestCount != wantRequestCount {
+				t.Fatalf("billing and inference requests = %d, want %d", requestCount, wantRequestCount)
 			}
 			if len(detail.Results) != 1 {
 				t.Fatalf("results = %#v", detail.Results)
@@ -225,23 +1070,77 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 			if result.ErrorKind != tc.classification || result.ErrorKind == "billing_healthy" || result.Action != "keep" {
 				t.Fatalf("result = %#v, want classification %q and keep", result, tc.classification)
 			}
+			if result.ActionReason != tc.reason {
+				t.Fatalf("action reason = %q, want %q", result.ActionReason, tc.reason)
+			}
 			if tc.statusCode > 0 && (result.StatusCode == nil || *result.StatusCode != tc.statusCode) {
 				t.Fatalf("status code = %#v, want %d", result.StatusCode, tc.statusCode)
 			}
-			if tc.classification == "protocol_changed" && (result.StatusCode == nil || *result.StatusCode != http.StatusOK) {
-				t.Fatalf("protocol status code = %#v, want 200", result.StatusCode)
+			logEntry := requireInspectionLog(t, detail.Logs, "monitoring.xai_inspection_log_server_complete")
+			if logEntry.Level != "warning" {
+				t.Fatalf("xAI failed inference log level = %q, want warning", logEntry.Level)
+			}
+			logDetail := requireInspectionLogDetail(t, logEntry)
+			if logDetail["inspectionMode"] != "inference" || logDetail["healthEvidence"] != tc.classification || logDetail["inferenceHealthy"] != false {
+				t.Fatalf("xAI failed inference log detail = %#v", logDetail)
+			}
+		})
+	}
+}
+
+func TestXAIInferenceDecisionUsesInferenceSpecificReasonKeys(t *testing.T) {
+	tests := []struct {
+		classification string
+		want           string
+	}{
+		{classification: "quota_or_entitlement_unknown", want: "monitoring.xai_inspection_reason_inference_quota_unknown"},
+		{classification: "probe_invalid", want: "monitoring.xai_inspection_reason_inference_probe_invalid"},
+		{classification: "protocol_changed", want: "monitoring.xai_inspection_reason_inference_protocol_changed"},
+		{classification: "model_unavailable", want: "monitoring.xai_inspection_reason_model_unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.classification, func(t *testing.T) {
+			decision := xaiInferenceDecision(http.StatusBadRequest, tc.classification, "detail")
+			if decision.Reason != tc.want {
+				t.Fatalf("reason = %q, want %q", decision.Reason, tc.want)
 			}
 		})
 	}
 }
 
 func TestXAIRelevantFailureUsesFrontendPriority(t *testing.T) {
-	failure, ok := xaiRelevantFailure([]xaiProbeDecision{
-		*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
-		*xaiDecision(http.StatusUnauthorized, "auth_invalid", "expired"),
-	}, true)
-	if !ok || failure.Classification != "auth_invalid" || failure.Action != "reauth" {
-		t.Fatalf("selected failure = %#v, ok=%v", failure, ok)
+	tests := []struct {
+		name       string
+		failures   []xaiProbeDecision
+		wantClass  string
+		wantAction string
+	}{
+		{
+			name: "auth invalid over generic forbidden",
+			failures: []xaiProbeDecision{
+				*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
+				*xaiDecision(http.StatusUnauthorized, "auth_invalid", "expired"),
+			},
+			wantClass:  "auth_invalid",
+			wantAction: "reauth",
+		},
+		{
+			name: "entitlement denial over earlier generic forbidden",
+			failures: []xaiProbeDecision{
+				*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
+				*xaiDecision(http.StatusForbidden, "entitlement_denied", "subscription required"),
+			},
+			wantClass:  "entitlement_denied",
+			wantAction: "disable",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			failure, ok := xaiRelevantFailure(tc.failures, true)
+			if !ok || failure.Classification != tc.wantClass || failure.Action != tc.wantAction {
+				t.Fatalf("selected failure = %#v, ok=%v", failure, ok)
+			}
+		})
 	}
 }
 
@@ -353,6 +1252,64 @@ func TestExecuteManualActionsAllowsXAIReauthDeleteOverride(t *testing.T) {
 	}
 	if len(repeated.Detail.Results) != 1 || repeated.Detail.Results[0].ActionStatus != model.CodexInspectionActionStatusSuccess || repeated.Detail.Results[0].ExecutedAction != "delete" {
 		t.Fatalf("repeated result lost successful delete state: %#v", repeated.Detail.Results)
+	}
+}
+
+func TestExecuteManualActionsReturnsLiveOutcomeWhenResultWriteFails(t *testing.T) {
+	deleteCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","account":"xai@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":401,"body":{"code":"unauthenticated:bad-credentials"}}`))
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodDelete:
+			deleteCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	svc := newCodexInspectionTestService(t, db)
+	runDetail, err := svc.Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if len(runDetail.Results) != 1 {
+		t.Fatalf("xAI results = %#v", runDetail.Results)
+	}
+
+	db.CodexInspections = &failAfterInsertCodexInspectionRepository{
+		Repository: db.CodexInspections,
+		failAfter:  0,
+	}
+	result, err := svc.ExecuteManualActions(context.Background(), runDetail.Run.ID, ExecuteActionsRequest{
+		ResultIDs: []int64{runDetail.Results[0].ID},
+		ActionOverrides: []ManualActionOverride{{
+			ResultID: runDetail.Results[0].ID,
+			Action:   "delete",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("execute manual delete: %v", err)
+	}
+	if !deleteCalled {
+		t.Fatal("manual delete was not executed")
+	}
+	if !strings.Contains(result.Detail.Run.Error, "1 个巡检结果写入失败") {
+		t.Fatalf("run error = %q, want result write failure", result.Detail.Run.Error)
+	}
+	if len(result.Detail.Results) != 1 || result.Detail.Results[0].ActionStatus != model.CodexInspectionActionStatusSuccess || result.Detail.Results[0].ExecutedAction != "delete" {
+		t.Fatalf("returned manual result lost the successful external action: %#v", result.Detail.Results)
 	}
 }
 
@@ -911,6 +1868,24 @@ func TestRunAutoActionSkipsDuplicateFileNameResults(t *testing.T) {
 		duplicate.ActionError == "" {
 		t.Fatalf("duplicate result = %#v, want skipped with action error", duplicate)
 	}
+	skippedLog := requireInspectionLog(t, result.Logs, "自动处理账号跳过")
+	if skippedLog.Level != "info" {
+		t.Fatalf("automatic duplicate skip level = %q, want info", skippedLog.Level)
+	}
+	skippedDetail := requireInspectionLogDetail(t, skippedLog)
+	if skippedDetail["status"] != model.CodexInspectionActionStatusSkipped ||
+		skippedDetail["reason"] == "" {
+		t.Fatalf("automatic duplicate skip detail = %#v", skippedDetail)
+	}
+	completion := requireInspectionLog(t, result.Logs, "凭证健康巡检完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "success" ||
+		completionDetail["actionSuccessCount"] != float64(1) ||
+		completionDetail["actionSkippedCount"] != float64(1) ||
+		completionDetail["actionFailedCount"] != float64(0) ||
+		completionDetail["actionNeedsReviewCount"] != float64(0) {
+		t.Fatalf("automatic duplicate completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
 }
 
 func TestRunAutoActionSkipsMixedActionsInSameFile(t *testing.T) {
@@ -970,6 +1945,15 @@ func TestExecuteManualActionsNeedsReviewForMixedFileNameActions(t *testing.T) {
 		}
 	}
 	assertMixedNeedsReviewRun(t, result.Detail, "enable", "delete")
+	completion := requireInspectionLog(t, result.Detail.Logs, "手动处理账号完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "warning" ||
+		completionDetail["needsReviewCount"] != float64(2) ||
+		completionDetail["successCount"] != float64(0) ||
+		completionDetail["skippedCount"] != float64(0) ||
+		completionDetail["failedCount"] != float64(0) {
+		t.Fatalf("manual mixed completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
 }
 
 func TestRunClassifiesExpiredUnauthorizedAsReauth(t *testing.T) {
@@ -1010,6 +1994,14 @@ func TestRunClassifiesExpiredUnauthorizedAsReauth(t *testing.T) {
 	}
 	if len(result.Results) != 1 || result.Results[0].Action != "reauth" {
 		t.Fatalf("result action = %#v, want reauth", result.Results)
+	}
+	probeLog := requireInspectionLog(t, result.Logs, "账号探测完成")
+	if probeLog.Level != "error" {
+		t.Fatalf("reauth probe log level = %q, want error", probeLog.Level)
+	}
+	completionDetail := requireInspectionLogDetail(t, requireInspectionLog(t, result.Logs, "凭证健康巡检完成"))
+	if completionDetail["reauthCount"] != float64(1) {
+		t.Fatalf("completion reauthCount = %#v, want 1", completionDetail["reauthCount"])
 	}
 }
 
@@ -1391,6 +2383,114 @@ func TestExecuteManualActionsRejectsChangedAuthIndex(t *testing.T) {
 		result.Detail.Results[0].ActionError == "" {
 		t.Fatalf("updated result = %#v", result.Detail.Results[0])
 	}
+	validationLog := requireInspectionLog(t, result.Detail.Logs, "手动处理账号校验失败")
+	validationDetail := requireInspectionLogDetail(t, validationLog)
+	if validationLog.Level != "error" || validationDetail["action"] != "delete" ||
+		validationDetail["error"] == "" {
+		t.Fatalf("manual identity validation log = level=%q detail=%#v", validationLog.Level, validationDetail)
+	}
+}
+
+func TestRunAutoActionsRejectsChangedAuthIdentity(t *testing.T) {
+	var authFilesCalls int
+	var deleteCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			authFilesCalls++
+			if authFilesCalls == 1 {
+				_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-2","provider":"codex","account":"bob@example.com","status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodDelete:
+			deleteCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDelete
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	detail, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if authFilesCalls != 2 {
+		t.Fatalf("auth files calls = %d, want inspection plus action validation", authFilesCalls)
+	}
+	if deleteCalled {
+		t.Fatal("automatic delete executed after auth identity changed")
+	}
+	if len(detail.Results) != 1 ||
+		detail.Results[0].Action != "delete" ||
+		detail.Results[0].ActionStatus != model.CodexInspectionActionStatusFailed ||
+		!strings.Contains(detail.Results[0].ActionError, "账号标识已变化") {
+		t.Fatalf("result = %#v, want failed automatic identity validation", detail.Results)
+	}
+	validationLog := requireInspectionLog(t, detail.Logs, "自动处理账号校验失败")
+	validationDetail := requireInspectionLogDetail(t, validationLog)
+	if validationLog.Level != "error" || validationDetail["action"] != "delete" {
+		t.Fatalf("automatic validation log = level=%q detail=%#v", validationLog.Level, validationDetail)
+	}
+}
+
+func TestRunAutoDisableSkipsAlreadyDisabledCurrentAuthFile(t *testing.T) {
+	var authFilesCalls int
+	var patchCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			authFilesCalls++
+			disabled := authFilesCalls > 1
+			_, _ = fmt.Fprintf(w, `{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","disabled":%t,"status":"ok","state":"ready"}]}`, disabled)
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodPatch:
+			patchCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDisable
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	detail, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if patchCalled {
+		t.Fatal("automatic disable repeated an already applied state")
+	}
+	if len(detail.Results) != 1 ||
+		detail.Results[0].Action != "delete" ||
+		detail.Results[0].ActionStatus != model.CodexInspectionActionStatusSkipped ||
+		detail.Results[0].ExecutedAction != "" ||
+		!detail.Results[0].Disabled ||
+		!strings.Contains(detail.Results[0].ActionError, "已是禁用状态") {
+		t.Fatalf("result = %#v, want skipped disable with current state", detail.Results)
+	}
+	skippedLog := requireInspectionLog(t, detail.Logs, "自动处理账号跳过")
+	skippedDetail := requireInspectionLogDetail(t, skippedLog)
+	if skippedLog.Level != "info" || skippedDetail["action"] != "disable" {
+		t.Fatalf("automatic skipped log = level=%q detail=%#v", skippedLog.Level, skippedDetail)
+	}
 }
 
 func TestExecuteManualActionsRejectsMissingAuthFile(t *testing.T) {
@@ -1448,6 +2548,70 @@ func TestExecuteManualActionsRejectsMissingAuthFile(t *testing.T) {
 		result.Detail.Results[0].ActionError == "" {
 		t.Fatalf("updated result = %#v", result.Detail.Results[0])
 	}
+	completion := requireInspectionLog(t, result.Detail.Logs, "手动处理账号完成")
+	if completion.Level != "warning" {
+		t.Fatalf("manual action completion level = %q, want warning", completion.Level)
+	}
+}
+
+func TestExecuteManualActionsRecordsAuthFileRefreshFailure(t *testing.T) {
+	var authFilesCalls int
+	var patchCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			authFilesCalls++
+			if authFilesCalls == 1 {
+				_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+				return
+			}
+			http.Error(w, "auth files unavailable", http.StatusServiceUnavailable)
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"message":"limit reached"}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodPatch:
+			patchCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	svc := newCodexInspectionTestService(t, db)
+
+	runDetail, err := svc.Run(context.Background(), RunRequest{TriggerType: "manual", TriggerKey: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	result, err := svc.ExecuteManualActions(context.Background(), runDetail.Run.ID, ExecuteActionsRequest{
+		ResultIDs: []int64{runDetail.Results[0].ID},
+	})
+	if err != nil {
+		t.Fatalf("execute manual actions: %v", err)
+	}
+	if patchCalled {
+		t.Fatal("manual action executed after auth-file refresh failed")
+	}
+	if len(result.Outcomes) != 1 || result.Outcomes[0].Success ||
+		result.Outcomes[0].Status != model.CodexInspectionActionStatusFailed ||
+		!strings.Contains(result.Outcomes[0].Error, "刷新认证文件失败") {
+		t.Fatalf("outcomes = %#v", result.Outcomes)
+	}
+	validation := requireInspectionLog(t, result.Detail.Logs, "手动处理账号校验失败")
+	if validation.Level != "error" {
+		t.Fatalf("validation level = %q, want error", validation.Level)
+	}
+	completion := requireInspectionLog(t, result.Detail.Logs, "手动处理账号完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "warning" || completionDetail["failedCount"] != float64(1) {
+		t.Fatalf("completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
 }
 
 func TestExecuteManualActionsSkipsDuplicateFileNameSelections(t *testing.T) {
@@ -1503,6 +2667,19 @@ func TestExecuteManualActionsSkipsDuplicateFileNameSelections(t *testing.T) {
 		statuses[model.CodexInspectionActionStatusSkipped] != 1 {
 		t.Fatalf("outcome statuses = %#v", result.Outcomes)
 	}
+	skippedLog := requireInspectionLog(t, result.Detail.Logs, "手动处理账号跳过")
+	if skippedLog.Level != "info" {
+		t.Fatalf("manual duplicate skip level = %q, want info", skippedLog.Level)
+	}
+	completion := requireInspectionLog(t, result.Detail.Logs, "手动处理账号完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "success" ||
+		completionDetail["successCount"] != float64(1) ||
+		completionDetail["skippedCount"] != float64(1) ||
+		completionDetail["needsReviewCount"] != float64(0) ||
+		completionDetail["failedCount"] != float64(0) {
+		t.Fatalf("manual duplicate completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
 }
 
 func TestRunFinalizesAfterContextCancellation(t *testing.T) {
@@ -1547,6 +2724,63 @@ func TestRunFinalizesAfterContextCancellation(t *testing.T) {
 	}
 	if runs[0].Status != model.CodexInspectionStatusFailed || runs[0].FinishedAtMS == 0 {
 		t.Fatalf("persisted run was not marked failed: %#v", runs[0])
+	}
+}
+
+func TestRunCancelsDuringAutomaticActionWithoutReportingCompletion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var patchCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","disabled":true,"status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000},"secondary_window":{"used_percent":5,"limit_window_seconds":2592000}}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodPatch:
+			patchCalled = true
+			cancel()
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	managerCfg.CodexInspection.AutoRecoverEnabled = true
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:  "auth-a.json",
+		AuthIndex: "auth-1",
+	}); err != nil {
+		t.Fatalf("save inspection disable ownership: %v", err)
+	}
+	svc := newCodexInspectionTestService(t, db)
+
+	result, err := svc.Run(ctx, RunRequest{TriggerType: "scheduled", TriggerKey: "interval:30:1"})
+	if err != nil {
+		t.Fatalf("run inspection after automatic action cancellation: %v", err)
+	}
+	if !patchCalled {
+		t.Fatal("automatic action was not started")
+	}
+	if result.Run.Status != model.CodexInspectionStatusFailed || !strings.Contains(result.Run.Error, context.Canceled.Error()) {
+		t.Fatalf("run after automatic action cancellation = %#v", result.Run)
+	}
+	if len(result.Results) != 1 || result.Results[0].ActionStatus != model.CodexInspectionActionStatusFailed {
+		t.Fatalf("result after automatic action cancellation = %#v", result.Results)
+	}
+	requireInspectionLog(t, result.Logs, "自动处理账号失败")
+	requireInspectionLog(t, result.Logs, "凭证健康巡检已取消")
+	for _, entry := range result.Logs {
+		if entry.Message == "凭证健康巡检完成" {
+			t.Fatalf("cancelled run emitted completion log: %#v", entry)
+		}
 	}
 }
 
@@ -1655,6 +2889,22 @@ func runMixedAutoActionInspection(t *testing.T, mode string, fixture mixedAutoAc
 	if deleteCalled || patchCalled {
 		t.Fatalf("mixed same-file actions executed delete=%v patch=%v, want false/false", deleteCalled, patchCalled)
 	}
+	completion := requireInspectionLog(t, result.Logs, "凭证健康巡检完成")
+	completionDetail := requireInspectionLogDetail(t, completion)
+	if completion.Level != "warning" ||
+		completionDetail["actionNeedsReviewCount"] != float64(2) ||
+		completionDetail["actionSuccessCount"] != float64(0) ||
+		completionDetail["actionSkippedCount"] != float64(0) ||
+		completionDetail["actionFailedCount"] != float64(0) {
+		t.Fatalf("mixed automatic completion = level=%q detail=%#v", completion.Level, completionDetail)
+	}
+	preflight := requireInspectionLog(t, result.Logs, "自动处理账号跳过")
+	preflightDetail := requireInspectionLogDetail(t, preflight)
+	if preflight.Level != "warning" ||
+		preflightDetail["status"] != model.CodexInspectionActionStatusNeedsReview ||
+		preflightDetail["reason"] == "" {
+		t.Fatalf("mixed automatic preflight = level=%q detail=%#v", preflight.Level, preflightDetail)
+	}
 	return result
 }
 
@@ -1762,6 +3012,7 @@ func newCodexInspectionManagerConfig(upstreamURL string) store.ManagerConfig {
 	}
 	cfg.CodexInspection.Enabled = &enabled
 	cfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDelete
+	cfg.CodexInspection.XAIInferenceEnabled = true
 	cfg.CodexInspection.Workers = 1
 	cfg.CodexInspection.DeleteWorkers = 1
 	return cfg

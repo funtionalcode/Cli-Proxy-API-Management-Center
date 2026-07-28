@@ -46,6 +46,7 @@ func dataSourceName(path string) string {
 		Path:   uriPath,
 	}
 	query := dsn.Query()
+	query.Add("_txlock", "immediate")
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "synchronous(FULL)")

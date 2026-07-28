@@ -4,6 +4,9 @@ const emptyArray: unknown[] = [];
 export const getDemoRawConfig = () => emptyObject;
 export const getDemoProviderModels = () => emptyArray;
 export const getDemoAuthFiles = () => ({ files: [] });
+export const requestDemoCredentialRefresh = (_selector: string) => false;
+export const advanceDemoCredentialRefresh = () => undefined;
+export const resetDemoCredentialRefresh = () => undefined;
 export const getDemoPlugins = () => ({ plugins: [] });
 export const getDemoPluginStore = () => ({ sources: [], plugins: [] });
 export const getDemoManagerConfig = () => emptyObject;
@@ -24,6 +27,15 @@ export const getDemoQuotaCooldowns = () => emptyArray;
 export const getDemoHeaderSnapshots = () => emptyObject;
 export const getDemoCodexInspectionRuns = () => ({ items: [] });
 export const getDemoCodexInspectionRun = () => ({ results: [] });
+export const getDemoCodexInspectionLocalRun = () => ({
+  settings: {},
+  files: [],
+  results: [],
+  summary: {},
+  startedAt: 0,
+  finishedAt: 0,
+});
+export const getDemoCodexInspectionLocalLogs = (_baseNow?: number, _t?: unknown) => [];
 export const getDemoAccountActionCandidates = () => ({ items: [], pendingCount: 0 });
 export const getDemoApiKeyAliases = () => ({ items: [] });
 export const getDemoLogsResponse = () => ({

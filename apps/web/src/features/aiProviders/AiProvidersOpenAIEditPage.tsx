@@ -12,7 +12,7 @@ import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { OpenAIKeyTestStatusIndicator } from '@/components/providers';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useNotificationStore } from '@/stores';
-import { apiCallApi, getApiCallErrorMessage } from '@/services/api';
+import { apiCallApi, getApiCallErrorDetails } from '@/services/api';
 import type { ApiKeyEntry } from '@/types';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject, hasHeader } from '@/utils/headers';
@@ -183,7 +183,7 @@ export function AiProvidersOpenAIEditPage() {
         );
 
         if (result.statusCode < 200 || result.statusCode >= 300) {
-          throw new Error(getApiCallErrorMessage(result));
+          throw new Error(getApiCallErrorDetails(result));
         }
 
         setDraftKeyTestStatus(keyIndex, { status: 'success', message: '' });

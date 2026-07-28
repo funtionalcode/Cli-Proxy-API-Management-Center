@@ -299,6 +299,7 @@ export function AuthFilesPage() {
     deleting,
     deletingAll,
     statusUpdating,
+    credentialRefreshing = {},
     batchStatusUpdating,
     batchFieldsUpdating,
     fileInputRef,
@@ -309,6 +310,7 @@ export function AuthFilesPage() {
     handleDelete,
     handleDeleteAll,
     handleDownload,
+    handleCredentialRefresh,
     handleStatusToggle,
     toggleSelect,
     selectAllVisible,
@@ -1966,8 +1968,9 @@ export function AuthFilesPage() {
 
       <OAuthExcludedCard
         disableControls={disableControls}
-        excludedError={excludedError}
+        loadState={excludedError}
         excluded={excluded}
+        onRetry={loadExcluded}
         onAdd={() => openExcludedEditor()}
         onEdit={openExcludedEditor}
         onDelete={deleteExcluded}
@@ -1977,10 +1980,11 @@ export function AuthFilesPage() {
         disableControls={disableControls}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        onRetry={loadModelAlias}
         onAdd={() => openModelAliasEditor()}
         onEditProvider={openModelAliasEditor}
         onDeleteProvider={deleteModelAlias}
-        modelAliasError={modelAliasError}
+        loadState={modelAliasError}
         modelAlias={modelAlias}
         allProviderModels={allProviderModels}
         onUpdate={handleMappingUpdate}
@@ -2007,9 +2011,14 @@ export function AuthFilesPage() {
         editor={prefixProxyEditor}
         updatedText={prefixProxyUpdatedText}
         dirty={prefixProxyDirty}
+        credentialRefreshing={Boolean(
+          prefixProxyEditor?.authFile &&
+          credentialRefreshing[getAuthFileSelectionKey(prefixProxyEditor.authFile)] === true
+        )}
         onClose={closePrefixProxyEditor}
         onCopyText={copyTextWithNotification}
         onSave={handlePrefixProxySave}
+        onRefreshCredential={handleCredentialRefresh}
         onChange={handlePrefixProxyChange}
       />
 

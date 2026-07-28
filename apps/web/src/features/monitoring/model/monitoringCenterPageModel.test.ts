@@ -69,6 +69,8 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'xai_quota.usage_amount': '{{remaining}} / {{limit}} remaining',
     'xai_quota.partial_data': 'Some billing data is unavailable. Reason: {{details}}',
     'xai_quota.partial_unknown': 'The cause could not be determined',
+    'xai_quota.official_api_health':
+      'Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.',
     'xai_quota.diagnostic_protocol_changed':
       'The billing endpoint returned data that cannot currently be recognized',
   };
@@ -1024,6 +1026,41 @@ describe('monitoringCenterPageModel account quota', () => {
           usageLabel: '$75.00 / $100.00 remaining',
         },
       ],
+    });
+  });
+
+  it('maps official API health without synthesizing quota windows', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'unknown',
+      usagePercent: null,
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: null,
+      includedUsedCents: null,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+      onDemandUsedPercent: null,
+      usedPercent: null,
+      officialApiHealth: {
+        source: 'api.x.ai/v1/me',
+        userId: 'user-1',
+        teamId: 'team-1',
+        teamBlocked: false,
+      },
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'paid-xai.json' }),
+      t
+    );
+
+    expect(entry).toMatchObject({
+      provider: 'xai',
+      metaLabels: [
+        'xAI Quota',
+        'Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.',
+      ],
+      windows: [],
     });
   });
 

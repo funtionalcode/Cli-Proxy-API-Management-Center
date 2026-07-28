@@ -162,9 +162,9 @@ vi.mock('@/stores', () => ({
 vi.mock('@/features/authFiles/hooks/useAuthFilesOauth', () => ({
   useAuthFilesOauth: () => ({
     excluded: [],
-    excludedError: '',
+    excludedError: 'ready',
     modelAlias: [],
-    modelAliasError: '',
+    modelAliasError: 'ready',
     allProviderModels: {},
     loadExcluded: mocks.loadExcluded,
     loadModelAlias: mocks.loadModelAlias,

@@ -173,9 +173,38 @@ type CacheInputContext struct {
 	ExecutorType     string
 	Provider         string
 	ProviderSnapshot string
+	AuthType         string
 	ResolvedModel    string
 	RequestedModel   string
 	DisplayModel     string
+}
+
+// EffectiveServiceTier returns the tier used for billing and aggregation.
+// Codex reports default/auto even when Fast Mode was requested, so Codex uses
+// the request tier. Other providers retain response-tier precedence.
+func EffectiveServiceTier(context CacheInputContext, requestTier, legacyTier, responseTier string) string {
+	identity := strings.ToLower(strings.Join([]string{
+		context.ExecutorType,
+		context.Provider,
+		context.ProviderSnapshot,
+		context.AuthType,
+	}, " "))
+	if strings.Contains(identity, "codex") {
+		if requestTier != "" {
+			return requestTier
+		}
+		if legacyTier != "" {
+			return legacyTier
+		}
+		return responseTier
+	}
+	if responseTier != "" {
+		return responseTier
+	}
+	if legacyTier != "" {
+		return legacyTier
+	}
+	return requestTier
 }
 
 type RawCacheAccountingHints struct {
@@ -501,22 +530,22 @@ func NormalizeRaw(raw []byte) (Event, error) {
 	}
 	provider := readString(record, "provider", "type", "auth_type", "authType")
 	executorType := readString(record, "executor_type", "executorType")
+	authType := readString(record, "auth_type", "authType")
 	requestServiceTier := readString(record, "request_service_tier", "requestServiceTier", "service_tier", "serviceTier")
 	responseServiceTier := readString(record, "response_service_tier", "responseServiceTier")
-	serviceTier := responseServiceTier
-	if serviceTier == "" {
-		serviceTier = requestServiceTier
-	}
 	authProviderSnapshot := readString(record, "auth_provider_snapshot", "authProviderSnapshot")
-	cacheAccounting := NormalizeCacheAccounting(CacheInputContext{
+	usageContext := CacheInputContext{
 		ExplicitMode:     cacheInputModeFromRecord(record),
 		ExecutorType:     executorType,
 		Provider:         provider,
 		ProviderSnapshot: authProviderSnapshot,
+		AuthType:         authType,
 		ResolvedModel:    resolvedModel,
 		RequestedModel:   requestedModel,
 		DisplayModel:     model,
-	}, inputTokens, cachedTokens, cacheTokens, cacheReadTokens, cacheCreationTokens)
+	}
+	serviceTier := EffectiveServiceTier(usageContext, requestServiceTier, "", responseServiceTier)
+	cacheAccounting := NormalizeCacheAccounting(usageContext, inputTokens, cachedTokens, cacheTokens, cacheReadTokens, cacheCreationTokens)
 	if totalTokens <= 0 {
 		totalTokens = cacheAccounting.TotalInputTokens + maxInt64(outputTokens, 0) + maxInt64(reasoningTokens, 0)
 	}
@@ -533,7 +562,7 @@ func NormalizeRaw(raw []byte) (Event, error) {
 		Endpoint:                      endpoint,
 		Method:                        method,
 		Path:                          path,
-		AuthType:                      readString(record, "auth_type", "authType"),
+		AuthType:                      authType,
 		AuthIndex:                     authIndex,
 		Source:                        source,
 		SourceHash:                    hashString(sourceRaw),

@@ -11,13 +11,31 @@ import (
 )
 
 type Repository interface {
+	// CreateRun imports a non-active historical run. Executable runs must be
+	// created through AcquireRun so the run row and global lease are committed
+	// atomically.
 	CreateRun(ctx context.Context, run model.CodexInspectionRun) (model.CodexInspectionRun, error)
+	// UpdateRun refreshes summary fields on an existing terminal run without
+	// permitting a terminal-state transition or touching an active lifecycle.
 	UpdateRun(ctx context.Context, run model.CodexInspectionRun) error
+	UpdateRunProgress(ctx context.Context, run model.CodexInspectionRun, ownerID string) error
+	AcquireRun(ctx context.Context, run model.CodexInspectionRun, ownerID string, leaseDuration time.Duration) (AcquireRunResult, error)
+	HeartbeatRun(ctx context.Context, runID int64, ownerID string, leaseDuration time.Duration) error
+	MarkRunCancelling(ctx context.Context, runID int64, ownerID string, reason string) (bool, error)
+	FinalizeRun(ctx context.Context, run model.CodexInspectionRun, ownerID string, finalLog *model.CodexInspectionLog) error
+	// ForceFinalizeRun is the fenced recovery path for a worker that lost an
+	// unexpired lease while it was finishing. It may finalize only while the
+	// expired lease still belongs to the same run/owner, so a replacement
+	// instance can never be overwritten by a stale worker.
+	ForceFinalizeRun(ctx context.Context, run model.CodexInspectionRun, ownerID string, finalLog *model.CodexInspectionLog) error
+	GetActiveLease(ctx context.Context, nowMS int64) (model.CodexInspectionLease, bool, error)
+	RecoverStaleRuns(ctx context.Context, nowMS int64, reason string) ([]model.CodexInspectionRun, error)
 	InsertResult(ctx context.Context, result model.CodexInspectionResult) (model.CodexInspectionResult, error)
 	InsertLog(ctx context.Context, entry model.CodexInspectionLog) (model.CodexInspectionLog, error)
 	ListRuns(ctx context.Context, limit int) ([]model.CodexInspectionRun, error)
 	GetRun(ctx context.Context, id int64) (model.CodexInspectionRun, bool, error)
 	GetLatestRunByTrigger(ctx context.Context, triggerType, triggerKey string) (model.CodexInspectionRun, bool, error)
+	GetLatestRunByTriggerType(ctx context.Context, triggerType string) (model.CodexInspectionRun, bool, error)
 	ListResults(ctx context.Context, runID int64) ([]model.CodexInspectionResult, error)
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
 	ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error)
@@ -26,6 +44,20 @@ type Repository interface {
 	RevokeDisableOwnership(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error)
 	RestoreDisableOwnership(ctx context.Context, items []model.CodexInspectionDisableOwnership) error
 }
+
+type AcquireRunResult struct {
+	Run          model.CodexInspectionRun
+	RecoveredRun *model.CodexInspectionRun
+}
+
+var (
+	ErrLeaseAlreadyActive     = errors.New("codex inspection lease is already active")
+	ErrTriggerAlreadyExists   = errors.New("codex inspection trigger already exists")
+	ErrLeaseLost              = errors.New("codex inspection lease is no longer owned")
+	ErrInvalidFinalStatus     = errors.New("codex inspection terminal status is invalid")
+	ErrActiveRunRequiresLease = errors.New("active codex inspection runs must be created and updated through the lease lifecycle")
+	ErrRunStateConflict       = errors.New("codex inspection run state changed concurrently")
+)
 
 type repository struct {
 	db *sql.DB
@@ -44,40 +76,46 @@ func (r *repository) CreateRun(ctx context.Context, run model.CodexInspectionRun
 		run.CreatedAtMS = now
 	}
 	run.UpdatedAtMS = now
-	if run.Status == "" {
-		run.Status = model.CodexInspectionStatusRunning
+	run.Status = model.NormalizeCodexInspectionRunStatus(run.Status)
+	if run.Status == "" || model.IsCodexInspectionRunActive(run.Status) {
+		return model.CodexInspectionRun{}, ErrActiveRunRequiresLease
 	}
 	if run.SettingsJSON == "" {
 		run.SettingsJSON = model.MarshalCodexInspectionSettings(run.Settings)
 	}
-	res, err := r.db.ExecContext(
-		ctx,
-		`insert into codex_inspection_runs (
+	var res sql.Result
+	err := withSQLiteBusyRetry(ctx, func() error {
+		var err error
+		res, err = r.db.ExecContext(
+			ctx,
+			`insert into codex_inspection_runs (
 			trigger_type, trigger_key, status, started_at_ms, finished_at_ms,
 			total_files, probe_set_count, sampled_count, disabled_count, enabled_count,
 			delete_count, disable_count, enable_count, reauth_count, keep_count, error,
 			settings_json, created_at_ms, updated_at_ms
 		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.TriggerType,
-		nullString(run.TriggerKey),
-		run.Status,
-		run.StartedAtMS,
-		nullPositiveInt64(run.FinishedAtMS),
-		run.TotalFiles,
-		run.ProbeSetCount,
-		run.SampledCount,
-		run.DisabledCount,
-		run.EnabledCount,
-		run.DeleteCount,
-		run.DisableCount,
-		run.EnableCount,
-		run.ReauthCount,
-		run.KeepCount,
-		nullString(run.Error),
-		run.SettingsJSON,
-		run.CreatedAtMS,
-		run.UpdatedAtMS,
-	)
+			run.TriggerType,
+			nullString(run.TriggerKey),
+			run.Status,
+			run.StartedAtMS,
+			nullPositiveInt64(run.FinishedAtMS),
+			run.TotalFiles,
+			run.ProbeSetCount,
+			run.SampledCount,
+			run.DisabledCount,
+			run.EnabledCount,
+			run.DeleteCount,
+			run.DisableCount,
+			run.EnableCount,
+			run.ReauthCount,
+			run.KeepCount,
+			nullString(run.Error),
+			run.SettingsJSON,
+			run.CreatedAtMS,
+			run.UpdatedAtMS,
+		)
+		return err
+	})
 	if err != nil {
 		return model.CodexInspectionRun{}, err
 	}
@@ -93,13 +131,18 @@ func (r *repository) UpdateRun(ctx context.Context, run model.CodexInspectionRun
 	if run.ID <= 0 {
 		return errors.New("codex inspection run id is required")
 	}
+	run.Status = model.NormalizeCodexInspectionRunStatus(run.Status)
+	if run.Status == "" || model.IsCodexInspectionRunActive(run.Status) {
+		return ErrActiveRunRequiresLease
+	}
 	run.UpdatedAtMS = time.Now().UnixMilli()
 	if run.SettingsJSON == "" {
 		run.SettingsJSON = model.MarshalCodexInspectionSettings(run.Settings)
 	}
-	_, err := r.db.ExecContext(
-		ctx,
-		`update codex_inspection_runs set
+	err := withSQLiteBusyRetry(ctx, func() error {
+		res, err := r.db.ExecContext(
+			ctx,
+			`update codex_inspection_runs set
 			status = ?,
 			finished_at_ms = ?,
 			total_files = ?,
@@ -115,24 +158,39 @@ func (r *repository) UpdateRun(ctx context.Context, run model.CodexInspectionRun
 			error = ?,
 			settings_json = ?,
 			updated_at_ms = ?
-		where id = ?`,
-		run.Status,
-		nullPositiveInt64(run.FinishedAtMS),
-		run.TotalFiles,
-		run.ProbeSetCount,
-		run.SampledCount,
-		run.DisabledCount,
-		run.EnabledCount,
-		run.DeleteCount,
-		run.DisableCount,
-		run.EnableCount,
-		run.ReauthCount,
-		run.KeepCount,
-		nullString(run.Error),
-		run.SettingsJSON,
-		run.UpdatedAtMS,
-		run.ID,
-	)
+			where id = ? and status = ? and status not in (?, ?)`,
+			run.Status,
+			nullPositiveInt64(run.FinishedAtMS),
+			run.TotalFiles,
+			run.ProbeSetCount,
+			run.SampledCount,
+			run.DisabledCount,
+			run.EnabledCount,
+			run.DeleteCount,
+			run.DisableCount,
+			run.EnableCount,
+			run.ReauthCount,
+			run.KeepCount,
+			nullString(run.Error),
+			run.SettingsJSON,
+			run.UpdatedAtMS,
+			run.ID,
+			run.Status,
+			model.CodexInspectionStatusRunning,
+			model.CodexInspectionStatusCancelling,
+		)
+		if err != nil {
+			return err
+		}
+		changed, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ErrRunStateConflict
+		}
+		return nil
+	})
 	return err
 }
 
@@ -156,9 +214,11 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 	if result.AutoRecoverEligible {
 		autoRecoverEligible = 1
 	}
-	res, err := r.db.ExecContext(
-		ctx,
-		`insert into codex_inspection_results (
+	var id int64
+	err := withSQLiteBusyRetry(ctx, func() error {
+		return r.db.QueryRowContext(
+			ctx,
+			`insert into codex_inspection_results (
 			run_id, account_key, file_name, display_account, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
@@ -185,39 +245,40 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			action_error = excluded.action_error,
 			plan_type = excluded.plan_type,
 			quota_windows_json = excluded.quota_windows_json,
-			error_kind = excluded.error_kind,
-			error_detail = excluded.error_detail,
-			created_at_ms = excluded.created_at_ms`,
-		result.RunID,
-		result.AccountKey,
-		result.FileName,
-		result.DisplayAccount,
-		nullString(result.AuthIndex),
-		nullString(result.AccountID),
-		nullString(result.Provider),
-		disabled,
-		nullString(result.Status),
-		nullString(result.State),
-		result.Action,
-		nullString(result.ActionReason),
-		nullInt(result.StatusCode),
-		nullFloat(result.UsedPercent),
-		isQuota,
-		autoRecoverEligible,
-		nullString(result.Error),
-		nullString(result.ActionStatus),
-		nullString(result.ExecutedAction),
-		nullString(result.ActionError),
-		nullString(result.PlanType),
-		nullString(result.QuotaWindowsJSON),
-		nullString(result.ErrorKind),
-		nullString(result.ErrorDetail),
-		result.CreatedAtMS,
-	)
+				error_kind = excluded.error_kind,
+				error_detail = excluded.error_detail,
+				created_at_ms = excluded.created_at_ms
+			returning id`,
+			result.RunID,
+			result.AccountKey,
+			result.FileName,
+			result.DisplayAccount,
+			nullString(result.AuthIndex),
+			nullString(result.AccountID),
+			nullString(result.Provider),
+			disabled,
+			nullString(result.Status),
+			nullString(result.State),
+			result.Action,
+			nullString(result.ActionReason),
+			nullInt(result.StatusCode),
+			nullFloat(result.UsedPercent),
+			isQuota,
+			autoRecoverEligible,
+			nullString(result.Error),
+			nullString(result.ActionStatus),
+			nullString(result.ExecutedAction),
+			nullString(result.ActionError),
+			nullString(result.PlanType),
+			nullString(result.QuotaWindowsJSON),
+			nullString(result.ErrorKind),
+			nullString(result.ErrorDetail),
+			result.CreatedAtMS,
+		).Scan(&id)
+	})
 	if err != nil {
 		return model.CodexInspectionResult{}, err
 	}
-	id, _ := res.LastInsertId()
 	result.ID = id
 	return result, nil
 }
@@ -231,20 +292,23 @@ func (r *repository) InsertLog(ctx context.Context, entry model.CodexInspectionL
 			entry.DetailJSON = string(data)
 		}
 	}
-	res, err := r.db.ExecContext(
-		ctx,
-		`insert into codex_inspection_logs(run_id, level, message, detail_json, created_at_ms)
-		 values(?, ?, ?, ?, ?)`,
-		entry.RunID,
-		entry.Level,
-		entry.Message,
-		nullString(entry.DetailJSON),
-		entry.CreatedAtMS,
-	)
+	var id int64
+	err := withSQLiteBusyRetry(ctx, func() error {
+		return r.db.QueryRowContext(
+			ctx,
+			`insert into codex_inspection_logs(run_id, level, message, detail_json, created_at_ms)
+			 values(?, ?, ?, ?, ?)
+			 returning id`,
+			entry.RunID,
+			entry.Level,
+			entry.Message,
+			nullString(entry.DetailJSON),
+			entry.CreatedAtMS,
+		).Scan(&id)
+	})
 	if err != nil {
 		return model.CodexInspectionLog{}, err
 	}
-	id, _ := res.LastInsertId()
 	entry.ID = id
 	return entry, nil
 }
@@ -328,6 +392,30 @@ func (r *repository) GetLatestRunByTrigger(ctx context.Context, triggerType, tri
 	return run, true, nil
 }
 
+func (r *repository) GetLatestRunByTriggerType(ctx context.Context, triggerType string) (model.CodexInspectionRun, bool, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		`select
+			id, trigger_type, trigger_key, status, started_at_ms, finished_at_ms,
+			total_files, probe_set_count, sampled_count, disabled_count, enabled_count,
+			delete_count, disable_count, enable_count, reauth_count, keep_count, error,
+			settings_json, created_at_ms, updated_at_ms
+		from codex_inspection_runs
+		where trigger_type = ?
+		order by started_at_ms desc, id desc
+		limit 1`,
+		triggerType,
+	)
+	run, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.CodexInspectionRun{}, false, nil
+	}
+	if err != nil {
+		return model.CodexInspectionRun{}, false, err
+	}
+	return run, true, nil
+}
+
 func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.CodexInspectionResult, error) {
 	rows, err := r.db.QueryContext(
 		ctx,
@@ -393,37 +481,55 @@ func (r *repository) UpsertDisableOwnership(ctx context.Context, item model.Code
 	if provider == "" {
 		provider = "codex"
 	}
-	_, err := r.db.ExecContext(ctx, `insert into codex_inspection_disable_ownership (
-		file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?)
-	on conflict(file_name) do update set
-		provider = excluded.provider,
-		auth_index = excluded.auth_index,
-		account_id = excluded.account_id,
-		disabled_at_ms = excluded.disabled_at_ms,
-		updated_at_ms = excluded.updated_at_ms`,
-		item.FileName,
-		provider,
-		nullString(item.AuthIndex),
-		nullString(item.AccountID),
-		item.DisabledAtMS,
-		item.UpdatedAtMS,
-	)
-	return err
+	return withSQLiteBusyRetry(ctx, func() error {
+		_, err := r.db.ExecContext(ctx, `insert into codex_inspection_disable_ownership (
+			file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
+		) values (?, ?, ?, ?, ?, ?)
+		on conflict(file_name) do update set
+			provider = excluded.provider,
+			auth_index = excluded.auth_index,
+			account_id = excluded.account_id,
+			disabled_at_ms = excluded.disabled_at_ms,
+			updated_at_ms = excluded.updated_at_ms`,
+			item.FileName,
+			provider,
+			nullString(item.AuthIndex),
+			nullString(item.AccountID),
+			item.DisabledAtMS,
+			item.UpdatedAtMS,
+		)
+		return err
+	})
 }
 
 func (r *repository) DeleteDisableOwnership(ctx context.Context, fileName string) error {
 	if fileName == "" {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `delete from codex_inspection_disable_ownership where file_name = ?`, fileName)
-	return err
+	return withSQLiteBusyRetry(ctx, func() error {
+		_, err := r.db.ExecContext(ctx, `delete from codex_inspection_disable_ownership where file_name = ?`, fileName)
+		return err
+	})
 }
 
 func (r *repository) RevokeDisableOwnership(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
 	if !clearAll && len(fileNames) == 0 {
 		return nil, nil
 	}
+	var revoked []model.CodexInspectionDisableOwnership
+	err := withSQLiteBusyRetry(ctx, func() error {
+		items, err := r.revokeDisableOwnershipOnce(ctx, fileNames, clearAll)
+		if err != nil {
+			revoked = nil
+			return err
+		}
+		revoked = items
+		return nil
+	})
+	return revoked, err
+}
+
+func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -489,6 +595,12 @@ func (r *repository) RestoreDisableOwnership(ctx context.Context, items []model.
 	if len(items) == 0 {
 		return nil
 	}
+	return withSQLiteBusyRetry(ctx, func() error {
+		return r.restoreDisableOwnershipOnce(ctx, items)
+	})
+}
+
+func (r *repository) restoreDisableOwnershipOnce(ctx context.Context, items []model.CodexInspectionDisableOwnership) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -581,6 +693,7 @@ func scanRun(row scanner) (model.CodexInspectionRun, error) {
 		return model.CodexInspectionRun{}, err
 	}
 	run.TriggerKey = triggerKey.String
+	run.Status = model.NormalizeCodexInspectionRunStatus(run.Status)
 	run.Error = errorText.String
 	if finishedAt.Valid {
 		run.FinishedAtMS = finishedAt.Int64

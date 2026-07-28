@@ -44,7 +44,7 @@ export interface ProviderHealthCheckSummary {
 
 type ProviderHealthCheckTarget =
   | { kind: 'gemini' | 'interactions'; config: GeminiKeyConfig }
-  | { kind: 'codex' | 'claude' | 'vertex'; config: ProviderKeyConfig }
+  | { kind: 'codex' | 'xai' | 'claude' | 'vertex'; config: ProviderKeyConfig }
   | { kind: 'openai'; config: OpenAIProviderConfig; keyIndex: number };
 
 const EMPTY_MODELS_ERROR = 'No models returned';
@@ -54,7 +54,11 @@ class HealthCheckError extends Error {
   messageKey: string;
   messageValues?: Record<string, string | number>;
 
-  constructor(message: string, messageKey: string, messageValues?: Record<string, string | number>) {
+  constructor(
+    message: string,
+    messageKey: string,
+    messageValues?: Record<string, string | number>
+  ) {
     super(message);
     this.messageKey = messageKey;
     this.messageValues = messageValues;
@@ -143,7 +147,7 @@ const joinProviderLabel = (kindLabel: string, identity: string): string => {
 const getKeyProviderDisplay = (
   row: Extract<
     ProviderRow,
-    { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }
+    { kind: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'vertex' }
   >
 ): Pick<ProviderHealthCheckItem, 'providerLabel' | 'providerSubtitle'> => {
   const kindLabel = PROVIDER_KIND_LABELS[row.kind];
@@ -170,11 +174,13 @@ const getOpenAIProviderDisplay = (
 };
 
 const getConfiguredModelNames = (models?: Array<{ name: string }>): string[] =>
-  (models ?? [])
-    .map((model) => String(model?.name ?? '').trim())
-    .filter(Boolean);
+  (models ?? []).map((model) => String(model?.name ?? '').trim()).filter(Boolean);
 
-const requireCredential = (apiKey?: string, authIndex?: string, headers?: Record<string, string>) => {
+const requireCredential = (
+  apiKey?: string,
+  authIndex?: string,
+  headers?: Record<string, string>
+) => {
   if (String(apiKey ?? '').trim()) return;
   if (normalizeAuthIndex(authIndex)) return;
   if (hasHeader(headers, 'authorization')) return;
@@ -189,7 +195,7 @@ const requireCredential = (apiKey?: string, authIndex?: string, headers?: Record
 const buildKeyProviderItem = (
   row: Extract<
     ProviderRow,
-    { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }
+    { kind: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'vertex' }
   >
 ): ProviderHealthCheckItem => {
   const providerDisplay = getKeyProviderDisplay(row);
@@ -307,7 +313,9 @@ export const getProviderHealthCheckApplyActions = (
   const actions = new Map<string, ProviderHealthCheckApplyAction>();
   grouped.forEach((groupItems, providerKey) => {
     const hasSuccess = groupItems.some((item) => item.status === 'success');
-    const hasCompleted = groupItems.some((item) => item.status === 'success' || item.status === 'error');
+    const hasCompleted = groupItems.some(
+      (item) => item.status === 'success' || item.status === 'error'
+    );
     if (!hasCompleted) return;
     actions.set(providerKey, hasSuccess ? 'enable' : 'disable');
   });
@@ -329,10 +337,7 @@ const getTargetForItem = (
 
 const ensureNonEmptyModels = (models: Array<{ name: string }>) => {
   if (models.length === 0) {
-    throw new HealthCheckError(
-      EMPTY_MODELS_ERROR,
-      'ai_providers.health_check_error_empty_models'
-    );
+    throw new HealthCheckError(EMPTY_MODELS_ERROR, 'ai_providers.health_check_error_empty_models');
   }
   return models.length;
 };
@@ -398,7 +403,7 @@ export const runProviderHealthCheckItem = async (
         normalizeAuthIndex(target.config.authIndex) ?? undefined
       );
       modelCount = ensureNonEmptyModels(models);
-    } else if (target.kind === 'codex') {
+    } else if (target.kind === 'codex' || target.kind === 'xai') {
       requireCredential(target.config.apiKey, target.config.authIndex, target.config.headers);
       const hasCustomAuthorization = hasHeader(target.config.headers, 'authorization');
       const models = await modelsApi.fetchV1ModelsViaApiCall(
@@ -422,7 +427,8 @@ export const runProviderHealthCheckItem = async (
       modelCount = await testVertexByStandardModelsEndpoints(target.config);
     } else if (target.kind === 'openai') {
       const entry = target.config.apiKeyEntries?.[target.keyIndex];
-      const authIndex = normalizeAuthIndex(entry?.authIndex ?? target.config.authIndex) ?? undefined;
+      const authIndex =
+        normalizeAuthIndex(entry?.authIndex ?? target.config.authIndex) ?? undefined;
       requireCredential(entry?.apiKey, authIndex, {
         ...(target.config.headers ?? {}),
         ...(entry?.headers ?? {}),

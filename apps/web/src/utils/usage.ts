@@ -75,6 +75,7 @@ export interface UsageResponseHeaderMetadata {
     retry_after_seconds?: number;
     retry_after_recover_at_ms?: number;
     rate_limit_bypass?: string;
+    should_retry?: boolean;
   };
   trace?: {
     primary_trace_id?: string;
@@ -86,6 +87,7 @@ export interface UsageResponseHeaderMetadata {
     cloud_ai_companion_trace_id?: string;
     client_request_id?: string;
     zeabur_request_id?: string;
+    traceparent?: string;
   };
   routing?: {
     openai_proxy_wasm?: string;
@@ -112,6 +114,31 @@ export interface UsageResponseHeaderMetadata {
     cloudflare_ray?: string;
     cloudflare_cache_status?: string;
   };
+  rate_limit?: {
+    requests?: { limit?: number; remaining?: number };
+    tokens?: { limit?: number; remaining?: number };
+  };
+  data_policy?: {
+    retention_mode?: string;
+    zero_retention?: boolean;
+  };
+  provider_usage?: {
+    provider?: string;
+    kind?: string;
+    state?: string;
+    code?: string;
+    model?: string;
+    unit?: string;
+    actual?: number;
+    limit?: number;
+    remaining?: number;
+    overage?: number;
+    window_kind?: string;
+    observed_at_ms?: number;
+    recover_at_ms?: number;
+    recover_at_estimated?: boolean;
+    source?: string;
+  };
 }
 
 export interface UsageDetail {
@@ -132,6 +159,8 @@ export interface UsageDetail {
   authProjectIdSnapshot?: string;
   auth_snapshot_at_ms?: number;
   authSnapshotAtMs?: number;
+  auth_type?: string;
+  authType?: string;
   reasoning_effort?: string;
   reasoningEffort?: string;
   service_tier?: string;
@@ -820,12 +849,15 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           auth_snapshot_at_ms: toPositiveNumber(
             detailRaw.auth_snapshot_at_ms ?? detailRaw.authSnapshotAtMs
           ),
+          auth_type: readDetailString(detailRaw.auth_type ?? detailRaw.authType),
           reasoning_effort: readDetailString(
             detailRaw.reasoning_effort ?? detailRaw.reasoningEffort
           ),
           service_tier: readDetailString(detailRaw.service_tier ?? detailRaw.serviceTier),
           executor_type: readDetailString(detailRaw.executor_type ?? detailRaw.executorType),
-          provider: readDetailString(detailRaw.provider),
+          provider: readDetailString(
+            detailRaw.provider ?? detailRaw.type ?? detailRaw.auth_type ?? detailRaw.authType
+          ),
           requested_model: readDetailString(
             detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
           ),
@@ -946,12 +978,15 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           auth_snapshot_at_ms: toPositiveNumber(
             detailRaw.auth_snapshot_at_ms ?? detailRaw.authSnapshotAtMs
           ),
+          auth_type: readDetailString(detailRaw.auth_type ?? detailRaw.authType),
           reasoning_effort: readDetailString(
             detailRaw.reasoning_effort ?? detailRaw.reasoningEffort
           ),
           service_tier: readDetailString(detailRaw.service_tier ?? detailRaw.serviceTier),
           executor_type: readDetailString(detailRaw.executor_type ?? detailRaw.executorType),
-          provider: readDetailString(detailRaw.provider),
+          provider: readDetailString(
+            detailRaw.provider ?? detailRaw.type ?? detailRaw.auth_type ?? detailRaw.authType
+          ),
           requested_model: readDetailString(
             detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
           ),
@@ -1056,6 +1091,13 @@ export function calculateCost(
     | 'requestServiceTier'
     | 'response_service_tier'
     | 'responseServiceTier'
+    | 'executor_type'
+    | 'executorType'
+    | 'provider'
+    | 'auth_provider_snapshot'
+    | 'authProviderSnapshot'
+    | 'auth_type'
+    | 'authType'
   >,
   modelPrices: Record<string, ModelPrice>
 ): number {
@@ -1120,13 +1162,31 @@ export function calculateCost(
       inputMultiplier +
     (completionTokens / TOKENS_PER_PRICE_UNIT) * completionPrice * outputMultiplier;
 
-  const serviceTier =
-    detail.response_service_tier ??
-    detail.responseServiceTier ??
-    detail.service_tier ??
-    detail.serviceTier ??
-    detail.request_service_tier ??
-    detail.requestServiceTier;
+  const identity = [
+    detail.executor_type,
+    detail.executorType,
+    detail.provider,
+    detail.auth_provider_snapshot,
+    detail.authProviderSnapshot,
+    detail.auth_type,
+    detail.authType,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const serviceTier = identity.includes('codex')
+    ? detail.request_service_tier ||
+      detail.requestServiceTier ||
+      detail.service_tier ||
+      detail.serviceTier ||
+      detail.response_service_tier ||
+      detail.responseServiceTier
+    : detail.response_service_tier ||
+      detail.responseServiceTier ||
+      detail.service_tier ||
+      detail.serviceTier ||
+      detail.request_service_tier ||
+      detail.requestServiceTier;
   let multiplier = getServiceTierMultiplier(behaviorModel, serviceTier);
   if (longContext && ['priority', 'fast'].includes(String(serviceTier ?? '').toLowerCase())) {
     multiplier = 1;

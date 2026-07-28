@@ -1,45 +1,52 @@
-# Model Prices
+---
+title: Model Prices And Cost Estimation
+description: Configure model prices, service tiers, long-context multipliers, and cache read/write/creation billing for local CPAMP cost estimates.
+---
 
-Model Prices maintains the price table used by CPAMP cost estimates. It only affects cost displayed in the panel. It does not change provider bills or model routing.
+# Model Prices And Cost Estimation
 
-Use [Usage Analytics](./usage-analytics.md) to see where cost went.
+Model Prices maintains CPAMP's local cost-estimation rules. It affects Dashboard, Monitoring, and Usage Analytics; it does not change provider billing or CPA routing.
 
-## When To Edit Prices
+Open the [Model Prices Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/model-prices) to inspect fictional prices and model usage.
 
-- A model in Usage Analytics has empty or clearly low cost.
-- Clients use custom model names, aliases, or internal names.
-- Upstream pricing changed.
-- You want to use LiteLLM or OpenRouter public prices as the estimate baseline.
+## Price Sources
 
-The price name must match the model name seen in Monitoring. If client aliases, provider model names, and price-table names differ, add the name recorded in request events.
+- Public metadata actively synchronized from LiteLLM or OpenRouter.
+- Local prices added or overridden by the user.
+- Entries for aliases, internal names, or provider-specific variants.
 
-## Common Actions
+Synchronization only occurs when the user triggers it and may use the current Manager Server proxy configuration.
 
-- Search model prices.
-- Add or edit a model price.
-- Delete prices that are no longer used.
-- Manually sync from external price sources.
-- Return to Usage Analytics and confirm cost is calculated.
+## Supported Billing Semantics
 
-External price sync happens only when you trigger it. Check server network and proxy policy before syncing.
+A price rule may include:
 
-## Field Guidance
+- Input and output tokens.
+- Reasoning tokens.
+- Cache read, cache write, and cache creation.
+- Fixed per-request cost.
+- `service_tier` differences.
+- Long-context thresholds and multipliers.
+- Model alias and billing-model mapping.
 
-Different models have different price structures. Common fields include input tokens, output tokens, cache read/write, reasoning tokens, or request-level fees. Follow the provider's published pricing.
+Models such as GPT-5.6 may vary by context length, service tier, and cache type. CPAMP can only apply a rule when both the request event and price entry contain the required fields.
 
-If a field has no corresponding price, leave it empty or handle it according to the provider's billing model. Do not fill uncertain values just to make cost look complete.
+## Matching Model Names
 
-## Verification
+The client model, CPA alias, provider model, and price-table name may differ. When cost is missing:
 
-1. Find a request for the target model in [Monitoring](./monitoring.md).
-2. Note the model name recorded on the request.
-3. Confirm a matching price exists on this page.
-4. Refresh [Usage Analytics](./usage-analytics.md) and check estimated cost for that model.
+1. Inspect the event model and billing model in [Monitoring](./monitoring.md).
+2. Search for matching entries in Model Prices.
+3. Add a local alias or override when required.
+4. Refresh [Usage Analytics](./usage-analytics.md).
 
-## Accuracy Boundary
+## Usage Summary
 
-- Provider invoices are always authoritative.
-- CPAMP estimates from collected requests and the current price table.
-- Missing token fields, rewritten model names, or stale prices all affect estimates.
-- Multi-currency pricing, tiers, monthly allowances, and free credits may not fit a single price-table row.
+The page uses a compact model-usage summary to show which prices are active. It does not download full request history just to count model calls.
 
+## Accuracy Boundaries
+
+- Provider billing remains authoritative.
+- Missing token, service tier, long-context, or cache fields reduce estimate accuracy.
+- Subscriptions, grants, tiered prices, and multiple currencies may not fit a single price entry.
+- Historical cost may be displayed using current prices after an update; the price table is not an immutable billing snapshot.

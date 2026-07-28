@@ -32,6 +32,13 @@ import {
   CODEX_USAGE_URL,
   XAI_BILLING_MONTHLY_URL,
   XAI_BILLING_WEEKLY_URL,
+  XAI_CLI_CHAT_PROXY_BASE_URL,
+  XAI_GROK_CLIENT_VERSION,
+  DEFAULT_XAI_INSPECTION_MODEL,
+  DEFAULT_XAI_INSPECTION_PROMPT,
+  XAI_INFERENCE_USER_AGENT,
+  XAI_OFFICIAL_API_BASE_URL,
+  XAI_OFFICIAL_API_ME_URL,
 } from './constants';
 import { formatQuotaResetTime } from './formatters';
 import {
@@ -42,10 +49,24 @@ import {
   fetchCodexQuota,
   mergeXaiBillingSummaries,
   probeXaiBilling,
+  probeXaiInference,
+  probeXaiQuota,
 } from './providerRequests';
 import { XaiProbeError } from './xaiErrors';
 
 const t = ((key: string) => key) as TFunction;
+
+const completedXaiInferenceResponse = () => ({
+  object: 'response',
+  status: 'completed',
+  error: null,
+  output: [
+    {
+      type: 'message',
+      content: [{ type: 'output_text', text: 'OK' }],
+    },
+  ],
+});
 
 beforeEach(() => {
   mocks.getSubscription.mockReset();
@@ -1577,6 +1598,26 @@ describe('buildXaiBillingSummary', () => {
       usedCents: null,
     });
   });
+
+  it('preserves the billing reset for weekly plans with positive on-demand credits', () => {
+    const summary = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'USAGE_PERIOD_TYPE_WEEKLY',
+        end: '2026-07-29T00:00:00Z',
+      },
+      onDemandCap: { val: 5000 },
+      onDemandUsed: { val: 1000 },
+      billingPeriodEnd: '2026-08-01T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      periodType: 'weekly',
+      onDemandCapCents: 5000,
+      onDemandUsedCents: 1000,
+      onDemandUsedPercent: 20,
+      billingPeriodEnd: '2026-08-01T00:00:00Z',
+    });
+  });
 });
 
 describe('mergeXaiBillingSummaries', () => {
@@ -1724,9 +1765,174 @@ describe('fetchXaiQuota', () => {
       usedCents: 5000,
       usedPercent: 25,
       partial: true,
-      diagnostics: [
-        expect.objectContaining({ classification: 'upstream_error', statusCode: 500 }),
-      ],
+      diagnostics: [expect.objectContaining({ classification: 'upstream_error', statusCode: 500 })],
+    });
+  });
+
+  it('falls back to official API identity health when both CLI billing endpoints deny access', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { user_id: 'user-1', team_id: 'team-1', team_blocked: false },
+      });
+
+    const result = await fetchXaiQuota(
+      { name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(3);
+    expect(mocks.request.mock.calls[2][0]).toEqual({
+      authIndex: 'xai-paid-1',
+      method: 'GET',
+      url: XAI_OFFICIAL_API_ME_URL,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        accept: 'application/json',
+      },
+    });
+    expect(result).toMatchObject({
+      periodType: 'unknown',
+      usagePercent: null,
+      productUsage: [],
+      officialApiHealth: {
+        source: 'api.x.ai/v1/me',
+        userId: 'user-1',
+        teamId: 'team-1',
+        teamBlocked: false,
+      },
+      partial: false,
+      diagnostics: [],
+    });
+  });
+
+  it.each([
+    {
+      name: 'an explicit entitlement denial',
+      statusCode: 403,
+      body: { error: 'Need a Grok subscription' },
+      classification: 'entitlement_denied',
+    },
+    {
+      name: 'an ambiguous payment-required response',
+      statusCode: 402,
+      body: { error: 'Payment required' },
+      classification: 'quota_or_entitlement_unknown',
+    },
+  ])(
+    'does not call the official API fallback for $name',
+    async ({ body, classification, statusCode }) => {
+      mocks.request.mockResolvedValue({
+        statusCode,
+        hasStatusCode: true,
+        header: {},
+        bodyText: JSON.stringify(body),
+        body,
+      });
+
+      await expect(
+        fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+      ).rejects.toMatchObject({
+        decision: { classification },
+      });
+
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      expect(mocks.request.mock.calls.map(([request]) => request.url)).not.toContain(
+        XAI_OFFICIAL_API_ME_URL
+      );
+    }
+  );
+
+  it.each([
+    { name: 'null team_blocked', body: { user_id: '', team_id: '', team_blocked: null } },
+    {
+      name: 'an invalid team_blocked value',
+      body: { user_id: ' ', team_id: '', team_blocked: 'unknown' },
+    },
+    {
+      name: 'a numeric team_blocked value',
+      body: { user_id: '', team_id: '', team_blocked: 0 },
+    },
+    {
+      name: 'a non-string identity value',
+      body: { user_id: false, team_id: '', team_blocked: null },
+    },
+  ])('rejects official API identity payloads with empty IDs and $name', async ({ body }) => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: JSON.stringify(body),
+        body,
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+    ).rejects.toBeInstanceOf(XaiProbeError);
+
+    expect(mocks.request).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not hide a blocked official API team behind the health fallback', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { user_id: 'user-1', team_id: 'team-1', team_blocked: true },
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+    ).rejects.toMatchObject({
+      decision: { classification: 'spending_limit', suggestedAction: 'disable' },
     });
   });
 
@@ -1752,8 +1958,38 @@ describe('fetchXaiQuota', () => {
     expect(result).toMatchObject({
       partial: true,
       summary: { monthlyLimitCents: 20000, usedCents: 5000 },
+      statusCode: 200,
     });
     expect(result.failures).toHaveLength(1);
+  });
+
+  it('preserves usable billing data while exposing a one-sided spending limit as blocking', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { config: { credit_usage_percent: 3 } },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 402,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"code":"personal-team-blocked:spending-limit"}',
+        body: { code: 'personal-team-blocked:spending-limit' },
+      });
+
+    const result = await probeXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t);
+
+    expect(result).toMatchObject({
+      partial: true,
+      summary: { usagePercent: 3 },
+      statusCode: 200,
+      blockingFailure: {
+        decision: { classification: 'spending_limit', suggestedAction: 'disable' },
+      },
+    });
   });
 
   it('prefers a verified xAI quota signal when both billing requests fail differently', async () => {
@@ -1802,6 +2038,31 @@ describe('fetchXaiQuota', () => {
     ).rejects.toMatchObject({
       decision: { classification: 'auth_invalid', suggestedAction: 'reauth' },
     });
+  });
+
+  it('prefers an explicit entitlement denial over an earlier generic forbidden failure', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'forbidden',
+        body: { error: 'forbidden' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Need a Grok subscription',
+        body: { error: 'Need a Grok subscription' },
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+    ).rejects.toMatchObject({
+      decision: { classification: 'entitlement_denied', suggestedAction: 'disable' },
+    });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
   });
 
   it('throws the upstream error when weekly and monthly billing both fail', async () => {
@@ -1934,6 +2195,272 @@ describe('fetchXaiQuota', () => {
         },
       });
     }
+  });
+});
+
+describe('probeXaiInference', () => {
+  it('defaults missing auth metadata to the OAuth CLI endpoint', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await probeXaiInference(
+      {
+        name: 'xai-legacy.json',
+        type: 'xai',
+        authIndex: 'xai-legacy-1',
+        metadata: { base_url: XAI_OFFICIAL_API_BASE_URL },
+      },
+      t
+    );
+
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      url: `${XAI_CLI_CHAT_PROXY_BASE_URL}/responses`,
+      header: {
+        'x-xai-token-auth': 'xai-grok-cli',
+        'x-grok-client-version': XAI_GROK_CLIENT_VERSION,
+        'User-Agent': XAI_INFERENCE_USER_AGENT,
+      },
+    });
+  });
+
+  it('sends a non-streamed real inference request through the OAuth CLI endpoint', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    const result = await probeXaiInference(
+      {
+        name: 'xai-oauth.json',
+        type: 'xai',
+        authIndex: 'xai-oauth-1',
+        metadata: { auth_kind: 'oauth', user_id: 'user-123' },
+      },
+      t
+    );
+
+    expect(result).toEqual({ statusCode: 200 });
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    const request = mocks.request.mock.calls[0][0];
+    expect(request).toMatchObject({
+      authIndex: 'xai-oauth-1',
+      method: 'POST',
+      url: `${XAI_CLI_CHAT_PROXY_BASE_URL}/responses`,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-xai-token-auth': 'xai-grok-cli',
+        'x-grok-client-version': XAI_GROK_CLIENT_VERSION,
+        'User-Agent': XAI_INFERENCE_USER_AGENT,
+        'x-userid': 'user-123',
+      },
+    });
+    expect(JSON.parse(request.data)).toEqual({
+      model: DEFAULT_XAI_INSPECTION_MODEL,
+      input: DEFAULT_XAI_INSPECTION_PROMPT,
+      stream: false,
+    });
+  });
+
+  it('uses the official endpoint without CLI-only headers for API credentials', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await probeXaiInference(
+      {
+        name: 'xai-api.json',
+        type: 'xai',
+        authIndex: 'xai-api-1',
+        metadata: { auth_kind: 'api_key', using_api: true, user_id: 'user-123' },
+      },
+      t
+    );
+
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      url: `${XAI_OFFICIAL_API_BASE_URL}/responses`,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': XAI_INFERENCE_USER_AGENT,
+      },
+    });
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-xai-token-auth');
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-grok-client-version');
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-userid');
+  });
+
+  it('forces the official endpoint after verified official identity fallback', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await probeXaiInference(
+      {
+        name: 'xai-paid-oauth.json',
+        type: 'xai',
+        authIndex: 'xai-paid-oauth-1',
+        metadata: { user_id: 'user-123' },
+      },
+      t,
+      undefined,
+      { routeMode: 'official' }
+    );
+
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      url: `${XAI_OFFICIAL_API_BASE_URL}/responses`,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': XAI_INFERENCE_USER_AGENT,
+      },
+    });
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-xai-token-auth');
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-grok-client-version');
+    expect(mocks.request.mock.calls[0][0].header).not.toHaveProperty('x-userid');
+  });
+
+  it('uses the configured model and prompt in the real inference request', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await probeXaiInference({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t, undefined, {
+      model: 'grok-custom',
+      prompt: 'Return a short health response.',
+      userAgent: 'xai-custom-agent',
+    });
+
+    expect(JSON.parse(mocks.request.mock.calls[0][0].data)).toMatchObject({
+      model: 'grok-custom',
+      input: 'Return a short health response.',
+      stream: false,
+    });
+    expect(mocks.request.mock.calls[0][0].header).toMatchObject({
+      'User-Agent': 'xai-custom-agent',
+    });
+  });
+
+  it('honors explicit using_api=false even when auth_kind is absent', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await probeXaiInference(
+      {
+        name: 'xai-explicit-cli.json',
+        type: 'xai',
+        authIndex: 'xai-explicit-cli-1',
+        metadata: { using_api: false, base_url: XAI_OFFICIAL_API_BASE_URL },
+      },
+      t
+    );
+
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      url: `${XAI_CLI_CHAT_PROXY_BASE_URL}/responses`,
+      header: { 'x-xai-token-auth': 'xai-grok-cli' },
+    });
+  });
+
+  it('rejects a proxy response without status_code as a protocol change', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 0,
+      hasStatusCode: false,
+      header: {},
+      bodyText: '',
+      body: '',
+    });
+
+    await expect(
+      probeXaiInference({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+    ).rejects.toMatchObject({ decision: { classification: 'protocol_changed' } });
+  });
+
+  it.each([
+    { statusCode: 401, body: { error: 'invalid credentials' }, classification: 'auth_invalid' },
+    {
+      statusCode: 402,
+      body: { error: 'Payment required' },
+      classification: 'quota_or_entitlement_unknown',
+    },
+    { statusCode: 429, body: { error: 'Too many requests' }, classification: 'rate_limited' },
+  ])(
+    'classifies an inference HTTP $statusCode response',
+    async ({ statusCode, body, classification }) => {
+      mocks.request.mockResolvedValue({
+        statusCode,
+        hasStatusCode: true,
+        header: {},
+        bodyText: JSON.stringify(body),
+        body,
+      });
+
+      await expect(
+        probeXaiInference({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+      ).rejects.toMatchObject({ decision: { classification } });
+    }
+  );
+
+  it('rejects a successful HTTP response without completed model output', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: null,
+    });
+
+    await expect(
+      probeXaiInference({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+    ).rejects.toMatchObject({ decision: { classification: 'protocol_changed' } });
+  });
+
+  it('accepts a completed non-streaming response with output text', async () => {
+    const body = completedXaiInferenceResponse();
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: JSON.stringify(body),
+      body,
+    });
+
+    await expect(
+      probeXaiInference({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+    ).resolves.toEqual({ statusCode: 200 });
   });
 });
 

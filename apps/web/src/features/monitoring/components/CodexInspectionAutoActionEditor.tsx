@@ -131,11 +131,11 @@ export function CodexInspectionAutoActionEditor({
               aria-pressed={active}
             >
               <span className={styles.settingsAutoOptionIcon}>
-                <option.Icon size={30} />
+                <option.Icon size={24} />
               </span>
               <span className={styles.settingsAutoOptionText}>
                 <strong>{option.title}</strong>
-                <small>{option.desc}</small>
+                {active ? <small>{option.desc}</small> : null}
               </span>
               <span className={styles.settingsAutoOptionCheck}>
                 {active ? <IconCheck size={14} /> : null}
@@ -169,15 +169,17 @@ export function CodexInspectionAutoActionEditor({
                   aria-pressed={active}
                 >
                   <span className={styles.settingsAutoOptionIcon}>
-                    <ProblemIcon size={28} />
+                    <ProblemIcon size={24} />
                   </span>
                   <span className={styles.settingsAutoOptionText}>
                     <strong>
                       {t(`monitoring.codex_inspection_settings_problem_action_${mode}`)}
                     </strong>
-                    <small>
-                      {t(`monitoring.codex_inspection_settings_problem_action_${mode}_desc`)}
-                    </small>
+                    {active ? (
+                      <small>
+                        {t(`monitoring.codex_inspection_settings_problem_action_${mode}_desc`)}
+                      </small>
+                    ) : null}
                   </span>
                   <span className={styles.settingsAutoOptionCheck}>
                     {active ? <IconCheck size={14} /> : null}
@@ -224,11 +226,11 @@ export function CodexInspectionAutoActionEditor({
                   aria-pressed={active}
                 >
                   <span className={styles.settingsAutoOptionIcon}>
-                    <option.Icon size={28} />
+                    <option.Icon size={24} />
                   </span>
                   <span className={styles.settingsAutoOptionText}>
                     <strong>{option.title}</strong>
-                    <small>{option.desc}</small>
+                    {active ? <small>{option.desc}</small> : null}
                   </span>
                   <span className={styles.settingsAutoOptionCheck}>
                     {active ? <IconCheck size={14} /> : null}

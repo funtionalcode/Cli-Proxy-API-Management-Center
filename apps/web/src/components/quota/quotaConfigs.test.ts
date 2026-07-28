@@ -165,6 +165,61 @@ describe('XAI_CONFIG.renderQuotaItems', () => {
     expect(output).not.toContain('protocol_changed');
     expect(output).not.toContain('HTTP 200');
   });
+
+  it('renders official API health without fake billing or pay-as-you-go rows', () => {
+    const quota: XaiQuotaState = {
+      status: 'success',
+      billing: {
+        periodType: 'unknown',
+        usagePercent: null,
+        productUsage: [],
+        monthlyLimitCents: null,
+        usedCents: null,
+        includedUsedCents: null,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+        usedPercent: null,
+        officialApiHealth: {
+          source: 'api.x.ai/v1/me',
+          userId: 'user-1',
+          teamId: 'team-1',
+          teamBlocked: false,
+        },
+      },
+    };
+    const helpers: QuotaRenderHelpers = {
+      styles: new Proxy(
+        {},
+        {
+          get: (_target, property) => String(property),
+        }
+      ) as QuotaRenderHelpers['styles'],
+      QuotaProgressBar: ({ percent }) =>
+        React.createElement('div', { className: 'progress', 'data-percent': percent }),
+    };
+    const t = ((key: string) =>
+      ({
+        'xai_quota.plan_label': 'Plan',
+        'xai_quota.official_api_plan': 'Official API',
+        'xai_quota.official_api_health':
+          'Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.',
+      })[key] ?? key) as TFunction;
+    let renderer!: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        React.createElement(React.Fragment, null, XAI_CONFIG.renderQuotaItems(quota, t, helpers))
+      );
+    });
+
+    const output = JSON.stringify(renderer.toJSON());
+    expect(output).toContain('Official API');
+    expect(output).toContain('Official xAI API identity is reachable');
+    expect(output).not.toContain('Pay-as-you-go');
+    expect(output).not.toContain('Monthly credits');
+    expect(output).not.toContain('data-percent');
+  });
 });
 
 describe('resolveQuotaDisplayState', () => {

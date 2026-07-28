@@ -1,8 +1,15 @@
-# 账号处理队列
+---
+title: 账号处理队列与安全自动禁用
+description: 使用 CPA Manager Plus 根据脱敏认证证据集中复核、禁用、重新启用、解决或删除问题账号，并避免按 401/403 误伤。
+---
+
+# 账号处理队列与安全自动禁用
 
 账号处理队列用于集中处理 CPAMP 从请求监控中识别出的认证问题。它不是请求明细页，而是把“可能需要人工处理的账号”整理成候选项。
 
 如果你要看失败请求本身，请先去 [请求监控](./monitoring.md)。
+
+打开[账号处理队列演示](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring/account-actions)可以查看虚构候选项和处理动作。
 
 ## 什么时候会出现候选项
 
@@ -49,7 +56,7 @@ CPAMP 不会因为 HTTP 状态码本身自动禁用账号。`401`、`403` 只是
 - 需要看失败详情：去 [请求监控](./monitoring.md)。
 - 需要重新授权：去 [OAuth 登录](./oauth.md)。
 - 需要禁用或恢复账号：去 [认证文件](./auth-files.md)。
-- 需要判断 Codex 配额和状态：去 [Codex 账号巡检](./codex-inspection.md)。
+- 需要判断 Codex/xAI 配额和状态：去 [账号巡检](./codex-inspection.md)。
 
 ## 使用建议
 

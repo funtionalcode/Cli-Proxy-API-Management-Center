@@ -819,8 +819,10 @@
 .keyStatusTooltip {
   position: fixed;
   transform: translateX(-50%);
-  width: max-content;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 24px));
   padding: 8px 10px;
+  overflow-x: hidden;
   overflow-y: auto;
   background: var(--bg-primary, #fff);
   border: 1px solid var(--border-subtle, #d8e5f2);
@@ -829,14 +831,16 @@
   color: var(--text-primary);
   font-size: 11px;
   line-height: 1.5;
-  pointer-events: none;
-  white-space: normal;
+  pointer-events: auto;
   text-align: left;
-  z-index: $z-dropdown;
+  user-select: text;
+  z-index: $z-modal + 1;
 }
 
 .keyStatusTooltipText {
   display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
 }

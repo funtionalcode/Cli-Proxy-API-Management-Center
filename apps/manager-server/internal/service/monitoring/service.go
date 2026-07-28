@@ -151,6 +151,7 @@ type Include struct {
 	AccountStats       bool              `json:"account_stats"`
 	CredentialStats    bool              `json:"credential_stats"`
 	CredentialTimeline bool              `json:"credential_timeline"`
+	APIKeyTimeline     bool              `json:"api_key_timeline"`
 	APIKeyStats        bool              `json:"api_key_stats"`
 	FilterOptions      bool              `json:"filter_options"`
 	FilterSelectors    bool              `json:"filter_selectors"`
@@ -191,6 +192,7 @@ type Response struct {
 	AccountStats       []AccountStatRow          `json:"account_stats,omitempty"`
 	CredentialStats    []CredentialStatRow       `json:"credential_stats,omitempty"`
 	CredentialTimeline []CredentialTimelinePoint `json:"credential_timeline,omitempty"`
+	APIKeyTimeline     []APIKeyTimelinePoint     `json:"api_key_timeline,omitempty"`
 	APIKeyStats        []APIKeyStatRow           `json:"api_key_stats,omitempty"`
 	FilterOptions      *FilterOptions            `json:"filter_options,omitempty"`
 	TaskBuckets        []TaskBucketRow           `json:"task_buckets,omitempty"`
@@ -500,6 +502,27 @@ type CredentialTimelinePoint struct {
 	FailureRate           float64  `json:"failure_rate"`
 }
 
+type APIKeyTimelinePoint struct {
+	APIKeyHash          string   `json:"api_key_hash"`
+	BucketMS            int64    `json:"bucket_ms"`
+	BucketLabel         string   `json:"bucket_label"`
+	Calls               int64    `json:"calls"`
+	Tokens              int64    `json:"tokens"`
+	Success             int64    `json:"success"`
+	Failure             int64    `json:"failure"`
+	InputTokens         int64    `json:"input_tokens"`
+	OutputTokens        int64    `json:"output_tokens"`
+	CachedTokens        int64    `json:"cached_tokens"`
+	CacheReadTokens     int64    `json:"cache_read_tokens"`
+	CacheCreationTokens int64    `json:"cache_creation_tokens"`
+	ReasoningTokens     int64    `json:"reasoning_tokens"`
+	TotalTokens         int64    `json:"total_tokens"`
+	Cost                float64  `json:"cost"`
+	AvgLatencyMS        *float64 `json:"average_latency_ms"`
+	SuccessRate         float64  `json:"success_rate"`
+	FailureRate         float64  `json:"failure_rate"`
+}
+
 type AccountModelStatRow struct {
 	Model               string  `json:"model"`
 	Calls               int64   `json:"calls"`
@@ -573,6 +596,9 @@ type FilterOptions struct {
 	APIKeyHashes     []string          `json:"api_key_hashes,omitempty"`
 	Providers        []string          `json:"providers,omitempty"`
 	AuthFiles        []string          `json:"auth_files,omitempty"`
+	Accounts         []string          `json:"accounts,omitempty"`
+	AccountCount     int               `json:"account_count,omitempty"`
+	APIKeyCount      int               `json:"api_key_count,omitempty"`
 	ProjectIDs       []string          `json:"project_ids,omitempty"`
 	RequestTypes     []string          `json:"request_types,omitempty"`
 	HeaderErrorKinds []string          `json:"header_error_kinds,omitempty"`
@@ -737,8 +763,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 	if rollupEligible && needsHourlyCore {
 		hourlySnapshot, hourlySnapshotAvailable = s.hourlyReader.LoadAnalytics(
 			ctx,
-			req.FromMS,
-			req.ToMS,
+			filter,
 			granularity,
 			location,
 			hourlyTimelineRepresentable,
@@ -830,6 +855,15 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		queries.Go(func(queryCtx context.Context) error {
 			var queryErr error
 			credentialTimelinePoints, queryErr = s.store.CredentialTimelineWithFilter(queryCtx, filter, granularity, location)
+			return queryErr
+		})
+	}
+
+	var apiKeyTimelinePoints []store.APIKeyTimelinePoint
+	if req.Include.APIKeyTimeline {
+		queries.Go(func(queryCtx context.Context) error {
+			var queryErr error
+			apiKeyTimelinePoints, queryErr = s.store.APIKeyTimelineWithFilter(queryCtx, filter, granularity, location)
 			return queryErr
 		})
 	}
@@ -974,8 +1008,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 				if rollupEligible {
 					prevSnapshot, prevSnapshotAvailable = s.hourlyReader.LoadAnalytics(
 						ctx,
-						prevFrom,
-						req.FromMS,
+						prevFilter,
 						granularity,
 						location,
 						false,
@@ -1057,6 +1090,9 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 	}
 	if req.Include.CredentialTimeline {
 		response.CredentialTimeline = buildCredentialTimeline(credentialTimelinePoints, granularity, location, prices)
+	}
+	if req.Include.APIKeyTimeline {
+		response.APIKeyTimeline = buildAPIKeyTimeline(apiKeyTimelinePoints, granularity, location, prices)
 	}
 	if req.Include.APIKeyStats {
 		response.APIKeyStats = buildAPIKeyStats(apiKeyStats, prices)
@@ -1304,26 +1340,7 @@ func buildFilter(req Request) store.AnalyticsFilter {
 }
 
 func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
-	return strings.TrimSpace(filter.SearchQuery) == "" &&
-		strings.TrimSpace(filter.SearchAPIKeyHash) == "" &&
-		len(filter.Models) == 0 &&
-		len(filter.Providers) == 0 &&
-		len(filter.Accounts) == 0 &&
-		len(filter.CredentialIDs) == 0 &&
-		len(filter.AuthFiles) == 0 &&
-		len(filter.AuthIndices) == 0 &&
-		len(filter.APIKeyHashes) == 0 &&
-		len(filter.SourceHashes) == 0 &&
-		len(filter.ProjectIDs) == 0 &&
-		len(filter.RequestTypes) == 0 &&
-		len(filter.HeaderErrorKinds) == 0 &&
-		len(filter.HeaderErrorCodes) == 0 &&
-		len(filter.HeaderQuotaPlans) == 0 &&
-		len(filter.HeaderTraceIDs) == 0 &&
-		filter.IncludeFailed &&
-		!filter.FailedOnly &&
-		filter.MinLatencyMS == 0 &&
-		strings.TrimSpace(filter.CacheStatus) == ""
+	return usagehourly.SupportsAnalyticsFilter(filter)
 }
 
 type filterOptionStats struct {
@@ -1430,12 +1447,83 @@ func (s *Service) filterSelectors(ctx context.Context, filter store.AnalyticsFil
 	if err != nil {
 		return nil, err
 	}
+	accountStats := buildAccountSelectorStats(values)
 	return &FilterOptions{
 		Models:       values.Models,
 		APIKeyHashes: values.APIKeyHashes,
 		Providers:    values.Providers,
 		AuthFiles:    values.AuthFiles,
+		Accounts:     values.Accounts,
+		AccountStats: accountStats,
+		AccountCount: len(accountStats),
+		APIKeyCount:  countAPIKeySelectors(values),
 	}, nil
+}
+
+func countAPIKeySelectors(values store.FilterSelectorValues) int {
+	groups := make(map[string]struct{}, len(values.APIKeySelectors))
+	for _, selector := range values.APIKeySelectors {
+		groups[apiKeyGroupKey(
+			selector.APIKeyHash,
+			selector.SourceHash,
+			selector.AuthIndex,
+			selector.Source,
+			selector.AuthProviderSnapshot,
+		)] = struct{}{}
+	}
+	return len(groups)
+}
+
+func buildAccountSelectorStats(values store.FilterSelectorValues) []AccountStatRow {
+	grouped := map[string]*accountStatAccumulator{}
+	for _, selector := range values.AccountSelectors {
+		id := accountGroupKey(
+			selector.AccountSnapshot,
+			selector.AuthLabelSnapshot,
+			selector.Source,
+			selector.AuthIndex,
+		)
+		if id == "-" && strings.TrimSpace(selector.SourceHash) == "" {
+			continue
+		}
+		entry := grouped[id]
+		if entry == nil {
+			entry = &accountStatAccumulator{
+				row: AccountStatRow{
+					ID:                   id,
+					AccountSnapshot:      selector.AccountSnapshot,
+					AuthLabelSnapshot:    selector.AuthLabelSnapshot,
+					AuthProviderSnapshot: selector.AuthProviderSnapshot,
+					SuccessRate:          1,
+				},
+				authIndices:  map[string]struct{}{},
+				sources:      map[string]struct{}{},
+				sourceHashes: map[string]struct{}{},
+			}
+			grouped[id] = entry
+		}
+		fillAccountStatSnapshots(
+			&entry.row,
+			selector.AccountSnapshot,
+			selector.AuthLabelSnapshot,
+			selector.AuthProviderSnapshot,
+		)
+		addSetValue(entry.authIndices, selector.AuthIndex)
+		addSetValue(entry.sources, selector.Source)
+		addSetValue(entry.sourceHashes, selector.SourceHash)
+	}
+
+	result := make([]AccountStatRow, 0, len(grouped))
+	for _, entry := range grouped {
+		entry.row.AuthIndices = sortedSetValues(entry.authIndices)
+		entry.row.Sources = sortedSetValues(entry.sources)
+		entry.row.SourceHashes = sortedSetValues(entry.sourceHashes)
+		result = append(result, entry.row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ID < result[j].ID
+	})
+	return result
 }
 
 func filterOptionsBaseFilter(filter store.AnalyticsFilter) store.AnalyticsFilter {
@@ -1548,9 +1636,23 @@ func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPerc
 		latencyTotal        float64
 		latencySample       int64
 	}
-	buckets := make(map[int64]*bucketAccumulator, len(points))
+	orderedPoints := append([]store.TimelinePoint(nil), points...)
+	sort.SliceStable(orderedPoints, func(i, j int) bool {
+		if orderedPoints[i].BucketMS != orderedPoints[j].BucketMS {
+			return orderedPoints[i].BucketMS < orderedPoints[j].BucketMS
+		}
+		if orderedPoints[i].Model != orderedPoints[j].Model {
+			return orderedPoints[i].Model < orderedPoints[j].Model
+		}
+		if orderedPoints[i].BillingModel != orderedPoints[j].BillingModel {
+			return orderedPoints[i].BillingModel < orderedPoints[j].BillingModel
+		}
+		return orderedPoints[i].ServiceTier < orderedPoints[j].ServiceTier
+	})
+
+	buckets := make(map[int64]*bucketAccumulator, len(orderedPoints))
 	order := make([]int64, 0, len(points))
-	for _, point := range points {
+	for _, point := range orderedPoints {
 		bucket := buckets[point.BucketMS]
 		if bucket == nil {
 			bucket = &bucketAccumulator{
@@ -2211,6 +2313,69 @@ func buildCredentialTimeline(points []store.CredentialTimelinePoint, granularity
 	}
 
 	result := make([]CredentialTimelinePoint, 0, len(order))
+	for _, mapKey := range order {
+		entry := grouped[mapKey]
+		if entry.latencySamples > 0 {
+			value := entry.latencySum / float64(entry.latencySamples)
+			entry.point.AvgLatencyMS = &value
+		}
+		entry.point.SuccessRate = ratio(entry.point.Success, entry.point.Calls)
+		entry.point.FailureRate = ratio(entry.point.Failure, entry.point.Calls)
+		result = append(result, entry.point)
+	}
+	return result
+}
+
+type apiKeyTimelineAccumulator struct {
+	point          APIKeyTimelinePoint
+	latencySum     float64
+	latencySamples int64
+}
+
+func buildAPIKeyTimeline(points []store.APIKeyTimelinePoint, granularity string, location *time.Location, prices map[string]store.ModelPrice) []APIKeyTimelinePoint {
+	type key struct {
+		apiKeyHash string
+		bucketMS   int64
+	}
+	grouped := map[key]*apiKeyTimelineAccumulator{}
+	order := make([]key, 0, len(points))
+	for _, point := range points {
+		apiKeyHash := strings.TrimSpace(point.APIKeyHash)
+		if apiKeyHash == "" {
+			continue
+		}
+		mapKey := key{apiKeyHash: apiKeyHash, bucketMS: point.BucketMS}
+		entry := grouped[mapKey]
+		if entry == nil {
+			entry = &apiKeyTimelineAccumulator{
+				point: APIKeyTimelinePoint{
+					APIKeyHash:  apiKeyHash,
+					BucketMS:    point.BucketMS,
+					BucketLabel: timelineLabel(point.BucketMS, granularity, location),
+				},
+			}
+			grouped[mapKey] = entry
+			order = append(order, mapKey)
+		}
+		entry.point.Calls += point.Calls
+		entry.point.Tokens += point.Tokens
+		entry.point.TotalTokens += point.Tokens
+		entry.point.Success += point.Success
+		entry.point.Failure += point.Failure
+		entry.point.InputTokens += point.InputTokens
+		entry.point.OutputTokens += point.OutputTokens
+		entry.point.CachedTokens += point.CachedTokens
+		entry.point.CacheReadTokens += point.CacheReadTokens
+		entry.point.CacheCreationTokens += point.CacheCreationTokens
+		entry.point.ReasoningTokens += point.ReasoningTokens
+		entry.point.Cost += costForAPIKeyTimelinePoint(point, prices)
+		if point.AvgLatencyMS.Valid && point.LatencySamples > 0 {
+			entry.latencySum += point.AvgLatencyMS.Float64 * float64(point.LatencySamples)
+			entry.latencySamples += point.LatencySamples
+		}
+	}
+
+	result := make([]APIKeyTimelinePoint, 0, len(order))
 	for _, mapKey := range order {
 		entry := grouped[mapKey]
 		if entry.latencySamples > 0 {
@@ -2993,6 +3158,21 @@ func costForCredentialModelStat(stat store.CredentialModelStat, prices map[strin
 }
 
 func costForCredentialTimelinePoint(point store.CredentialTimelinePoint, prices map[string]store.ModelPrice) float64 {
+	return pricing.CostForModelCandidatesWithServiceTier([]string{point.BillingModel, point.Model}, point.ServiceTier, pricing.ModelTokens{
+		InputTokens:             point.InputTokens,
+		OutputTokens:            point.OutputTokens,
+		CachedTokens:            point.CachedTokens,
+		CacheReadTokens:         point.CacheReadTokens,
+		CacheCreationTokens:     point.CacheCreationTokens,
+		LongInputTokens:         point.LongInputTokens,
+		LongOutputTokens:        point.LongOutputTokens,
+		LongCachedTokens:        point.LongCachedTokens,
+		LongCacheReadTokens:     point.LongCacheReadTokens,
+		LongCacheCreationTokens: point.LongCacheCreationTokens,
+	}, prices)
+}
+
+func costForAPIKeyTimelinePoint(point store.APIKeyTimelinePoint, prices map[string]store.ModelPrice) float64 {
 	return pricing.CostForModelCandidatesWithServiceTier([]string{point.BillingModel, point.Model}, point.ServiceTier, pricing.ModelTokens{
 		InputTokens:             point.InputTokens,
 		OutputTokens:            point.OutputTokens,

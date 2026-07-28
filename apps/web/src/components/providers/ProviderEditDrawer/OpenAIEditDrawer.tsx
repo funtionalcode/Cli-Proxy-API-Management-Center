@@ -10,7 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { OpenAIKeyTestStatusIndicator } from '@/components/providers';
-import { apiCallApi, getApiCallErrorMessage, modelsApi, providersApi } from '@/services/api';
+import { apiCallApi, getApiCallErrorDetails, modelsApi, providersApi } from '@/services/api';
 import { useConfigStore, useNotificationStore } from '@/stores';
 import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
@@ -501,7 +501,7 @@ export function OpenAIEditDrawer({
           { timeout: OPENAI_TEST_TIMEOUT_MS }
         );
         if (result.statusCode < 200 || result.statusCode >= 300)
-          throw new Error(getApiCallErrorMessage(result));
+          throw new Error(getApiCallErrorDetails(result));
         setKeyTestStatuses((prev) => {
           const next = [...prev];
           next[keyIndex] = { status: 'success', message: '' };

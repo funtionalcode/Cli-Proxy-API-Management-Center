@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
@@ -119,5 +120,127 @@ func TestDisableOwnershipCRUD(t *testing.T) {
 		if item.FileName == "auth-c.json" && (item.AuthIndex != "new-auth" || item.DisabledAtMS != 999) {
 			t.Fatalf("restore overwrote newer ownership: %#v", item)
 		}
+	}
+}
+
+func TestDisableOwnershipWritesRetrySQLiteBusy(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, repository Repository)
+		operation func(ctx context.Context, repository Repository) error
+		verify    func(t *testing.T, repository Repository)
+	}{
+		{
+			name: "upsert",
+			operation: func(ctx context.Context, repository Repository) error {
+				return repository.UpsertDisableOwnership(ctx, model.CodexInspectionDisableOwnership{FileName: "auth-a.json"})
+			},
+			verify: func(t *testing.T, repository Repository) {
+				items, err := repository.ListDisableOwnership(context.Background())
+				if err != nil || len(items) != 1 || items[0].FileName != "auth-a.json" {
+					t.Fatalf("ownership after retried upsert = %#v err=%v", items, err)
+				}
+			},
+		},
+		{
+			name: "delete",
+			setup: func(t *testing.T, repository Repository) {
+				if err := repository.UpsertDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{FileName: "auth-a.json"}); err != nil {
+					t.Fatalf("seed ownership: %v", err)
+				}
+			},
+			operation: func(ctx context.Context, repository Repository) error {
+				return repository.DeleteDisableOwnership(ctx, "auth-a.json")
+			},
+			verify: func(t *testing.T, repository Repository) {
+				items, err := repository.ListDisableOwnership(context.Background())
+				if err != nil || len(items) != 0 {
+					t.Fatalf("ownership after retried delete = %#v err=%v", items, err)
+				}
+			},
+		},
+		{
+			name: "revoke",
+			setup: func(t *testing.T, repository Repository) {
+				if err := repository.UpsertDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{FileName: "auth-a.json"}); err != nil {
+					t.Fatalf("seed ownership: %v", err)
+				}
+			},
+			operation: func(ctx context.Context, repository Repository) error {
+				revoked, err := repository.RevokeDisableOwnership(ctx, []string{"auth-a.json"}, false)
+				if err == nil && (len(revoked) != 1 || revoked[0].FileName != "auth-a.json") {
+					t.Fatalf("revoked ownership = %#v", revoked)
+				}
+				return err
+			},
+			verify: func(t *testing.T, repository Repository) {
+				items, err := repository.ListDisableOwnership(context.Background())
+				if err != nil || len(items) != 0 {
+					t.Fatalf("ownership after retried revoke = %#v err=%v", items, err)
+				}
+			},
+		},
+		{
+			name: "restore",
+			operation: func(ctx context.Context, repository Repository) error {
+				return repository.RestoreDisableOwnership(ctx, []model.CodexInspectionDisableOwnership{{FileName: "auth-a.json"}})
+			},
+			verify: func(t *testing.T, repository Repository) {
+				items, err := repository.ListDisableOwnership(context.Background())
+				if err != nil || len(items) != 1 || items[0].FileName != "auth-a.json" {
+					t.Fatalf("ownership after retried restore = %#v err=%v", items, err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+			db, err := sqlite.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open sqlite: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			locker, err := sqlite.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open lock sqlite: %v", err)
+			}
+			t.Cleanup(func() { _ = locker.Close() })
+			db.SetMaxOpenConns(1)
+			db.SetMaxIdleConns(1)
+			if _, err := db.ExecContext(context.Background(), `pragma busy_timeout = 1`); err != nil {
+				t.Fatalf("set short busy timeout: %v", err)
+			}
+			repository := New(db)
+			if test.setup != nil {
+				test.setup(t, repository)
+			}
+
+			lockConn, err := locker.Conn(context.Background())
+			if err != nil {
+				t.Fatalf("open lock connection: %v", err)
+			}
+			defer lockConn.Close()
+			if _, err := lockConn.ExecContext(context.Background(), `begin immediate`); err != nil {
+				t.Fatalf("begin write lock: %v", err)
+			}
+			releaseErr := make(chan error, 1)
+			go func() {
+				time.Sleep(40 * time.Millisecond)
+				_, err := lockConn.ExecContext(context.Background(), `commit`)
+				releaseErr <- err
+			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := test.operation(ctx, repository); err != nil {
+				t.Fatalf("operation after transient write lock: %v", err)
+			}
+			if err := <-releaseErr; err != nil {
+				t.Fatalf("release write lock: %v", err)
+			}
+			test.verify(t, repository)
+		})
 	}
 }

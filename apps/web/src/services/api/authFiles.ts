@@ -18,6 +18,8 @@ export type AuthFilesListQuery = {
   includeBalances?: boolean;
 };
 export type AuthFileFieldsPatch = {
+  expired?: string;
+  last_refresh?: string;
   prefix?: string;
   proxy_url?: string;
   websockets?: boolean;
@@ -616,6 +618,8 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
         const name = String(entry.name ?? entry.id ?? entry.model ?? '').trim();
         const alias = String(entry.alias ?? '').trim();
         if (!name || !alias) return null;
+        // Match CPA SanitizeOAuthModelAlias: drop identity mappings.
+        if (name.toLowerCase() === alias.toLowerCase()) return null;
         const fork = entry.fork === true;
         const forceMapping =
           entry['force-mapping'] === true ||
@@ -631,9 +635,10 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
       .filter(Boolean)
       .filter((entry) => {
         const aliasEntry = entry as OAuthModelAliasEntry;
-        const dedupeKey = `${aliasEntry.name.toLowerCase()}::${aliasEntry.alias.toLowerCase()}::${aliasEntry.fork ? '1' : '0'}::${aliasEntry.forceMapping ? '1' : '0'}`;
-        if (seen.has(dedupeKey)) return false;
-        seen.add(dedupeKey);
+        // Match CPA: aliases must be unique within a channel (first wins).
+        const aliasKey = aliasEntry.alias.toLowerCase();
+        if (seen.has(aliasKey)) return false;
+        seen.add(aliasKey);
         return true;
       }) as OAuthModelAliasEntry[];
 
@@ -646,6 +651,7 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 };
 
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
+const AUTH_FILE_FORCE_REFRESH_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 export const authFilesApi = {
   list: async (query: AuthFilesListQuery = {}) => {
@@ -673,6 +679,13 @@ export const authFilesApi = {
 
   patchFields: (name: string, fields: AuthFileFieldsPatch) =>
     apiClient.patch('/auth-files/fields', { name, ...fields }),
+
+  requestCredentialRefresh: (selector: string) =>
+    apiClient.patch('/auth-files/fields', {
+      name: selector,
+      expired: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
+      last_refresh: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
+    }),
 
   patchFieldsForAuthIndexes: async (
     name: string,

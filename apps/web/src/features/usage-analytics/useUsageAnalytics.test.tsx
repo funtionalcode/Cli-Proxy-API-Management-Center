@@ -48,6 +48,7 @@ describe('useUsageAnalytics request orchestration', () => {
     const selectors = Boolean(params.include?.filter_selectors);
     const main = Boolean(params.include?.summary);
     const credentialTimeline = Boolean(params.include?.credential_timeline);
+    const apiKeyTimeline = Boolean(params.include?.api_key_timeline);
     const mainData = params.include?.credential_stats
       ? {
           ...emptyAnalyticsResponse,
@@ -71,7 +72,48 @@ describe('useUsageAnalytics request orchestration', () => {
             },
           ],
         }
-      : emptyAnalyticsResponse;
+      : params.include?.api_key_stats
+        ? {
+            ...emptyAnalyticsResponse,
+            timeline: [
+              {
+                bucket_ms: 1,
+                label: '00:00',
+                calls: 5,
+                tokens: 500,
+                success: 5,
+                failure: 0,
+              },
+              {
+                bucket_ms: 3_600_001,
+                label: '01:00',
+                calls: 5,
+                tokens: 500,
+                success: 5,
+                failure: 0,
+              },
+            ],
+            api_key_stats: [
+              {
+                id: 'key-a',
+                api_key_hash: 'key-a',
+                calls: 6,
+                success_calls: 6,
+                failure_calls: 0,
+                success_rate: 1,
+                input_tokens: 600,
+                output_tokens: 0,
+                cached_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                total_tokens: 600,
+                cost: 0.6,
+                average_latency_ms: null,
+                last_seen_ms: 1,
+              },
+            ],
+          }
+        : emptyAnalyticsResponse;
     return {
       enabled: Boolean(params.fromMs && params.toMs),
       loading: credentialTimeline ? credentialTimelineLoading : false,
@@ -90,22 +132,44 @@ describe('useUsageAnalytics request orchestration', () => {
             }
         : main
           ? mainData
-          : credentialTimeline && !credentialTimelineError && !credentialTimelineLoading
+          : apiKeyTimeline
             ? {
                 ...emptyAnalyticsResponse,
-                credential_timeline: [
+                api_key_timeline: [
                   {
-                    id: 'credential-a.json',
-                    auth_file_snapshot: 'credential-a.json',
+                    api_key_hash: 'key-a',
                     bucket_ms: 1,
-                    calls: 10,
-                    tokens: 150,
-                    success: 9,
-                    failure: 1,
+                    calls: 2,
+                    tokens: 200,
+                    success: 2,
+                    failure: 0,
+                  },
+                  {
+                    api_key_hash: 'key-a',
+                    bucket_ms: 3_600_001,
+                    calls: 4,
+                    tokens: 400,
+                    success: 4,
+                    failure: 0,
                   },
                 ],
               }
-            : null,
+            : credentialTimeline && !credentialTimelineError && !credentialTimelineLoading
+              ? {
+                  ...emptyAnalyticsResponse,
+                  credential_timeline: [
+                    {
+                      id: 'credential-a.json',
+                      auth_file_snapshot: 'credential-a.json',
+                      bucket_ms: 1,
+                      calls: 10,
+                      tokens: 150,
+                      success: 9,
+                      failure: 1,
+                    },
+                  ],
+                }
+              : null,
       dataStale: false,
       lastRefreshedAt: null,
       serviceBase: 'http://manager.local',
@@ -195,6 +259,30 @@ describe('useUsageAnalytics request orchestration', () => {
     });
     expect(JSON.parse(heatmap?.dataScopeKey ?? '{}')).toMatchObject({ activeTab: 'heatmap' });
     expect(selectorsAfterTab?.dataScopeKey).toBe(selectorScope);
+  });
+
+  it('loads exact timeline buckets for the visible client keys on overview and trends', async () => {
+    await renderHook();
+
+    const apiKeyTimeline = lastParams((params) => Boolean(params.include?.api_key_timeline));
+    expect(apiKeyTimeline?.include).toEqual({ granularity: 'hour', api_key_timeline: true });
+    expect(apiKeyTimeline?.filters).toMatchObject({ api_key_hashes: ['key-a'] });
+    expect(JSON.parse(apiKeyTimeline?.dataScopeKey ?? '{}')).toMatchObject({
+      activeTab: 'overview',
+      apiKeyHashes: ['key-a'],
+    });
+    expect(latestResult?.apiKeyTrendSeries[0].points.map((point) => point.value)).toEqual([2, 4]);
+
+    await act(async () => {
+      latestResult?.setActiveTab('trends');
+      await Promise.resolve();
+    });
+
+    const trendsTimeline = lastParams((params) => Boolean(params.include?.api_key_timeline));
+    expect(JSON.parse(trendsTimeline?.dataScopeKey ?? '{}')).toMatchObject({
+      activeTab: 'trends',
+      apiKeyHashes: ['key-a'],
+    });
   });
 
   it('does not couple selector failures to the main page error and refreshes both requests', async () => {

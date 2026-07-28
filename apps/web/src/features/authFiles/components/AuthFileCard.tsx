@@ -124,6 +124,33 @@ export function AuthFileCard(props: AuthFileCardProps) {
   const quotaCooldownPresentation = quotaCooldown
     ? getQuotaCooldownPresentation(quotaCooldown)
     : null;
+  const quotaCooldownEvidence = quotaCooldown?.evidence;
+  const quotaCooldownEvidenceMatchesRecovery =
+    typeof quotaCooldownEvidence?.recover_at_ms === 'number' &&
+    Number.isFinite(quotaCooldownEvidence.recover_at_ms) &&
+    quotaCooldownEvidence.recover_at_ms === quotaCooldown?.recoverAtMs;
+  const quotaCooldownUsage = (() => {
+    if (
+      typeof quotaCooldownEvidence?.actual !== 'number' ||
+      typeof quotaCooldownEvidence?.limit !== 'number'
+    ) {
+      return t('common.not_set', { defaultValue: 'Not set' });
+    }
+    const parts = [
+      `${quotaCooldownEvidence.actual.toLocaleString()} / ${quotaCooldownEvidence.limit.toLocaleString()} ${quotaCooldownEvidence.unit || 'tokens'}`,
+    ];
+    if (typeof quotaCooldownEvidence.remaining === 'number') {
+      parts.push(
+        `${t('monitoring.provider_usage_remaining', { defaultValue: 'Remaining' })} ${quotaCooldownEvidence.remaining.toLocaleString()}`
+      );
+    }
+    if (typeof quotaCooldownEvidence.overage === 'number' && quotaCooldownEvidence.overage > 0) {
+      parts.push(
+        `${t('monitoring.provider_usage_overage', { defaultValue: 'Overage' })} ${quotaCooldownEvidence.overage.toLocaleString()}`
+      );
+    }
+    return parts.join(' · ');
+  })();
   const accountAutomationPresentation = accountActionCandidate
     ? getAccountAutomationPresentation(accountActionCandidate)
     : null;
@@ -328,6 +355,16 @@ export function AuthFileCard(props: AuthFileCardProps) {
                       source: t(quotaCooldownPresentation.sourceLabelKey, {
                         defaultValue: quotaCooldownPresentation.sourceLabelDefault,
                       }),
+                      usage: quotaCooldownUsage,
+                      recoveryKind: quotaCooldownEvidenceMatchesRecovery
+                        ? quotaCooldownEvidence.recover_at_estimated
+                          ? t('monitoring.provider_usage_estimated', {
+                              defaultValue: 'estimated',
+                            })
+                          : t('monitoring.provider_usage_reported', { defaultValue: 'reported' })
+                        : t('monitoring.provider_usage_recovery_unknown', {
+                            defaultValue: 'recovery source unknown',
+                          }),
                       defaultValue: quotaCooldownPresentation.titleDefault,
                     })}
                   >

@@ -1,8 +1,15 @@
-# Auth Files
+---
+title: Auth Files And Account State
+description: Manage CPA auth files, Sub2API multi-account imports, priority, quota health, automation state, and safe bulk actions.
+---
+
+# Auth Files And Account State
 
 Auth Files manages account credentials and account state. It answers: which accounts exist, whether they are enabled, which `auth_index` they use, and whether recent quota or auth issues were observed.
 
 Use [OAuth Login](./oauth.md) to add new OAuth accounts. This page is for maintenance after credentials exist.
+
+Open the [Auth Files Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/auth-files) to inspect fictional Codex, Claude, and xAI quota, inspection, and automation state.
 
 ## What To Check First
 
@@ -37,13 +44,17 @@ If you are not sure whether an account is still needed, disable it first instead
 
 When pasting JSON, choose the format that matches the source. JSON formats differ by source, and a successful save does not guarantee the account can serve requests.
 
-When you directly upload an official sub2api account export, CPAMP detects and converts its OpenAI OAuth accounts in the browser, then uploads one independent CPA Codex auth file per account. Pasted sub2api JSON uses the same conversion flow. Multi-account imports generate per-account file names instead of saving a top-level JSON array as one auth file.
+### Sub2API Multi-Account Import
+
+When you upload an official Sub2API account export, CPAMP detects and converts its OpenAI OAuth accounts in the browser, then uploads one independent CPA Codex auth file per account. Pasted Sub2API JSON uses the same conversion flow. Multi-account imports generate stable, unique file names instead of saving a top-level JSON array as one auth file.
+
+Conversion requires supported OpenAI OAuth accounts with an `access_token`. Empty exports, malformed fields, and partial upload failures produce explicit results; the original export is not silently saved as an ordinary CPA auth file.
 
 ## Handling Problem Accounts
 
 - **Needs reauth**: open [OAuth Login](./oauth.md), then confirm state here.
 - **Quota exhausted or cooling down**: open [Quota](./quota.md) to check reset time and cooldown source.
-- **Codex state is abnormal**: open [Codex Inspection](./codex-inspection.md) for suggested actions.
+- **Codex/xAI state is abnormal**: open [Account Inspection](./codex-inspection.md) for provider-specific evidence and suggested actions.
 - **Requests fail while the account looks fine**: open [Monitoring](./monitoring.md) and read the failure summary and actual model.
 - **Account Action Queue has a candidate**: open [Account Action Queue](./account-actions.md) and decide whether to ignore, resolve, enable, or delete.
 

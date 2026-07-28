@@ -3,6 +3,7 @@ import type { ResponseHeaderMetadata } from '@/services/api/usageService';
 import type { AuthFileItem } from '@/types/authFile';
 import type { Config } from '@/types/config';
 import type { ModelPrice } from '@/utils/usage';
+import type { MonitoringDataTab } from '../monitoringCenterUiState';
 
 export type MonitoringChannelMeta = {
   key: string;
@@ -183,6 +184,8 @@ export type MonitoringEventRow = {
   totalCost: number;
   reasoningEffort?: string;
   serviceTier?: string;
+  requestServiceTier?: string;
+  responseServiceTier?: string;
   executorType?: string;
   failStatusCode?: number | null;
   failSummary?: string;
@@ -297,6 +300,8 @@ export type MonitoringApiKeyRow = {
 export type MonitoringFilterOptions = {
   accountRows: MonitoringAccountRow[];
   apiKeyRows: MonitoringApiKeyRow[];
+  accountCount?: number;
+  apiKeyCount?: number;
   providers: string[];
   models: string[];
   channels: string[];
@@ -367,6 +372,7 @@ export interface UseMonitoringDataParams {
   searchQuery: string;
   searchApiKeyHash?: string;
   scopeFilters?: MonitoringScopeFilters;
+  activeDataTab?: MonitoringDataTab;
 }
 
 export interface UseMonitoringDataReturn {

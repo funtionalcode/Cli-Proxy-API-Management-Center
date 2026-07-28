@@ -10,6 +10,8 @@ const t = ((key: string, options?: Record<string, unknown>) => {
   const messages: Record<string, string> = {
     'common.loading': 'Loading',
     'common.copy': 'Copy',
+    'common.yes': 'Yes',
+    'common.no': 'No',
     'monitoring.account_overview_account_display_masked': 'Masked',
     'monitoring.account_overview_account_display_full': 'Full',
     'monitoring.account_overview_show_full_accounts_hint': 'Show full accounts',
@@ -26,6 +28,7 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'monitoring.elapsed_short': 'Elapsed',
     'monitoring.executor_type_short': 'Executor',
     'monitoring.fail_status_code_short': 'HTTP',
+    'monitoring.header_should_retry': 'Should retry',
     'monitoring.filter_account': 'Account',
     'monitoring.filter_status_failed': 'Failed only',
     'monitoring.filter_provider': 'Provider',
@@ -48,7 +51,19 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'monitoring.request_status': 'Status',
     'monitoring.result_failed': 'Failed',
     'monitoring.result_success': 'Success',
+    'monitoring.provider_usage_xai_exhausted': 'xAI included free usage exhausted',
+    'monitoring.provider_usage_remaining': 'Remaining',
+    'monitoring.provider_usage_overage': 'Overage',
+    'monitoring.provider_usage_rolling_24h': 'Rolling 24-hour window',
+    'monitoring.provider_usage_estimated_recovery': 'Estimated recovery',
+    'monitoring.provider_rate_limit': 'API rate limit',
+    'monitoring.provider_rate_limit_requests': 'Requests',
+    'monitoring.provider_rate_limit_tokens': 'Tokens',
+    'monitoring.provider_data_policy': 'Data policy',
+    'monitoring.provider_zero_retention': 'Zero retention',
     'monitoring.service_tier_short': 'Tier',
+    'monitoring.request_service_tier_short': 'Requested tier',
+    'monitoring.response_service_tier_short': 'Reported tier',
     'monitoring.this_call_cost': 'Cost',
     'monitoring.this_call_usage': 'Usage',
     'monitoring.ttft_short': 'TTFT',
@@ -185,6 +200,8 @@ describe('RealtimeEventsPanel', () => {
         executorType: 'codex',
         reasoningEffort: 'medium',
         serviceTier: 'priority',
+        requestServiceTier: 'priority',
+        responseServiceTier: 'default',
         cacheReadTokens: 4,
         cacheCreationTokens: 1,
         failStatusCode: 429,
@@ -198,7 +215,8 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).not.toContain('>Executor: codex<');
     expect(markup).not.toContain('Executor: codex');
     expect(markup).toContain('medium');
-    expect(markup).toContain('Tier: priority');
+    expect(markup).toContain('Requested tier: priority');
+    expect(markup).toContain('Reported tier: default');
     expect(markup).toContain('client-gpt');
     expect(markup).toContain('gpt-5.4');
     expect(markup).not.toContain('Resolved');
@@ -219,6 +237,72 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).toContain('aria-label="Copy"');
     expect(markup).toContain('HTTP 429');
     expect(markup).toContain('rate limit exceeded');
+  });
+
+  it('renders structured xAI free-usage exhaustion evidence', () => {
+    const markup = renderPanel(
+      baseRow({
+        provider: 'xai',
+        failed: true,
+        successRate: 0,
+        failStatusCode: 429,
+        failSummary: '{"code":"subscription:free-usage-exhausted"}',
+        responseMetadata: {
+          errors: { should_retry: true },
+          provider_usage: {
+            provider: 'xai',
+            kind: 'included_free_usage',
+            state: 'exhausted',
+            code: 'subscription:free-usage-exhausted',
+            model: 'grok-4.5-build-free',
+            unit: 'tokens',
+            actual: 1_024_413,
+            limit: 1_000_000,
+            remaining: 0,
+            overage: 24_413,
+            window_kind: 'rolling_24h',
+            recover_at_ms: Date.UTC(2026, 3, 26, 12, 34, 56),
+            recover_at_estimated: true,
+          },
+          rate_limit: {
+            requests: { limit: 21, remaining: 21 },
+            tokens: { limit: 1_000_000, remaining: 1_000_000 },
+          },
+          data_policy: { retention_mode: 'zdr', zero_retention: true },
+        },
+      })
+    );
+
+    expect(markup).toContain('xAI included free usage exhausted');
+    expect(markup).toContain('1,024,413 / 1,000,000 tokens');
+    expect(markup).toContain('Remaining 0');
+    expect(markup).toContain('Overage 24,413');
+    expect(markup).toContain('Rolling 24-hour window');
+    expect(markup).toContain('Estimated recovery');
+    expect(markup).toContain('API rate limit');
+    expect(markup).toContain('Data policy');
+    expect(markup).toContain('Zero retention');
+  });
+
+  it('renders safe response diagnostics on a successful request', () => {
+    const markup = renderPanel(
+      baseRow({
+        responseMetadata: {
+          rate_limit: {
+            requests: { limit: 21, remaining: 20 },
+            tokens: { limit: 1_000_000, remaining: 999_000 },
+          },
+          data_policy: { zero_retention: false },
+        },
+      })
+    );
+
+    expect(markup).toContain('Success');
+    expect(markup).toContain('API rate limit');
+    expect(markup).toContain('Requests 20 / 21');
+    expect(markup).toContain('Tokens 999000 / 1000000');
+    expect(markup).toContain('Zero retention: No');
+    expect(markup).toContain(styles.realtimeSuccessDiagnosticTooltip);
   });
 
   it('renders safe defaults when optional usage fields are missing', () => {

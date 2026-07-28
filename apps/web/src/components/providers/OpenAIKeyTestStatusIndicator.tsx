@@ -15,8 +15,9 @@ type OpenAIKeyTestStatus = 'idle' | 'loading' | 'success' | 'error';
 
 const TOOLTIP_VIEWPORT_MARGIN = 12;
 const TOOLTIP_OFFSET = 10;
-const TOOLTIP_MAX_WIDTH = 360;
-const TOOLTIP_MAX_HEIGHT = 240;
+const TOOLTIP_MAX_WIDTH = 420;
+const TOOLTIP_MAX_HEIGHT = 360;
+const TOOLTIP_HIDE_DELAY_MS = 120;
 
 type TooltipPlacement = 'above' | 'below';
 
@@ -151,6 +152,7 @@ export function OpenAIKeyTestStatusIndicator({
   const tooltipId = useId();
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [tooltipPosition, setTooltipPosition] = useState<OpenAIKeyTestTooltipPosition | null>(null);
   const isBrowser = typeof document !== 'undefined';
@@ -179,12 +181,34 @@ export function OpenAIKeyTestStatusIndicator({
     });
   }, [updateTooltipPosition]);
 
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current === null || typeof window === 'undefined') return;
+    window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = null;
+  }, []);
+
   const showTooltip = useCallback(() => {
+    clearHideTimer();
     updateTooltipPosition();
     setOpen(true);
-  }, [updateTooltipPosition]);
+  }, [clearHideTimer, updateTooltipPosition]);
 
-  const hideTooltip = useCallback(() => setOpen(false), []);
+  const hideTooltip = useCallback(() => {
+    clearHideTimer();
+    setOpen(false);
+  }, [clearHideTimer]);
+
+  const scheduleHideTooltip = useCallback(() => {
+    if (typeof window === 'undefined') {
+      setOpen(false);
+      return;
+    }
+    clearHideTimer();
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setOpen(false);
+    }, TOOLTIP_HIDE_DELAY_MS);
+  }, [clearHideTimer]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape') return;
@@ -209,8 +233,9 @@ export function OpenAIKeyTestStatusIndicator({
       if (rafRef.current !== null && typeof window !== 'undefined') {
         window.cancelAnimationFrame(rafRef.current);
       }
+      clearHideTimer();
     },
-    []
+    [clearHideTimer]
   );
 
   const ariaLabel =
@@ -228,6 +253,8 @@ export function OpenAIKeyTestStatusIndicator({
       role="tooltip"
       className={styles.keyStatusTooltip}
       style={isBrowser ? tooltipPosition?.style : undefined}
+      onMouseEnter={clearHideTimer}
+      onMouseLeave={scheduleHideTooltip}
     >
       <span className={styles.keyStatusTooltipText}>{resolvedMessage}</span>
     </span>
@@ -241,7 +268,7 @@ export function OpenAIKeyTestStatusIndicator({
       aria-label={ariaLabel}
       aria-describedby={hasTooltip && open ? tooltipId : undefined}
       onMouseEnter={hasTooltip ? showTooltip : undefined}
-      onMouseLeave={hasTooltip ? hideTooltip : undefined}
+      onMouseLeave={hasTooltip ? scheduleHideTooltip : undefined}
       onFocus={hasTooltip ? showTooltip : undefined}
       onBlur={hasTooltip ? hideTooltip : undefined}
       onKeyDown={hasTooltip ? handleKeyDown : undefined}

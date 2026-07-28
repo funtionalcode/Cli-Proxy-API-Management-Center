@@ -56,11 +56,18 @@ export {
 export { executeCodexInspectionActions } from '@/features/monitoring/model/codexInspectionExecution';
 
 export type CodexInspectionLogLevel = 'info' | 'success' | 'warning' | 'error';
+export type CodexInspectionLogDetail = Record<string, unknown>;
+export type CodexInspectionLogHandler = (
+  level: CodexInspectionLogLevel,
+  message: string,
+  detail?: CodexInspectionLogDetail
+) => void;
 export type CodexInspectionAction = 'keep' | 'delete' | 'disable' | 'enable' | 'reauth';
 export type CodexInspectionExecutionAction = Extract<
   CodexInspectionAction,
   'delete' | 'disable' | 'enable'
 >;
+export type CodexInspectionExecutionStatus = 'success' | 'failed' | 'skipped' | 'needs_review';
 export type CodexInspectionProgressStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'completed';
 export type CodexInspectionAutoActionMode = 'none' | 'enable' | 'disable' | 'delete';
 export type CodexInspectionStoredActionFilter =
@@ -71,26 +78,47 @@ export type CodexInspectionStoredActionFilter =
   | 'reauth'
   | 'keep';
 
+const identityT = ((key: string) => key) as TFunction;
+
+const formatInspectionTargetTypes = (targetTypes: string[], t: TFunction) => {
+  const providers = new Set(targetTypes.map((item) => item.trim().toLowerCase()));
+  if (providers.has('codex') && providers.has('xai')) {
+    return t('monitoring.codex_inspection_target_codex_xai');
+  }
+  if (providers.has('xai')) return t('monitoring.codex_inspection_target_xai');
+  return t('monitoring.codex_inspection_target_codex');
+};
+
 export interface CodexInspectionSettings {
   baseUrl: string;
   token: string;
+  targetTypes: string[];
   targetType: string;
   workers: number;
   deleteWorkers: number;
   timeout: number;
   retries: number;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: number;
   sampleSize: number;
 }
 
 export interface CodexInspectionConfigurableSettings {
+  targetTypes: string[];
   targetType: string;
   workers: number;
   deleteWorkers: number;
   timeout: number;
   retries: number;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: number;
   sampleSize: number;
   autoActionMode: CodexInspectionAutoActionMode;
@@ -186,9 +214,11 @@ export interface CodexInspectionProgressSnapshot {
 }
 
 export interface CodexInspectionExecutionOutcome {
+  accountKey: string;
   action: CodexInspectionExecutionAction;
   fileName: string;
   displayAccount: string;
+  status: CodexInspectionExecutionStatus;
   success: boolean;
   error: string;
 }
@@ -204,6 +234,7 @@ export interface CodexInspectionStoredLogEntry {
   level: CodexInspectionLogLevel;
   message: string;
   timestamp: number;
+  detail?: CodexInspectionLogDetail;
 }
 
 export interface CodexInspectionLastRunState {
@@ -215,7 +246,6 @@ export interface CodexInspectionLastRunState {
   savedAt: number;
 }
 
-type LogHandler = (level: CodexInspectionLogLevel, message: string) => void;
 type ProgressHandler = (progress: CodexInspectionProgressSnapshot) => void;
 type ResultsChangeHandler = (result: CodexInspectionRunResult) => void;
 
@@ -224,13 +254,15 @@ type InspectCodexAccountsOptions = {
   apiBase: string;
   managementKey: string;
   settings?: Partial<CodexInspectionConfigurableSettings> | null;
-  onLog?: LogHandler;
+  onLog?: CodexInspectionLogHandler;
   onProgress?: ProgressHandler;
   onResultsChange?: ResultsChangeHandler;
   t?: TFunction;
 };
 
-type CreateCodexInspectionSessionOptions = InspectCodexAccountsOptions;
+type CreateCodexInspectionSessionOptions = InspectCodexAccountsOptions & {
+  deferCompletionLog?: boolean;
+};
 
 type CodexInspectionSessionPromiseState = {
   promise: Promise<CodexInspectionRunResult>;
@@ -302,6 +334,22 @@ const pickSample = <T>(items: T[], sampleSize: number): T[] => {
   return shuffled.slice(0, sampleSize);
 };
 
+const pickSamplePerProvider = (
+  items: CodexInspectionAccount[],
+  sampleSize: number
+): CodexInspectionAccount[] => {
+  if (sampleSize <= 0) return [...items];
+
+  const groups = new Map<string, CodexInspectionAccount[]>();
+  items.forEach((item) => {
+    const group = groups.get(item.provider) ?? [];
+    group.push(item);
+    groups.set(item.provider, group);
+  });
+
+  return Array.from(groups.values()).flatMap((group) => pickSample(group, sampleSize));
+};
+
 export const resolveCodexInspectionSettings = (
   config: Config | null,
   apiBase: string,
@@ -317,12 +365,17 @@ export const resolveCodexInspectionSettings = (
   return {
     baseUrl: readString(apiBase) || readString(clean?.baseUrl),
     token: readString(managementKey) || readString(clean?.token),
+    targetTypes: configurable.targetTypes,
     targetType: configurable.targetType,
     workers: configurable.workers,
     deleteWorkers: configurable.deleteWorkers,
     timeout: configurable.timeout,
     retries: configurable.retries,
     userAgent: configurable.userAgent,
+    xaiInferenceUserAgent: configurable.xaiInferenceUserAgent,
+    xaiInferenceEnabled: configurable.xaiInferenceEnabled,
+    xaiInferenceModel: configurable.xaiInferenceModel,
+    xaiInferencePrompt: configurable.xaiInferencePrompt,
     usedPercentThreshold: configurable.usedPercentThreshold,
     sampleSize: configurable.sampleSize,
   };
@@ -337,8 +390,10 @@ export const createCodexInspectionSession = ({
   onProgress,
   onResultsChange,
   t,
+  deferCompletionLog = false,
 }: CreateCodexInspectionSessionOptions): CodexInspectionSession => {
   const resolvedSettings = resolveCodexInspectionSettings(config, apiBase, managementKey, settings);
+  const translate = t ?? identityT;
   const sessionId = `codex-inspection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   let status: CodexInspectionProgressStatus = 'idle';
@@ -407,10 +462,31 @@ export const createCodexInspectionSession = ({
     finalResult = buildRunResult(finishedAt);
     status = 'completed';
     emitProgress();
-    onLog?.(
-      'success',
-      `巡检完成：删除 ${finalResult.summary.deleteCount}、禁用 ${finalResult.summary.disableCount}、启用 ${finalResult.summary.enableCount}、重新登录 ${finalResult.summary.reauthCount}、保留 ${finalResult.summary.keepCount}`
-    );
+    if (!deferCompletionLog) {
+      onLog?.(
+        'success',
+        translate('monitoring.codex_inspection_log_completed', {
+          delete: finalResult.summary.deleteCount,
+          disable: finalResult.summary.disableCount,
+          enable: finalResult.summary.enableCount,
+          reauth: finalResult.summary.reauthCount,
+          keep: finalResult.summary.keepCount,
+        }),
+        {
+          deleteCount: finalResult.summary.deleteCount,
+          disableCount: finalResult.summary.disableCount,
+          enableCount: finalResult.summary.enableCount,
+          reauthCount: finalResult.summary.reauthCount,
+          keepCount: finalResult.summary.keepCount,
+          actionSuccessCount: 0,
+          actionFailedCount: 0,
+          actionSkippedCount: 0,
+          actionNeedsReviewCount: 0,
+          actionErrors: [],
+          resultWriteFailedCount: 0,
+        }
+      );
+    }
     currentDeferred.resolve(finalResult);
   };
 
@@ -445,14 +521,29 @@ export const createCodexInspectionSession = ({
 
       void (
         account.provider === 'xai'
-          ? inspectSingleXaiAccount(account, resolvedSettings, onLog, t)
-          : inspectSingleAccount(account, resolvedSettings, onLog)
+          ? inspectSingleXaiAccount(account, resolvedSettings, onLog, translate)
+          : inspectSingleAccount(account, resolvedSettings, onLog, translate)
       )
         .then((inspectionResult) => {
           resultMap.set(inspectionResult.key, inspectionResult);
           emitResultsChange(inspectionResult);
         })
         .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error || '探测失败');
+          onLog?.(
+            'warning',
+            translate('monitoring.codex_inspection_log_unexpected_error', {
+              account: account.displayAccount,
+              message,
+            }),
+            {
+              provider: account.provider,
+              fileName: account.fileName,
+              displayAccount: account.displayAccount,
+              action: 'keep',
+              error: message,
+            }
+          );
           const fallbackResult: CodexInspectionResultItem = {
             ...account,
             action: 'keep',
@@ -461,7 +552,7 @@ export const createCodexInspectionSession = ({
             usedPercent: null,
             isQuota: false,
             autoRecoverEligible: false,
-            error: error instanceof Error ? error.message : String(error || '探测失败'),
+            error: message,
           };
           resultMap.set(account.key, fallbackResult);
           emitResultsChange(fallbackResult);
@@ -487,7 +578,17 @@ export const createCodexInspectionSession = ({
   };
 
   const initialize = async () => {
-    onLog?.('info', `加载认证文件列表，目标类型：${resolvedSettings.targetType}`);
+    onLog?.(
+      'info',
+      translate('monitoring.codex_inspection_log_loading', {
+        target: formatInspectionTargetTypes(resolvedSettings.targetTypes, translate),
+      }),
+      {
+        triggerType: 'manual',
+        triggerKey: 'manual',
+        targetTypes: [...resolvedSettings.targetTypes],
+      }
+    );
 
     const authFilesResponse = await authFilesApi.list();
     files = Array.isArray(authFilesResponse.files) ? authFilesResponse.files : [];
@@ -501,19 +602,28 @@ export const createCodexInspectionSession = ({
       files
     );
     probeSet = accounts
-      .filter((item) => item.provider === resolvedSettings.targetType)
+      .filter((item) => resolvedSettings.targetTypes.includes(item.provider))
       .map((item) => ({
         ...item,
         autoRecoverOwned: ownedDisableFileNames.has(item.fileName),
       }));
     sampledAccounts =
       resolvedSettings.sampleSize > 0
-        ? pickSample(probeSet, Math.min(resolvedSettings.sampleSize, probeSet.length))
+        ? pickSamplePerProvider(probeSet, resolvedSettings.sampleSize)
         : probeSet;
 
     onLog?.(
       'info',
-      `巡检集合 ${probeSet.length} 个账号，本次探测 ${sampledAccounts.length} 个账号`
+      translate('monitoring.codex_inspection_log_set_ready', {
+        total: probeSet.length,
+        sampled: sampledAccounts.length,
+      }),
+      {
+        totalFiles: files.length,
+        probeSetCount: probeSet.length,
+        sampledCount: sampledAccounts.length,
+        targetTypes: [...resolvedSettings.targetTypes],
+      }
     );
     emitProgress();
   };
@@ -533,7 +643,7 @@ export const createCodexInspectionSession = ({
 
     if (status === 'paused') {
       status = 'running';
-      onLog?.('info', '继续巡检');
+      onLog?.('info', translate('monitoring.codex_inspection_log_resumed'));
       emitProgress();
       pump();
       return ensureStarted().promise;
@@ -552,6 +662,15 @@ export const createCodexInspectionSession = ({
         pump();
       })
       .catch((error) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error || translate('common.unknown_error'));
+        onLog?.(
+          'error',
+          translate('monitoring.codex_inspection_log_auth_files_failed', { message }),
+          { error: message }
+        );
         status = 'completed';
         emitProgress();
         const activeDeferred = deferred;
@@ -565,7 +684,7 @@ export const createCodexInspectionSession = ({
   const resume = () => {
     if (status !== 'paused') return;
     status = 'running';
-    onLog?.('info', '继续巡检');
+    onLog?.('info', translate('monitoring.codex_inspection_log_resumed'));
     emitProgress();
     pump();
   };
@@ -575,7 +694,9 @@ export const createCodexInspectionSession = ({
     status = 'paused';
     onLog?.(
       'info',
-      inFlight > 0 ? `巡检已暂停，等待 ${inFlight} 个进行中的探测完成` : '巡检已暂停'
+      inFlight > 0
+        ? translate('monitoring.codex_inspection_log_paused_pending', { count: inFlight })
+        : translate('monitoring.codex_inspection_log_paused')
     );
     emitProgress();
     maybeSettle();
@@ -586,7 +707,9 @@ export const createCodexInspectionSession = ({
     status = 'stopped';
     onLog?.(
       'warning',
-      inFlight > 0 ? `巡检已停止，等待 ${inFlight} 个进行中的探测完成` : '巡检已停止'
+      inFlight > 0
+        ? translate('monitoring.codex_inspection_log_stopped_pending', { count: inFlight })
+        : translate('monitoring.codex_inspection_log_stopped')
     );
     emitProgress();
     maybeSettle();
@@ -640,12 +763,15 @@ export const buildCodexInspectionError = (message: string) => message;
 export const buildExecutionFailureMessage = (outcome: CodexInspectionExecutionOutcome) =>
   `${outcome.displayAccount}：${outcome.error || '执行失败'}`;
 
-export const isSuggestedAction = (item: CodexInspectionResultItem) => item.action !== 'keep';
+export const isSuggestedAction = (item: CodexInspectionResultItem) =>
+  !item.actionHandled && item.action !== 'keep';
 
 export const isExecutableAction = (item: CodexInspectionResultItem) =>
-  item.action === 'delete' || item.action === 'disable' || item.action === 'enable';
+  !item.actionHandled &&
+  (item.action === 'delete' || item.action === 'disable' || item.action === 'enable');
 
-export const isReauthAction = (item: CodexInspectionResultItem) => item.action === 'reauth';
+export const isReauthAction = (item: CodexInspectionResultItem) =>
+  !item.actionHandled && item.action === 'reauth';
 
 export const toReauthDeleteExecutionItem = (
   item: CodexInspectionResultItem
@@ -657,53 +783,105 @@ export const toReauthDeleteExecutionItem = (
     : '用户选择删除需重新登录账号',
 });
 
+export interface CodexInspectionAutoActionPlan {
+  items: CodexInspectionResultItem[];
+  preflightOutcomes: CodexInspectionExecutionOutcome[];
+}
+
+const buildAutoActionPreflightOutcome = (
+  item: CodexInspectionResultItem,
+  status: Extract<CodexInspectionExecutionStatus, 'skipped' | 'needs_review'>,
+  error: string
+): CodexInspectionExecutionOutcome => ({
+  accountKey: item.key,
+  action: item.action as CodexInspectionExecutionAction,
+  fileName: item.fileName,
+  displayAccount: item.displayAccount,
+  status,
+  success: true,
+  error,
+});
+
+export const resolveCodexInspectionAutoActionPlan = (
+  mode: CodexInspectionAutoActionMode,
+  autoRecoverEnabled: boolean,
+  items: CodexInspectionResultItem[]
+): CodexInspectionAutoActionPlan => {
+  const normalizedMode = normalizeAutoActionMode(mode);
+  if (normalizedMode === 'none' && !autoRecoverEnabled) {
+    return { items: [], preflightOutcomes: [] };
+  }
+
+  const canAutoRecover = (item: CodexInspectionResultItem) =>
+    autoRecoverEnabled && item.action === 'enable' && item.autoRecoverEligible;
+  const allowsAction = (item: CodexInspectionResultItem) => {
+    if (item.action === 'enable') return canAutoRecover(item);
+    if (normalizedMode === 'disable' || normalizedMode === 'delete') {
+      return item.action === 'delete' || item.action === 'disable';
+    }
+    return false;
+  };
+
+  const groups = new Map<string, CodexInspectionResultItem[]>();
+  items.filter(isExecutableAction).forEach((item) => {
+    const fileName = item.fileName.trim();
+    if (!fileName) return;
+    const group = groups.get(fileName) ?? [];
+    group.push(item);
+    groups.set(fileName, group);
+  });
+
+  const executableItems: CodexInspectionResultItem[] = [];
+  const preflightOutcomes: CodexInspectionExecutionOutcome[] = [];
+  groups.forEach((group) => {
+    if (new Set(group.map((item) => item.action)).size > 1) {
+      group.forEach((item) =>
+        preflightOutcomes.push(
+          buildAutoActionPreflightOutcome(
+            item,
+            'needs_review',
+            '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理'
+          )
+        )
+      );
+      return;
+    }
+
+    const canonical = group[0];
+    if (!canonical || !allowsAction(canonical)) return;
+    executableItems.push(
+      normalizedMode === 'disable' && canonical.action === 'delete'
+        ? {
+            ...canonical,
+            action: 'disable',
+            actionReason: canonical.actionReason
+              ? `${canonical.actionReason}；自动禁用策略改为禁用账号`
+              : '自动禁用策略改为禁用账号',
+          }
+        : canonical
+    );
+    group
+      .slice(1)
+      .forEach((item) =>
+        preflightOutcomes.push(
+          buildAutoActionPreflightOutcome(
+            item,
+            'skipped',
+            'CPA 认证文件动作按文件执行，同名文件已由另一条结果处理'
+          )
+        )
+      );
+  });
+
+  return { items: executableItems, preflightOutcomes };
+};
+
 export const resolveCodexInspectionAutoActionItems = (
   mode: CodexInspectionAutoActionMode,
   autoRecoverEnabled: boolean,
   items: CodexInspectionResultItem[]
-): CodexInspectionResultItem[] => {
-  const normalizedMode = normalizeAutoActionMode(mode);
-  const canAutoRecover = (item: CodexInspectionResultItem) =>
-    autoRecoverEnabled && item.action === 'enable' && item.autoRecoverEligible;
-
-  const grouped = new Map<string, CodexInspectionResultItem[]>();
-  items.filter(isExecutableAction).forEach((item) => {
-    const fileName = item.fileName.trim();
-    if (!fileName) return;
-    const group = grouped.get(fileName) ?? [];
-    group.push(item);
-    grouped.set(fileName, group);
-  });
-  const canonicalItems = Array.from(grouped.values())
-    .filter((group) => new Set(group.map((item) => item.action)).size === 1)
-    .map((group) => group[0]);
-
-  if (normalizedMode === 'none' || normalizedMode === 'enable') {
-    return canonicalItems.filter(canAutoRecover);
-  }
-
-  if (normalizedMode === 'disable') {
-    return canonicalItems
-      .filter(
-        (item) => canAutoRecover(item) || item.action === 'delete' || item.action === 'disable'
-      )
-      .map((item) =>
-        item.action === 'delete'
-          ? {
-              ...item,
-              action: 'disable' as const,
-              actionReason: item.actionReason
-                ? `${item.actionReason}；自动禁用策略改为禁用账号`
-                : '自动禁用策略改为禁用账号',
-            }
-          : item
-      );
-  }
-
-  return canonicalItems.filter(
-    (item) => canAutoRecover(item) || item.action === 'delete' || item.action === 'disable'
-  );
-};
+): CodexInspectionResultItem[] =>
+  resolveCodexInspectionAutoActionPlan(mode, autoRecoverEnabled, items).items;
 
 export const isCodexInspectionStoppedError = (
   error: unknown
@@ -714,7 +892,14 @@ export const applyCodexInspectionExecutionResult = (
   execution: CodexInspectionExecutionResult
 ): CodexInspectionRunResult => {
   const successfulOutcomes = new Map(
-    execution.outcomes.filter((item) => item.success).map((item) => [item.fileName, item] as const)
+    execution.outcomes
+      .filter((item) => item.success && item.status === 'success')
+      .map((item) => [item.fileName, item] as const)
+  );
+  const terminalPreflightOutcomes = new Map(
+    execution.outcomes
+      .filter((item) => item.status === 'skipped' || item.status === 'needs_review')
+      .map((item) => [item.accountKey, item] as const)
   );
   const refreshedAccounts = new Map(
     execution.refreshedFiles.map((file) => {
@@ -734,7 +919,15 @@ export const applyCodexInspectionExecutionResult = (
           }
         : item;
       const outcome = successfulOutcomes.get(item.fileName);
+      const terminalPreflight = terminalPreflightOutcomes.get(item.key);
 
+      if (terminalPreflight) {
+        return {
+          ...baseItem,
+          actionHandled: true,
+          actionReason: terminalPreflight.error || baseItem.actionReason,
+        };
+      }
       if (!outcome) {
         return baseItem;
       }

@@ -3,6 +3,7 @@ package quotacooldown
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 	if cooldown.RecoverAtMS <= 0 {
 		return model.QuotaCooldown{}, errors.New("quota cooldown recover_at_ms is required")
 	}
+	cooldown.EvidenceJSON = normalizeEvidenceJSON(cooldown.EvidenceJSON)
 	now := time.Now().UnixMilli()
 	if cooldown.DisabledAtMS <= 0 {
 		cooldown.DisabledAtMS = now
@@ -57,16 +59,17 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		res, execErr := tx.ExecContext(ctx, `insert into quota_cooldowns (
-			auth_file_name, auth_index, account_snapshot, provider, reason_code, window_kind, recover_at_ms,
+			auth_file_name, auth_index, account_snapshot, provider, reason_code, window_kind, evidence_json, recover_at_ms,
 			owner, event_hash, pre_disabled_state, status, disabled_at_ms,
 			created_at_ms, updated_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			cooldown.AuthFileName,
 			nullString(cooldown.AuthIndex),
 			nullString(cooldown.AccountSnapshot),
 			nullString(cooldown.Provider),
 			nullString(cooldown.ReasonCode),
 			nullString(cooldown.WindowKind),
+			nullString(cooldown.EvidenceJSON),
 			cooldown.RecoverAtMS,
 			cooldown.Owner,
 			nullString(cooldown.EventHash),
@@ -90,6 +93,10 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 			provider = ?,
 			reason_code = coalesce(nullif(?, ''), reason_code),
 			window_kind = coalesce(nullif(?, ''), window_kind),
+			evidence_json = case
+				when ? >= recover_at_ms then coalesce(nullif(?, ''), evidence_json)
+				else evidence_json
+			end,
 			recover_at_ms = max(recover_at_ms, ?),
 			event_hash = ?,
 			pre_disabled_state = ?,
@@ -102,6 +109,8 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 			nullString(cooldown.Provider),
 			cooldown.ReasonCode,
 			cooldown.WindowKind,
+			cooldown.RecoverAtMS,
+			cooldown.EvidenceJSON,
 			cooldown.RecoverAtMS,
 			nullString(cooldown.EventHash),
 			boolInt(cooldown.PreDisabledState),
@@ -168,7 +177,7 @@ func (r *repository) RecordFailure(ctx context.Context, id int64, reason string)
 }
 
 const selectQuotaCooldowns = `select
-	id, auth_file_name, auth_index, account_snapshot, provider, reason_code, window_kind, recover_at_ms,
+	id, auth_file_name, auth_index, account_snapshot, provider, reason_code, window_kind, evidence_json, recover_at_ms,
 	owner, event_hash, pre_disabled_state, status, disabled_at_ms,
 	recovered_at_ms, last_error, created_at_ms, updated_at_ms
 from quota_cooldowns`
@@ -217,7 +226,7 @@ func scanScanner(row scanner) (model.QuotaCooldown, error) {
 	var authIndex sql.NullString
 	var accountSnapshot sql.NullString
 	var provider sql.NullString
-	var reasonCode, windowKind, eventHash sql.NullString
+	var reasonCode, windowKind, evidenceJSON, eventHash sql.NullString
 	var recoveredAtMS sql.NullInt64
 	var lastError sql.NullString
 	var preDisabled int
@@ -229,6 +238,7 @@ func scanScanner(row scanner) (model.QuotaCooldown, error) {
 		&provider,
 		&reasonCode,
 		&windowKind,
+		&evidenceJSON,
 		&item.RecoverAtMS,
 		&item.Owner,
 		&eventHash,
@@ -248,6 +258,7 @@ func scanScanner(row scanner) (model.QuotaCooldown, error) {
 	item.Provider = provider.String
 	item.ReasonCode = reasonCode.String
 	item.WindowKind = windowKind.String
+	item.EvidenceJSON = evidenceJSON.String
 	item.EventHash = eventHash.String
 	item.PreDisabledState = preDisabled != 0
 	if recoveredAtMS.Valid {
@@ -261,6 +272,14 @@ func nullString(value string) any {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
+	}
+	return value
+}
+
+func normalizeEvidenceJSON(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !json.Valid([]byte(value)) {
+		return ""
 	}
 	return value
 }

@@ -3,6 +3,7 @@ package usageevent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -106,10 +107,30 @@ type FilterOptionValues struct {
 }
 
 type FilterSelectorValues struct {
-	Models       []string
-	APIKeyHashes []string
-	Providers    []string
-	AuthFiles    []string
+	Models           []string
+	APIKeyHashes     []string
+	Providers        []string
+	AuthFiles        []string
+	Accounts         []string
+	AccountSelectors []AccountSelectorValue
+	APIKeySelectors  []APIKeySelectorValue
+}
+
+type AccountSelectorValue struct {
+	AccountSnapshot      string
+	AuthLabelSnapshot    string
+	AuthProviderSnapshot string
+	AuthIndex            string
+	Source               string
+	SourceHash           string
+}
+
+type APIKeySelectorValue struct {
+	APIKeyHash           string
+	AuthProviderSnapshot string
+	AuthIndex            string
+	Source               string
+	SourceHash           string
 }
 
 type TimelinePoint struct {
@@ -274,6 +295,27 @@ type CredentialTimelinePoint struct {
 	CacheCreationTokens   int64
 	AvgLatencyMS          sql.NullFloat64
 	LatencySamples        int64
+}
+
+type APIKeyTimelinePoint struct {
+	usage.LongContextTokens
+	APIKeyHash          string
+	BucketMS            int64
+	Model               string
+	BillingModel        string
+	ServiceTier         string
+	Calls               int64
+	Tokens              int64
+	Success             int64
+	Failure             int64
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	AvgLatencyMS        sql.NullFloat64
+	LatencySamples      int64
 }
 
 type APIKeyModelStat struct {
@@ -643,6 +685,120 @@ order by timestamp_ms, model`, where)
 	return points, nil
 }
 
+func (r *repository) APIKeyTimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]APIKeyTimelinePoint, error) {
+	if len(normalizeFilterValues(filter.APIKeyHashes)) == 0 && strings.TrimSpace(filter.SearchAPIKeyHash) == "" {
+		return nil, nil
+	}
+	where, args := analyticsWhere(filter)
+	query := fmt.Sprintf(`select
+	timestamp_ms,
+	coalesce(api_key_hash, ''),
+	model,
+	coalesce(nullif(resolved_model, ''), model) as billing_model,
+	coalesce(service_tier, '') as service_tier,
+	failed,
+	`+normalizedInputExpr+`,
+	output_tokens,
+	reasoning_tokens,
+	`+compatCachedExpr+`,
+	cache_read_tokens,
+	cache_creation_tokens,
+	total_tokens,
+	latency_ms
+from usage_events %s
+order by timestamp_ms, api_key_hash, model`, where)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type key struct {
+		apiKeyHash   string
+		bucketMS     int64
+		model        string
+		billingModel string
+		serviceTier  string
+	}
+	grouped := map[key]*APIKeyTimelinePoint{}
+	order := make([]key, 0)
+	for rows.Next() {
+		var timestampMS int64
+		var point APIKeyTimelinePoint
+		var failed int
+		var latency sql.NullFloat64
+		var totalTokens int64
+		if err := rows.Scan(
+			&timestampMS,
+			&point.APIKeyHash,
+			&point.Model,
+			&point.BillingModel,
+			&point.ServiceTier,
+			&failed,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.ReasoningTokens,
+			&point.CachedTokens,
+			&point.CacheReadTokens,
+			&point.CacheCreationTokens,
+			&totalTokens,
+			&latency,
+		); err != nil {
+			return nil, err
+		}
+		mapKey := key{
+			apiKeyHash:   point.APIKeyHash,
+			bucketMS:     usage.AnalyticsBucketMS(timestampMS, granularity, location),
+			model:        point.Model,
+			billingModel: point.BillingModel,
+			serviceTier:  point.ServiceTier,
+		}
+		entry := grouped[mapKey]
+		if entry == nil {
+			entry = &APIKeyTimelinePoint{
+				APIKeyHash:   point.APIKeyHash,
+				BucketMS:     mapKey.bucketMS,
+				Model:        point.Model,
+				BillingModel: point.BillingModel,
+				ServiceTier:  point.ServiceTier,
+			}
+			grouped[mapKey] = entry
+			order = append(order, mapKey)
+		}
+		entry.Calls += 1
+		entry.Tokens += totalTokens
+		if failed != 0 {
+			entry.Failure += 1
+		} else {
+			entry.Success += 1
+		}
+		entry.InputTokens += point.InputTokens
+		entry.OutputTokens += point.OutputTokens
+		entry.ReasoningTokens += point.ReasoningTokens
+		entry.CachedTokens += point.CachedTokens
+		entry.CacheReadTokens += point.CacheReadTokens
+		entry.CacheCreationTokens += point.CacheCreationTokens
+		entry.AddIfLongContext(point.InputTokens, point.OutputTokens, point.CachedTokens, point.CacheReadTokens, point.CacheCreationTokens)
+		if latency.Valid && latency.Float64 > 0 {
+			entry.AvgLatencyMS.Float64 += latency.Float64
+			entry.LatencySamples += 1
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	points := make([]APIKeyTimelinePoint, 0, len(order))
+	for _, mapKey := range order {
+		point := grouped[mapKey]
+		if point.LatencySamples > 0 {
+			point.AvgLatencyMS.Float64 = point.AvgLatencyMS.Float64 / float64(point.LatencySamples)
+			point.AvgLatencyMS.Valid = true
+		}
+		points = append(points, *point)
+	}
+	return points, nil
+}
+
 func (r *repository) LatencyPercentilesWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]LatencyPercentiles, error) {
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(`select
@@ -862,10 +1018,22 @@ func (r *repository) FilterSelectorValuesWithFilter(ctx context.Context, filter 
 	if err != nil {
 		return FilterSelectorValues{}, err
 	}
-	apiKeyHashes, err := r.distinctFilterValues(ctx, filter, "coalesce(api_key_hash, '')")
+	apiKeySelectors, err := r.apiKeyFilterSelectorValuesWithFilter(ctx, filter)
 	if err != nil {
 		return FilterSelectorValues{}, err
 	}
+	apiKeyHashSet := make(map[string]struct{}, len(apiKeySelectors))
+	for _, selector := range apiKeySelectors {
+		apiKeyHash := strings.ToLower(strings.TrimSpace(selector.APIKeyHash))
+		if apiKeyHash != "" {
+			apiKeyHashSet[apiKeyHash] = struct{}{}
+		}
+	}
+	apiKeyHashes := make([]string, 0, len(apiKeyHashSet))
+	for apiKeyHash := range apiKeyHashSet {
+		apiKeyHashes = append(apiKeyHashes, apiKeyHash)
+	}
+	sort.Strings(apiKeyHashes)
 	providers, err := r.distinctFilterValues(ctx, filter, "coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), '')")
 	if err != nil {
 		return FilterSelectorValues{}, err
@@ -874,12 +1042,121 @@ func (r *repository) FilterSelectorValuesWithFilter(ctx context.Context, filter 
 	if err != nil {
 		return FilterSelectorValues{}, err
 	}
+	accountSelectors, err := r.accountFilterSelectorValuesWithFilter(ctx, filter)
+	if err != nil {
+		return FilterSelectorValues{}, err
+	}
+	accountSet := make(map[string]struct{}, len(accountSelectors))
+	for _, selector := range accountSelectors {
+		account := strings.TrimSpace(selector.AccountSnapshot)
+		if account != "" {
+			accountSet[account] = struct{}{}
+		}
+	}
+	accounts := make([]string, 0, len(accountSet))
+	for account := range accountSet {
+		accounts = append(accounts, account)
+	}
+	sort.Strings(accounts)
 	return FilterSelectorValues{
-		Models:       models,
-		APIKeyHashes: apiKeyHashes,
-		Providers:    providers,
-		AuthFiles:    authFiles,
+		Models:           models,
+		APIKeyHashes:     apiKeyHashes,
+		Providers:        providers,
+		AuthFiles:        authFiles,
+		Accounts:         accounts,
+		AccountSelectors: accountSelectors,
+		APIKeySelectors:  apiKeySelectors,
 	}, nil
+}
+
+func (r *repository) apiKeyFilterSelectorValuesWithFilter(ctx context.Context, filter AnalyticsFilter) ([]APIKeySelectorValue, error) {
+	where, args := analyticsWhere(filter)
+	rows, err := r.db.QueryContext(ctx, `select
+	coalesce(api_key_hash, ''),
+	coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), ''),
+	coalesce(auth_index, ''),
+	coalesce(max(source), ''),
+	coalesce(source_hash, '')
+from usage_events `+where+`
+group by
+	coalesce(api_key_hash, ''),
+	coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), ''),
+	coalesce(auth_index, ''),
+	coalesce(source_hash, '')
+order by 1, 5, 3, 4, 2`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	values := make([]APIKeySelectorValue, 0)
+	for rows.Next() {
+		var value APIKeySelectorValue
+		if err := rows.Scan(
+			&value.APIKeyHash,
+			&value.AuthProviderSnapshot,
+			&value.AuthIndex,
+			&value.Source,
+			&value.SourceHash,
+		); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (r *repository) accountFilterSelectorValuesWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountSelectorValue, error) {
+	where, args := analyticsWhere(filter)
+	rows, err := r.db.QueryContext(ctx, `select
+	coalesce(account_snapshot, ''),
+	coalesce(auth_label_snapshot, ''),
+	coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), ''),
+	coalesce(auth_index, ''),
+	coalesce(max(source), ''),
+	coalesce(source_hash, '')
+from usage_events `+where+`
+and (
+	coalesce(account_snapshot, '') <> '' or
+	coalesce(auth_label_snapshot, '') <> '' or
+	coalesce(auth_index, '') <> '' or
+	coalesce(source, '') <> '' or
+	coalesce(source_hash, '') <> ''
+)
+group by
+	coalesce(account_snapshot, ''),
+	coalesce(auth_label_snapshot, ''),
+	coalesce(nullif(auth_provider_snapshot, ''), nullif(provider, ''), ''),
+	coalesce(auth_index, ''),
+	coalesce(source_hash, '')
+order by 1, 2, 5, 4, 6`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	values := make([]AccountSelectorValue, 0)
+	for rows.Next() {
+		var value AccountSelectorValue
+		if err := rows.Scan(
+			&value.AccountSnapshot,
+			&value.AuthLabelSnapshot,
+			&value.AuthProviderSnapshot,
+			&value.AuthIndex,
+			&value.Source,
+			&value.SourceHash,
+		); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func (r *repository) distinctFilterValues(ctx context.Context, filter AnalyticsFilter, expression string) ([]string, error) {
@@ -2241,11 +2518,8 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 		if len(normalized) == 0 {
 			return
 		}
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
-		conditions = append(conditions, fmt.Sprintf("coalesce(%s, '') in (%s)", column, placeholders))
-		for _, value := range normalized {
-			args = append(args, value)
-		}
+		conditions = append(conditions, fmt.Sprintf("coalesce(%s, '') in (select value from json_each(?))", column))
+		args = append(args, encodeJSONFilterValues(normalized))
 	}
 	addInCondition("model", filter.Models)
 	addProviderCondition(filter.Providers, &conditions, &args)
@@ -2296,16 +2570,14 @@ func addProviderCondition(values []string, conditions *[]string, args *[]any) {
 	if len(normalized) == 0 {
 		return
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
+	encoded := encodeJSONFilterValues(normalized)
 	providerConditions := []string{
-		fmt.Sprintf("lower(coalesce(provider, '')) in (%s)", placeholders),
-		fmt.Sprintf("lower(coalesce(auth_provider_snapshot, '')) in (%s)", placeholders),
+		"lower(coalesce(provider, '')) in (select value from json_each(?))",
+		"lower(coalesce(auth_provider_snapshot, '')) in (select value from json_each(?))",
 	}
 	*conditions = append(*conditions, "("+strings.Join(providerConditions, " or ")+")")
 	for range providerConditions {
-		for _, value := range normalized {
-			*args = append(*args, value)
-		}
+		*args = append(*args, encoded)
 	}
 }
 
@@ -2314,19 +2586,22 @@ func addAccountCondition(values []string, conditions *[]string, args *[]any) {
 	if len(normalized) == 0 {
 		return
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
+	encoded := encodeJSONFilterValues(normalized)
 	accountConditions := []string{
-		fmt.Sprintf("lower(coalesce(account_snapshot, '')) in (%s)", placeholders),
-		fmt.Sprintf("lower(coalesce(auth_label_snapshot, '')) in (%s)", placeholders),
-		fmt.Sprintf("lower(coalesce(source, '')) in (%s)", placeholders),
-		fmt.Sprintf("lower(coalesce(auth_index, '')) in (%s)", placeholders),
+		"lower(coalesce(account_snapshot, '')) in (select value from json_each(?))",
+		"lower(coalesce(auth_label_snapshot, '')) in (select value from json_each(?))",
+		"lower(coalesce(source, '')) in (select value from json_each(?))",
+		"lower(coalesce(auth_index, '')) in (select value from json_each(?))",
 	}
 	*conditions = append(*conditions, "("+strings.Join(accountConditions, " or ")+")")
 	for range accountConditions {
-		for _, value := range normalized {
-			*args = append(*args, value)
-		}
+		*args = append(*args, encoded)
 	}
+}
+
+func encodeJSONFilterValues(values []string) string {
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
 }
 
 func normalizeFilterValues(values []string) []string {
