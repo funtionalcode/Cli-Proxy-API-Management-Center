@@ -103,6 +103,12 @@ const requestLogParams = (query: RequestLogFilesQuery = {}) => {
   return params;
 };
 
+const hasHttpStatus = (error: unknown, status: number): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'status' in error &&
+  (error as { status?: unknown }).status === status;
+
 export const normalizeLogsResponse = (value: unknown): LogsResponse => {
   const source = asRecord(value);
   const lines = Array.isArray(source.lines) ? source.lines.map((line) => String(line ?? '')) : [];
@@ -155,11 +161,18 @@ export const logsApi = {
 
   fetchSuccessLogs: async (query: RequestLogFilesQuery = {}): Promise<SuccessLogsResponse> => {
     const params = requestLogParams(query);
-    const data = await apiClient.get('/request-success-logs', {
-      ...(Object.keys(params).length > 0 ? { params } : {}),
-      timeout: LOGS_TIMEOUT_MS,
-    });
-    return normalizeRequestLogFilesResponse(data);
+    try {
+      const data = await apiClient.get('/request-success-logs', {
+        ...(Object.keys(params).length > 0 ? { params } : {}),
+        timeout: LOGS_TIMEOUT_MS,
+      });
+      return normalizeRequestLogFilesResponse(data);
+    } catch (error: unknown) {
+      if (hasHttpStatus(error, 404)) {
+        return { files: [] };
+      }
+      throw error;
+    }
   },
 
   downloadSuccessLog: (filename: string) =>

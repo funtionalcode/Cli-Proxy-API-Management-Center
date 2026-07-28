@@ -71,4 +71,26 @@ describe('logs API', () => {
       timeout: expect.any(Number),
     });
   });
+
+  it('treats a missing success log list endpoint as an empty list', async () => {
+    mocks.get.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 404'), { status: 404 })
+    );
+
+    await expect(logsApi.fetchSuccessLogs({ page: 2, pageSize: 50 })).resolves.toEqual({
+      files: [],
+    });
+
+    expect(mocks.get).toHaveBeenCalledWith('/request-success-logs', {
+      params: { page: 2, page_size: 50 },
+      timeout: expect.any(Number),
+    });
+  });
+
+  it('keeps non-404 success log list errors visible', async () => {
+    const serverError = Object.assign(new Error('server unavailable'), { status: 500 });
+    mocks.get.mockRejectedValue(serverError);
+
+    await expect(logsApi.fetchSuccessLogs()).rejects.toBe(serverError);
+  });
 });
