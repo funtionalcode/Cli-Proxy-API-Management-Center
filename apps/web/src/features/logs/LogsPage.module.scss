@@ -392,11 +392,32 @@
 }
 
 .errorPanel {
-  height: 480px;
+  height: 420px;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  flex: 1 1 auto;
+  min-height: 240px;
 }
+
+.requestLogLayout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+}
+
+.paginationFooter {
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: 4px;
+  padding-top: 8px;
+  background: linear-gradient(180deg, transparent 0%, var(--bg-primary) 28%);
+  border-top: 1px solid var(--border-color);
+}
+
 
 .loadMoreBanner {
   position: sticky;

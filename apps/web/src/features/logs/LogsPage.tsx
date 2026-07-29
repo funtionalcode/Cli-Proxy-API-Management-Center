@@ -168,6 +168,11 @@ export function LogsPage() {
     'logsPage.requestLogPageSize',
     DEFAULT_REQUEST_LOG_PAGE_SIZE
   );
+  const [contentLogsPage, setContentLogsPage] = useState(1);
+  const [contentLogsPageSizeSetting, setContentLogsPageSize] = useLocalStorage<number>(
+    'logsPage.contentLogsPageSize',
+    100
+  );
   const [errorLogFilterDraft, setErrorLogFilterDraft] = useState<RequestLogFilterState>(emptyRequestLogFilter);
   const [errorLogFilter, setErrorLogFilter] = useState<RequestLogFilterState>(emptyRequestLogFilter);
   const [successLogFilterDraft, setSuccessLogFilterDraft] =
@@ -210,6 +215,7 @@ export function LogsPage() {
   const disableControls = connectionStatus !== 'connected';
   const canLoadFileLogs = activeTab === 'logs' && fileLogsAvailable;
   const requestLogPageSize = normalizeRequestLogPageSize(requestLogPageSizeSetting);
+  const contentLogsPageSize = normalizeRequestLogPageSize(contentLogsPageSizeSetting);
 
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab);
@@ -630,14 +636,10 @@ export function LogsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, connectionStatus, canLoadFileLogs]);
 
-  const visibleLines = useMemo(
-    () => logState.buffer.slice(logState.visibleFrom),
-    [logState.buffer, logState.visibleFrom]
-  );
-
   const trimmedSearchQuery = deferredSearchQuery.trim();
   const isSearching = trimmedSearchQuery.length > 0;
-  const baseLines = isSearching ? logState.buffer : visibleLines;
+  // Content tab uses explicit pagination, so filter against the full buffer.
+  const baseLines = logState.buffer;
 
   const parsedSearchLines = useMemo(() => {
     let working = baseLines;
@@ -713,12 +715,44 @@ export function LogsPage() {
     parsedSearchLines,
   ]);
 
-  const parsedVisibleLines = useMemo(
-    () => (showRawLogs ? [] : filteredParsedLines),
-    [filteredParsedLines, showRawLogs]
+  const contentLogsTotal = filteredLines.length;
+  const contentLogsTotalPages =
+    contentLogsTotal > 0 ? Math.ceil(contentLogsTotal / contentLogsPageSize) : 0;
+  const contentLogsSafePage =
+    contentLogsTotalPages > 0
+      ? Math.min(Math.max(contentLogsPage, 1), contentLogsTotalPages)
+      : 1;
+  const contentLogsStartIndex =
+    contentLogsTotal > 0 ? (contentLogsSafePage - 1) * contentLogsPageSize : 0;
+  const contentLogsEndIndex =
+    contentLogsTotal > 0
+      ? Math.min(contentLogsStartIndex + contentLogsPageSize, contentLogsTotal)
+      : 0;
+  const pagedFilteredParsedLines = useMemo(
+    () => filteredParsedLines.slice(contentLogsStartIndex, contentLogsEndIndex),
+    [contentLogsEndIndex, contentLogsStartIndex, filteredParsedLines]
+  );
+  const pagedFilteredLines = useMemo(
+    () => filteredLines.slice(contentLogsStartIndex, contentLogsEndIndex),
+    [contentLogsEndIndex, contentLogsStartIndex, filteredLines]
   );
 
-  const rawVisibleText = useMemo(() => filteredLines.join('\n'), [filteredLines]);
+  const parsedVisibleLines = useMemo(
+    () => (showRawLogs ? [] : pagedFilteredParsedLines),
+    [pagedFilteredParsedLines, showRawLogs]
+  );
+
+  const rawVisibleText = useMemo(() => pagedFilteredLines.join('\n'), [pagedFilteredLines]);
+
+  const handleContentLogsPageChange = (page: number) => {
+    setContentLogsPage(page);
+  };
+
+  const handleContentLogsPageSizeChange = (pageSize: number) => {
+    const nextPageSize = normalizeRequestLogPageSize(pageSize);
+    setContentLogsPageSize(nextPageSize);
+    setContentLogsPage(1);
+  };
 
   const scroller = useLogScroller({
     logState,
@@ -816,6 +850,19 @@ export function LogsPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    setContentLogsPage(1);
+  }, [
+    deferredSearchQuery,
+    hideManagementLogs,
+    filters.methodFilters,
+    filters.statusFilters,
+    filters.pathFilters,
+    filters.latencyMinMs,
+    filters.latencyMaxMs,
+    showRawLogs,
+  ]);
 
   return (
     <div className={styles.container}>
@@ -1114,14 +1161,14 @@ export function LogsPage() {
                   <div className={styles.loadMoreBanner}>
                     <span>{t('logs.load_more_hint')}</span>
                     <div className={styles.loadMoreStats}>
-                      <span>{t('logs.loaded_lines', { count: filteredLines.length })}</span>
+                      <span>{t('logs.loaded_lines', { count: contentLogsTotal })}</span>
                       {removedCount > 0 && (
                         <span className={styles.loadMoreCount}>
                           {t('logs.filtered_lines', { count: removedCount })}
                         </span>
                       )}
                       <span className={styles.loadMoreCount}>
-                        {t('logs.hidden_lines', { count: logState.visibleFrom })}
+                        {t('logs.page_range', { start: contentLogsTotal > 0 ? contentLogsStartIndex + 1 : 0, end: contentLogsEndIndex, total: contentLogsTotal, defaultValue: `第 ${contentLogsTotal > 0 ? contentLogsStartIndex + 1 : 0}-${contentLogsEndIndex} / ${contentLogsTotal} 行` })}
                       </span>
                     </div>
                   </div>
@@ -1139,7 +1186,7 @@ export function LogsPage() {
                         rowClassNames.push(styles.rowError);
                       return (
                         <div
-                          key={`${logState.visibleFrom + index}-${line.raw}`}
+                          key={`${contentLogsStartIndex + index}-${line.raw}`}
                           className={rowClassNames.join(' ')}
                           onDoubleClick={() => {
                             void copyLogLine(line.raw);
@@ -1248,6 +1295,22 @@ export function LogsPage() {
             ) : (
               <EmptyState title={t('logs.empty_title')} description={t('logs.empty_desc')} />
             )}
+            {contentLogsTotal > 0 && (
+              <div className={styles.paginationFooter}>
+                <PaginationControls
+                  count={contentLogsTotal}
+                  currentPage={contentLogsSafePage}
+                  totalPages={contentLogsTotalPages}
+                  startItem={contentLogsTotal > 0 ? contentLogsStartIndex + 1 : 0}
+                  endItem={contentLogsEndIndex}
+                  pageSize={contentLogsPageSize}
+                  pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
+                  onPageChange={handleContentLogsPageChange}
+                  onPageSizeChange={handleContentLogsPageSizeChange}
+                  t={t}
+                />
+              </div>
+            )}
           </Card>
         )}
 
@@ -1265,7 +1328,7 @@ export function LogsPage() {
               </Button>
             }
           >
-            <div className="stack">
+            <div className={`stack ${styles.requestLogLayout}`}>
               <div className="hint">{t('logs.error_logs_description')}</div>
 
               <div className={styles.requestLogFilterBar}>
@@ -1365,18 +1428,32 @@ export function LogsPage() {
                   </div>
                 )}
               </div>
-              <PaginationControls
-                count={errorLogsTotal}
-                currentPage={errorLogsPage}
-                totalPages={errorLogsTotalPages}
-                startItem={errorLogsTotal > 0 ? (errorLogsPage - 1) * requestLogPageSize + 1 : 0}
-                endItem={Math.min(errorLogsPage * requestLogPageSize, errorLogsTotal)}
-                pageSize={requestLogPageSize}
-                pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
-                onPageChange={handleErrorLogsPageChange}
-                onPageSizeChange={handleRequestLogPageSizeChange}
-                t={t}
-              />
+              <div className={styles.paginationFooter}>
+                <PaginationControls
+                  count={Math.max(errorLogsTotal, errorLogs.length)}
+                  currentPage={errorLogsPage}
+                  totalPages={Math.max(
+                    errorLogsTotalPages,
+                    errorLogsTotal > 0 || errorLogs.length > 0
+                      ? Math.ceil(Math.max(errorLogsTotal, errorLogs.length) / requestLogPageSize)
+                      : 0
+                  )}
+                  startItem={
+                    Math.max(errorLogsTotal, errorLogs.length) > 0
+                      ? (errorLogsPage - 1) * requestLogPageSize + 1
+                      : 0
+                  }
+                  endItem={Math.min(
+                    errorLogsPage * requestLogPageSize,
+                    Math.max(errorLogsTotal, errorLogs.length)
+                  )}
+                  pageSize={requestLogPageSize}
+                  pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
+                  onPageChange={handleErrorLogsPageChange}
+                  onPageSizeChange={handleRequestLogPageSizeChange}
+                  t={t}
+                />
+              </div>
             </div>
           </Card>
         )}
@@ -1395,7 +1472,7 @@ export function LogsPage() {
               </Button>
             }
           >
-            <div className="stack">
+            <div className={`stack ${styles.requestLogLayout}`}>
               <div className="hint">{t('logs.success_logs_description')}</div>
 
               <div className={styles.requestLogFilterBar}>
@@ -1510,20 +1587,32 @@ export function LogsPage() {
                   </div>
                 )}
               </div>
-              <PaginationControls
-                count={successLogsTotal}
-                currentPage={successLogsPage}
-                totalPages={successLogsTotalPages}
-                startItem={
-                  successLogsTotal > 0 ? (successLogsPage - 1) * requestLogPageSize + 1 : 0
-                }
-                endItem={Math.min(successLogsPage * requestLogPageSize, successLogsTotal)}
-                pageSize={requestLogPageSize}
-                pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
-                onPageChange={handleSuccessLogsPageChange}
-                onPageSizeChange={handleRequestLogPageSizeChange}
-                t={t}
-              />
+              <div className={styles.paginationFooter}>
+                <PaginationControls
+                  count={Math.max(successLogsTotal, successLogs.length)}
+                  currentPage={successLogsPage}
+                  totalPages={Math.max(
+                    successLogsTotalPages,
+                    successLogsTotal > 0 || successLogs.length > 0
+                      ? Math.ceil(Math.max(successLogsTotal, successLogs.length) / requestLogPageSize)
+                      : 0
+                  )}
+                  startItem={
+                    Math.max(successLogsTotal, successLogs.length) > 0
+                      ? (successLogsPage - 1) * requestLogPageSize + 1
+                      : 0
+                  }
+                  endItem={Math.min(
+                    successLogsPage * requestLogPageSize,
+                    Math.max(successLogsTotal, successLogs.length)
+                  )}
+                  pageSize={requestLogPageSize}
+                  pageSizeOptions={REQUEST_LOG_PAGE_SIZE_OPTIONS}
+                  onPageChange={handleSuccessLogsPageChange}
+                  onPageSizeChange={handleRequestLogPageSizeChange}
+                  t={t}
+                />
+              </div>
             </div>
           </Card>
         )}
