@@ -357,6 +357,40 @@
   }
 }
 
+
+.requestLogFilterBar {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.4fr) minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+
+.requestLogFilterActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 2px;
+
+  @include mobile {
+    width: 100%;
+
+    :global(.btn) {
+      flex: 1 1 auto;
+    }
+  }
+}
+
 .errorPanel {
   height: 480px;
   overflow: auto;

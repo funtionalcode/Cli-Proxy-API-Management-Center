@@ -2621,7 +2621,22 @@
     "lines": "строк",
     "removed": "Отфильтровано",
     "upgrade_required_title": "Обновите CLI Proxy API",
-    "upgrade_required_desc": "Текущая версия сервера не поддерживает просмотр журналов. Обновите CLI Proxy API до последней версии, чтобы использовать эту функцию."
+    "upgrade_required_desc": "Текущая версия сервера не поддерживает просмотр журналов. Обновите CLI Proxy API до последней версии, чтобы использовать эту функцию.",
+    "success_logs_modal_title": "Успешные логи запросов",
+    "success_logs_description": "Успешные логи запросов CPA для просмотра 2xx полезных нагрузок и ответов.",
+    "success_logs_enable": "Записывать успешные логи запросов",
+    "success_logs_request_log_disabled": "Сначала включите логирование запросов, затем успешные логи.",
+    "success_logs_empty": "Нет файлов успешных логов запросов",
+    "success_logs_load_error": "Не удалось загрузить успешные логи",
+    "success_logs_download": "Скачать",
+    "success_logs_download_formatted": "Скачать форматированный",
+    "error_logs_download_formatted": "Скачать форматированный",
+    "request_logs_filter_model": "Модель",
+    "request_logs_filter_model_placeholder": "Фильтр по модели, напр. gpt-5",
+    "request_logs_filter_from": "С",
+    "request_logs_filter_to": "По",
+    "request_logs_filter_apply": "Фильтр",
+    "request_logs_filter_reset": "Сброс"
   },
   "config_management": {
     "title": "Панель конфигурации",

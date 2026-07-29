@@ -2621,7 +2621,22 @@
     "lines": "行",
     "removed": "已过滤",
     "upgrade_required_title": "需要升级 CLI Proxy API",
-    "upgrade_required_desc": "当前服务器版本不支持日志查看功能，请升级到最新版本的 CLI Proxy API 以使用此功能。"
+    "upgrade_required_desc": "当前服务器版本不支持日志查看功能，请升级到最新版本的 CLI Proxy API 以使用此功能。",
+    "success_logs_modal_title": "成功请求日志",
+    "success_logs_description": "这里展示 CPA 侧记录的成功请求日志，便于复核 2xx 请求报文与上下游响应。",
+    "success_logs_enable": "记录成功请求日志",
+    "success_logs_request_log_disabled": "请先开启请求日志，再启用成功请求日志记录。",
+    "success_logs_empty": "暂无成功请求日志文件",
+    "success_logs_load_error": "加载成功日志列表失败",
+    "success_logs_download": "下载",
+    "success_logs_download_formatted": "下载格式化文件",
+    "error_logs_download_formatted": "下载格式化文件",
+    "request_logs_filter_model": "模型名称",
+    "request_logs_filter_model_placeholder": "按模型名筛选，例如 gpt-5",
+    "request_logs_filter_from": "开始时间",
+    "request_logs_filter_to": "结束时间",
+    "request_logs_filter_apply": "筛选",
+    "request_logs_filter_reset": "重置"
   },
   "config_management": {
     "title": "配置面板",

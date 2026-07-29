@@ -3,7 +3,7 @@
  */
 
 import { apiClient } from './client';
-import { LOGS_TIMEOUT_MS } from '@/utils/constants';
+import { LOGS_DOWNLOAD_TIMEOUT_MS, LOGS_TIMEOUT_MS } from '@/utils/constants';
 
 export interface LogsQuery {
   after?: number;
@@ -29,6 +29,12 @@ export interface ErrorLogFile {
 export interface RequestLogFilesQuery {
   page?: number;
   pageSize?: number;
+  /** Case-insensitive model substring filter. */
+  model?: string;
+  /** Inclusive lower bound as unix seconds. */
+  from?: number;
+  /** Inclusive upper bound as unix seconds. */
+  to?: number;
 }
 
 export interface SuccessLogFile {
@@ -97,9 +103,17 @@ export const normalizeRequestLogFilesResponse = (value: unknown): RequestLogFile
 };
 
 const requestLogParams = (query: RequestLogFilesQuery = {}) => {
-  const params: Record<string, number> = {};
+  const params: Record<string, string | number> = {};
   if (query.page !== undefined) params.page = query.page;
   if (query.pageSize !== undefined) params.page_size = query.pageSize;
+  const model = query.model?.trim();
+  if (model) params.model = model;
+  if (query.from !== undefined && Number.isFinite(query.from) && query.from > 0) {
+    params.from = Math.floor(query.from);
+  }
+  if (query.to !== undefined && Number.isFinite(query.to) && query.to > 0) {
+    params.to = Math.floor(query.to);
+  }
   return params;
 };
 
@@ -150,13 +164,13 @@ export const logsApi = {
   downloadErrorLog: (filename: string) =>
     apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS,
+      timeout: LOGS_DOWNLOAD_TIMEOUT_MS,
     }),
 
   downloadFormattedErrorLog: (filename: string) =>
     apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}/formatted`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS,
+      timeout: LOGS_DOWNLOAD_TIMEOUT_MS,
     }),
 
   fetchSuccessLogs: async (query: RequestLogFilesQuery = {}): Promise<SuccessLogsResponse> => {
@@ -178,18 +192,18 @@ export const logsApi = {
   downloadSuccessLog: (filename: string) =>
     apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS,
+      timeout: LOGS_DOWNLOAD_TIMEOUT_MS,
     }),
 
   downloadFormattedSuccessLog: (filename: string) =>
     apiClient.getRaw(`/request-success-logs/${encodeURIComponent(filename)}/formatted`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS,
+      timeout: LOGS_DOWNLOAD_TIMEOUT_MS,
     }),
 
   downloadRequestLogById: (id: string) =>
     apiClient.getRaw(`/request-log-by-id/${encodeURIComponent(id)}`, {
       responseType: 'blob',
-      timeout: LOGS_TIMEOUT_MS,
+      timeout: LOGS_DOWNLOAD_TIMEOUT_MS,
     }),
 };

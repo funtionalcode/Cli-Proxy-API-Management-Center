@@ -90,6 +90,38 @@ const buildLogsQuery = (incremental: boolean, position: LogPosition): LogsQuery 
   return params;
 };
 
+
+interface RequestLogFilterState {
+  model: string;
+  from: string;
+  to: string;
+}
+
+const emptyRequestLogFilter = (): RequestLogFilterState => ({
+  model: '',
+  from: '',
+  to: '',
+});
+
+const datetimeLocalToUnixSeconds = (value: string): number | undefined => {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const ms = new Date(trimmed).getTime();
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.floor(ms / 1000);
+};
+
+const buildRequestLogFilterQuery = (filter: RequestLogFilterState) => {
+  const query: { model?: string; from?: number; to?: number } = {};
+  const model = filter.model.trim();
+  if (model) query.model = model;
+  const from = datetimeLocalToUnixSeconds(filter.from);
+  if (from !== undefined && from > 0) query.from = from;
+  const to = datetimeLocalToUnixSeconds(filter.to);
+  if (to !== undefined && to > 0) query.to = to;
+  return query;
+};
+
 export function LogsPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -136,6 +168,11 @@ export function LogsPage() {
     'logsPage.requestLogPageSize',
     DEFAULT_REQUEST_LOG_PAGE_SIZE
   );
+  const [errorLogFilterDraft, setErrorLogFilterDraft] = useState<RequestLogFilterState>(emptyRequestLogFilter);
+  const [errorLogFilter, setErrorLogFilter] = useState<RequestLogFilterState>(emptyRequestLogFilter);
+  const [successLogFilterDraft, setSuccessLogFilterDraft] =
+    useState<RequestLogFilterState>(emptyRequestLogFilter);
+  const [successLogFilter, setSuccessLogFilter] = useState<RequestLogFilterState>(emptyRequestLogFilter);
   const [requestLogId, setRequestLogId] = useState<string | null>(null);
   const [requestLogDownloading, setRequestLogDownloading] = useState(false);
 
@@ -301,7 +338,11 @@ export function LogsPage() {
     showNotification(t('logs.download_success'), 'success');
   };
 
-  const loadErrorLogs = async (page = errorLogsPage, pageSize = requestLogPageSize) => {
+  const loadErrorLogs = async (
+    page = errorLogsPage,
+    pageSize = requestLogPageSize,
+    filter = errorLogFilter
+  ) => {
     if (connectionStatus !== 'connected') {
       setLoadingErrors(false);
       return;
@@ -310,7 +351,11 @@ export function LogsPage() {
     setLoadingErrors(true);
     setErrorLogsError('');
     try {
-      const res = await logsApi.fetchErrorLogs({ page, pageSize });
+      const res = await logsApi.fetchErrorLogs({
+        page,
+        pageSize,
+        ...buildRequestLogFilterQuery(filter),
+      });
       const files = Array.isArray(res.files) ? res.files : [];
       const total = Number.isFinite(res.total) ? Math.max(res.total ?? 0, 0) : files.length;
       const totalPages = Number.isFinite(res.totalPages)
@@ -335,7 +380,11 @@ export function LogsPage() {
     }
   };
 
-  const loadSuccessLogs = async (page = successLogsPage, pageSize = requestLogPageSize) => {
+  const loadSuccessLogs = async (
+    page = successLogsPage,
+    pageSize = requestLogPageSize,
+    filter = successLogFilter
+  ) => {
     if (connectionStatus !== 'connected') {
       setLoadingSuccesses(false);
       return;
@@ -344,7 +393,11 @@ export function LogsPage() {
     setLoadingSuccesses(true);
     setSuccessLogsError('');
     try {
-      const res = await logsApi.fetchSuccessLogs({ page, pageSize });
+      const res = await logsApi.fetchSuccessLogs({
+        page,
+        pageSize,
+        ...buildRequestLogFilterQuery(filter),
+      });
       const files = Array.isArray(res.files) ? res.files : [];
       const total = Number.isFinite(res.total) ? Math.max(res.total ?? 0, 0) : files.length;
       const totalPages = Number.isFinite(res.totalPages)
@@ -377,28 +430,66 @@ export function LogsPage() {
     setErrorLogsPage(1);
     setSuccessLogsPage(1);
     if (activeTab === 'errors') {
-      void loadErrorLogs(1, nextPageSize);
+      void loadErrorLogs(1, nextPageSize, errorLogFilter);
     } else if (activeTab === 'success') {
-      void loadSuccessLogs(1, nextPageSize);
+      void loadSuccessLogs(1, nextPageSize, successLogFilter);
     }
   };
 
   const handleErrorLogsPageChange = (page: number) => {
     setErrorLogsPage(page);
-    void loadErrorLogs(page);
+    void loadErrorLogs(page, requestLogPageSize, errorLogFilter);
   };
 
   const handleSuccessLogsPageChange = (page: number) => {
     setSuccessLogsPage(page);
-    void loadSuccessLogs(page);
+    void loadSuccessLogs(page, requestLogPageSize, successLogFilter);
+  };
+
+  const applyErrorLogFilter = () => {
+    const next = {
+      model: errorLogFilterDraft.model.trim(),
+      from: errorLogFilterDraft.from,
+      to: errorLogFilterDraft.to,
+    };
+    setErrorLogFilter(next);
+    setErrorLogsPage(1);
+    void loadErrorLogs(1, requestLogPageSize, next);
+  };
+
+  const resetErrorLogFilter = () => {
+    const next = emptyRequestLogFilter();
+    setErrorLogFilterDraft(next);
+    setErrorLogFilter(next);
+    setErrorLogsPage(1);
+    void loadErrorLogs(1, requestLogPageSize, next);
+  };
+
+  const applySuccessLogFilter = () => {
+    const next = {
+      model: successLogFilterDraft.model.trim(),
+      from: successLogFilterDraft.from,
+      to: successLogFilterDraft.to,
+    };
+    setSuccessLogFilter(next);
+    setSuccessLogsPage(1);
+    void loadSuccessLogs(1, requestLogPageSize, next);
+  };
+
+  const resetSuccessLogFilter = () => {
+    const next = emptyRequestLogFilter();
+    setSuccessLogFilterDraft(next);
+    setSuccessLogFilter(next);
+    setSuccessLogsPage(1);
+    void loadSuccessLogs(1, requestLogPageSize, next);
   };
 
   useHeaderRefresh(() => {
     if (activeTab === 'success') {
-      return loadSuccessLogs();
+      return loadSuccessLogs(successLogsPage, requestLogPageSize, successLogFilter);
     }
     if (activeTab === 'errors') {
-      return loadErrorLogs();
+      return loadErrorLogs(errorLogsPage, requestLogPageSize, errorLogFilter);
     }
     return loadLogs(false);
   }, connectionStatus === 'connected');
@@ -517,14 +608,14 @@ export function LogsPage() {
   useEffect(() => {
     if (activeTab !== 'errors') return;
     if (connectionStatus !== 'connected') return;
-    void loadErrorLogs(1, requestLogPageSize);
+    void loadErrorLogs(1, requestLogPageSize, errorLogFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, connectionStatus, requestLogEnabled]);
 
   useEffect(() => {
     if (activeTab !== 'success') return;
     if (connectionStatus !== 'connected') return;
-    void loadSuccessLogs(1, requestLogPageSize);
+    void loadSuccessLogs(1, requestLogPageSize, successLogFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, connectionStatus, requestLogEnabled, successRequestLogEnabled]);
 
@@ -1166,7 +1257,7 @@ export function LogsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => void loadErrorLogs()}
+                onClick={() => void loadErrorLogs(errorLogsPage, requestLogPageSize, errorLogFilter)}
                 loading={loadingErrors}
                 disabled={disableControls}
               >
@@ -1176,6 +1267,54 @@ export function LogsPage() {
           >
             <div className="stack">
               <div className="hint">{t('logs.error_logs_description')}</div>
+
+              <div className={styles.requestLogFilterBar}>
+                <Input
+                  label={t('logs.request_logs_filter_model')}
+                  value={errorLogFilterDraft.model}
+                  onChange={(e) =>
+                    setErrorLogFilterDraft((prev) => ({ ...prev, model: e.target.value }))
+                  }
+                  placeholder={t('logs.request_logs_filter_model_placeholder')}
+                  disabled={disableControls}
+                />
+                <Input
+                  type="datetime-local"
+                  label={t('logs.request_logs_filter_from')}
+                  value={errorLogFilterDraft.from}
+                  onChange={(e) =>
+                    setErrorLogFilterDraft((prev) => ({ ...prev, from: e.target.value }))
+                  }
+                  disabled={disableControls}
+                />
+                <Input
+                  type="datetime-local"
+                  label={t('logs.request_logs_filter_to')}
+                  value={errorLogFilterDraft.to}
+                  onChange={(e) =>
+                    setErrorLogFilterDraft((prev) => ({ ...prev, to: e.target.value }))
+                  }
+                  disabled={disableControls}
+                />
+                <div className={styles.requestLogFilterActions}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={applyErrorLogFilter}
+                    disabled={disableControls || loadingErrors}
+                  >
+                    {t('logs.request_logs_filter_apply')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={resetErrorLogFilter}
+                    disabled={disableControls || loadingErrors}
+                  >
+                    {t('logs.request_logs_filter_reset')}
+                  </Button>
+                </div>
+              </div>
 
               {requestLogEnabled && (
                 <div>
@@ -1248,7 +1387,7 @@ export function LogsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => void loadSuccessLogs()}
+                onClick={() => void loadSuccessLogs(successLogsPage, requestLogPageSize, successLogFilter)}
                 loading={loadingSuccesses}
                 disabled={disableControls}
               >
@@ -1258,6 +1397,54 @@ export function LogsPage() {
           >
             <div className="stack">
               <div className="hint">{t('logs.success_logs_description')}</div>
+
+              <div className={styles.requestLogFilterBar}>
+                <Input
+                  label={t('logs.request_logs_filter_model')}
+                  value={successLogFilterDraft.model}
+                  onChange={(e) =>
+                    setSuccessLogFilterDraft((prev) => ({ ...prev, model: e.target.value }))
+                  }
+                  placeholder={t('logs.request_logs_filter_model_placeholder')}
+                  disabled={disableControls}
+                />
+                <Input
+                  type="datetime-local"
+                  label={t('logs.request_logs_filter_from')}
+                  value={successLogFilterDraft.from}
+                  onChange={(e) =>
+                    setSuccessLogFilterDraft((prev) => ({ ...prev, from: e.target.value }))
+                  }
+                  disabled={disableControls}
+                />
+                <Input
+                  type="datetime-local"
+                  label={t('logs.request_logs_filter_to')}
+                  value={successLogFilterDraft.to}
+                  onChange={(e) =>
+                    setSuccessLogFilterDraft((prev) => ({ ...prev, to: e.target.value }))
+                  }
+                  disabled={disableControls}
+                />
+                <div className={styles.requestLogFilterActions}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={applySuccessLogFilter}
+                    disabled={disableControls || loadingSuccesses}
+                  >
+                    {t('logs.request_logs_filter_apply')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={resetSuccessLogFilter}
+                    disabled={disableControls || loadingSuccesses}
+                  >
+                    {t('logs.request_logs_filter_reset')}
+                  </Button>
+                </div>
+              </div>
 
               <div className={styles.toggleRow}>
                 <ToggleSwitch

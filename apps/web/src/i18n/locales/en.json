@@ -2621,7 +2621,22 @@
     "lines": "lines",
     "removed": "Filtered",
     "upgrade_required_title": "Please Upgrade CLI Proxy API",
-    "upgrade_required_desc": "The current server version does not support the logs viewing feature. Please upgrade to the latest version of CLI Proxy API to use this feature."
+    "upgrade_required_desc": "The current server version does not support the logs viewing feature. Please upgrade to the latest version of CLI Proxy API to use this feature.",
+    "success_logs_modal_title": "Success Request Logs",
+    "success_logs_description": "Successful request logs recorded by CPA for reviewing 2xx request payloads and upstream responses.",
+    "success_logs_enable": "Record success request logs",
+    "success_logs_request_log_disabled": "Enable request logging first, then turn on success request logs.",
+    "success_logs_empty": "No success request log files",
+    "success_logs_load_error": "Failed to load success logs",
+    "success_logs_download": "Download",
+    "success_logs_download_formatted": "Download formatted",
+    "error_logs_download_formatted": "Download formatted",
+    "request_logs_filter_model": "Model",
+    "request_logs_filter_model_placeholder": "Filter by model, e.g. gpt-5",
+    "request_logs_filter_from": "From",
+    "request_logs_filter_to": "To",
+    "request_logs_filter_apply": "Filter",
+    "request_logs_filter_reset": "Reset"
   },
   "config_management": {
     "title": "Config Panel",

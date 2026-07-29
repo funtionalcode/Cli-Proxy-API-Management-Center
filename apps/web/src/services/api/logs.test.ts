@@ -87,6 +87,29 @@ describe('logs API', () => {
     });
   });
 
+  it('passes model and time filters when fetching request logs', async () => {
+    mocks.get.mockResolvedValue({ files: [] });
+
+    await logsApi.fetchErrorLogs({
+      page: 1,
+      pageSize: 20,
+      model: ' gpt-5 ',
+      from: 1700000000,
+      to: 1700003600,
+    });
+
+    expect(mocks.get).toHaveBeenCalledWith('/request-error-logs', {
+      params: {
+        page: 1,
+        page_size: 20,
+        model: 'gpt-5',
+        from: 1700000000,
+        to: 1700003600,
+      },
+      timeout: expect.any(Number),
+    });
+  });
+
   it('keeps non-404 success log list errors visible', async () => {
     const serverError = Object.assign(new Error('server unavailable'), { status: 500 });
     mocks.get.mockRejectedValue(serverError);
