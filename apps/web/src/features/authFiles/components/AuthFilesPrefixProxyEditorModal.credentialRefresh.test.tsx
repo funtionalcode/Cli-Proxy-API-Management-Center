@@ -45,6 +45,7 @@ const createEditor = (
   prefix: '',
   proxyUrl: '',
   priority: '',
+  weight: '',
   websockets: false,
   websocketsTouched: false,
   usingApi: false,
@@ -54,6 +55,9 @@ const createEditor = (
   headersText: '',
   headersTouched: false,
   headersError: null,
+  modelAliasesText: '',
+  modelAliasesTouched: false,
+  modelAliasesError: null,
 });
 
 const renderModal = (

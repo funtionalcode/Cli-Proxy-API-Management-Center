@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authFilesApi, type AuthFileFieldsPatch } from '@/services/api';
-import type { AuthFileItem } from '@/types';
+import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
+import { normalizeOAuthAliasEntries } from '@/features/authFiles/oauthAliasValidation';
 import { useNotificationStore } from '@/stores';
 import {
   applyAuthFileWebsockets,
@@ -17,6 +18,12 @@ type AuthFileHeadersErrorKey =
   | 'auth_files.headers_invalid_json'
   | 'auth_files.headers_invalid_object'
   | 'auth_files.headers_invalid_value';
+type AuthFileModelAliasesErrorKey =
+  | 'auth_files.model_aliases_invalid_json'
+  | 'auth_files.model_aliases_invalid_array'
+  | 'auth_files.model_aliases_invalid_entry'
+  | 'auth_files.model_aliases_same_as_name'
+  | 'auth_files.model_aliases_duplicate';
 type AuthFileContentErrorKey =
   | 'auth_files.prefix_proxy_invalid_json'
   | 'auth_files.prefix_proxy_html_challenge';
@@ -25,10 +32,12 @@ export type PrefixProxyEditorField =
   | 'prefix'
   | 'proxyUrl'
   | 'priority'
+  | 'weight'
   | 'websockets'
   | 'usingApi'
   | 'note'
-  | 'headersText';
+  | 'headersText'
+  | 'modelAliasesText';
 
 export type PrefixProxyEditorFieldValue = string | boolean;
 
@@ -47,6 +56,7 @@ export type PrefixProxyEditorState = {
   prefix: string;
   proxyUrl: string;
   priority: string;
+  weight: string;
   websockets: boolean;
   websocketsTouched: boolean;
   usingApi: boolean;
@@ -56,6 +66,9 @@ export type PrefixProxyEditorState = {
   headersText: string;
   headersTouched: boolean;
   headersError: string | null;
+  modelAliasesText: string;
+  modelAliasesTouched: boolean;
+  modelAliasesError: string | null;
 };
 
 export type UseAuthFilesPrefixProxyEditorOptions = {
@@ -110,6 +123,109 @@ const parseHeadersText = (
 
   return { value: parsed as AuthFileHeaders, errorKey: null };
 };
+
+
+const emptyModelAliasEntry = (): OAuthModelAliasEntry => ({ name: '', alias: '', fork: false });
+
+const readModelAliases = (value: unknown): OAuthModelAliasEntry[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return emptyModelAliasEntry();
+      }
+      const entry = item as Record<string, unknown>;
+      return {
+        name: typeof entry.name === 'string' ? entry.name : '',
+        alias: typeof entry.alias === 'string' ? entry.alias : '',
+        fork: entry.fork === true,
+        ...(entry.forceMapping === true || entry.force_mapping === true
+          ? { forceMapping: true }
+          : {}),
+      } satisfies OAuthModelAliasEntry;
+    })
+    .filter((entry) => entry.name || entry.alias || entry.fork || entry.forceMapping);
+};
+
+const serializeModelAliasesText = (entries: OAuthModelAliasEntry[]): string => {
+  if (!entries.length) return '';
+  return JSON.stringify(
+    entries.map((entry) => ({
+      name: entry.name,
+      alias: entry.alias,
+      ...(entry.fork === true ? { fork: true } : {}),
+      ...(entry.forceMapping === true ? { forceMapping: true } : {}),
+    })),
+    null,
+    2
+  );
+};
+
+const parseModelAliasesText = (
+  text: string
+): {
+  value: OAuthModelAliasEntry[] | null;
+  errorKey: AuthFileModelAliasesErrorKey | null;
+  errorParams?: Record<string, string>;
+} => {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { value: [], errorKey: null };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return { value: null, errorKey: 'auth_files.model_aliases_invalid_json' };
+  }
+  if (!Array.isArray(parsed)) {
+    return { value: null, errorKey: 'auth_files.model_aliases_invalid_array' };
+  }
+
+  const draft: OAuthModelAliasEntry[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { value: null, errorKey: 'auth_files.model_aliases_invalid_entry' };
+    }
+    const entry = item as Record<string, unknown>;
+    if (typeof entry.name !== 'string' || typeof entry.alias !== 'string') {
+      return { value: null, errorKey: 'auth_files.model_aliases_invalid_entry' };
+    }
+    draft.push({
+      name: entry.name,
+      alias: entry.alias,
+      ...(entry.fork === true ? { fork: true } : {}),
+      ...(entry.forceMapping === true || entry.force_mapping === true
+        ? { forceMapping: true }
+        : {}),
+    });
+  }
+
+  const normalization = normalizeOAuthAliasEntries(draft);
+  const firstIssue = normalization.issues[0];
+  if (firstIssue) {
+    if (firstIssue.code === 'same_as_name') {
+      return { value: null, errorKey: 'auth_files.model_aliases_same_as_name' };
+    }
+    if (firstIssue.code === 'duplicate_alias') {
+      return {
+        value: null,
+        errorKey: 'auth_files.model_aliases_duplicate',
+        errorParams: { alias: firstIssue.alias ?? '' },
+      };
+    }
+    return { value: null, errorKey: 'auth_files.model_aliases_invalid_entry' };
+  }
+  // Refuse partial drafts where rows are incomplete after the user entered something.
+  if (normalization.incompleteCount > 0) {
+    return { value: null, errorKey: 'auth_files.model_aliases_invalid_entry' };
+  }
+  return { value: normalization.accepted, errorKey: null };
+};
+
+const modelAliasesEqual = (left: OAuthModelAliasEntry[], right: OAuthModelAliasEntry[]): boolean =>
+  serializeModelAliasesText(left) === serializeModelAliasesText(right);
 
 const normalizeTextField = (value: unknown): string =>
   typeof value === 'string' ? value.trim() : '';
@@ -220,7 +336,11 @@ const applyHeadersPatch = (
 
 const buildAuthFileFieldsPatch = (
   editor: PrefixProxyEditorState,
-  resolveHeadersError: (key: AuthFileHeadersErrorKey) => string
+  resolveHeadersError: (key: AuthFileHeadersErrorKey) => string,
+  resolveModelAliasesError: (
+    key: AuthFileModelAliasesErrorKey,
+    params?: Record<string, string>
+  ) => string = (key) => key
 ): AuthFileFieldsPatch => {
   const original = editor.json ?? {};
   const patch: AuthFileFieldsPatch = {};
@@ -251,6 +371,24 @@ const buildAuthFileFieldsPatch = (
       }
     } else if (nextPriority !== originalPriority) {
       patch.priority = nextPriority;
+    }
+  }
+
+  // weight is only meaningful when > 0; empty/0/negative clears it (backend treats <=0 as absent).
+  const originalWeight = parsePriorityValue(original.weight);
+  const weightText = editor.weight.trim();
+  const nextWeight = parsePriorityValue(weightText);
+  if (!weightText) {
+    if (originalWeight !== undefined && originalWeight > 0) {
+      patch.weight = 0;
+    }
+  } else if (nextWeight !== undefined) {
+    if (nextWeight <= 0) {
+      if (originalWeight !== undefined && originalWeight > 0) {
+        patch.weight = 0;
+      }
+    } else if (nextWeight !== originalWeight) {
+      patch.weight = nextWeight;
     }
   }
 
@@ -288,15 +426,36 @@ const buildAuthFileFieldsPatch = (
     if (editor.usingApi !== originalUsingApi) patch.using_api = editor.usingApi;
   }
 
+  if (editor.modelAliasesTouched) {
+    const { value: nextAliases, errorKey, errorParams } = parseModelAliasesText(
+      editor.modelAliasesText
+    );
+    if (errorKey) {
+      throw new Error(resolveModelAliasesError(errorKey, errorParams));
+    }
+    const originalAliases = readModelAliases(
+      original.model_aliases ?? original['model-aliases']
+    );
+    const normalizedNext = nextAliases ?? [];
+    if (!modelAliasesEqual(originalAliases, normalizedNext)) {
+      // Empty array clears the per-account aliases field on the auth file.
+      patch.model_aliases = normalizedNext;
+    }
+  }
+
   return patch;
 };
 
 const buildPrefixProxyUpdatedText = (
   editor: PrefixProxyEditorState | null,
-  resolveHeadersError: (key: AuthFileHeadersErrorKey) => string
+  resolveHeadersError: (key: AuthFileHeadersErrorKey) => string,
+  resolveModelAliasesError: (
+    key: AuthFileModelAliasesErrorKey,
+    params?: Record<string, string>
+  ) => string = (key) => key
 ): string => {
   if (!editor?.json) return editor?.rawText ?? '';
-  const patch = buildAuthFileFieldsPatch(editor, resolveHeadersError);
+  const patch = buildAuthFileFieldsPatch(editor, resolveHeadersError, resolveModelAliasesError);
   let next: Record<string, unknown> = { ...editor.json };
   if (patch.prefix !== undefined) {
     if (patch.prefix) {
@@ -321,6 +480,14 @@ const buildPrefixProxyUpdatedText = (
     }
   }
 
+  if (patch.weight !== undefined) {
+    if (patch.weight <= 0) {
+      delete next.weight;
+    } else {
+      next.weight = patch.weight;
+    }
+  }
+
   if (patch.note !== undefined) {
     if (patch.note) {
       next.note = patch.note;
@@ -336,6 +503,20 @@ const buildPrefixProxyUpdatedText = (
   }
   if (patch.using_api !== undefined) next.using_api = patch.using_api;
 
+  if (patch.model_aliases !== undefined) {
+    if (patch.model_aliases && patch.model_aliases.length > 0) {
+      next.model_aliases = patch.model_aliases;
+      if ('model-aliases' in next) {
+        delete next['model-aliases'];
+      }
+    } else {
+      delete next.model_aliases;
+      if ('model-aliases' in next) {
+        delete next['model-aliases'];
+      }
+    }
+  }
+
   return JSON.stringify(next);
 };
 
@@ -349,16 +530,21 @@ export function useAuthFilesPrefixProxyEditor(
   const [prefixProxyEditor, setPrefixProxyEditor] = useState<PrefixProxyEditorState | null>(null);
 
   const hasBlockingValidationError = Boolean(
-    prefixProxyEditor?.headersTouched && prefixProxyEditor.headersError
+    (prefixProxyEditor?.headersTouched && prefixProxyEditor.headersError) ||
+      (prefixProxyEditor?.modelAliasesTouched && prefixProxyEditor.modelAliasesError)
   );
+  const resolveModelAliasesError = (
+    key: AuthFileModelAliasesErrorKey,
+    params?: Record<string, string>
+  ) => t(key, params);
   const prefixProxyUpdatedText =
     prefixProxyEditor && !hasBlockingValidationError
-      ? buildPrefixProxyUpdatedText(prefixProxyEditor, (key) => t(key))
+      ? buildPrefixProxyUpdatedText(prefixProxyEditor, (key) => t(key), resolveModelAliasesError)
       : '';
 
   const prefixProxyPatch =
     prefixProxyEditor?.json && !hasBlockingValidationError
-      ? buildAuthFileFieldsPatch(prefixProxyEditor, (key) => t(key))
+      ? buildAuthFileFieldsPatch(prefixProxyEditor, (key) => t(key), resolveModelAliasesError)
       : null;
 
   const prefixProxyDirty = hasKeys(prefixProxyPatch);
@@ -392,6 +578,7 @@ export function useAuthFilesPrefixProxyEditor(
       prefix: '',
       proxyUrl: '',
       priority: '',
+      weight: '',
       websockets: false,
       websocketsTouched: false,
       usingApi: false,
@@ -401,6 +588,9 @@ export function useAuthFilesPrefixProxyEditor(
       headersText: '',
       headersTouched: false,
       headersError: null,
+      modelAliasesText: '',
+      modelAliasesTouched: false,
+      modelAliasesError: null,
     });
 
     try {
@@ -437,6 +627,7 @@ export function useAuthFilesPrefixProxyEditor(
       const prefix = typeof json.prefix === 'string' ? json.prefix : '';
       const proxyUrl = typeof json.proxy_url === 'string' ? json.proxy_url : '';
       const priority = parsePriorityValue(json.priority);
+      const weight = parsePriorityValue(json.weight);
       const providerKey = normalizeProviderKey(
         String(json.type ?? json.provider ?? file.type ?? file.provider ?? '')
       );
@@ -454,6 +645,16 @@ export function useAuthFilesPrefixProxyEditor(
         headersError = errorKey ? t(errorKey) : null;
       }
 
+      const modelAliases = readModelAliases(json.model_aliases ?? json['model-aliases']);
+      const modelAliasesText = serializeModelAliasesText(modelAliases);
+      let modelAliasesError: string | null = null;
+      if (modelAliasesText) {
+        const parsedAliases = parseModelAliasesText(modelAliasesText);
+        if (parsedAliases.errorKey) {
+          modelAliasesError = t(parsedAliases.errorKey, parsedAliases.errorParams);
+        }
+      }
+
       setPrefixProxyEditor((prev) => {
         if (!prev || prev.fileName !== name) return prev;
         return {
@@ -467,6 +668,7 @@ export function useAuthFilesPrefixProxyEditor(
           prefix,
           proxyUrl,
           priority: priority !== undefined ? String(priority) : '',
+          weight: weight !== undefined && weight > 0 ? String(weight) : '',
           websockets,
           websocketsTouched: false,
           usingApi,
@@ -476,6 +678,9 @@ export function useAuthFilesPrefixProxyEditor(
           headersText,
           headersTouched: false,
           headersError,
+          modelAliasesText,
+          modelAliasesTouched: false,
+          modelAliasesError,
           error: null,
         };
       });
@@ -498,6 +703,7 @@ export function useAuthFilesPrefixProxyEditor(
       if (field === 'prefix') return { ...prev, prefix: String(value) };
       if (field === 'proxyUrl') return { ...prev, proxyUrl: String(value) };
       if (field === 'priority') return { ...prev, priority: String(value) };
+      if (field === 'weight') return { ...prev, weight: String(value) };
       if (field === 'websockets') {
         return { ...prev, websockets: Boolean(value), websocketsTouched: true };
       }
@@ -515,6 +721,16 @@ export function useAuthFilesPrefixProxyEditor(
           headersError: errorKey ? t(errorKey) : null,
         };
       }
+      if (field === 'modelAliasesText') {
+        const modelAliasesText = String(value);
+        const { errorKey, errorParams } = parseModelAliasesText(modelAliasesText);
+        return {
+          ...prev,
+          modelAliasesText,
+          modelAliasesTouched: true,
+          modelAliasesError: errorKey ? t(errorKey, errorParams) : null,
+        };
+      }
       return prev;
     });
   };
@@ -526,7 +742,11 @@ export function useAuthFilesPrefixProxyEditor(
     const name = prefixProxyEditor.fileName;
     let payload: AuthFileFieldsPatch;
     try {
-      payload = buildAuthFileFieldsPatch(prefixProxyEditor, (key) => t(key));
+      payload = buildAuthFileFieldsPatch(
+        prefixProxyEditor,
+        (key) => t(key),
+        (key, params) => t(key, params)
+      );
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Invalid format';
       showNotification(errorMessage, 'error');

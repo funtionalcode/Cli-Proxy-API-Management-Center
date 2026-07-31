@@ -179,6 +179,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
     Boolean(rawStatusMessage) && !HEALTHY_STATUS_MESSAGES.has(rawStatusMessage.toLowerCase());
 
   const priorityValue = parsePriorityValue(file.priority ?? file['priority']);
+  const weightValue = parsePriorityValue(file.weight ?? file['weight']);
   const projectIdValue = getProjectIdValue(file);
   const noteValue = typeof file.note === 'string' ? file.note.trim() : '';
   const subscription = isAntigravity && !isRuntimeOnly ? antigravitySubscription : undefined;
@@ -404,6 +405,14 @@ export function AuthFileCard(props: AuthFileCardProps) {
                 <span className={styles.metaLabel}>{t('auth_files.priority_display')}</span>
                 <span className={`${styles.metaValue} ${styles.priorityValue}`}>
                   {priorityValue}
+                </span>
+              </div>
+            )}
+            {weightValue !== undefined && weightValue > 0 && (
+              <div className={`${styles.metaItem} ${styles.priorityBadge}`}>
+                <span className={styles.metaLabel}>{t('auth_files.weight_display')}</span>
+                <span className={`${styles.metaValue} ${styles.priorityValue}`}>
+                  {weightValue}
                 </span>
               </div>
             )}

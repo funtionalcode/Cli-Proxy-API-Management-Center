@@ -244,6 +244,8 @@ export function AuthFilesPage() {
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
   const [batchPriorityOpen, setBatchPriorityOpen] = useState(false);
   const [batchPriorityValue, setBatchPriorityValue] = useState('');
+  const [batchWeightOpen, setBatchWeightOpen] = useState(false);
+  const [batchWeightValue, setBatchWeightValue] = useState('');
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const [lastCodexInspectionResults, setLastCodexInspectionResults] = useState<
     AuthFileCodexInspectionSnapshot[]
@@ -1445,6 +1447,24 @@ export function AuthFilesPage() {
     }
   }, [batchPatchFields, batchPriorityValue, selectedPatchTargets, showNotification, t]);
 
+  const handleOpenBatchWeight = useCallback(() => {
+    setBatchWeightValue('');
+    setBatchWeightOpen(true);
+  }, []);
+
+  const handleBatchWeightSave = useCallback(async () => {
+    const parsedWeight = parsePriorityValue(batchWeightValue);
+    if (parsedWeight === undefined || parsedWeight <= 0) {
+      showNotification(t('auth_files.batch_weight_invalid'), 'error');
+      return;
+    }
+
+    const result = await batchPatchFields(selectedPatchTargets, { weight: parsedWeight });
+    if (result) {
+      setBatchWeightOpen(false);
+    }
+  }, [batchPatchFields, batchWeightValue, selectedPatchTargets, showNotification, t]);
+
   const handleBatchCodexWebsockets = useCallback(
     (websockets: boolean) => {
       void batchPatchFields(selectedWebsocketPatchTargets, { websockets });
@@ -2086,6 +2106,53 @@ export function AuthFilesPage() {
         </div>
       </Modal>
 
+      <Modal
+        open={batchWeightOpen}
+        onClose={() => {
+          if (!batchFieldsUpdating) setBatchWeightOpen(false);
+        }}
+        closeDisabled={batchFieldsUpdating}
+        title={t('auth_files.batch_weight_title')}
+        width={420}
+        footer={
+          <div className={styles.batchPriorityFooter}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setBatchWeightOpen(false)}
+              disabled={batchFieldsUpdating}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void handleBatchWeightSave()}
+              disabled={batchFieldsButtonsDisabled}
+              loading={batchFieldsUpdating}
+            >
+              {t('common.confirm')}
+            </Button>
+          </div>
+        }
+      >
+        <div className={styles.batchPriorityModal}>
+          <Input
+            label={t('auth_files.weight_label')}
+            placeholder={t('auth_files.weight_placeholder')}
+            hint={t('auth_files.weight_hint')}
+            value={batchWeightValue}
+            onChange={(event) => setBatchWeightValue(event.target.value)}
+            disabled={disableControls || batchFieldsUpdating}
+            inputMode="numeric"
+            autoFocus
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || batchFieldsButtonsDisabled) return;
+              void handleBatchWeightSave();
+            }}
+          />
+        </div>
+      </Modal>
+
       {batchActionBarVisible && typeof document !== 'undefined'
         ? createPortal(
             <div className={styles.batchActionContainer} ref={floatingBatchActionsRef}>
@@ -2154,6 +2221,15 @@ export function AuthFilesPage() {
                     loading={batchFieldsUpdating}
                   >
                     {t('auth_files.batch_priority_button')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleOpenBatchWeight}
+                    disabled={batchFieldsButtonsDisabled}
+                    loading={batchFieldsUpdating}
+                  >
+                    {t('auth_files.batch_weight_button')}
                   </Button>
                   <Button
                     variant="secondary"

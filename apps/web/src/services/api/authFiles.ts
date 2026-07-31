@@ -26,7 +26,11 @@ export type AuthFileFieldsPatch = {
   using_api?: boolean;
   headers?: Record<string, string>;
   priority?: number;
+  /** Weighted selection among same-priority accounts; <=0 clears the field. */
+  weight?: number;
   note?: string;
+  /** Per-account model aliases stored on the auth file metadata. */
+  model_aliases?: OAuthModelAliasEntry[] | null;
 };
 export type AuthFilePatchAuthIndex = string | number;
 type AuthFileBatchFailure = { name: string; error: string };
@@ -459,6 +463,14 @@ const applyFieldsPatchToAuthRecord = (
       delete next.priority;
     } else {
       next.priority = fields.priority;
+    }
+  }
+
+  if (fields.weight !== undefined) {
+    if (fields.weight <= 0) {
+      delete next.weight;
+    } else {
+      next.weight = fields.weight;
     }
   }
 

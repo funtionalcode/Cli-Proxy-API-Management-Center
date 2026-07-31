@@ -103,7 +103,8 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
               editor?.saving === true ||
               !dirty ||
               !editor?.json ||
-              Boolean(editor?.headersTouched && editor.headersError)
+              Boolean(editor?.headersTouched && editor.headersError) ||
+              Boolean(editor?.modelAliasesTouched && editor.modelAliasesError)
             }
           >
             {t('common.save')}
@@ -174,6 +175,14 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
                     disabled={disableControls || editor.saving || !editor.json}
                     onChange={(e) => onChange('priority', e.target.value)}
                   />
+                  <Input
+                    label={t('auth_files.weight_label')}
+                    value={editor.weight}
+                    placeholder={t('auth_files.weight_placeholder')}
+                    hint={t('auth_files.weight_hint')}
+                    disabled={disableControls || editor.saving || !editor.json}
+                    onChange={(e) => onChange('weight', e.target.value)}
+                  />
                   {supportsAuthFileWebsockets(editor.providerKey) && (
                     <div className="form-group">
                       <label>{t('auth_files.websockets_label')}</label>
@@ -211,6 +220,22 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
                     />
                     {editor.headersError && <div className="error-box">{editor.headersError}</div>}
                     <div className="hint">{t('auth_files.headers_hint')}</div>
+                  </div>
+                  <div className="form-group">
+                    <label>{t('auth_files.model_aliases_label')}</label>
+                    <textarea
+                      className={`input ${editor.modelAliasesError ? styles.prefixProxyTextareaInvalid : ''}`}
+                      value={editor.modelAliasesText}
+                      placeholder={t('auth_files.model_aliases_placeholder')}
+                      rows={6}
+                      aria-invalid={Boolean(editor.modelAliasesError)}
+                      disabled={disableControls || editor.saving || !editor.json}
+                      onChange={(e) => onChange('modelAliasesText', e.target.value)}
+                    />
+                    {editor.modelAliasesError && (
+                      <div className="error-box">{editor.modelAliasesError}</div>
+                    )}
+                    <div className="hint">{t('auth_files.model_aliases_hint')}</div>
                   </div>
                   <Input
                     label={t('auth_files.note_label')}

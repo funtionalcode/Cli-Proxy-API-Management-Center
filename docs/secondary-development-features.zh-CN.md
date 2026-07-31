@@ -1,8 +1,8 @@
 # 二开功能保留清单
 
-更新时间：2026-07-16
+更新时间：2026-07-31
 
-本文记录当前 `master` 中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
+本文记录当前 `master`（及已落地未提交的本地改动）中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
 ## 维护约定
 
@@ -11,6 +11,11 @@
 - 提交说明中需要明确本次是否更新了二开功能保留清单；如果没有更新，需要说明原因。
 - 后续排查“功能不见了”时，先对照本文检查，不要只凭当前页面表现判断功能是否已丢失。
 
+相关远程：
+
+- `origin`：`funtionalcode/Cli-Proxy-API-Management-Center`
+- `upstream`：`seakee/CPA-Manager-Plus`
+
 主要依据：
 
 - 当前 `master` 相对 `upstream/main` 的业务差异。
@@ -18,6 +23,7 @@
 - 2026-07-03 已恢复并验证的提交：`fc8ea44 fix(frontend): 恢复同步后隐藏的二开功能`。
 - 2026-07-03 已补充并验证的提交：`da3e5a0 fix(frontend): 恢复认证文件权重展示`。
 - 2026-07-09 已补充并验证的提交：`f0be172 feat(proxy-configs): 新增代理配置总览页面`。
+- 2026-07-31 日志分页/筛选与认证文件单账号别名、权重编辑（见下文第 3、5 节增量）。
 
 ## 当前应保留的二开功能
 
@@ -63,6 +69,9 @@
 - 日志页内联提供 `request-log`、`success-request-log` 开关。
 - 支持错误日志、成功请求日志的格式化下载按钮。
 - 错误日志和成功请求日志支持服务端分页，日志列表提供翻页和每页 10/20/50/100 条配置，选择每页数量后自动回到第 1 页。
+- **日志三个 Tab（含应用日志等）均支持分页**（`b74d77b5`）。
+- **请求日志支持模型/时间等筛选**；大文件下载需放宽超时，避免前端先于后端截断策略失败（`105c6c1e`，配合 CPA `logs` 管理 API 的 model/from/to 与超大文件截断下载）。
+- 兼容成功日志列表接口缺失时的降级（`b4ac874e`）。
 - 支持解析 GIN 日志、英文/中文耗时标签、`latency`、排队耗时等 timing 字段。
 - 日志行展示 latency/timings pill。
 - 支持最小/最大耗时筛选，筛选值按毫秒保存。
@@ -71,11 +80,13 @@
 关键位置：
 
 - `apps/web/src/features/logs/LogsPage.tsx`
+- `apps/web/src/features/logs/LogsPage.module.scss`
 - `apps/web/src/features/logs/logFeatureAvailability.ts`
 - `apps/web/src/features/logs/hooks/logParsing.ts`
 - `apps/web/src/features/logs/hooks/useLogFilters.ts`
 - `apps/web/src/services/api/logs.ts`
 - `apps/web/src/services/api/config.ts`
+- `apps/web/src/utils/constants.ts`
 
 ### 4. Provider 配置增强
 
@@ -102,21 +113,27 @@
 - 认证文件卡片显示最近请求状态、额度状态、冷却恢复信息、项目 ID、优先级 `priority`、权重 `weight` 等。
 - Codex 额度冷却恢复后可触发对应账号额度刷新，避免继续展示过期 Header 快照。
 - 支持 Auth JSON 粘贴导入，包含 ChatGPT session/sub2api 到 CPA Codex 登录文件的转换。
-- Prefix/Proxy 编辑器支持编辑 `prefix`、`proxy`、`priority`、`weight`、`headers`。
+- Prefix/Proxy 编辑器支持编辑 `prefix`、`proxy`、`priority`、`weight`、`headers`、`note`，以及条件字段 `websockets` / `using_api`。
 - `priority` 仅接受整数；留空会清理该字段；认证文件页支持按优先级高低排序和批量设置优先级。
-- `weight` 仅接受正整数；留空会清理该字段。
+- `weight` 仅接受正整数；留空或 `≤0` 会清理该字段；**详情弹窗必须有权重输入**；卡片在 `weight > 0` 时展示权重徽章；**批量栏提供「设置权重」**（与批量优先级并列）。
 - `headers` 按 JSON 对象编辑，支持写入、更新和清空。
-- `authFilesApi.patchFieldsForAuthIndexes` 支持写入/清空 `weight` 和 `headers`。
-- OAuth 排除模型、OAuth 模型别名页面保留，模型别名支持图形化关系视图。
+- **单账号模型别名 `model_aliases`：** 详情弹窗提供 JSON 数组文本框（兼容 `model-aliases` 读入）；保存走 `authFilesApi.patchFields` 的 `model_aliases`；非法 JSON/重复/与 name 相同等校验阻止保存；空数组表示清空账号级别名。
+- `AuthFileFieldsPatch` 必须包含：`priority`、`weight`、`model_aliases`、`headers`、`proxy_url`、`note` 等字段。
+- `authFilesApi.patchFieldsForAuthIndexes` / 本地 JSON apply 路径支持写入/清空 `weight`、`headers`、`model_aliases`（勿只改 UI 不改 apply）。
+- OAuth 排除模型、OAuth 模型别名（全局）页面保留，模型别名支持图形化关系视图；**全局别名页与单账号 `model_aliases` 同时保留，不可互相替代。**
 - 认证文件列表的图形/列表视图偏好、排序偏好需要保留。
 - 大量认证文件采用服务端分页和前端渐进加载：首批数据返回后立即展示，其余分页并发补齐；列表默认不触发远程余额查询，避免单个账号的网络超时拖死整个接口。
 
 关键位置：
 
 - `apps/web/src/features/authFiles/`
-- `apps/web/src/services/api/authFiles.ts`
+- `apps/web/src/features/authFiles/AuthFilesPage.tsx`（批量优先级/权重）
+- `apps/web/src/features/authFiles/components/AuthFileCard.tsx`
+- `apps/web/src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.tsx`
 - `apps/web/src/features/authFiles/hooks/useAuthFilesPrefixProxyEditor.ts`
+- `apps/web/src/services/api/authFiles.ts`
 - `apps/web/src/features/authFiles/sessionAuthConverter.ts`
+- `apps/web/src/i18n/locales/{zh-CN,zh-TW,en,ru}.json`（`weight_*`、`batch_weight_*`、`model_aliases_*`）
 
 ### 6. 代理配置总览
 
@@ -236,14 +253,22 @@
 - 外部 CPA 面板连接 Manager Server 时，请求监控入口和 API Key 别名是否仍可用。
 - 配置页能否显示和保存 Manager Server 的 CPA 连接、采集模式、请求监控开关。
 - 日志页能否切换成功请求日志，能否下载格式化错误/成功日志，耗时筛选是否有效。
+- 日志三个 Tab 分页、请求日志模型/时间筛选、大文件下载超时是否仍可用。
 - Provider 保存后是否保留 `headers`、`weight`、`balanceToken`，keyless OpenAI custom entry 是否不会被丢弃。
-- AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `weight`、`headers`。
+- AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `priority`、`weight`、`headers`、`model_aliases`。
+- AuthFiles 批量栏是否同时有「设置优先级」和「设置权重」。
 - 代理配置总览页是否能展示全局、Provider、OpenAI key entry、认证文件代理配置；代理用户是否可见、代理密码是否脱敏；按 `authIndex` 编辑认证文件代理是否只影响目标账号。
-- AuthFiles 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级是否仍可用。
+- AuthFiles 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级/权重是否仍可用。
+- 全局 OAuth 模型别名页与单账号 `model_aliases` 是否同时存在。
 - Claude `one_day` 日额度窗口是否正常展示。
 - Codex 额度 Header 快照、手动刷新、冷却恢复刷新是否不会相互覆盖错误状态。
 - API Key 别名是否能创建、删除、复用历史别名，并在监控/用量分析中显示。
 - 插件能力不支持时是否正确隐藏或跳转。
+
+与 CPA / new-api 的联调提示：
+
+- 日志 request id 对齐依赖 CPA 采用 new-api 入站头；CPAMP 侧负责日志筛选/下载 UI，不负责改写 request id。
+- 单账号 `model_aliases` 写入依赖 CPA management `PatchAuthFileFields` 与 synthesizer 读取；同步后应用真实认证文件试保存一次。
 
 建议验证命令：
 
@@ -269,6 +294,20 @@ npm --workspace apps/web run test -- \
   src/services/api/authFiles.test.ts \
   src/features/authFiles/hooks/useAuthFilesData.test.ts \
   src/features/authFiles/components/AuthFileCard.test.tsx \
+  src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.credentialRefresh.test.tsx \
   src/features/proxyConfigs/proxyConfigModel.test.ts \
   src/components/quota/QuotaSection.test.tsx
 ```
+
+```bash
+# 或在 apps/web 下
+bunx tsc --noEmit
+bunx vitest run src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.credentialRefresh.test.tsx
+```
+
+## 变更记录
+
+| 日期 | 说明 |
+| --- | --- |
+| 2026-07-16 | 代理配置总览等既有清单 |
+| 2026-07-31 | 补充日志三 Tab 分页/筛选/大文件下载；认证文件权重编辑与批量权重；单账号 `model_aliases`；联调契约与回归项 |
