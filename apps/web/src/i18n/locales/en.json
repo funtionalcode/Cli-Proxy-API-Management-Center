@@ -2648,6 +2648,8 @@
     "error_logs_download_formatted": "Download formatted",
     "request_logs_filter_model": "Model",
     "request_logs_filter_model_placeholder": "Filter by model, e.g. gpt-5",
+    "request_logs_filter_request_id": "Request ID",
+    "request_logs_filter_request_id_placeholder": "Paste new-api request ID or log suffix",
     "request_logs_filter_from": "From",
     "request_logs_filter_to": "To",
     "request_logs_filter_apply": "Filter",

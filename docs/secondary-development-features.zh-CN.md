@@ -70,7 +70,7 @@
 - 支持错误日志、成功请求日志的格式化下载按钮。
 - 错误日志和成功请求日志支持服务端分页，日志列表提供翻页和每页 10/20/50/100 条配置，选择每页数量后自动回到第 1 页。
 - **日志三个 Tab（含应用日志等）均支持分页**（`b74d77b5`）。
-- **请求日志支持模型/时间等筛选**；大文件下载需放宽超时，避免前端先于后端截断策略失败（`105c6c1e`，配合 CPA `logs` 管理 API 的 model/from/to 与超大文件截断下载）。
+- **请求日志支持模型/请求 ID/时间等筛选**；大文件下载需放宽超时，避免前端先于后端截断策略失败（`105c6c1e`，配合 CPA `logs` 管理 API 的 model/request_id/from/to 与超大文件截断下载）。
 - 兼容成功日志列表接口缺失时的降级（`b4ac874e`）。
 - 支持解析 GIN 日志、英文/中文耗时标签、`latency`、排队耗时等 timing 字段。
 - 日志行展示 latency/timings pill。
@@ -253,7 +253,7 @@
 - 外部 CPA 面板连接 Manager Server 时，请求监控入口和 API Key 别名是否仍可用。
 - 配置页能否显示和保存 Manager Server 的 CPA 连接、采集模式、请求监控开关。
 - 日志页能否切换成功请求日志，能否下载格式化错误/成功日志，耗时筛选是否有效。
-- 日志三个 Tab 分页、请求日志模型/时间筛选、大文件下载超时是否仍可用。
+- 日志三个 Tab 分页、请求日志模型/请求 ID/时间筛选、大文件下载超时是否仍可用。
 - Provider 保存后是否保留 `headers`、`weight`、`balanceToken`，keyless OpenAI custom entry 是否不会被丢弃。
 - AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `priority`、`weight`、`headers`、`model_aliases`。
 - AuthFiles 批量栏是否同时有「设置优先级」和「设置权重」。
@@ -311,3 +311,4 @@ bunx vitest run src/features/authFiles/components/AuthFilesPrefixProxyEditorModa
 | --- | --- |
 | 2026-07-16 | 代理配置总览等既有清单 |
 | 2026-07-31 | 补充日志三 Tab 分页/筛选/大文件下载；认证文件权重编辑与批量权重；单账号 `model_aliases`；联调契约与回归项 |
+| 2026-07-31 | 错误/成功请求日志筛选栏补充请求 ID（对接 CPA `request_id`） |

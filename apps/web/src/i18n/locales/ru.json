@@ -2648,6 +2648,8 @@
     "error_logs_download_formatted": "Скачать форматированный",
     "request_logs_filter_model": "Модель",
     "request_logs_filter_model_placeholder": "Фильтр по модели, напр. gpt-5",
+    "request_logs_filter_request_id": "Request ID",
+    "request_logs_filter_request_id_placeholder": "Вставьте request ID new-api или суффикс лога",
     "request_logs_filter_from": "С",
     "request_logs_filter_to": "По",
     "request_logs_filter_apply": "Фильтр",

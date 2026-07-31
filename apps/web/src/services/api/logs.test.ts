@@ -87,13 +87,14 @@ describe('logs API', () => {
     });
   });
 
-  it('passes model and time filters when fetching request logs', async () => {
+  it('passes model, request id, and time filters when fetching request logs', async () => {
     mocks.get.mockResolvedValue({ files: [] });
 
     await logsApi.fetchErrorLogs({
       page: 1,
       pageSize: 20,
       model: ' gpt-5 ',
+      requestId: ' 202607311301428373439638268d9d6tX6BBjia ',
       from: 1700000000,
       to: 1700003600,
     });
@@ -103,6 +104,7 @@ describe('logs API', () => {
         page: 1,
         page_size: 20,
         model: 'gpt-5',
+        request_id: '202607311301428373439638268d9d6tX6BBjia',
         from: 1700000000,
         to: 1700003600,
       },

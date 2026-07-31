@@ -31,6 +31,11 @@ export interface RequestLogFilesQuery {
   pageSize?: number;
   /** Case-insensitive model substring filter. */
   model?: string;
+  /**
+   * Request id filter (new-api / gateway id). Matched against the log file
+   * name suffix; partial paste is accepted by the backend.
+   */
+  requestId?: string;
   /** Inclusive lower bound as unix seconds. */
   from?: number;
   /** Inclusive upper bound as unix seconds. */
@@ -108,6 +113,8 @@ const requestLogParams = (query: RequestLogFilesQuery = {}) => {
   if (query.pageSize !== undefined) params.page_size = query.pageSize;
   const model = query.model?.trim();
   if (model) params.model = model;
+  const requestId = query.requestId?.trim();
+  if (requestId) params.request_id = requestId;
   if (query.from !== undefined && Number.isFinite(query.from) && query.from > 0) {
     params.from = Math.floor(query.from);
   }

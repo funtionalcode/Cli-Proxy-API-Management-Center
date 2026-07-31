@@ -2648,6 +2648,8 @@
     "error_logs_download_formatted": "下載格式化檔案",
     "request_logs_filter_model": "模型名稱",
     "request_logs_filter_model_placeholder": "按模型名篩選，例如 gpt-5",
+    "request_logs_filter_request_id": "請求 ID",
+    "request_logs_filter_request_id_placeholder": "貼上 new-api 請求 ID 或日誌後綴",
     "request_logs_filter_from": "開始時間",
     "request_logs_filter_to": "結束時間",
     "request_logs_filter_apply": "篩選",

@@ -93,12 +93,14 @@ const buildLogsQuery = (incremental: boolean, position: LogPosition): LogsQuery 
 
 interface RequestLogFilterState {
   model: string;
+  requestId: string;
   from: string;
   to: string;
 }
 
 const emptyRequestLogFilter = (): RequestLogFilterState => ({
   model: '',
+  requestId: '',
   from: '',
   to: '',
 });
@@ -112,9 +114,11 @@ const datetimeLocalToUnixSeconds = (value: string): number | undefined => {
 };
 
 const buildRequestLogFilterQuery = (filter: RequestLogFilterState) => {
-  const query: { model?: string; from?: number; to?: number } = {};
+  const query: { model?: string; requestId?: string; from?: number; to?: number } = {};
   const model = filter.model.trim();
   if (model) query.model = model;
+  const requestId = filter.requestId.trim();
+  if (requestId) query.requestId = requestId;
   const from = datetimeLocalToUnixSeconds(filter.from);
   if (from !== undefined && from > 0) query.from = from;
   const to = datetimeLocalToUnixSeconds(filter.to);
@@ -455,6 +459,7 @@ export function LogsPage() {
   const applyErrorLogFilter = () => {
     const next = {
       model: errorLogFilterDraft.model.trim(),
+      requestId: errorLogFilterDraft.requestId.trim(),
       from: errorLogFilterDraft.from,
       to: errorLogFilterDraft.to,
     };
@@ -474,6 +479,7 @@ export function LogsPage() {
   const applySuccessLogFilter = () => {
     const next = {
       model: successLogFilterDraft.model.trim(),
+      requestId: successLogFilterDraft.requestId.trim(),
       from: successLogFilterDraft.from,
       to: successLogFilterDraft.to,
     };
@@ -1342,6 +1348,15 @@ export function LogsPage() {
                   disabled={disableControls}
                 />
                 <Input
+                  label={t('logs.request_logs_filter_request_id')}
+                  value={errorLogFilterDraft.requestId}
+                  onChange={(e) =>
+                    setErrorLogFilterDraft((prev) => ({ ...prev, requestId: e.target.value }))
+                  }
+                  placeholder={t('logs.request_logs_filter_request_id_placeholder')}
+                  disabled={disableControls}
+                />
+                <Input
                   type="datetime-local"
                   label={t('logs.request_logs_filter_from')}
                   value={errorLogFilterDraft.from}
@@ -1483,6 +1498,15 @@ export function LogsPage() {
                     setSuccessLogFilterDraft((prev) => ({ ...prev, model: e.target.value }))
                   }
                   placeholder={t('logs.request_logs_filter_model_placeholder')}
+                  disabled={disableControls}
+                />
+                <Input
+                  label={t('logs.request_logs_filter_request_id')}
+                  value={successLogFilterDraft.requestId}
+                  onChange={(e) =>
+                    setSuccessLogFilterDraft((prev) => ({ ...prev, requestId: e.target.value }))
+                  }
+                  placeholder={t('logs.request_logs_filter_request_id_placeholder')}
                   disabled={disableControls}
                 />
                 <Input
