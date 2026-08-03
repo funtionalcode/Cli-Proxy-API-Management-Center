@@ -21,6 +21,10 @@ import {
   codexInspectionTargetTypesToSelection,
   normalizeCodexInspectionTargetTypes,
 } from './codexInspectionSettings';
+import {
+  getCodexInspectionOwnershipIdentityKey,
+  hasCodexInspectionStableIdentity,
+} from './codexInspectionOwnership';
 
 export type RunStatus = 'idle' | 'running' | 'paused' | 'success' | 'error';
 
@@ -675,13 +679,26 @@ export const normalizeServerCodexInspectionActionStatus = (
 };
 
 export const isActionableServerCodexInspectionResult = (
-  item: Pick<CodexInspectionResult, 'id' | 'action' | 'actionStatus'>
+  item: Pick<CodexInspectionResult, 'id' | 'action' | 'actionStatus'> &
+    Partial<
+      Pick<
+        CodexInspectionResult,
+        'fileName' | 'provider' | 'authIndex' | 'accountId' | 'accountSnapshot'
+      >
+    >
 ) => {
   const status = normalizeServerCodexInspectionActionStatus(item);
   return (
     item.id > 0 &&
     isServerCodexInspectionAction(item.action) &&
-    (status === 'pending' || status === 'failed')
+    (status === 'pending' || status === 'failed') &&
+    hasCodexInspectionStableIdentity({
+      fileName: item.fileName ?? '',
+      provider: item.provider,
+      authIndex: item.authIndex,
+      accountId: item.accountId,
+      accountSnapshot: item.accountSnapshot,
+    })
   );
 };
 
@@ -701,28 +718,62 @@ export const isHandledServerCodexInspectionResult = (
   return item.action === 'reauth' && item.executedAction === 'delete';
 };
 
+type ServerActionIdentity = Pick<CodexInspectionResult, 'id' | 'fileName' | 'action'> &
+  Partial<
+    Pick<
+      CodexInspectionResult,
+      'provider' | 'authIndex' | 'accountId' | 'accountSnapshot' | 'actionStatus'
+    >
+  >;
+
+const getServerActionIdentityKey = (item: ServerActionIdentity) =>
+  getCodexInspectionOwnershipIdentityKey({
+    fileName: item.fileName,
+    provider: item.provider,
+    authIndex: item.authIndex,
+    accountId: item.accountId,
+    accountSnapshot: item.accountSnapshot,
+  });
+
+const buildServerActionGroups = <T extends ServerActionIdentity>(results: T[]): T[][] => {
+  const groups: T[][] = [];
+  const itemsByFile = new Map<string, T[]>();
+  results.forEach((item) => {
+    const fileName = item.fileName.trim();
+    if (!fileName) return;
+    const fileItems = itemsByFile.get(fileName) ?? [];
+    fileItems.push(item);
+    itemsByFile.set(fileName, fileItems);
+  });
+  itemsByFile.forEach((allFileItems) => {
+    const fileItems = allFileItems.filter((item) => isServerCodexInspectionAction(item.action));
+    if (fileItems.length === 0) return;
+    if (fileItems.some((item) => item.action === 'delete')) {
+      groups.push(allFileItems);
+      return;
+    }
+    const identityGroups = new Map<string, T[]>();
+    fileItems.forEach((item) => {
+      const identityKey = getServerActionIdentityKey(item);
+      const identityItems = identityGroups.get(identityKey) ?? [];
+      identityItems.push(item);
+      identityGroups.set(identityKey, identityItems);
+    });
+    groups.push(...identityGroups.values());
+  });
+  return groups;
+};
+
 export const getCanonicalServerCodexInspectionActionIds = (
-  results: Array<Pick<CodexInspectionResult, 'id' | 'fileName' | 'action' | 'actionStatus'>>
+  results: Array<
+    Pick<CodexInspectionResult, 'id' | 'fileName' | 'action' | 'actionStatus'> &
+      Partial<
+        Pick<CodexInspectionResult, 'provider' | 'authIndex' | 'accountId' | 'accountSnapshot'>
+      >
+  >
 ) => {
   const canonicalIds = new Set<number>();
-  const fileOrder: string[] = [];
-  const groups = new Map<
-    string,
-    Array<Pick<CodexInspectionResult, 'id' | 'fileName' | 'action' | 'actionStatus'>>
-  >();
-  for (const item of results) {
-    const fileName = item.fileName.trim();
-    if (!isServerCodexInspectionAction(item.action) || !fileName) {
-      continue;
-    }
-    if (!groups.has(fileName)) {
-      groups.set(fileName, []);
-      fileOrder.push(fileName);
-    }
-    groups.get(fileName)?.push(item);
-  }
-  for (const fileName of fileOrder) {
-    const group = groups.get(fileName) ?? [];
+  for (const group of buildServerActionGroups(results)) {
     if (group.length === 0) continue;
     const action = group[0].action;
     if (group.some((item) => item.action !== action)) continue;
@@ -734,24 +785,15 @@ export const getCanonicalServerCodexInspectionActionIds = (
 };
 
 export const getMixedServerCodexInspectionActionIds = (
-  results: Array<Pick<CodexInspectionResult, 'id' | 'fileName' | 'action'>>
+  results: Array<
+    Pick<CodexInspectionResult, 'id' | 'fileName' | 'action'> &
+      Partial<
+        Pick<CodexInspectionResult, 'provider' | 'authIndex' | 'accountId' | 'accountSnapshot'>
+      >
+  >
 ) => {
   const mixedIds = new Set<number>();
-  const groups = new Map<
-    string,
-    Array<Pick<CodexInspectionResult, 'id' | 'fileName' | 'action'>>
-  >();
-  for (const item of results) {
-    const fileName = item.fileName.trim();
-    if (!isServerCodexInspectionAction(item.action) || !fileName) {
-      continue;
-    }
-    if (!groups.has(fileName)) {
-      groups.set(fileName, []);
-    }
-    groups.get(fileName)?.push(item);
-  }
-  for (const group of groups.values()) {
+  for (const group of buildServerActionGroups(results)) {
     if (group.length === 0) continue;
     const action = group[0].action;
     if (!group.some((item) => item.action !== action)) continue;

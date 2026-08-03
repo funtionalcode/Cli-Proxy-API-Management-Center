@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { authFilesApi, configApi, providersApi } from '@/services/api';
+import { authFilesApi, configApi, providersApi, type AuthFileStatusTarget } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import type {
   ApiKeyEntry,
@@ -28,6 +28,7 @@ import {
   type ProxyConfigRow,
   type ProxyConfigScope,
 } from './proxyConfigModel';
+import { getAuthFilePatchTarget } from '@/features/authFiles/model/authFilesPageModel';
 import styles from './ProxyConfigsPage.module.scss';
 
 type ProviderLists = {
@@ -62,8 +63,43 @@ const hasAuthIndex = (value: unknown): value is string | number => {
   return String(value).trim().length > 0;
 };
 
+const normalizeAuthIndexKey = (value: unknown): string =>
+  hasAuthIndex(value) ? String(value).trim() : '';
+
+const readAuthFileRowAuthIndex = (file: AuthFileItem): string =>
+  normalizeAuthIndexKey(file.authIndex ?? file.auth_index ?? file['auth-index']);
+
 const readErrorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+
+const resolveAuthFileProxyTarget = (
+  files: AuthFileItem[],
+  name: string,
+  authIndex: string | number | null | undefined
+): AuthFileStatusTarget => {
+  const physicalName = name.trim();
+  const expectedAuthIndex = normalizeAuthIndexKey(authIndex);
+  const matchedFile = files.find((file) => {
+    if (String(file.name ?? '').trim() !== physicalName) return false;
+    const currentAuthIndex = readAuthFileRowAuthIndex(file);
+    return expectedAuthIndex ? currentAuthIndex === expectedAuthIndex : !currentAuthIndex;
+  });
+
+  if (matchedFile) return getAuthFilePatchTarget(matchedFile);
+  return expectedAuthIndex
+    ? { name: physicalName, authIndex: expectedAuthIndex }
+    : { name: physicalName };
+};
+
+const resolveAuthFileProxySourceIdentities = (
+  files: AuthFileItem[],
+  physicalName: string
+): AuthFileStatusTarget[] => {
+  const sourceIdentities = files
+    .filter((file) => String(file.name ?? '').trim() === physicalName)
+    .map(getAuthFilePatchTarget);
+  return sourceIdentities.length > 0 ? sourceIdentities : [{ name: physicalName }];
+};
 
 function ProxyParsedPreview({ parsed }: { parsed: ParsedProxyURL }) {
   const { t } = useTranslation();
@@ -124,45 +160,41 @@ export function ProxyConfigsPage() {
 
     try {
       const configData = await fetchConfig(undefined, true);
-      const [
-        geminiResult,
-        codexResult,
-        claudeResult,
-        vertexResult,
-        openaiResult,
-        authFilesResult,
-      ] = await Promise.allSettled([
-        providersApi.getGeminiKeys(),
-        providersApi.getCodexConfigs(),
-        providersApi.getClaudeConfigs(),
-        providersApi.getVertexConfigs(),
-        providersApi.getOpenAIProviders(),
-        authFilesApi.list(),
-      ]);
+      const [geminiResult, codexResult, claudeResult, vertexResult, openaiResult, authFilesResult] =
+        await Promise.allSettled([
+          providersApi.getGeminiKeys(),
+          providersApi.getCodexConfigs(),
+          providersApi.getClaudeConfigs(),
+          providersApi.getVertexConfigs(),
+          providersApi.getOpenAIProviders(),
+          authFilesApi.list(),
+        ]);
 
       const nextProviders = {
         gemini:
           geminiResult.status === 'fulfilled'
             ? geminiResult.value
-            : configData.geminiApiKeys ?? [],
+            : (configData.geminiApiKeys ?? []),
         codex:
-          codexResult.status === 'fulfilled' ? codexResult.value : configData.codexApiKeys ?? [],
+          codexResult.status === 'fulfilled' ? codexResult.value : (configData.codexApiKeys ?? []),
         claude:
           claudeResult.status === 'fulfilled'
             ? claudeResult.value
-            : configData.claudeApiKeys ?? [],
+            : (configData.claudeApiKeys ?? []),
         vertex:
           vertexResult.status === 'fulfilled'
             ? vertexResult.value
-            : configData.vertexApiKeys ?? [],
+            : (configData.vertexApiKeys ?? []),
         openai:
           openaiResult.status === 'fulfilled'
             ? openaiResult.value
-            : configData.openaiCompatibility ?? [],
+            : (configData.openaiCompatibility ?? []),
       };
 
       setProviders(nextProviders);
-      setAuthFiles(authFilesResult.status === 'fulfilled' ? authFilesResult.value.files ?? [] : []);
+      setAuthFiles(
+        authFilesResult.status === 'fulfilled' ? (authFilesResult.value.files ?? []) : []
+      );
 
       updateConfigValue('gemini-api-key', nextProviders.gemini);
       updateConfigValue('codex-api-key', nextProviders.codex);
@@ -171,7 +203,8 @@ export function ProxyConfigsPage() {
       updateConfigValue('openai-compatibility', nextProviders.openai);
 
       if (authFilesResult.status === 'rejected') {
-        const message = readErrorMessage(authFilesResult.reason) || t('notification.refresh_failed');
+        const message =
+          readErrorMessage(authFilesResult.reason) || t('notification.refresh_failed');
         showNotification(`${t('notification.refresh_failed')}: ${message}`, 'warning');
       }
     } catch (err: unknown) {
@@ -326,10 +359,18 @@ export function ProxyConfigsPage() {
     authIndex: string | number | null | undefined,
     nextProxyUrl: string
   ) => {
-    if (hasAuthIndex(authIndex)) {
-      await authFilesApi.patchFieldsForAuthIndexes(name, [authIndex], { proxy_url: nextProxyUrl });
+    const target = resolveAuthFileProxyTarget(authFiles, name, authIndex);
+    const sourceIdentities = resolveAuthFileProxySourceIdentities(authFiles, target.name);
+    if (hasAuthIndex(target.authIndex)) {
+      await authFilesApi.patchFieldsForAuthIndexes(target.name, [target], sourceIdentities, {
+        proxy_url: nextProxyUrl,
+      });
     } else {
-      await authFilesApi.patchFields(name, { proxy_url: nextProxyUrl });
+      await authFilesApi.patchFieldsWithPluginSourceFallback(
+        target,
+        { proxy_url: nextProxyUrl },
+        sourceIdentities
+      );
     }
     const data = await authFilesApi.list();
     setAuthFiles(data.files ?? []);

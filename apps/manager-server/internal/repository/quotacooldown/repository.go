@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,6 +31,12 @@ func New(db *sql.DB) Repository {
 
 func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCooldownUpsert) (model.QuotaCooldown, error) {
 	cooldown.AuthFileName = strings.TrimSpace(cooldown.AuthFileName)
+	cooldown.AuthIndex = strings.TrimSpace(cooldown.AuthIndex)
+	cooldown.AccountSnapshot = strings.TrimSpace(cooldown.AccountSnapshot)
+	if cooldown.AccountSnapshot == cooldown.AuthFileName {
+		cooldown.AccountSnapshot = ""
+	}
+	cooldown.Provider = normalizeProvider(cooldown.Provider)
 	cooldown.Owner = strings.TrimSpace(cooldown.Owner)
 	if cooldown.AuthFileName == "" {
 		return model.QuotaCooldown{}, errors.New("quota cooldown auth file name is required")
@@ -52,12 +59,59 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 	}
 	defer tx.Rollback()
 
-	var id int64
-	err = tx.QueryRowContext(ctx, `select id from quota_cooldowns where auth_file_name = ? and owner = ? and status = ? limit 1`, cooldown.AuthFileName, cooldown.Owner, model.QuotaCooldownStatusActive).Scan(&id)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	authIndexIdentity, providerIdentity, accountSnapshotIdentity := cooldownIdentity(cooldown)
+	id, found, err := querySingleCooldownID(ctx, tx, `select id from quota_cooldowns
+		where auth_file_name = ? and owner = ? and status = ?
+			and coalesce(trim(auth_index), '') = ?
+			and case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else case coalesce(lower(replace(trim(provider), '_', '-')), '')
+					when 'x-ai' then 'xai'
+					when 'grok' then 'xai'
+					else coalesce(lower(replace(trim(provider), '_', '-')), '')
+				end
+			end = ?
+			and case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else coalesce(trim(account_snapshot), '')
+			end = ?
+		order by id asc limit 2`,
+		cooldown.AuthFileName,
+		cooldown.Owner,
+		model.QuotaCooldownStatusActive,
+		authIndexIdentity,
+		providerIdentity,
+		accountSnapshotIdentity,
+	)
+	if err != nil {
 		return model.QuotaCooldown{}, err
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if !found && authIndexIdentity != "" {
+		fallbackProvider := normalizeProvider(cooldown.Provider)
+		fallbackSnapshot := strings.TrimSpace(cooldown.AccountSnapshot)
+		if fallbackProvider != "" && fallbackSnapshot != "" {
+			id, found, err = querySingleCooldownID(ctx, tx, `select id from quota_cooldowns
+				where auth_file_name = ? and owner = ? and status = ?
+					and coalesce(trim(auth_index), '') = ''
+					and case coalesce(lower(replace(trim(provider), '_', '-')), '')
+						when 'x-ai' then 'xai'
+						when 'grok' then 'xai'
+						else coalesce(lower(replace(trim(provider), '_', '-')), '')
+					end = ?
+					and coalesce(trim(account_snapshot), '') = ?
+				order by id asc limit 2`,
+				cooldown.AuthFileName,
+				cooldown.Owner,
+				model.QuotaCooldownStatusActive,
+				fallbackProvider,
+				fallbackSnapshot,
+			)
+			if err != nil {
+				return model.QuotaCooldown{}, err
+			}
+		}
+	}
+	if !found {
 		res, execErr := tx.ExecContext(ctx, `insert into quota_cooldowns (
 			auth_file_name, auth_index, account_snapshot, provider, reason_code, window_kind, evidence_json, recover_at_ms,
 			owner, event_hash, pre_disabled_state, status, disabled_at_ms,
@@ -91,29 +145,39 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 			auth_index = ?,
 			account_snapshot = ?,
 			provider = ?,
-			reason_code = coalesce(nullif(?, ''), reason_code),
-			window_kind = coalesce(nullif(?, ''), window_kind),
+			reason_code = case
+				when ? >= recover_at_ms then coalesce(nullif(?, ''), reason_code)
+				else reason_code
+			end,
+			window_kind = case
+				when ? >= recover_at_ms then coalesce(nullif(?, ''), window_kind)
+				else window_kind
+			end,
 			evidence_json = case
 				when ? >= recover_at_ms then coalesce(nullif(?, ''), evidence_json)
 				else evidence_json
 			end,
 			recover_at_ms = max(recover_at_ms, ?),
-			event_hash = ?,
-			pre_disabled_state = ?,
-			disabled_at_ms = ?,
+			event_hash = case
+				when ? >= recover_at_ms then coalesce(nullif(?, ''), event_hash)
+				else event_hash
+			end,
+			disabled_at_ms = min(disabled_at_ms, ?),
 			last_error = null,
 			updated_at_ms = ?
 		where id = ?`,
 			nullString(cooldown.AuthIndex),
 			nullString(cooldown.AccountSnapshot),
 			nullString(cooldown.Provider),
+			cooldown.RecoverAtMS,
 			cooldown.ReasonCode,
+			cooldown.RecoverAtMS,
 			cooldown.WindowKind,
 			cooldown.RecoverAtMS,
 			cooldown.EvidenceJSON,
 			cooldown.RecoverAtMS,
-			nullString(cooldown.EventHash),
-			boolInt(cooldown.PreDisabledState),
+			cooldown.RecoverAtMS,
+			cooldown.EventHash,
 			cooldown.DisabledAtMS,
 			now,
 			id,
@@ -133,6 +197,51 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 		return model.QuotaCooldown{}, err
 	}
 	return item, nil
+}
+
+func querySingleCooldownID(ctx context.Context, tx *sql.Tx, query string, args ...any) (int64, bool, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+	if len(ids) == 0 {
+		return 0, false, nil
+	}
+	if len(ids) > 1 {
+		return 0, false, fmt.Errorf("quota cooldown identity is ambiguous across records %v", ids)
+	}
+	return ids[0], true, nil
+}
+
+func cooldownIdentity(cooldown model.QuotaCooldownUpsert) (authIndex string, provider string, accountSnapshot string) {
+	authIndex = strings.TrimSpace(cooldown.AuthIndex)
+	if authIndex != "" {
+		return authIndex, "", ""
+	}
+	return "", normalizeProvider(cooldown.Provider), strings.TrimSpace(cooldown.AccountSnapshot)
+}
+
+func normalizeProvider(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "x-ai", "grok":
+		return "xai"
+	default:
+		return normalized
+	}
 }
 
 func (r *repository) ListDue(ctx context.Context, nowMS int64, limit int) ([]model.QuotaCooldown, error) {

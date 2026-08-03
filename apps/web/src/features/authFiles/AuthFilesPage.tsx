@@ -94,6 +94,7 @@ import {
   easePower3Out,
   getAuthFileCodexInspectionKey,
   getAuthFileCodexInspectionKeyForFile,
+  getAuthFileCodexInspectionKeyForIdentity,
   getAuthFileCodexStatus,
   getAuthFilePatchTarget,
   getAuthFilePlanSortRank,
@@ -130,6 +131,11 @@ import {
 import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
 import {
+  readAuthFileStatusAccountSnapshot,
+  readAuthFileStatusAuthIndex,
+  readAuthFileStatusProvider,
+} from '@/utils/authFileStatusMutation';
+import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
   useAuthStore,
@@ -147,8 +153,12 @@ const hasInlineQuotaLayout = (file: AuthFileItem): boolean => {
 
 type CodexInspectionSnapshotSource = {
   fileName: string;
+  runtimeId?: string | null;
   provider?: string | null;
   authIndex?: string | number | null;
+  accountId?: string | null;
+  accountSnapshot?: string | null;
+  displayAccount?: string | null;
   statusCode?: number | string | null;
   action?: string | null;
   usedPercent?: number | string | null;
@@ -175,8 +185,11 @@ const toAuthFileCodexInspectionSnapshots = (
 ): AuthFileCodexInspectionSnapshot[] =>
   results.map((item) => ({
     fileName: item.fileName,
+    runtimeId: item.runtimeId ?? null,
     provider: item.provider ?? null,
     authIndex: item.authIndex ?? null,
+    accountId: item.accountId ?? null,
+    accountSnapshot: item.accountSnapshot ?? null,
     statusCode: item.statusCode ?? null,
     action: item.action ?? null,
     usedPercent: item.usedPercent ?? null,
@@ -203,6 +216,16 @@ type QuotaCooldownState = {
 
 const getQuotaCooldownContextKey = (managerServiceBase: string, managementKey: string): string =>
   `${managerServiceBase}\u0000${managementKey}`;
+
+const getQuotaCooldownIdentityKeyForFile = (file: AuthFileItem): string =>
+  getAuthFileCodexInspectionKeyForIdentity({
+    fileName: file.name,
+    runtimeId: null,
+    provider: readAuthFileStatusProvider(file),
+    authIndex: readAuthFileStatusAuthIndex(file),
+    accountId: null,
+    accountSnapshot: readAuthFileStatusAccountSnapshot(file),
+  });
 
 export function AuthFilesPage() {
   const { t } = useTranslation();
@@ -333,10 +356,10 @@ export function AuthFilesPage() {
   const uniqueAuthFileKeyByFallbackCooldownKey = useMemo(() => {
     const fallbackEntries = new Map<string, { authFileKey: string; count: number }>();
     files.forEach((file) => {
-      const provider = resolveAuthProvider(file);
+      const provider = readAuthFileStatusProvider(file);
       if (isRuntimeOnlyAuthFile(file) || (provider !== 'codex' && provider !== 'xai')) return;
       const fallbackKey = getAuthFileCodexInspectionKey(file.name, null);
-      const authFileKey = getAuthFileCodexInspectionKeyForFile(file);
+      const authFileKey = getQuotaCooldownIdentityKeyForFile(file);
       const existing = fallbackEntries.get(fallbackKey);
       if (existing) {
         existing.count += 1;
@@ -353,11 +376,11 @@ export function AuthFilesPage() {
   }, [files]);
   const getQuotaCooldownForFile = useCallback(
     (file: AuthFileItem): QuotaCooldownInfo | undefined => {
-      const provider = resolveAuthProvider(file);
+      const provider = readAuthFileStatusProvider(file);
       if (isRuntimeOnlyAuthFile(file) || (provider !== 'codex' && provider !== 'xai')) {
         return undefined;
       }
-      const authFileKey = getAuthFileCodexInspectionKeyForFile(file);
+      const authFileKey = getQuotaCooldownIdentityKeyForFile(file);
       const exactCooldown = quotaCooldowns.get(authFileKey);
       if (exactCooldown) return exactCooldown;
 
@@ -392,10 +415,13 @@ export function AuthFilesPage() {
     const next = new Map<string, AccountActionCandidate[]>();
     accountActionCandidates.forEach((candidate) => {
       if (candidate.status !== 'pending' || !candidate.authFileName) return;
-      const key = getAuthFileCodexInspectionKey(
-        candidate.authFileName,
-        candidate.authIndex ?? null
-      );
+      const key = getAuthFileCodexInspectionKeyForIdentity({
+        fileName: candidate.authFileName,
+        provider: candidate.provider,
+        authIndex: candidate.authIndex ?? null,
+        accountId: candidate.accountIdSnapshot,
+        accountSnapshot: candidate.accountSnapshot,
+      });
       next.set(key, [...(next.get(key) ?? []), candidate]);
     });
     return next;
@@ -741,10 +767,12 @@ export function AuthFilesPage() {
       const next = new Map<string, QuotaCooldownInfo>();
       for (const item of items) {
         if (!item.authFileName) continue;
-        const cooldownKey = getAuthFileCodexInspectionKey(
-          item.authFileName,
-          item.authIndex ?? null
-        );
+        const cooldownKey = getAuthFileCodexInspectionKeyForIdentity({
+          fileName: item.authFileName,
+          provider: item.provider,
+          authIndex: item.authIndex ?? null,
+          accountSnapshot: item.accountSnapshot,
+        });
         const existing = next.get(cooldownKey);
         if (!existing || (item.recoverAtMs ?? 0) > (existing.recoverAtMs ?? 0)) {
           next.set(cooldownKey, item);
@@ -869,7 +897,7 @@ export function AuthFilesPage() {
     if (pendingRecoveredCodexQuotaRefreshRef.current.size === 0) return;
 
     for (const file of files) {
-      const authFileKey = getAuthFileCodexInspectionKeyForFile(file);
+      const authFileKey = getQuotaCooldownIdentityKeyForFile(file);
       const fallbackKey = getAuthFileCodexInspectionKey(file.name, null);
       const hasExactPending = pendingRecoveredCodexQuotaRefreshRef.current.has(authFileKey);
       const hasFallbackPending =
@@ -877,7 +905,11 @@ export function AuthFilesPage() {
         pendingRecoveredCodexQuotaRefreshRef.current.has(fallbackKey) &&
         uniqueAuthFileKeyByFallbackCooldownKey.get(fallbackKey) === authFileKey;
       if (!hasExactPending && !hasFallbackPending) continue;
-      if (file.disabled || resolveAuthProvider(file) !== 'codex' || isRuntimeOnlyAuthFile(file)) {
+      if (
+        file.disabled ||
+        readAuthFileStatusProvider(file) !== 'codex' ||
+        isRuntimeOnlyAuthFile(file)
+      ) {
         continue;
       }
       if (hasExactPending) pendingRecoveredCodexQuotaRefreshRef.current.delete(authFileKey);
@@ -978,16 +1010,16 @@ export function AuthFilesPage() {
     if (!isCurrentLayer || !managerServiceBase) return;
 
     const nowMs = Date.now();
-    let hasRecovered = false;
+    let hasRecoveredAuthFile = false;
     previous.items.forEach((item, authFileKey) => {
       if (quotaCooldowns.has(authFileKey)) return;
-      if (item.owner && item.owner !== 'cpamp_usage_429') return;
       if (item.recoverAtMs > nowMs + 60_000) return;
+      hasRecoveredAuthFile = true;
+      if (item.owner && item.owner !== 'cpamp_usage_429') return;
       pendingRecoveredCodexQuotaRefreshRef.current.add(authFileKey);
-      hasRecovered = true;
     });
 
-    if (!hasRecovered) return;
+    if (!hasRecoveredAuthFile) return;
     void loadFiles().catch(() => {});
     refreshPendingRecoveredCodexQuotas();
   }, [
@@ -1397,8 +1429,8 @@ export function AuthFilesPage() {
     [selectedTargetFiles]
   );
   const selectedHasStatusUpdating = useMemo(
-    () => selectedFileNames.some((name) => statusUpdating[name] === true),
-    [selectedFileNames, statusUpdating]
+    () => selectedKeys.some((key) => statusUpdating[key] === true),
+    [selectedKeys, statusUpdating]
   );
   const selectedHasPartialSharedAuthFile = useMemo(
     () => hasPartialSharedAuthFileSelection(files, selectedKeys),
@@ -1406,7 +1438,7 @@ export function AuthFilesPage() {
   );
   const batchStatusButtonsDisabled =
     disableControls ||
-    selectedFileNames.length === 0 ||
+    selectedPatchTargets.length === 0 ||
     batchStatusUpdating ||
     selectedHasStatusUpdating;
   const batchFieldsButtonsDisabled =
@@ -1478,10 +1510,17 @@ export function AuthFilesPage() {
     await loadCodexInspectionSnapshots();
     if (!target?.fileName) return;
 
-    const targetKey = getAuthFileCodexInspectionKey(target.fileName, target.authIndex ?? null);
+    const targetKey = getAuthFileCodexInspectionKeyForIdentity({
+      fileName: target.fileName,
+      runtimeId: target.runtimeId,
+      provider: target.provider,
+      authIndex: target.authIndex ?? null,
+      accountId: target.accountId,
+      accountSnapshot: target.accountSnapshot,
+    });
     setLastCodexInspectionResults((current) =>
       current.filter((item) => {
-        const itemKey = getAuthFileCodexInspectionKey(item.fileName, item.authIndex ?? null);
+        const itemKey = getAuthFileCodexInspectionKeyForIdentity(item);
         return itemKey !== targetKey || !isStaleCodexReauthSnapshot(item);
       })
     );
@@ -2200,7 +2239,7 @@ export function AuthFilesPage() {
                   </Button>
                   <Button
                     size="sm"
-                    onClick={() => void batchSetStatus(selectedFileNames, true)}
+                    onClick={() => void batchSetStatus(selectedPatchTargets, true)}
                     disabled={batchStatusButtonsDisabled}
                   >
                     {t('auth_files.batch_enable')}
@@ -2208,7 +2247,7 @@ export function AuthFilesPage() {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => void batchSetStatus(selectedFileNames, false)}
+                    onClick={() => void batchSetStatus(selectedPatchTargets, false)}
                     disabled={batchStatusButtonsDisabled}
                   >
                     {t('auth_files.batch_disable')}
@@ -2252,7 +2291,7 @@ export function AuthFilesPage() {
                   <Button
                     variant="danger"
                     size="sm"
-                    onClick={() => batchDelete(selectedFileNames)}
+                    onClick={() => batchDelete(selectedTargetFiles)}
                     disabled={batchDeleteButtonsDisabled}
                   >
                     {t('common.delete')}

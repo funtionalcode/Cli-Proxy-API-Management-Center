@@ -27,7 +27,7 @@ func BenchmarkDashboardTodayMetrics(b *testing.B) {
 	b.Run("raw_events_100k", func(b *testing.B) {
 		b.ReportAllocs()
 		for index := 0; index < b.N; index++ {
-			if _, _, _, _, err := service.loadTodayMetrics(ctx, todayStart, nowMS, 5); err != nil {
+			if _, _, _, _, _, err := service.loadTodayMetrics(ctx, todayStart, nowMS, 5); err != nil {
 				b.Fatalf("load raw metrics: %v", err)
 			}
 		}
@@ -42,11 +42,20 @@ func BenchmarkDashboardTodayMetrics(b *testing.B) {
 			break
 		}
 	}
+	for {
+		result, err := db.CatchUpUsagePricing(ctx, 5_000, time.Now().UnixMilli())
+		if err != nil {
+			b.Fatalf("catch up dashboard pricing rollup: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
 
 	b.Run("hourly_rollup_100k", func(b *testing.B) {
 		b.ReportAllocs()
 		for index := 0; index < b.N; index++ {
-			if _, _, _, _, err := service.loadTodayMetrics(ctx, todayStart, nowMS, 5); err != nil {
+			if _, _, _, _, _, err := service.loadTodayMetrics(ctx, todayStart, nowMS, 5); err != nil {
 				b.Fatalf("load rollup metrics: %v", err)
 			}
 		}
@@ -107,6 +116,15 @@ func BenchmarkDashboardMonitoringRefreshPaths(b *testing.B) {
 				result, err := db.CatchUpUsageHourlyAggregate(ctx, 10_000, nowMS)
 				if err != nil {
 					b.Fatalf("catch up dashboard rollup: %v", err)
+				}
+				if !result.Pending {
+					break
+				}
+			}
+			for {
+				result, err := db.CatchUpUsagePricing(ctx, 10_000, nowMS)
+				if err != nil {
+					b.Fatalf("catch up dashboard pricing rollup: %v", err)
 				}
 				if !result.Pending {
 					break

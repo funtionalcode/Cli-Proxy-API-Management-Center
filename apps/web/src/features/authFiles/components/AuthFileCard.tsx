@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/icons';
 import { ProviderStatusBar } from '@/components/providers/ProviderStatusBar';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
+import { getAuthFileSelectionKey } from '@/features/authFiles/model/authFilesPageModel';
 import { resolveAuthProvider } from '@/utils/quota';
 import {
   normalizeRecentRequestAuthIndex,
@@ -64,7 +65,7 @@ export type AuthFileCardProps = {
   onReauth?: (file: AuthFileItem) => void;
   onDownload: (name: string) => void;
   onOpenPrefixProxyEditor: (file: AuthFileItem) => void;
-  onDelete: (name: string) => void;
+  onDelete: (file: AuthFileItem) => void;
   onToggleStatus: (file: AuthFileItem, enabled: boolean) => void;
   onToggleSelect: (name: string) => void;
 };
@@ -528,7 +529,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
                       <Button
                         variant="danger"
                         size="sm"
-                        onClick={() => onDelete(file.name)}
+                        onClick={() => onDelete(file)}
                         className={styles.iconButton}
                         title={t('auth_files.delete_button')}
                         disabled={disableControls || deleting === file.name}
@@ -552,7 +553,9 @@ export function AuthFileCard(props: AuthFileCardProps) {
                 <ToggleSwitch
                   ariaLabel={t('auth_files.status_toggle_label')}
                   checked={!file.disabled}
-                  disabled={disableControls || statusUpdating[file.name] === true}
+                  disabled={
+                    disableControls || statusUpdating[getAuthFileSelectionKey(file)] === true
+                  }
                   onChange={(value) => onToggleStatus(file, value)}
                 />
               </div>

@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Select } from '@/components/ui/Select';
@@ -6,6 +6,7 @@ import en from '@/i18n/locales/en.json';
 import ru from '@/i18n/locales/ru.json';
 import zhCN from '@/i18n/locales/zh-CN.json';
 import zhTW from '@/i18n/locales/zh-TW.json';
+import type { AuthFileItem } from '@/types';
 import { ProxyConfigsPage } from './ProxyConfigsPage';
 
 const { mocks } = vi.hoisted(() => ({
@@ -18,7 +19,10 @@ const { mocks } = vi.hoisted(() => ({
     getClaudeConfigs: vi.fn(async () => []),
     getVertexConfigs: vi.fn(async () => []),
     getOpenAIProviders: vi.fn(async () => []),
-    listAuthFiles: vi.fn(async () => ({
+    patchFields: vi.fn(async () => undefined),
+    patchFieldsWithPluginSourceFallback: vi.fn(async () => undefined),
+    patchFieldsForAuthIndexes: vi.fn(async () => undefined),
+    listAuthFiles: vi.fn(async (): Promise<{ files: AuthFileItem[] }> => ({
       files: [
         { name: 'enabled.json', type: 'codex' },
         { name: 'disabled.json', type: 'codex', disabled: true },
@@ -37,11 +41,30 @@ vi.mock('@/hooks/useHeaderRefresh', () => ({
   useHeaderRefresh: () => {},
 }));
 
+vi.mock('@/components/ui/Modal', () => ({
+  Modal: ({
+    open,
+    children,
+    footer,
+  }: {
+    open: boolean;
+    children?: ReactNode;
+    footer?: ReactNode;
+  }) =>
+    open ? (
+      <div>
+        <div>{children}</div>
+        <div>{footer}</div>
+      </div>
+    ) : null,
+}));
+
 vi.mock('@/services/api', () => ({
   authFilesApi: {
     list: mocks.listAuthFiles,
-    patchFields: vi.fn(),
-    patchFieldsForAuthIndexes: vi.fn(),
+    patchFields: mocks.patchFields,
+    patchFieldsWithPluginSourceFallback: mocks.patchFieldsWithPluginSourceFallback,
+    patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
   },
   configApi: {
     clearProxyUrl: vi.fn(),
@@ -118,6 +141,9 @@ describe('ProxyConfigsPage enabled-state filter', () => {
     mocks.getClaudeConfigs.mockClear();
     mocks.getVertexConfigs.mockClear();
     mocks.getOpenAIProviders.mockClear();
+    mocks.patchFields.mockClear();
+    mocks.patchFieldsWithPluginSourceFallback.mockClear();
+    mocks.patchFieldsForAuthIndexes.mockClear();
     mocks.listAuthFiles.mockClear();
   });
 
@@ -154,5 +180,76 @@ describe('ProxyConfigsPage enabled-state filter', () => {
       expect(locale.proxy_configs.enabled_filter_disabled).toBeTruthy();
       expect(locale.proxy_configs.enabled_filter_all).toBeTruthy();
     }
+  });
+
+  it('saves auth-file proxy updates with identity-aware auth-index targets', async () => {
+    mocks.listAuthFiles.mockResolvedValue({
+      files: [
+        {
+          id: 'runtime-1',
+          name: 'shared-codex.json',
+          type: 'codex',
+          authIndex: 1,
+          account: 'user@example.com',
+        },
+      ],
+    });
+    const renderer = await renderPage();
+
+    const authFileRow = renderer.root
+      .findAll((node) => node.props.role === 'row')
+      .find((row) => getText(row).includes('shared-codex.json'));
+    expect(authFileRow).toBeDefined();
+
+    const editButton = authFileRow
+      ?.findAllByType('button')
+      .find((button) => button.props['aria-label'] === 'proxy_configs.edit_proxy');
+    expect(editButton).toBeDefined();
+
+    await act(async () => {
+      editButton?.props.onClick();
+    });
+    const proxyInput = renderer.root
+      .findAllByType('input')
+      .find((input) => input.props.placeholder === 'proxy_configs.proxy_url_placeholder');
+    expect(proxyInput).toBeDefined();
+    await act(async () => {
+      proxyInput?.props.onChange({ target: { value: 'http://127.0.0.1:7890' } });
+    });
+
+    const saveButton = renderer.root
+      .findAllByType('button')
+      .find((button) => getText(button) === 'common.save');
+    expect(saveButton).toBeDefined();
+    await act(async () => {
+      saveButton?.props.onClick();
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledWith(
+      'shared-codex.json',
+      [
+        expect.objectContaining({
+          name: 'shared-codex.json',
+          runtimeId: 'runtime-1',
+          authIndex: 1,
+          provider: 'codex',
+          accountSnapshot: 'user@example.com',
+        }),
+      ],
+      [
+        expect.objectContaining({
+          name: 'shared-codex.json',
+          runtimeId: 'runtime-1',
+          authIndex: 1,
+          provider: 'codex',
+          accountSnapshot: 'user@example.com',
+        }),
+      ],
+      { proxy_url: 'http://127.0.0.1:7890' }
+    );
+    expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
   });
 });

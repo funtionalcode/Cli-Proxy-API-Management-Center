@@ -4,6 +4,7 @@ import {
   getDemoAccountActionCandidates,
   getDemoAccountProcessingPolicy,
   getDemoApiKeyAliases,
+  getDemoAuthFiles,
   getDemoCodexInspectionRun,
   getDemoDashboardSummary,
   getDemoHeaderSnapshots,
@@ -17,7 +18,14 @@ import {
   getDemoUsageServiceStatus,
 } from '@/features/demo/demoFixtures';
 import { isDemoMode } from '@/features/demo/demoMode';
+import { hasCodexInspectionStableIdentity } from '@/features/monitoring/model/codexInspectionOwnership';
+import type { AuthFileItem } from '@/types';
 import { normalizeApiBase } from '@/utils/connection';
+import {
+  getAuthFileStatusIdentityKey,
+  readAuthFileStatusPhysicalName,
+  resolveAuthFileStatusMutationTarget,
+} from '@/utils/authFileStatusMutation';
 import type { ModelPrice } from '@/utils/usage';
 
 const USAGE_SERVICE_ERROR_CODES = new Set([
@@ -120,6 +128,7 @@ export interface AccountProcessingPolicyPatch {
 export interface QuotaCooldownInfo {
   authFileName: string;
   authIndex?: string;
+  accountSnapshot?: string;
   provider?: string;
   owner?: string;
   reasonCode?: string;
@@ -260,6 +269,7 @@ export interface CodexInspectionResult {
   accountKey: string;
   fileName: string;
   displayAccount: string;
+  accountSnapshot?: string;
   authIndex?: string;
   accountId?: string;
   provider: string;
@@ -368,6 +378,7 @@ export interface ModelPriceSyncResponse extends ModelPricesResponse {
   matched?: Record<string, ModelPrice>;
   candidates?: ModelPriceSyncCandidateSet[];
   unmatched?: string[];
+  preserved?: string[];
   proxyUsed?: boolean;
   sourceResults?: ModelPriceSyncSourceResult[];
 }
@@ -1599,6 +1610,123 @@ const cloneDemoCodexInspectionDetail = (
   detail: CodexInspectionRunDetail
 ): CodexInspectionRunDetail => JSON.parse(JSON.stringify(detail)) as CodexInspectionRunDetail;
 
+export const isDemoCodexInspectionStatusMutationAmbiguous = (
+  _results: Array<Pick<CodexInspectionResult, 'accountKey' | 'fileName'>>,
+  result: Pick<
+    CodexInspectionResult,
+    | 'accountKey'
+    | 'fileName'
+    | 'action'
+    | 'authIndex'
+    | 'accountId'
+    | 'provider'
+    | 'accountSnapshot'
+  >,
+  authFiles = getDemoAuthFiles().files
+): boolean => {
+  if (result.action !== 'disable' && result.action !== 'enable') return false;
+  const fileName = result.fileName.trim();
+  if (!fileName) return true;
+  const accountSnapshot = result.accountSnapshot?.trim() ?? '';
+  const resolution = resolveAuthFileStatusMutationTarget(authFiles, {
+    name: fileName,
+    authIndex: result.authIndex,
+    provider: result.provider,
+    accountId: result.accountId,
+    accountSnapshot: accountSnapshot && accountSnapshot !== fileName ? accountSnapshot : null,
+  });
+  return (
+    resolution.failure !== null ||
+    resolution.scope === 'ambiguous' ||
+    resolution.scope === 'expanded-child'
+  );
+};
+
+type DemoSourceFileStatusActionPlan = {
+  canonicalResultId: number;
+  action: 'disable' | 'enable';
+  memberResultIds: Set<number>;
+};
+
+export const buildDemoCodexInspectionSourceFileStatusActionPlans = (
+  results: CodexInspectionResult[],
+  authFiles: AuthFileItem[] = getDemoAuthFiles().files
+): Map<string, DemoSourceFileStatusActionPlan> => {
+  const plans = new Map<string, DemoSourceFileStatusActionPlan>();
+  const filesByName = new Map<string, AuthFileItem[]>();
+  authFiles.forEach((file) => {
+    const fileName = readAuthFileStatusPhysicalName(file);
+    if (!fileName) return;
+    const siblings = filesByName.get(fileName) ?? [];
+    siblings.push(file);
+    filesByName.set(fileName, siblings);
+  });
+
+  const resolved = results.flatMap((result) => {
+    if (result.action !== 'disable' && result.action !== 'enable') return [];
+    const accountSnapshot = result.accountSnapshot?.trim() ?? '';
+    const resolution = resolveAuthFileStatusMutationTarget(authFiles, {
+      name: result.fileName,
+      authIndex: result.authIndex,
+      provider: result.provider,
+      accountId: result.accountId,
+      accountSnapshot:
+        accountSnapshot && accountSnapshot !== result.fileName.trim() ? accountSnapshot : null,
+    });
+    if (!resolution.target || resolution.failure !== null) return [];
+    return [{ result, resolution }];
+  });
+
+  filesByName.forEach((currentFiles, fileName) => {
+    if (currentFiles.length <= 1) return;
+    const entries = resolved.filter(
+      (entry) => readAuthFileStatusPhysicalName(entry.resolution.target!) === fileName
+    );
+    const matchedEntries: typeof entries = [];
+    const members: number[] = [];
+    let action: 'disable' | 'enable' | null = null;
+    for (const currentFile of currentFiles) {
+      const matches = entries.filter((entry) => entry.resolution.target === currentFile);
+      if (matches.length !== 1) return;
+      const matchedAction = matches[0].result.action;
+      if (matchedAction !== 'disable' && matchedAction !== 'enable') return;
+      if (action === null) action = matchedAction;
+      if (matchedAction !== action) return;
+      matchedEntries.push(matches[0]);
+      members.push(matches[0].result.id);
+    }
+    const sourceEntries = matchedEntries.filter(
+      (entry) => entry.resolution.scope === 'source-file'
+    );
+    if (!action || sourceEntries.length > 1) return;
+    const canonicalEntry = sourceEntries[0] ?? matchedEntries[0];
+    if (!canonicalEntry) return;
+    plans.set(fileName, {
+      canonicalResultId: canonicalEntry.result.id,
+      action,
+      memberResultIds: new Set(members),
+    });
+  });
+  return plans;
+};
+
+export const getDemoCodexInspectionActionIdentityKey = (
+  item: Pick<
+    CodexInspectionResult,
+    'fileName' | 'provider' | 'authIndex' | 'accountId' | 'accountSnapshot' | 'displayAccount'
+  >
+): string => {
+  const fileName = item.fileName.trim();
+  const accountSnapshot = item.accountSnapshot?.trim() ?? '';
+  return getAuthFileStatusIdentityKey({
+    name: fileName,
+    provider: item.provider,
+    authIndex: item.authIndex,
+    accountId: item.accountId,
+    accountSnapshot: accountSnapshot && accountSnapshot !== fileName ? accountSnapshot : null,
+  });
+};
+
 let demoCodexInspectionRunState: CodexInspectionRunDetail | null = null;
 
 export const resetDemoCodexInspectionRunState = () => {
@@ -1671,15 +1799,49 @@ const getDemoCodexInspectionActionsResponse = (
         return executableActions.has(result.action) ? 'pending' : 'none';
     }
   };
-  const groupsByFileName = new Map<string, CodexInspectionResult[]>();
+  const sourceFilePlans = buildDemoCodexInspectionSourceFileStatusActionPlans(
+    selected.filter((result) => {
+      const status = normalizeActionStatus(result);
+      return status !== 'success' && status !== 'skipped' && status !== 'needs_review';
+    })
+  );
+  type DemoActionGroup = { key: string; items: CodexInspectionResult[]; mixed: boolean };
+  const itemsByFileName = new Map<string, CodexInspectionResult[]>();
   manualResults.forEach((result) => {
     const fileName = result.fileName.trim();
-    if (!fileName || !executableActions.has(result.action)) return;
-    const group = groupsByFileName.get(fileName) ?? [];
-    group.push(result);
-    groupsByFileName.set(fileName, group);
+    if (!fileName) return;
+    const fileItems = itemsByFileName.get(fileName) ?? [];
+    fileItems.push(result);
+    itemsByFileName.set(fileName, fileItems);
   });
-  const seenFileNames = new Set<string>();
+  const groupByResultID = new Map<number, DemoActionGroup>();
+  itemsByFileName.forEach((allFileItems, fileName) => {
+    const fileItems = allFileItems.filter((item) => executableActions.has(item.action));
+    if (fileItems.length === 0) return;
+    if (fileItems.some((item) => item.action === 'delete')) {
+      const group = {
+        key: `file:${fileName}`,
+        items: fileItems,
+        mixed: allFileItems.some((item) => item.action !== 'delete'),
+      };
+      fileItems.forEach((item) => groupByResultID.set(item.id, group));
+      return;
+    }
+    const identityGroups = new Map<string, DemoActionGroup>();
+    fileItems.forEach((item) => {
+      const identityKey = getDemoCodexInspectionActionIdentityKey(item);
+      const group = identityGroups.get(identityKey) ?? {
+        key: `credential:${identityKey}`,
+        items: [],
+        mixed: false,
+      };
+      if (group.items.length > 0 && group.items[0].action !== item.action) group.mixed = true;
+      group.items.push(item);
+      identityGroups.set(identityKey, group);
+      groupByResultID.set(item.id, group);
+    });
+  });
+  const seenGroupKeys = new Set<string>();
   const plannedOutcomes = selected.map((result) => {
     const action = result.action;
     const currentStatus = normalizeActionStatus(result);
@@ -1729,8 +1891,55 @@ const getDemoCodexInspectionActionsResponse = (
         error: '认证文件名为空，无法执行',
       };
     }
-    const group = groupsByFileName.get(fileName) ?? [result];
-    if (group.some((item) => item.action !== group[0]?.action)) {
+    if (
+      !hasCodexInspectionStableIdentity({
+        fileName: result.fileName,
+        provider: result.provider,
+        authIndex: result.authIndex,
+        accountId: result.accountId,
+        accountSnapshot: result.accountSnapshot,
+      })
+    ) {
+      return {
+        result,
+        action,
+        status: 'needs_review',
+        success: true,
+        error: '巡检结果缺少稳定账号标识，已阻止处理，请人工确认',
+      };
+    }
+    const sourceFilePlan = sourceFilePlans.get(fileName);
+    if (
+      sourceFilePlan?.memberResultIds.has(result.id) &&
+      sourceFilePlan.canonicalResultId !== result.id
+    ) {
+      return {
+        result,
+        action,
+        status: 'skipped',
+        success: true,
+        error: '该认证目标已由另一条结果处理',
+      };
+    }
+    if (
+      sourceFilePlan?.canonicalResultId !== result.id &&
+      isDemoCodexInspectionStatusMutationAmbiguous(manualResults, result)
+    ) {
+      return {
+        result,
+        action,
+        status: 'needs_review',
+        success: true,
+        error:
+          '认证凭证缺少唯一 runtime ID，或 runtime ID 与物理文件选择器冲突，已阻止状态修改，请人工确认',
+      };
+    }
+    const group = groupByResultID.get(result.id) ?? {
+      key: `credential:${result.id}`,
+      items: [result],
+      mixed: false,
+    };
+    if (group.mixed) {
       return {
         result,
         action,
@@ -1739,25 +1948,16 @@ const getDemoCodexInspectionActionsResponse = (
         error: '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理',
       };
     }
-    if (group[0]?.id !== result.id) {
+    if (seenGroupKeys.has(group.key)) {
       return {
         result,
         action,
         status: 'skipped',
         success: true,
-        error: 'CPA 认证文件动作按文件执行，该文件已有另一条结果作为可执行项',
+        error: '该认证目标已由另一条结果处理',
       };
     }
-    if (seenFileNames.has(fileName)) {
-      return {
-        result,
-        action,
-        status: 'skipped',
-        success: true,
-        error: 'CPA 认证文件动作按文件执行，同名文件已由另一条结果处理',
-      };
-    }
-    seenFileNames.add(fileName);
+    seenGroupKeys.add(group.key);
     return {
       result,
       action,
@@ -2479,7 +2679,7 @@ export const usageServiceApi = {
         buildUrl(base, '/v0/management/model-prices/sync'),
         models ? { models } : {},
         {
-          timeout: 30 * 1000,
+          timeout: 45 * 1000,
           headers: authHeaders(managementKey),
         }
       );

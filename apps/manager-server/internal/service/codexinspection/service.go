@@ -71,30 +71,33 @@ type Service struct {
 	store                *store.Store
 	managerConfigService *managerconfig.Service
 	client               *http.Client
+	authFileMutations    *cpaauthfiles.MutationCoordinator
 
-	mu                sync.Mutex
-	cancelMu          sync.Mutex
-	active            *localRun
-	starting          bool
-	startDone         chan struct{}
-	startCancel       context.CancelFunc
-	auxiliaryRunning  bool
-	auxiliaryDone     chan struct{}
-	auxiliaryCancel   context.CancelFunc
-	lifecycleOps      int
-	lifecycleDone     chan struct{}
-	stopping          bool
-	ownerID           string
-	leaseDuration     time.Duration
-	heartbeatInterval time.Duration
-	logMu             sync.Mutex
-	logGate           chan struct{}
+	mu                             sync.Mutex
+	cancelMu                       sync.Mutex
+	active                         *localRun
+	starting                       bool
+	startDone                      chan struct{}
+	startCancel                    context.CancelFunc
+	auxiliaryRunning               bool
+	auxiliaryDone                  chan struct{}
+	auxiliaryCancel                context.CancelFunc
+	lifecycleOps                   int
+	lifecycleDone                  chan struct{}
+	stopping                       bool
+	ownerID                        string
+	leaseDuration                  time.Duration
+	heartbeatInterval              time.Duration
+	manualActionPersistenceTimeout time.Duration
+	logMu                          sync.Mutex
+	logGate                        chan struct{}
 }
 
 type ServiceOptions struct {
-	OwnerID           string
-	LeaseDuration     time.Duration
-	HeartbeatInterval time.Duration
+	OwnerID                     string
+	LeaseDuration               time.Duration
+	HeartbeatInterval           time.Duration
+	AuthFileMutationCoordinator *cpaauthfiles.MutationCoordinator
 }
 
 var inspectionOwnerSequence atomic.Uint64
@@ -161,8 +164,10 @@ type authFile map[string]any
 
 type account struct {
 	Key              string
+	RuntimeID        string
 	FileName         string
 	DisplayAccount   string
+	AccountSnapshot  string
 	AuthIndex        string
 	AccountID        string
 	Provider         string
@@ -188,15 +193,35 @@ type inspectionDecision struct {
 }
 
 type fileActionGroup struct {
+	Key      string
 	FileName string
 	Items    []model.CodexInspectionResult
+	AllItems []model.CodexInspectionResult
 	Action   string
 	Mixed    bool
 }
 
+type sourceFileActionPlan struct {
+	CanonicalIdentity string
+	Action            string
+	Members           []model.CodexInspectionResult
+}
+
+type statusMutationTargetScope int
+
 const (
-	fileActionDuplicateReason = "CPA 认证文件动作按文件执行，该文件已由另一条结果处理"
-	fileActionMixedReason     = "同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理"
+	statusMutationTargetCredential statusMutationTargetScope = iota
+	statusMutationTargetSourceFile
+	statusMutationTargetExpandedChild
+	statusMutationTargetAmbiguous
+)
+
+const (
+	fileActionDuplicateReason       = "该认证目标已由另一条结果处理"
+	fileActionMixedReason           = "同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理"
+	fileDeleteCoverageReason        = "实时认证文件包含未被删除建议完整覆盖的凭证，文件级删除已阻止，请人工确认"
+	inspectionIdentityMissingReason = "巡检结果缺少稳定账号标识，已阻止处理，请人工确认"
+	statusMutationScopeReason       = "当前凭证缺少可安全独立修改的运行时标识，或该标识代表共享源文件，已阻止状态修改，请人工确认"
 )
 
 type codexRateLimit struct {
@@ -281,14 +306,20 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 	if heartbeatInterval <= 0 {
 		heartbeatInterval = time.Nanosecond
 	}
+	authFileMutations := options.AuthFileMutationCoordinator
+	if authFileMutations == nil {
+		authFileMutations = cpaauthfiles.NewMutationCoordinator()
+	}
 	return &Service{
-		store:                st,
-		managerConfigService: managerConfigService,
-		client:               client,
-		ownerID:              ownerID,
-		leaseDuration:        leaseDuration,
-		heartbeatInterval:    heartbeatInterval,
-		logGate:              make(chan struct{}, 1),
+		store:                          st,
+		managerConfigService:           managerConfigService,
+		client:                         client,
+		authFileMutations:              authFileMutations,
+		ownerID:                        ownerID,
+		leaseDuration:                  leaseDuration,
+		heartbeatInterval:              heartbeatInterval,
+		manualActionPersistenceTimeout: resultPersistenceTimeout,
+		logGate:                        make(chan struct{}, 1),
 	}
 }
 
@@ -1387,24 +1418,22 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 	if len(items) == 0 && len(preflightOutcomes) == 0 {
 		return ExecuteActionsResult{}, ErrNoActionableResults
 	}
+	authorizedResults := selectInspectionResultsByID(manualResults, selected)
 
-	// Keep lifecycle/result writes independent from a disconnected HTTP request,
-	// but give the whole post-action persistence phase one finite budget so
-	// shutdown cannot wait forever on a locked SQLite writer.
-	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), resultPersistenceTimeout)
-	defer cancelPersist()
+	logCtx := context.WithoutCancel(ctx)
 	logger := runLogger{service: s, runID: detail.Run.ID}
-	logger.info(persistCtx, "手动处理账号开始", map[string]any{
+	logger.info(logCtx, "手动处理账号开始", map[string]any{
 		"requestedCount": len(req.ResultIDs),
 		"actionCount":    len(items),
 	})
-	logPreflightActionOutcomes(persistCtx, logger, "手动处理", preflightOutcomes)
+	logPreflightActionOutcomes(logCtx, logger, "手动处理", preflightOutcomes)
 
-	validItems, validationOutcomes, err := s.validateActionItems(
+	validItems, sourceFileMembers, validationOutcomes, err := s.validateActionItems(
 		ctx,
-		persistCtx,
+		logCtx,
 		setup,
 		items,
+		authorizedResults,
 		logger,
 		"手动处理",
 		func(item model.CodexInspectionResult) string { return item.Action },
@@ -1415,13 +1444,22 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 	outcomes := make([]ActionOutcome, 0, len(preflightOutcomes)+len(validationOutcomes)+len(validItems))
 	outcomes = append(outcomes, preflightOutcomes...)
 	outcomes = append(outcomes, validationOutcomes...)
-	outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, validItems, logger, "手动处理", false, func(item model.CodexInspectionResult) string {
+	outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, validItems, sourceFileMembers, logger, "手动处理", false, func(item model.CodexInspectionResult) string {
 		return item.Action
 	})...)
 	if len(outcomes) == 0 {
 		return ExecuteActionsResult{}, ErrNoActionableResults
 	}
 	nextResults := applyActionOutcomes(detail.Results, outcomes)
+	// Start the bounded persistence budget only after every external action has
+	// finished. Slow CPA requests must not consume the time reserved for writing
+	// the successful outcomes and updated run state.
+	persistenceTimeout := s.manualActionPersistenceTimeout
+	if persistenceTimeout <= 0 {
+		persistenceTimeout = resultPersistenceTimeout
+	}
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistenceTimeout)
+	defer cancelPersist()
 	resultWriteFailures := s.persistInspectionResults(persistCtx, detail.Run.ID, nextResults, logger)
 
 	run := summarizeRun(detail.Run, nextResults)
@@ -1461,6 +1499,19 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 		return ExecuteActionsResult{}, err
 	}
 	return ExecuteActionsResult{Outcomes: outcomes, Detail: nextDetail}, nil
+}
+
+func selectInspectionResultsByID(
+	results []model.CodexInspectionResult,
+	selected map[int64]struct{},
+) []model.CodexInspectionResult {
+	selectedResults := make([]model.CodexInspectionResult, 0, len(selected))
+	for _, result := range results {
+		if _, ok := selected[result.ID]; ok {
+			selectedResults = append(selectedResults, result)
+		}
+	}
+	return selectedResults
 }
 
 func applyManualActionOverrides(
@@ -1914,11 +1965,12 @@ func (s *Service) executeAutoActions(
 	actionFor := func(item model.CodexInspectionResult) string {
 		return resolveExecutableAction(mode, item.Action)
 	}
-	validItems, validationOutcomes, validationErr := s.validateActionItems(
+	validItems, sourceFileMembers, validationOutcomes, validationErr := s.validateActionItems(
 		ctx,
 		logCtx,
 		setup,
 		items,
+		results,
 		logger,
 		"自动处理",
 		actionFor,
@@ -1934,12 +1986,13 @@ func (s *Service) executeAutoActions(
 			"自动处理",
 		)
 		validItems = nil
+		sourceFileMembers = nil
 	}
 	outcomes := make([]ActionOutcome, 0, len(preflightOutcomes)+len(validationOutcomes)+len(validItems))
 	outcomes = append(outcomes, preflightOutcomes...)
 	outcomes = append(outcomes, validationOutcomes...)
 	if len(validItems) > 0 {
-		outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, validItems, logger, "自动处理", true, actionFor)...)
+		outcomes = append(outcomes, s.executeActionItems(ctx, setup, settings, validItems, sourceFileMembers, logger, "自动处理", true, actionFor)...)
 	}
 	summary := summarizeActionOutcomes(outcomes)
 	remainingCount := countPendingActionResults(results, outcomes)
@@ -1996,6 +2049,7 @@ func (s *Service) executeActionItems(
 	setup store.Setup,
 	settings model.ManagerCodexInspectionConfig,
 	items []model.CodexInspectionResult,
+	sourceFileMembers map[string][]model.CodexInspectionResult,
 	logger runLogger,
 	logPrefix string,
 	automatic bool,
@@ -2008,6 +2062,13 @@ func (s *Service) executeActionItems(
 	}
 	jobs := make(chan model.CodexInspectionResult)
 	outcomes := make(chan ActionOutcome, len(items))
+	fileLocks := make(map[string]*sync.Mutex, len(items))
+	for _, item := range items {
+		fileName := strings.TrimSpace(item.FileName)
+		if fileName != "" && fileLocks[fileName] == nil {
+			fileLocks[fileName] = &sync.Mutex{}
+		}
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < workers && i < len(items); i++ {
 		wg.Add(1)
@@ -2038,16 +2099,25 @@ func (s *Service) executeActionItems(
 						Action:          action,
 						CurrentDisabled: boolPointer(item.Disabled),
 					}
-					if err := s.executeAction(ctx, setup, actionItem, automatic); err != nil {
+					sourceMembers := sourceFileMembers[inspectionActionIdentityKey(item)]
+					fileLock := fileLocks[strings.TrimSpace(item.FileName)]
+					executeErr := func() error {
+						if fileLock != nil {
+							fileLock.Lock()
+							defer fileLock.Unlock()
+						}
+						return s.executeAction(ctx, setup, actionItem, sourceMembers, automatic)
+					}()
+					if executeErr != nil {
 						outcome.Success = false
 						outcome.Status = model.CodexInspectionActionStatusFailed
-						outcome.Error = err.Error()
+						outcome.Error = executeErr.Error()
 						outcomes <- outcome
 						logger.error(logCtx, logPrefix+"账号失败", map[string]any{
 							"fileName":       item.FileName,
 							"displayAccount": item.DisplayAccount,
 							"action":         action,
-							"error":          err.Error(),
+							"error":          executeErr.Error(),
 						})
 						continue
 					}
@@ -2153,12 +2223,70 @@ func completeCanceledActionOutcomes(
 	return outcomes
 }
 
-func (s *Service) executeAction(ctx context.Context, setup store.Setup, item model.CodexInspectionResult, automatic bool) error {
+func (s *Service) executeAction(
+	ctx context.Context,
+	setup store.Setup,
+	item model.CodexInspectionResult,
+	sourceMembers []model.CodexInspectionResult,
+	automatic bool,
+) error {
+	fileNames := make([]string, 0, len(sourceMembers)+1)
+	fileNames = append(fileNames, item.FileName)
+	for _, member := range sourceMembers {
+		fileNames = append(fileNames, member.FileName)
+	}
+	if s == nil || s.authFileMutations == nil {
+		return cpaauthfiles.ErrMutationCoordinatorUnavailable
+	}
+	releaseMutation, err := s.authFileMutations.Acquire(ctx, fileNames...)
+	if err != nil {
+		return fmt.Errorf("acquire auth file mutation: %w", err)
+	}
+	defer releaseMutation()
+
+	isSourceFileAction := len(sourceMembers) > 0 && (item.Action == "disable" || item.Action == "enable")
+	var statusTarget cpaauthfiles.StatusMutationTarget
+	if item.Action == "disable" || item.Action == "enable" {
+		var err error
+		if isSourceFileAction {
+			statusTarget, err = s.resolveVerifiedStatusActionGroup(ctx, setup, item, sourceMembers)
+		} else {
+			statusTarget, err = cpaauthfiles.New(s.client).ResolveVerifiedStatusMutationTarget(
+				ctx,
+				setup.CPAUpstreamURL,
+				setup.ManagementKey,
+				inspectionAuthFileIdentity(item),
+			)
+		}
+		if err != nil {
+			return fmt.Errorf("resolve current auth file status target: %w", err)
+		}
+		if automatic && item.Action == "disable" {
+			if isSourceFileAction {
+				for _, affectedFile := range statusTarget.AffectedFiles {
+					if affectedFile.Disabled {
+						return fmt.Errorf(
+							"refuse automatic source-file disable ownership: credential auth_index %q is already disabled",
+							strings.TrimSpace(affectedFile.AuthIndex),
+						)
+					}
+				}
+			} else if statusTarget.File.Disabled {
+				return errors.New("refuse automatic disable ownership: current credential is already disabled")
+			}
+		}
+	}
 	var revokedOwnership []store.CodexInspectionDisableOwnership
-	shouldRevokeOwnership := item.Action == "enable" || item.Action == "delete" || (item.Action == "disable" && !automatic)
+	shouldRevokeOwnership := isSourceFileAction || item.Action == "enable" || item.Action == "delete" || (item.Action == "disable" && !automatic)
 	if shouldRevokeOwnership {
 		var err error
-		revokedOwnership, err = s.store.RevokeCodexInspectionDisableOwnership(ctx, []string{item.FileName}, false)
+		ownershipTarget := disableOwnershipTargetForResult(item)
+		if isSourceFileAction || item.Action == "delete" {
+			ownershipTarget = model.CodexInspectionDisableOwnershipTarget{FileName: strings.TrimSpace(item.FileName)}
+		}
+		revokedOwnership, err = s.store.RevokeCodexInspectionDisableOwnership(ctx, []model.CodexInspectionDisableOwnershipTarget{
+			ownershipTarget,
+		}, false)
 		if err != nil {
 			return fmt.Errorf("revoke inspection disable ownership: %w", err)
 		}
@@ -2167,16 +2295,46 @@ func (s *Service) executeAction(ctx context.Context, setup store.Setup, item mod
 	var actionErr error
 	switch item.Action {
 	case "delete":
-		actionErr = s.deleteAuthFileOnly(ctx, setup, "/v0/management/auth-files", item.FileName)
+		deleteMembers := sourceMembers
+		if len(deleteMembers) == 0 {
+			deleteMembers = []model.CodexInspectionResult{item}
+		}
+		identities := make([]cpaauthfiles.Identity, 0, len(deleteMembers))
+		for _, member := range deleteMembers {
+			identities = append(identities, inspectionAuthFileIdentity(member))
+		}
+		actionErr = cpaauthfiles.New(s.client).DeleteVerifiedPhysicalFile(
+			ctx,
+			setup.CPAUpstreamURL,
+			setup.ManagementKey,
+			identities,
+		)
 	case "disable", "enable":
 		disabled := item.Action == "disable"
-		payload := map[string]any{"name": item.FileName, "disabled": disabled}
-		actionErr, _ = s.patchAuthFile(ctx, setup, "/v0/management/auth-files/status", payload)
+		authFilesClient := cpaauthfiles.New(s.client)
+		if isSourceFileAction {
+			actionErr = s.patchVerifiedStatusActionGroup(
+				ctx,
+				setup,
+				item,
+				sourceMembers,
+				statusTarget,
+				disabled,
+			)
+		} else {
+			actionErr = authFilesClient.PatchDisabledTarget(
+				ctx,
+				setup.CPAUpstreamURL,
+				setup.ManagementKey,
+				statusTarget,
+				disabled,
+			)
+		}
 	default:
 		return nil
 	}
 	if actionErr != nil {
-		restoreCtx, cancelRestore := context.WithTimeout(context.WithoutCancel(ctx), resultPersistenceTimeout)
+		restoreCtx, cancelRestore := detachedActionContext(ctx)
 		restoreErr := s.store.RestoreCodexInspectionDisableOwnership(restoreCtx, revokedOwnership)
 		cancelRestore()
 		if restoreErr != nil {
@@ -2190,27 +2348,351 @@ func (s *Service) executeAction(ctx context.Context, setup store.Setup, item mod
 		if !automatic {
 			return nil
 		}
-		if item.Disabled {
+		if isSourceFileAction {
+			disabledAtMS := time.Now().UnixMilli()
+			ownership := make([]model.CodexInspectionDisableOwnership, 0, len(sourceMembers))
+			for _, member := range sourceMembers {
+				ownership = append(ownership, model.CodexInspectionDisableOwnership{
+					FileName:        member.FileName,
+					Provider:        member.Provider,
+					AuthIndex:       member.AuthIndex,
+					AccountID:       member.AccountID,
+					AccountSnapshot: member.AccountSnapshot,
+					DisabledAtMS:    disabledAtMS,
+				})
+			}
+			if err := s.store.UpsertCodexInspectionDisableOwnerships(ctx, ownership); err != nil {
+				return s.rollbackSourceFileDisable(ctx, setup, item, sourceMembers, revokedOwnership, err)
+			}
 			return nil
 		}
 		if err := s.store.UpsertCodexInspectionDisableOwnership(ctx, model.CodexInspectionDisableOwnership{
-			FileName:     item.FileName,
-			Provider:     item.Provider,
-			AuthIndex:    item.AuthIndex,
-			AccountID:    item.AccountID,
-			DisabledAtMS: time.Now().UnixMilli(),
+			FileName:        item.FileName,
+			Provider:        item.Provider,
+			AuthIndex:       item.AuthIndex,
+			AccountID:       item.AccountID,
+			AccountSnapshot: item.AccountSnapshot,
+			DisabledAtMS:    time.Now().UnixMilli(),
 		}); err != nil {
-			rollbackErr, _ := s.patchAuthFile(ctx, setup, "/v0/management/auth-files/status", map[string]any{
-				"name":     item.FileName,
-				"disabled": false,
-			})
+			rollbackCtx, cancelRollback := detachedActionContext(ctx)
+			authFilesClient := cpaauthfiles.New(s.client)
+			rollbackTarget, rollbackErr := authFilesClient.ResolveVerifiedStatusMutationTarget(
+				rollbackCtx,
+				setup.CPAUpstreamURL,
+				setup.ManagementKey,
+				cpaauthfiles.Identity{
+					AuthFileName:      statusTarget.File.Name,
+					AuthIndex:         statusTarget.File.AuthIndex,
+					Provider:          statusTarget.File.Provider,
+					AccountSnapshot:   statusTarget.File.AccountSnapshot,
+					AccountIDSnapshot: statusTarget.File.AccountID,
+				},
+			)
 			if rollbackErr != nil {
-				return fmt.Errorf("persist inspection disable ownership: %w; rollback enable failed: %v", err, rollbackErr)
+				rollbackErr = fmt.Errorf("revalidate rollback target: %w", rollbackErr)
+			} else {
+				rollbackErr = authFilesClient.PatchDisabledTarget(
+					rollbackCtx,
+					setup.CPAUpstreamURL,
+					setup.ManagementKey,
+					rollbackTarget,
+					false,
+				)
+			}
+			cancelRollback()
+			if rollbackErr != nil {
+				return fmt.Errorf("persist inspection disable ownership: %w; rollback enable failed: %w", err, rollbackErr)
 			}
 			return fmt.Errorf("persist inspection disable ownership: %w", err)
 		}
 	}
 	return nil
+}
+
+func inspectionAuthFileIdentity(item model.CodexInspectionResult) cpaauthfiles.Identity {
+	return cpaauthfiles.Identity{
+		AuthFileName:      strings.TrimSpace(item.FileName),
+		AuthIndex:         strings.TrimSpace(item.AuthIndex),
+		Provider:          strings.TrimSpace(item.Provider),
+		AccountSnapshot:   directInspectionAccountSnapshot(item.FileName, item.AccountSnapshot),
+		AccountIDSnapshot: strings.TrimSpace(item.AccountID),
+	}
+}
+
+func inspectionAuthFileIdentities(items []model.CodexInspectionResult) []cpaauthfiles.Identity {
+	identities := make([]cpaauthfiles.Identity, 0, len(items))
+	for _, item := range items {
+		identities = append(identities, inspectionAuthFileIdentity(item))
+	}
+	return identities
+}
+
+func (s *Service) resolveVerifiedStatusActionGroup(
+	ctx context.Context,
+	setup store.Setup,
+	item model.CodexInspectionResult,
+	members []model.CodexInspectionResult,
+) (cpaauthfiles.StatusMutationTarget, error) {
+	authIndex := strings.TrimSpace(item.AuthIndex)
+	if authIndex == "" {
+		for _, member := range members {
+			if candidate := strings.TrimSpace(member.AuthIndex); candidate != "" {
+				authIndex = candidate
+				break
+			}
+		}
+	}
+	return cpaauthfiles.New(s.client).ResolveVerifiedSourceFileStatusMutationTarget(
+		ctx,
+		setup.CPAUpstreamURL,
+		setup.ManagementKey,
+		strings.TrimSpace(item.FileName),
+		authIndex,
+		inspectionAuthFileIdentities(members),
+	)
+}
+
+func verifiedStatusActionGroupFiles(
+	files []cpaauthfiles.File,
+	members []model.CodexInspectionResult,
+) ([]cpaauthfiles.File, error) {
+	matchedFiles := make([]cpaauthfiles.File, 0, len(members))
+	used := make([]bool, len(files))
+	for _, member := range members {
+		identity := inspectionAuthFileIdentity(member)
+		matches := make([]int, 0, 1)
+		for index, file := range files {
+			if used[index] || cpaauthfiles.VerifyResolvedIdentity(file, identity) != nil {
+				continue
+			}
+			matches = append(matches, index)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("%w: grouped status member identity changed", cpaauthfiles.ErrIdentityMismatch)
+		}
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("%w: grouped status member identity is ambiguous", cpaauthfiles.ErrStatusMutationScopeAmbiguous)
+		}
+		used[matches[0]] = true
+		matchedFiles = append(matchedFiles, files[matches[0]])
+	}
+	return matchedFiles, nil
+}
+
+func sourceStatusMutationTarget(
+	target cpaauthfiles.StatusMutationTarget,
+) (cpaauthfiles.StatusMutationTarget, bool, error) {
+	physicalName := strings.TrimSpace(target.File.Name)
+	var sourceFile cpaauthfiles.File
+	sourceCount := 0
+	for _, file := range target.AffectedFiles {
+		if strings.TrimSpace(file.ID) != physicalName {
+			continue
+		}
+		sourceFile = file
+		sourceCount++
+	}
+	if sourceCount > 1 {
+		return cpaauthfiles.StatusMutationTarget{}, false, fmt.Errorf(
+			"%w: physical file %q has multiple source runtime ids",
+			cpaauthfiles.ErrStatusMutationScopeAmbiguous,
+			physicalName,
+		)
+	}
+	if sourceCount == 0 {
+		return cpaauthfiles.StatusMutationTarget{}, false, nil
+	}
+	return cpaauthfiles.StatusMutationTarget{
+		Selector:      physicalName,
+		File:          sourceFile,
+		Scope:         cpaauthfiles.StatusMutationScopeSourceFile,
+		AffectedFiles: target.AffectedFiles,
+	}, true, nil
+}
+
+func (s *Service) patchVerifiedStatusActionGroup(
+	ctx context.Context,
+	setup store.Setup,
+	item model.CodexInspectionResult,
+	members []model.CodexInspectionResult,
+	target cpaauthfiles.StatusMutationTarget,
+	disabled bool,
+) error {
+	authFilesClient := cpaauthfiles.New(s.client)
+	knownSourceTarget, hasKnownSource, err := sourceStatusMutationTarget(target)
+	if err != nil {
+		return err
+	}
+	if hasKnownSource {
+		return authFilesClient.PatchDisabledTargetAllowSourceFile(
+			ctx,
+			setup.CPAUpstreamURL,
+			setup.ManagementKey,
+			knownSourceTarget,
+			disabled,
+		)
+	}
+
+	files, err := verifiedStatusActionGroupFiles(target.AffectedFiles, members)
+	if err != nil {
+		return err
+	}
+	patchedMembers := make([]model.CodexInspectionResult, 0, len(members))
+	patchedDisabled := make([]bool, 0, len(members))
+	for index, file := range files {
+		credentialTarget := cpaauthfiles.StatusMutationTarget{
+			Selector:      strings.TrimSpace(file.ID),
+			File:          file,
+			Scope:         cpaauthfiles.StatusMutationScopeCredential,
+			AffectedFiles: []cpaauthfiles.File{file},
+		}
+		patchErr := authFilesClient.PatchDisabledTarget(
+			ctx,
+			setup.CPAUpstreamURL,
+			setup.ManagementKey,
+			credentialTarget,
+			disabled,
+		)
+		if patchErr == nil {
+			patchedMembers = append(patchedMembers, members[index])
+			patchedDisabled = append(patchedDisabled, file.Disabled)
+			continue
+		}
+		if index == 0 && cpaauthfiles.IsPluginVirtualMutationConflict(patchErr) {
+			refreshedTarget, resolveErr := s.resolveVerifiedStatusActionGroup(ctx, setup, item, members)
+			if resolveErr != nil {
+				return fmt.Errorf("plugin source fallback preflight: %w", resolveErr)
+			}
+			return authFilesClient.PatchDisabledTargetAllowSourceFile(
+				ctx,
+				setup.CPAUpstreamURL,
+				setup.ManagementKey,
+				refreshedTarget,
+				disabled,
+			)
+		}
+		rollbackErr := s.restorePatchedStatusActionTargets(
+			ctx,
+			setup,
+			patchedMembers,
+			patchedDisabled,
+		)
+		if rollbackErr != nil {
+			return fmt.Errorf("%w; rollback grouped status mutation: %v", patchErr, rollbackErr)
+		}
+		return patchErr
+	}
+	return nil
+}
+
+func (s *Service) restorePatchedStatusActionTargets(
+	ctx context.Context,
+	setup store.Setup,
+	members []model.CodexInspectionResult,
+	disabled []bool,
+) error {
+	if len(members) == 0 {
+		return nil
+	}
+	rollbackCtx, cancelRollback := detachedActionContext(ctx)
+	defer cancelRollback()
+	authFilesClient := cpaauthfiles.New(s.client)
+	var rollbackErr error
+	for index := len(members) - 1; index >= 0; index-- {
+		target, err := authFilesClient.ResolveVerifiedStatusMutationTarget(
+			rollbackCtx,
+			setup.CPAUpstreamURL,
+			setup.ManagementKey,
+			inspectionAuthFileIdentity(members[index]),
+		)
+		if err == nil && target.Scope != cpaauthfiles.StatusMutationScopeCredential {
+			err = fmt.Errorf("%w: rollback target is no longer credential scoped", cpaauthfiles.ErrIdentityMismatch)
+		}
+		if err == nil {
+			err = authFilesClient.PatchDisabledTarget(
+				rollbackCtx,
+				setup.CPAUpstreamURL,
+				setup.ManagementKey,
+				target,
+				disabled[index],
+			)
+		}
+		if err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore %s: %w", members[index].FileName, err))
+		}
+	}
+	return rollbackErr
+}
+
+func verifySourceFileStatusTarget(target cpaauthfiles.StatusMutationTarget, members []model.CodexInspectionResult) error {
+	if target.Scope != cpaauthfiles.StatusMutationScopeSourceFile {
+		return fmt.Errorf("%w: current target is not a source file", cpaauthfiles.ErrStatusMutationScopeAmbiguous)
+	}
+	if len(target.AffectedFiles) != len(members) {
+		return fmt.Errorf("%w: source file membership changed", cpaauthfiles.ErrIdentityMismatch)
+	}
+	for _, member := range members {
+		identity := inspectionAuthFileIdentity(member)
+		matches := make([]cpaauthfiles.File, 0, 1)
+		for _, file := range target.AffectedFiles {
+			if strings.TrimSpace(file.Name) != identity.AuthFileName ||
+				strings.TrimSpace(file.AuthIndex) != identity.AuthIndex {
+				continue
+			}
+			matches = append(matches, file)
+		}
+		if len(matches) != 1 {
+			return fmt.Errorf("%w: source file member %q auth_index %q changed", cpaauthfiles.ErrIdentityMismatch, identity.AuthFileName, identity.AuthIndex)
+		}
+		if _, err := cpaauthfiles.VerifyIdentity(matches, identity); err != nil {
+			return fmt.Errorf("verify source file member: %w", err)
+		}
+	}
+	return nil
+}
+
+func detachedActionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if ctx != nil {
+		base = context.WithoutCancel(ctx)
+	}
+	return context.WithTimeout(base, resultPersistenceTimeout)
+}
+
+func (s *Service) rollbackSourceFileDisable(
+	ctx context.Context,
+	setup store.Setup,
+	item model.CodexInspectionResult,
+	sourceMembers []model.CodexInspectionResult,
+	revokedOwnership []store.CodexInspectionDisableOwnership,
+	persistErr error,
+) error {
+	resultErr := fmt.Errorf("persist inspection disable ownership: %w", persistErr)
+
+	rollbackCtx, cancelRollback := detachedActionContext(ctx)
+	rollbackTarget, rollbackErr := s.resolveVerifiedStatusActionGroup(rollbackCtx, setup, item, sourceMembers)
+	if rollbackErr == nil {
+		rollbackErr = s.patchVerifiedStatusActionGroup(
+			rollbackCtx,
+			setup,
+			item,
+			sourceMembers,
+			rollbackTarget,
+			false,
+		)
+	}
+	cancelRollback()
+	if rollbackErr != nil {
+		resultErr = fmt.Errorf("%w; rollback source-file enable failed: %w", resultErr, rollbackErr)
+	}
+
+	restoreCtx, cancelRestore := detachedActionContext(ctx)
+	restoreErr := s.store.RestoreCodexInspectionDisableOwnership(restoreCtx, revokedOwnership)
+	cancelRestore()
+	if restoreErr != nil {
+		resultErr = fmt.Errorf("%w; restore inspection disable ownership failed: %v", resultErr, restoreErr)
+	}
+	return resultErr
 }
 
 func (s *Service) deleteAuthFileOnly(ctx context.Context, setup store.Setup, path string, fileName string) error {
@@ -2525,51 +3007,158 @@ func selectAutoActionItems(mode string, autoRecoverEnabled bool, results []model
 
 	items := make([]model.CodexInspectionResult, 0)
 	outcomes := make([]ActionOutcome, 0)
-	for _, group := range buildExecutableFileActionGroups(results) {
+	for _, group := range buildExecutableFileActionGroups(results, func(result model.CodexInspectionResult) string {
+		return resolveExecutableAction(mode, result.Action)
+	}) {
 		if group.Mixed {
 			for _, result := range group.Items {
-				outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, fileActionMixedReason))
+				reason := fileActionMixedReason
+				if !hasInspectionActionIdentity(result) {
+					reason = inspectionIdentityMissingReason
+				}
+				outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, reason))
 			}
 			continue
 		}
-		if len(group.Items) == 0 || !allowAutoAction(mode, autoRecoverEnabled, group.Items[0]) {
+		eligible := make([]model.CodexInspectionResult, 0, len(group.Items))
+		for _, result := range group.Items {
+			if !allowAutoAction(mode, autoRecoverEnabled, result) {
+				continue
+			}
+			if !hasInspectionActionIdentity(result) {
+				outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, inspectionIdentityMissingReason))
+				continue
+			}
+			eligible = append(eligible, result)
+		}
+		if len(eligible) == 0 {
 			continue
 		}
-		items = append(items, group.Items[0])
-		for _, result := range group.Items[1:] {
+		items = append(items, eligible[0])
+		for _, result := range eligible[1:] {
 			outcomes = append(outcomes, skippedActionOutcome(result, result.Action, fileActionDuplicateReason))
 		}
 	}
 	return items, outcomes
 }
 
-func buildExecutableFileActionGroups(results []model.CodexInspectionResult) []fileActionGroup {
+func buildExecutableFileActionGroups(
+	results []model.CodexInspectionResult,
+	actionResolvers ...func(model.CodexInspectionResult) string,
+) []fileActionGroup {
+	resolveAction := func(result model.CodexInspectionResult) string { return result.Action }
+	if len(actionResolvers) > 0 && actionResolvers[0] != nil {
+		resolveAction = actionResolvers[0]
+	}
 	groupOrder := make([]string, 0)
-	groupsByFileName := map[string]*fileActionGroup{}
+	itemsByFileName := map[string][]model.CodexInspectionResult{}
 	for _, result := range results {
-		if !isExecutableInspectionAction(result.Action) {
-			continue
-		}
 		fileName := strings.TrimSpace(result.FileName)
 		if fileName == "" {
 			continue
 		}
-		group, ok := groupsByFileName[fileName]
-		if !ok {
-			group = &fileActionGroup{FileName: fileName, Action: result.Action}
-			groupsByFileName[fileName] = group
+		if _, ok := itemsByFileName[fileName]; !ok {
 			groupOrder = append(groupOrder, fileName)
 		}
-		if result.Action != group.Action {
-			group.Mixed = true
-		}
-		group.Items = append(group.Items, result)
+		itemsByFileName[fileName] = append(itemsByFileName[fileName], result)
 	}
-	groups := make([]fileActionGroup, 0, len(groupOrder))
+	groups := make([]fileActionGroup, 0, len(results))
 	for _, fileName := range groupOrder {
-		groups = append(groups, *groupsByFileName[fileName])
+		allFileItems := itemsByFileName[fileName]
+		fileItems := make([]model.CodexInspectionResult, 0, len(allFileItems))
+		for _, item := range allFileItems {
+			if isExecutableInspectionAction(resolveAction(item)) {
+				fileItems = append(fileItems, item)
+			}
+		}
+		if len(fileItems) == 0 {
+			continue
+		}
+		hasDelete := false
+		for _, item := range fileItems {
+			if resolveAction(item) == "delete" {
+				hasDelete = true
+				break
+			}
+		}
+		if hasDelete {
+			group := fileActionGroup{
+				Key:      "file:" + fileName,
+				FileName: fileName,
+				Items:    fileItems,
+				AllItems: allFileItems,
+				Action:   "delete",
+			}
+			for _, item := range allFileItems {
+				if resolveAction(item) != "delete" {
+					group.Mixed = true
+				}
+			}
+			groups = append(groups, group)
+			continue
+		}
+
+		identityOrder := make([]string, 0)
+		identityGroups := map[string]*fileActionGroup{}
+		for _, item := range fileItems {
+			identityKey := inspectionActionIdentityKey(item)
+			group, ok := identityGroups[identityKey]
+			if !ok {
+				group = &fileActionGroup{
+					Key:      "credential:" + identityKey,
+					FileName: fileName,
+					Action:   resolveAction(item),
+				}
+				identityGroups[identityKey] = group
+				identityOrder = append(identityOrder, identityKey)
+			}
+			if resolveAction(item) != group.Action {
+				group.Mixed = true
+			}
+			group.Items = append(group.Items, item)
+			group.AllItems = append(group.AllItems, item)
+		}
+		for _, identityKey := range identityOrder {
+			groups = append(groups, *identityGroups[identityKey])
+		}
 	}
 	return groups
+}
+
+func inspectionActionIdentityKey(result model.CodexInspectionResult) string {
+	return inspectionIdentityKey(
+		result.FileName,
+		result.Provider,
+		result.AuthIndex,
+		result.AccountID,
+		result.AccountSnapshot,
+	)
+}
+
+func inspectionIdentityKey(fileName, provider, authIndex, accountID, accountSnapshot string) string {
+	fileName = strings.TrimSpace(fileName)
+	accountID = strings.TrimSpace(accountID)
+	normalizedAccountSnapshot := ""
+	if accountID == "" {
+		normalizedAccountSnapshot = directInspectionAccountSnapshot(fileName, accountSnapshot)
+	}
+	encoded, _ := json.Marshal([]string{
+		fileName,
+		normalizeInspectionProvider(provider),
+		strings.TrimSpace(authIndex),
+		accountID,
+		normalizedAccountSnapshot,
+	})
+	return string(encoded)
+}
+
+func hasInspectionActionIdentity(result model.CodexInspectionResult) bool {
+	if strings.TrimSpace(result.FileName) == "" || normalizeInspectionProvider(result.Provider) == "" {
+		return false
+	}
+	return strings.TrimSpace(result.AuthIndex) != "" ||
+		strings.TrimSpace(result.AccountID) != "" ||
+		directInspectionAccountSnapshot(result.FileName, result.AccountSnapshot) != ""
 }
 
 func allowAutoAction(mode string, autoRecoverEnabled bool, result model.CodexInspectionResult) bool {
@@ -2595,43 +3184,77 @@ func (s *Service) applyDisableOwnership(ctx context.Context, accounts []account,
 		return
 	}
 	for _, item := range items {
-		provider := normalizeInspectionProvider(item.Provider)
-		if provider == "" {
-			provider = "codex"
+		matchedIndexes := make([]int, 0, 1)
+		disabledMatchCount := 0
+		for index := range accounts {
+			if disableOwnershipMatchesAccount(item, accounts[index]) {
+				matchedIndexes = append(matchedIndexes, index)
+				if accounts[index].Disabled {
+					disabledMatchCount++
+				}
+			}
 		}
-		matched := false
-		disabled := false
-		for _, candidate := range accounts {
-			if candidate.FileName != item.FileName {
-				continue
-			}
-			if normalizeInspectionProvider(candidate.Provider) != provider {
-				continue
-			}
-			if item.AuthIndex != "" && candidate.AuthIndex != item.AuthIndex {
-				continue
-			}
-			if item.AccountID != "" && candidate.AccountID != item.AccountID {
-				continue
-			}
-			matched = true
-			disabled = disabled || candidate.Disabled
-		}
-		if !matched || !disabled {
-			if err := s.store.DeleteCodexInspectionDisableOwnership(ctx, item.FileName); err != nil {
+		if len(matchedIndexes) != 1 || disabledMatchCount == 0 {
+			if err := s.store.DeleteCodexInspectionDisableOwnership(ctx, disableOwnershipTarget(item)); err != nil {
 				logger.warning(ctx, "清理巡检禁用所有权失败", map[string]any{
-					"fileName": item.FileName,
-					"error":    err.Error(),
+					"fileName":  item.FileName,
+					"authIndex": item.AuthIndex,
+					"error":     err.Error(),
 				})
 			}
 			continue
 		}
-		for index := range accounts {
-			if accounts[index].FileName == item.FileName && normalizeInspectionProvider(accounts[index].Provider) == provider {
-				accounts[index].AutoRecoverOwned = true
-			}
-		}
+		accounts[matchedIndexes[0]].AutoRecoverOwned = true
 	}
+}
+
+func disableOwnershipMatchesAccount(item model.CodexInspectionDisableOwnership, candidate account) bool {
+	provider := normalizeInspectionProvider(item.Provider)
+	candidateProvider := normalizeInspectionProvider(candidate.Provider)
+	if provider == "" || candidateProvider == "" {
+		return false
+	}
+	if candidate.FileName != strings.TrimSpace(item.FileName) ||
+		candidateProvider != provider {
+		return false
+	}
+	authIndex := strings.TrimSpace(item.AuthIndex)
+	if authIndex != "" && candidate.AuthIndex != authIndex {
+		return false
+	}
+	accountID := strings.TrimSpace(item.AccountID)
+	if accountID != "" {
+		return strings.TrimSpace(candidate.AccountID) == accountID
+	}
+	accountSnapshot := directInspectionAccountSnapshot(item.FileName, item.AccountSnapshot)
+	if accountSnapshot == "" {
+		return authIndex != ""
+	}
+	return directInspectionAccountSnapshot(candidate.FileName, candidate.AccountSnapshot) == accountSnapshot
+}
+
+func disableOwnershipTarget(item model.CodexInspectionDisableOwnership) model.CodexInspectionDisableOwnershipTarget {
+	provider := normalizeInspectionProvider(item.Provider)
+	authIndex := strings.TrimSpace(item.AuthIndex)
+	accountID := strings.TrimSpace(item.AccountID)
+	accountSnapshot := directInspectionAccountSnapshot(item.FileName, item.AccountSnapshot)
+	return model.CodexInspectionDisableOwnershipTarget{
+		FileName:        strings.TrimSpace(item.FileName),
+		Provider:        &provider,
+		AuthIndex:       &authIndex,
+		AccountID:       &accountID,
+		AccountSnapshot: &accountSnapshot,
+	}
+}
+
+func disableOwnershipTargetForResult(item model.CodexInspectionResult) model.CodexInspectionDisableOwnershipTarget {
+	return disableOwnershipTarget(model.CodexInspectionDisableOwnership{
+		FileName:        item.FileName,
+		Provider:        item.Provider,
+		AuthIndex:       item.AuthIndex,
+		AccountID:       item.AccountID,
+		AccountSnapshot: item.AccountSnapshot,
+	})
 }
 
 func selectManualActionItems(
@@ -2640,10 +3263,12 @@ func selectManualActionItems(
 ) ([]model.CodexInspectionResult, []ActionOutcome) {
 	items := make([]model.CodexInspectionResult, 0, len(selected))
 	outcomes := make([]ActionOutcome, 0)
-	seenFileNames := map[string]struct{}{}
-	groupByFileName := map[string]fileActionGroup{}
+	seenGroupKeys := map[string]struct{}{}
+	groupByResultID := map[int64]fileActionGroup{}
 	for _, group := range buildExecutableFileActionGroups(results) {
-		groupByFileName[group.FileName] = group
+		for _, item := range group.Items {
+			groupByResultID[item.ID] = group
+		}
 	}
 	for _, result := range results {
 		if _, ok := selected[result.ID]; !ok {
@@ -2669,20 +3294,28 @@ func selectManualActionItems(
 			outcomes = append(outcomes, failedActionOutcome(result, result.Action, "认证文件名为空，无法执行"))
 			continue
 		}
-		group, ok := groupByFileName[fileName]
+		if !hasInspectionActionIdentity(result) {
+			outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, inspectionIdentityMissingReason))
+			continue
+		}
+		group, ok := groupByResultID[result.ID]
+		if !ok {
+			group = fileActionGroup{
+				Key:      "credential:" + inspectionActionIdentityKey(result),
+				FileName: fileName,
+				Items:    []model.CodexInspectionResult{result},
+				Action:   result.Action,
+			}
+		}
 		if ok && group.Mixed {
 			outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, fileActionMixedReason))
 			continue
 		}
-		if ok && len(group.Items) > 0 && group.Items[0].ID != result.ID {
-			outcomes = append(outcomes, skippedActionOutcome(result, result.Action, "CPA 认证文件动作按文件执行，该文件已有另一条结果作为可执行项"))
+		if _, ok := seenGroupKeys[group.Key]; ok {
+			outcomes = append(outcomes, skippedActionOutcome(result, result.Action, "该认证目标已由另一条结果处理"))
 			continue
 		}
-		if _, ok := seenFileNames[fileName]; ok {
-			outcomes = append(outcomes, skippedActionOutcome(result, result.Action, "CPA 认证文件动作按文件执行，同名文件已由另一条结果处理"))
-			continue
-		}
-		seenFileNames[fileName] = struct{}{}
+		seenGroupKeys[group.Key] = struct{}{}
 		items = append(items, result)
 	}
 	return items, outcomes
@@ -2697,17 +3330,18 @@ func (s *Service) validateActionItems(
 	logCtx context.Context,
 	setup store.Setup,
 	items []model.CodexInspectionResult,
+	referenceResults []model.CodexInspectionResult,
 	logger runLogger,
 	logPrefix string,
 	actionFor func(model.CodexInspectionResult) string,
-) ([]model.CodexInspectionResult, []ActionOutcome, error) {
+) ([]model.CodexInspectionResult, map[string][]model.CodexInspectionResult, []ActionOutcome, error) {
 	if len(items) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	files, err := s.fetchAuthFiles(ctx, setup)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, ctxErr
+			return nil, nil, nil, ctxErr
 		}
 		message := fmt.Sprintf("刷新认证文件失败，已拒绝执行：%v", err)
 		outcomes := make([]ActionOutcome, 0, len(items))
@@ -2727,22 +3361,25 @@ func (s *Service) validateActionItems(
 				"error":          outcome.Error,
 			})
 		}
-		return nil, outcomes, nil
+		return nil, nil, outcomes, nil
 	}
 	currentByFile := map[string][]account{}
 	for _, file := range files {
 		item := toAccount(file)
 		currentByFile[item.FileName] = append(currentByFile[item.FileName], item)
 	}
+	sourceFilePlans := buildSourceFileActionPlans(items, currentByFile, actionFor)
 
 	validItems := make([]model.CodexInspectionResult, 0, len(items))
+	sourceFileMembers := make(map[string][]model.CodexInspectionResult)
 	outcomes := make([]ActionOutcome, 0)
 	for _, item := range items {
 		action := item.Action
 		if actionFor != nil {
 			action = actionFor(item)
 		}
-		current, ok := matchCurrentAccount(currentByFile[item.FileName], item)
+		currentCandidates := currentByFile[strings.TrimSpace(item.FileName)]
+		current, ok := matchCurrentAccount(currentCandidates, item)
 		if !ok {
 			outcome := failedActionOutcome(item, action, "认证文件不存在或账号标识已变化，已拒绝执行")
 			outcomes = append(outcomes, outcome)
@@ -2756,8 +3393,67 @@ func (s *Service) validateActionItems(
 			})
 			continue
 		}
+		identityKey := inspectionActionIdentityKey(item)
+		sourcePlan, hasSourcePlan := sourceFilePlans[strings.TrimSpace(item.FileName)]
+		var actionMembers []model.CodexInspectionResult
+		if hasSourcePlan && (action == "disable" || action == "enable") {
+			if identityKey == sourcePlan.CanonicalIdentity {
+				actionMembers = append([]model.CodexInspectionResult(nil), sourcePlan.Members...)
+			} else if sourceFileActionPlanContainsIdentity(sourcePlan, identityKey) {
+				outcome := skippedActionOutcome(item, action, fileActionDuplicateReason)
+				outcomes = append(outcomes, outcome)
+				logger.info(logCtx, logPrefix+"账号跳过", map[string]any{
+					"fileName":       item.FileName,
+					"displayAccount": item.DisplayAccount,
+					"action":         action,
+					"reason":         outcome.Error,
+				})
+				continue
+			}
+		}
+		mutationScope := statusMutationTargetScopeForAccount(currentCandidates, current)
+		if (action == "disable" || action == "enable") &&
+			mutationScope != statusMutationTargetCredential &&
+			!(hasSourcePlan && identityKey == sourcePlan.CanonicalIdentity) {
+			outcome := needsReviewActionOutcome(item, action, statusMutationScopeReason)
+			outcomes = append(outcomes, outcome)
+			logger.warning(logCtx, logPrefix+"账号跳过", map[string]any{
+				"fileName":       item.FileName,
+				"displayAccount": item.DisplayAccount,
+				"action":         action,
+				"authIndex":      item.AuthIndex,
+				"accountId":      item.AccountID,
+				"status":         outcome.Status,
+				"reason":         outcome.Error,
+			})
+			continue
+		}
+		deleteMembers, deleteCovered := deleteActionMembersForCurrentFile(currentCandidates, referenceResults, item.FileName, actionFor)
+		if action == "delete" && !deleteCovered {
+			outcome := needsReviewActionOutcome(item, action, fileDeleteCoverageReason)
+			outcomes = append(outcomes, outcome)
+			logger.warning(logCtx, logPrefix+"账号跳过", map[string]any{
+				"fileName":       item.FileName,
+				"displayAccount": item.DisplayAccount,
+				"action":         action,
+				"authIndex":      item.AuthIndex,
+				"accountId":      item.AccountID,
+				"status":         outcome.Status,
+				"reason":         outcome.Error,
+			})
+			continue
+		}
+		if action == "delete" {
+			actionMembers = deleteMembers
+		}
 		item.Disabled = current.Disabled
-		if action == "disable" && current.Disabled {
+		allSourceMembersDisabled := false
+		allSourceMembersEnabled := false
+		if hasSourcePlan && identityKey == sourcePlan.CanonicalIdentity {
+			allSourceMembersDisabled = allAccountsDisabled(currentCandidates)
+			allSourceMembersEnabled = allAccountsEnabled(currentCandidates)
+		}
+		if action == "disable" && (current.Disabled && !hasSourcePlan || allSourceMembersDisabled) {
 			outcome := skippedActionOutcome(item, action, "账号已是禁用状态，未重复执行")
 			outcome.CurrentDisabled = boolPointer(current.Disabled)
 			outcomes = append(outcomes, outcome)
@@ -2769,7 +3465,7 @@ func (s *Service) validateActionItems(
 			})
 			continue
 		}
-		if action == "enable" && !current.Disabled {
+		if action == "enable" && (!current.Disabled && !hasSourcePlan || allSourceMembersEnabled) {
 			outcome := skippedActionOutcome(item, action, "账号已是启用状态，未重复执行")
 			outcome.CurrentDisabled = boolPointer(current.Disabled)
 			outcomes = append(outcomes, outcome)
@@ -2781,42 +3477,273 @@ func (s *Service) validateActionItems(
 			})
 			continue
 		}
+		if len(actionMembers) > 0 {
+			sourceFileMembers[identityKey] = actionMembers
+		}
 		validItems = append(validItems, item)
 	}
-	return validItems, outcomes, nil
+	return validItems, sourceFileMembers, outcomes, nil
 }
 
-func matchCurrentAccount(candidates []account, result model.CodexInspectionResult) (account, bool) {
-	if len(candidates) == 0 {
-		return account{}, false
+func buildSourceFileActionPlans(
+	items []model.CodexInspectionResult,
+	currentByFile map[string][]account,
+	actionFor func(model.CodexInspectionResult) string,
+) map[string]sourceFileActionPlan {
+	plans := make(map[string]sourceFileActionPlan)
+	for fileName, candidates := range currentByFile {
+		if len(candidates) <= 1 {
+			continue
+		}
+		fileItems := make([]model.CodexInspectionResult, 0, len(candidates))
+		for _, item := range items {
+			if strings.TrimSpace(item.FileName) == strings.TrimSpace(fileName) {
+				fileItems = append(fileItems, item)
+			}
+		}
+		members := make([]model.CodexInspectionResult, 0, len(candidates))
+		used := make(map[string]struct{}, len(candidates))
+		canonicalIndex := 0
+		sourceCount := 0
+		action := ""
+		complete := true
+		for candidateIndex, candidate := range candidates {
+			matches := matchingInspectionResults(fileItems, candidate, used, actionFor)
+			if len(matches) != 1 {
+				complete = false
+				break
+			}
+			matchedAction := matches[0].Action
+			if actionFor != nil {
+				matchedAction = actionFor(matches[0])
+			}
+			if matchedAction != "disable" && matchedAction != "enable" {
+				complete = false
+				break
+			}
+			if action == "" {
+				action = matchedAction
+			} else if matchedAction != action {
+				complete = false
+				break
+			}
+			identityKey := inspectionActionIdentityKey(matches[0])
+			used[identityKey] = struct{}{}
+			members = append(members, matches[0])
+			if strings.TrimSpace(candidate.RuntimeID) == strings.TrimSpace(fileName) {
+				sourceCount++
+				canonicalIndex = candidateIndex
+			}
+		}
+		if !complete || sourceCount > 1 || len(members) != len(candidates) {
+			continue
+		}
+		canonicalItem := members[canonicalIndex]
+		plans[fileName] = sourceFileActionPlan{
+			CanonicalIdentity: inspectionActionIdentityKey(canonicalItem),
+			Action:            action,
+			Members:           members,
+		}
+	}
+	return plans
+}
+
+func matchingInspectionResults(
+	items []model.CodexInspectionResult,
+	candidate account,
+	used map[string]struct{},
+	actionFor func(model.CodexInspectionResult) string,
+) []model.CodexInspectionResult {
+	matches := make([]model.CodexInspectionResult, 0, 1)
+	for _, item := range items {
+		identityKey := inspectionActionIdentityKey(item)
+		if used != nil {
+			if _, ok := used[identityKey]; ok {
+				continue
+			}
+		}
+		action := item.Action
+		if actionFor != nil {
+			action = actionFor(item)
+		}
+		if action != "disable" && action != "enable" {
+			continue
+		}
+		if inspectionResultMatchesCurrentAccount(item, candidate) {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
+func sourceFileActionPlanContainsIdentity(plan sourceFileActionPlan, identityKey string) bool {
+	for _, item := range plan.Members {
+		if inspectionActionIdentityKey(item) == identityKey {
+			return true
+		}
+	}
+	return false
+}
+
+func statusMutationTargetScopeForAccount(candidates []account, target account) statusMutationTargetScope {
+	runtimeID := strings.TrimSpace(target.RuntimeID)
+	if runtimeID == "" {
+		return statusMutationTargetAmbiguous
+	}
+	runtimeIDMatches := 0
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.RuntimeID) == runtimeID {
+			runtimeIDMatches++
+		}
+	}
+	if runtimeIDMatches != 1 {
+		return statusMutationTargetAmbiguous
+	}
+	if len(candidates) <= 1 {
+		return statusMutationTargetCredential
+	}
+	sourceCount := 0
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.RuntimeID) == strings.TrimSpace(target.FileName) {
+			sourceCount++
+		}
+	}
+	if sourceCount > 1 {
+		return statusMutationTargetAmbiguous
+	}
+	if sourceCount == 1 {
+		if runtimeID == strings.TrimSpace(target.FileName) {
+			return statusMutationTargetSourceFile
+		}
+		return statusMutationTargetExpandedChild
+	}
+	return statusMutationTargetCredential
+}
+
+func allAccountsDisabled(items []account) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !item.Disabled {
+			return false
+		}
+	}
+	return true
+}
+
+func allAccountsEnabled(items []account) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.Disabled {
+			return false
+		}
+	}
+	return true
+}
+
+func deleteActionMembersForCurrentFile(
+	current []account,
+	results []model.CodexInspectionResult,
+	fileName string,
+	actionFor func(model.CodexInspectionResult) string,
+) ([]model.CodexInspectionResult, bool) {
+	if len(current) == 0 {
+		return nil, false
+	}
+	fileName = strings.TrimSpace(fileName)
+	deleteByIdentity := make(map[string]model.CodexInspectionResult)
+	for _, result := range results {
+		if strings.TrimSpace(result.FileName) != fileName {
+			continue
+		}
+		action := result.Action
+		if actionFor != nil {
+			action = actionFor(result)
+		}
+		if action != "delete" {
+			return nil, false
+		}
+		deleteByIdentity[inspectionActionIdentityKey(result)] = result
+	}
+	if len(deleteByIdentity) == 0 {
+		return nil, false
+	}
+	deleteResults := make([]model.CodexInspectionResult, 0, len(deleteByIdentity))
+	for _, result := range deleteByIdentity {
+		deleteResults = append(deleteResults, result)
+	}
+	used := make([]bool, len(deleteResults))
+	members := make([]model.CodexInspectionResult, 0, len(current))
+	for _, candidate := range current {
+		matchIndex := -1
+		for index, result := range deleteResults {
+			if used[index] || !inspectionResultMatchesCurrentAccount(result, candidate) {
+				continue
+			}
+			if matchIndex >= 0 {
+				return nil, false
+			}
+			matchIndex = index
+		}
+		if matchIndex < 0 {
+			return nil, false
+		}
+		used[matchIndex] = true
+		members = append(members, deleteResults[matchIndex])
+	}
+	return members, true
+}
+
+func inspectionResultMatchesCurrentAccount(result model.CodexInspectionResult, current account) bool {
+	if strings.TrimSpace(result.FileName) != strings.TrimSpace(current.FileName) {
+		return false
+	}
+	provider := normalizeInspectionProvider(result.Provider)
+	currentProvider := normalizeInspectionProvider(current.Provider)
+	if provider == "" || currentProvider == "" || provider != currentProvider {
+		return false
 	}
 	authIndex := strings.TrimSpace(result.AuthIndex)
 	accountID := strings.TrimSpace(result.AccountID)
-	provider := normalizeInspectionProvider(result.Provider)
-	if provider == "" {
-		provider = "codex"
+	if authIndex != "" && authIndex != strings.TrimSpace(current.AuthIndex) {
+		return false
 	}
-	if authIndex == "" && accountID == "" {
-		for _, candidate := range candidates {
-			if normalizeInspectionProvider(candidate.Provider) == provider {
-				return candidate, true
-			}
+	if accountID != "" {
+		return accountID == strings.TrimSpace(current.AccountID)
+	}
+	accountSnapshot := directInspectionAccountSnapshot(result.FileName, result.AccountSnapshot)
+	if accountSnapshot == "" {
+		return authIndex != ""
+	}
+	currentSnapshot := directInspectionAccountSnapshot(current.FileName, current.AccountSnapshot)
+	if currentSnapshot == "" {
+		return false
+	}
+	return accountSnapshot == currentSnapshot
+}
+
+func directInspectionAccountSnapshot(fileName, value string) string {
+	snapshot := strings.TrimSpace(value)
+	if snapshot == "" || snapshot == strings.TrimSpace(fileName) {
+		return ""
+	}
+	return snapshot
+}
+
+func matchCurrentAccount(candidates []account, result model.CodexInspectionResult) (account, bool) {
+	matches := make([]account, 0, 1)
+	for _, candidate := range candidates {
+		if inspectionResultMatchesCurrentAccount(result, candidate) {
+			matches = append(matches, candidate)
 		}
+	}
+	if len(matches) != 1 {
 		return account{}, false
 	}
-	for _, candidate := range candidates {
-		if normalizeInspectionProvider(candidate.Provider) != provider {
-			continue
-		}
-		if authIndex != "" && candidate.AuthIndex != authIndex {
-			continue
-		}
-		if accountID != "" && candidate.AccountID != accountID {
-			continue
-		}
-		return candidate, true
-	}
-	return account{}, false
+	return matches[0], true
 }
 
 func summarizeRun(run model.CodexInspectionRun, results []model.CodexInspectionResult) model.CodexInspectionRun {
@@ -3117,19 +4044,20 @@ func failedActionOutcomes(outcomes []ActionOutcome) []map[string]any {
 
 func resultFromAccount(item account) model.CodexInspectionResult {
 	return model.CodexInspectionResult{
-		AccountKey:     item.Key,
-		FileName:       item.FileName,
-		DisplayAccount: item.DisplayAccount,
-		AuthIndex:      item.AuthIndex,
-		AccountID:      item.AccountID,
-		Provider:       item.Provider,
-		Disabled:       item.Disabled,
-		Status:         item.Status,
-		State:          item.State,
-		PlanType:       resolveCodexPlanType(item.File),
-		Action:         "keep",
-		ActionReason:   "无需处理",
-		IsQuota:        false,
+		AccountKey:      item.Key,
+		FileName:        item.FileName,
+		DisplayAccount:  item.DisplayAccount,
+		AccountSnapshot: item.AccountSnapshot,
+		AuthIndex:       item.AuthIndex,
+		AccountID:       item.AccountID,
+		Provider:        item.Provider,
+		Disabled:        item.Disabled,
+		Status:          item.Status,
+		State:           item.State,
+		PlanType:        resolveCodexPlanType(item.File),
+		Action:          "keep",
+		ActionReason:    "无需处理",
+		IsQuota:         false,
 	}
 }
 
@@ -3187,27 +4115,44 @@ func toAccount(file authFile) account {
 	fileName := firstNonEmpty(readString(file, "name"), readString(file, "id"), normalizeAuthIndex(file["auth_index"]), normalizeAuthIndex(file["authIndex"]), "unknown-auth-file")
 	authIndex := firstNonEmpty(normalizeAuthIndex(file["auth_index"]), normalizeAuthIndex(file["authIndex"]), normalizeAuthIndex(file["auth-index"]))
 	provider := normalizeInspectionProvider(firstNonEmpty(readString(file, "provider"), readString(file, "type")))
-	displayAccount := firstNonEmpty(
+	runtimeID := readString(file, "id")
+	accountSnapshot := firstNonEmpty(
 		readString(file, "account"),
 		readString(file, "email"),
+		readString(file, "display_account"),
+		readString(file, "displayAccount"),
+	)
+	displayAccount := firstNonEmpty(
+		accountSnapshot,
 		readString(file, "label"),
 		fileName,
 	)
+	accountID := resolveCodexAccountID(file)
 	key := fileName + "::" + authIndex
 	if authIndex == "" {
-		key = fileName + "::-"
+		switch {
+		case accountID != "" || accountSnapshot != "":
+			key = fileName + "::-::" + inspectionIdentityKey(fileName, provider, authIndex, accountID, accountSnapshot)
+		case strings.TrimSpace(runtimeID) != "" && strings.TrimSpace(runtimeID) != strings.TrimSpace(fileName):
+			encoded, _ := json.Marshal([]string{provider, strings.TrimSpace(runtimeID)})
+			key = fileName + "::-::runtime:" + string(encoded)
+		default:
+			key = fileName + "::-"
+		}
 	}
 	return account{
-		Key:            key,
-		FileName:       fileName,
-		DisplayAccount: displayAccount,
-		AuthIndex:      authIndex,
-		AccountID:      resolveCodexAccountID(file),
-		Provider:       provider,
-		Disabled:       isDisabledAuthFile(file),
-		Status:         readString(file, "status"),
-		State:          readString(file, "state"),
-		File:           file,
+		Key:             key,
+		RuntimeID:       runtimeID,
+		FileName:        fileName,
+		DisplayAccount:  displayAccount,
+		AccountSnapshot: accountSnapshot,
+		AuthIndex:       authIndex,
+		AccountID:       accountID,
+		Provider:        provider,
+		Disabled:        isDisabledAuthFile(file),
+		Status:          readString(file, "status"),
+		State:           readString(file, "state"),
+		File:            file,
 	}
 }
 

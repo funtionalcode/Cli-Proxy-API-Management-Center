@@ -5,6 +5,7 @@ import en from '@/i18n/locales/en.json';
 import ru from '@/i18n/locales/ru.json';
 import zhCN from '@/i18n/locales/zh-CN.json';
 import zhTW from '@/i18n/locales/zh-TW.json';
+import { apiClient } from '@/services/api/client';
 import { authFilesApi } from '@/services/api/authFiles';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import localInspectionPageSource from './CodexInspectionPage.tsx?raw';
@@ -61,9 +62,11 @@ import {
   validateInspectionConfigDraft,
 } from './model/codexInspectionPresentation';
 import {
-  getCodexInspectionOwnedDisableFileNames,
+  getCodexInspectionOwnedDisableIdentityKeys,
+  getCodexInspectionOwnershipIdentityKey,
   recordCodexInspectionDisableOwnership,
 } from './model/codexInspectionOwnership';
+import { toInspectionAccount } from './model/codexInspectionProbe';
 
 const createStorage = () => {
   const values = new Map<string, string>();
@@ -96,10 +99,18 @@ const createResultItem = (
   overrides: Partial<CodexInspectionResultItem> = {}
 ): CodexInspectionResultItem => ({
   key: overrides.key ?? `${action}.json::1`,
+  runtimeId:
+    overrides.runtimeId === undefined
+      ? `${overrides.fileName ?? `${action}.json`}::${overrides.authIndex ?? '1'}::runtime`
+      : overrides.runtimeId,
   fileName: overrides.fileName ?? `${action}.json`,
   displayAccount: overrides.displayAccount ?? `${action}@example.com`,
+  accountSnapshot:
+    overrides.accountSnapshot === undefined
+      ? (overrides.displayAccount ?? `${action}@example.com`)
+      : overrides.accountSnapshot,
   authIndex: overrides.authIndex ?? '1',
-  accountId: overrides.accountId ?? 'account-1',
+  accountId: overrides.accountId === undefined ? 'account-1' : overrides.accountId,
   provider: overrides.provider ?? 'codex',
   disabled: overrides.disabled ?? false,
   autoRecoverOwned: overrides.autoRecoverOwned ?? false,
@@ -108,6 +119,10 @@ const createResultItem = (
   raw:
     overrides.raw ??
     ({
+      id:
+        overrides.runtimeId === undefined
+          ? `${overrides.fileName ?? `${action}.json`}::${overrides.authIndex ?? '1'}::runtime`
+          : (overrides.runtimeId ?? undefined),
       name: `${action}.json`,
       type: 'codex',
       access_token: 'raw-secret-token',
@@ -131,10 +146,14 @@ const createCurrentAuthFile = (
   overrides: Partial<AuthFileItem> = {}
 ): AuthFileItem =>
   ({
+    id: item.runtimeId ?? undefined,
     name: item.fileName,
     type: item.provider,
     auth_index: item.authIndex,
     ...(item.accountId ? { id_token: { account_id: item.accountId } } : {}),
+    ...(!item.accountId && item.accountSnapshot && item.accountSnapshot !== item.fileName
+      ? { account: item.accountSnapshot }
+      : {}),
     disabled: item.disabled,
     ...overrides,
   }) as AuthFileItem;
@@ -1384,6 +1403,19 @@ describe('resolveCodexInspectionAutoActionItems', () => {
     ]);
   });
 
+  it('blocks automatic file deletion when a same-file result says keep', () => {
+    const items = [
+      createResultItem('delete', { fileName: 'mixed-delete.json', authIndex: 'auth-1' }),
+      createResultItem('keep', { fileName: 'mixed-delete.json', authIndex: 'auth-2' }),
+    ];
+
+    const plan = resolveCodexInspectionAutoActionPlan('delete', false, items);
+    expect(plan.items).toEqual([]);
+    expect(plan.preflightOutcomes).toEqual([
+      expect.objectContaining({ accountKey: items[0].key, status: 'needs_review' }),
+    ]);
+  });
+
   it('turns delete suggestions into disable actions in auto disable mode', () => {
     const items = resolveCodexInspectionAutoActionItems('disable', false, [
       deleteItem,
@@ -1395,6 +1427,26 @@ describe('resolveCodexInspectionAutoActionItems', () => {
     expect(items.map((item) => [item.fileName, item.action])).toEqual([
       ['delete.json', 'disable'],
       ['disable.json', 'disable'],
+    ]);
+  });
+
+  it('keeps mapped same-file disables independent when auth_index differs', () => {
+    const items = resolveCodexInspectionAutoActionItems('disable', false, [
+      createResultItem('delete', {
+        key: 'shared.json::auth-1',
+        fileName: 'shared.json',
+        authIndex: 'auth-1',
+      }),
+      createResultItem('delete', {
+        key: 'shared.json::auth-2',
+        fileName: 'shared.json',
+        authIndex: 'auth-2',
+      }),
+    ]);
+
+    expect(items.map((item) => [item.key, item.action])).toEqual([
+      ['shared.json::auth-1', 'disable'],
+      ['shared.json::auth-2', 'disable'],
     ]);
   });
 
@@ -1549,7 +1601,23 @@ describe('Server Codex inspection action presentation', () => {
         actionStatus: 'needs_review',
       })
     ).toBe('needs_review');
-    expect(isActionableServerCodexInspectionResult({ id: 1, action: 'disable' })).toBe(true);
+    expect(
+      isActionableServerCodexInspectionResult({
+        id: 1,
+        action: 'disable',
+        fileName: 'auth-a.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+      })
+    ).toBe(true);
+    expect(
+      isActionableServerCodexInspectionResult({
+        id: 4,
+        action: 'disable',
+        fileName: 'legacy.json',
+        provider: 'codex',
+      })
+    ).toBe(false);
     expect(
       isActionableServerCodexInspectionResult({
         id: 2,
@@ -1570,7 +1638,14 @@ describe('Server Codex inspection action presentation', () => {
     const canonicalIds = getCanonicalServerCodexInspectionActionIds([
       { id: 1, fileName: 'auth-a.json', action: 'delete', actionStatus: 'success' },
       { id: 2, fileName: 'auth-a.json', action: 'delete', actionStatus: 'pending' },
-      { id: 3, fileName: 'auth-b.json', action: 'disable', actionStatus: 'failed' },
+      {
+        id: 3,
+        fileName: 'auth-b.json',
+        provider: 'codex',
+        authIndex: 'auth-b',
+        action: 'disable',
+        actionStatus: 'failed',
+      },
       { id: 4, fileName: 'auth-c.json', action: 'reauth' },
     ]);
 
@@ -1589,19 +1664,107 @@ describe('Server Codex inspection action presentation', () => {
     expect(Array.from(mixedIds)).toEqual([1, 2]);
   });
 
+  it('suppresses server deletion when a same-file result says keep', () => {
+    const results = [
+      { id: 1, fileName: 'auth-a.json', action: 'delete', actionStatus: 'pending' },
+      { id: 2, fileName: 'auth-a.json', action: 'keep', actionStatus: 'none' },
+    ];
+
+    expect(Array.from(getCanonicalServerCodexInspectionActionIds(results))).toEqual([]);
+    expect(Array.from(getMixedServerCodexInspectionActionIds(results))).toEqual([1, 2]);
+  });
+
   it('keeps one canonical action per same-action file group', () => {
     const canonicalIds = getCanonicalServerCodexInspectionActionIds([
-      { id: 1, fileName: 'auth-a.json', action: 'delete', actionStatus: 'pending' },
-      { id: 2, fileName: 'auth-a.json', action: 'delete', actionStatus: 'pending' },
+      {
+        id: 1,
+        fileName: 'auth-a.json',
+        provider: 'codex',
+        authIndex: 'auth-a',
+        action: 'delete',
+        actionStatus: 'pending',
+      },
+      {
+        id: 2,
+        fileName: 'auth-a.json',
+        provider: 'codex',
+        authIndex: 'auth-a',
+        action: 'delete',
+        actionStatus: 'pending',
+      },
     ]);
 
     expect(Array.from(canonicalIds)).toEqual([1]);
   });
 
+  it('keeps same-file status actions canonical when auth_index differs', () => {
+    const results = [
+      {
+        id: 1,
+        fileName: 'shared.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+        action: 'disable',
+        actionStatus: 'pending',
+      },
+      {
+        id: 2,
+        fileName: 'shared.json',
+        provider: 'codex',
+        authIndex: 'auth-2',
+        action: 'enable',
+        actionStatus: 'pending',
+      },
+    ];
+
+    expect(Array.from(getCanonicalServerCodexInspectionActionIds(results))).toEqual([1, 2]);
+    expect(Array.from(getMixedServerCodexInspectionActionIds(results))).toEqual([]);
+  });
+
+  it('keeps same-file status actions independent by account snapshot when auth_index is absent', () => {
+    const results = [
+      {
+        id: 1,
+        fileName: 'shared.json',
+        displayAccount: 'first@example.com',
+        accountSnapshot: 'first@example.com',
+        provider: 'codex',
+        action: 'disable',
+        actionStatus: 'pending',
+      },
+      {
+        id: 2,
+        fileName: 'shared.json',
+        displayAccount: 'second@example.com',
+        accountSnapshot: 'second@example.com',
+        provider: 'codex',
+        action: 'enable',
+        actionStatus: 'pending',
+      },
+    ];
+
+    expect(Array.from(getCanonicalServerCodexInspectionActionIds(results))).toEqual([1, 2]);
+    expect(Array.from(getMixedServerCodexInspectionActionIds(results))).toEqual([]);
+  });
+
   it('keeps canonical actions for different files independently', () => {
     const canonicalIds = getCanonicalServerCodexInspectionActionIds([
-      { id: 1, fileName: 'auth-a.json', action: 'delete', actionStatus: 'pending' },
-      { id: 2, fileName: 'auth-b.json', action: 'enable', actionStatus: 'failed' },
+      {
+        id: 1,
+        fileName: 'auth-a.json',
+        provider: 'codex',
+        authIndex: 'auth-a',
+        action: 'delete',
+        actionStatus: 'pending',
+      },
+      {
+        id: 2,
+        fileName: 'auth-b.json',
+        provider: 'codex',
+        authIndex: 'auth-b',
+        action: 'enable',
+        actionStatus: 'failed',
+      },
       { id: 3, fileName: 'auth-c.json', action: 'disable', actionStatus: 'needs_review' },
     ]);
 
@@ -1694,9 +1857,22 @@ describe('executeCodexInspectionActions', () => {
       .mockResolvedValueOnce({
         files: [
           {
+            id: 'reauth-runtime-1',
             name: 'reauth.json',
             type: 'xai',
             auth_index: '1',
+            account: 'reauth@example.com',
+          } as AuthFileItem,
+        ],
+      })
+      .mockResolvedValueOnce({
+        files: [
+          {
+            id: 'reauth-runtime-1',
+            name: 'reauth.json',
+            type: 'xai',
+            auth_index: '1',
+            account: 'reauth@example.com',
           } as AuthFileItem,
         ],
       })
@@ -1721,7 +1897,21 @@ describe('executeCodexInspectionActions', () => {
       t: translateEn,
     });
 
-    expect(deleteSpy).toHaveBeenCalledWith('reauth.json');
+    expect(deleteSpy).toHaveBeenCalledWith(
+      'reauth-runtime-1',
+      'reauth.json',
+      expect.any(Function),
+      [
+        {
+          name: 'reauth.json',
+          runtimeId: 'reauth-runtime-1',
+          authIndex: '1',
+          provider: 'xai',
+          accountId: null,
+          accountSnapshot: 'reauth@example.com',
+        },
+      ]
+    );
     expect(execution.outcomes).toEqual([
       {
         accountKey: 'reauth.json::1',
@@ -1770,17 +1960,16 @@ describe('executeCodexInspectionActions', () => {
       files: ['reauth.json'],
       failed: [],
     });
-    vi.spyOn(authFilesApi, 'list')
-      .mockResolvedValueOnce({
-        files: [
-          {
-            name: 'reauth.json',
-            type: 'codex',
-            auth_index: '1',
-          } as AuthFileItem,
-        ],
-      })
-      .mockResolvedValueOnce({ files: [] });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValueOnce({
+      files: [
+        {
+          name: 'reauth.json',
+          type: 'codex',
+          auth_index: '1',
+          account: 'reauth@example.com',
+        } as AuthFileItem,
+      ],
+    });
 
     const execution = await executeCodexInspectionActions({
       settings: createRunResult().settings,
@@ -1818,7 +2007,26 @@ describe('executeCodexInspectionActions', () => {
     });
     vi.spyOn(authFilesApi, 'list')
       .mockResolvedValueOnce({
-        files: [{ name: 'reauth.json', type: 'xai', auth_index: '1' } as AuthFileItem],
+        files: [
+          {
+            id: 'reauth-runtime-1',
+            name: 'reauth.json',
+            type: 'xai',
+            auth_index: '1',
+            account: 'reauth@example.com',
+          } as AuthFileItem,
+        ],
+      })
+      .mockResolvedValueOnce({
+        files: [
+          {
+            id: 'reauth-runtime-1',
+            name: 'reauth.json',
+            type: 'xai',
+            auth_index: '1',
+            account: 'reauth@example.com',
+          } as AuthFileItem,
+        ],
       })
       .mockResolvedValueOnce({ files: [] });
 
@@ -1834,7 +2042,21 @@ describe('executeCodexInspectionActions', () => {
       source: 'manual',
     });
 
-    expect(deleteSpy).toHaveBeenCalledWith('reauth.json');
+    expect(deleteSpy).toHaveBeenCalledWith(
+      'reauth-runtime-1',
+      'reauth.json',
+      expect.any(Function),
+      [
+        {
+          name: 'reauth.json',
+          runtimeId: 'reauth-runtime-1',
+          authIndex: '1',
+          provider: 'xai',
+          accountId: null,
+          accountSnapshot: 'reauth@example.com',
+        },
+      ]
+    );
     expect(execution.outcomes).toEqual([
       expect.objectContaining({ success: false, error: '删除接口未确认认证文件已删除' }),
     ]);
@@ -1905,6 +2127,7 @@ describe('executeCodexInspectionActions', () => {
             name: 'reauth.json',
             type: 'xai',
             auth_index: 'replacement',
+            account: 'replacement@example.com',
           } as AuthFileItem,
         ],
       })
@@ -1929,6 +2152,50 @@ describe('executeCodexInspectionActions', () => {
 
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(execution.outcomes[0]).toMatchObject({ success: false, action: 'delete' });
+  });
+
+  it('rejects an xAI replacement when runtime ID, auth index, and provider stay unchanged', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['reauth.json'],
+      failed: [],
+    });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValueOnce({
+      files: [
+        {
+          id: 'reauth.json',
+          name: 'reauth.json',
+          type: 'xai',
+          auth_index: '1',
+          account: 'replacement@example.com',
+        } as AuthFileItem,
+      ],
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [
+        toReauthDeleteExecutionItem(
+          createResultItem('reauth', {
+            fileName: 'reauth.json',
+            runtimeId: 'reauth.json',
+            provider: 'xai',
+            authIndex: '1',
+            accountId: null,
+            displayAccount: 'original@example.com',
+          })
+        ),
+      ],
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({ action: 'delete', status: 'failed', success: false }),
+    ]);
   });
 
   it('rejects disable and enable when the current auth identities changed', async () => {
@@ -2071,8 +2338,7 @@ describe('executeCodexInspectionActions', () => {
     ];
     const listSpy = vi
       .spyOn(authFilesApi, 'list')
-      .mockResolvedValueOnce({ files: items.map((item) => createCurrentAuthFile(item)) })
-      .mockResolvedValueOnce({ files: [] });
+      .mockResolvedValue({ files: items.map((item) => createCurrentAuthFile(item)) });
 
     const execution = await executeCodexInspectionActions({
       settings: {
@@ -2088,7 +2354,7 @@ describe('executeCodexInspectionActions', () => {
 
     expect(execution.outcomes).toHaveLength(3);
     expect(maxStatusUpdates).toBe(1);
-    expect(listSpy).toHaveBeenCalledTimes(2);
+    expect(listSpy).toHaveBeenCalledTimes(4);
   });
 
   it('blocks mixed same-file manual actions and records them as needing review', async () => {
@@ -2117,6 +2383,7 @@ describe('executeCodexInspectionActions', () => {
       }),
     ];
     vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(items[0])] })
       .mockResolvedValueOnce({ files: [createCurrentAuthFile(items[0])] })
       .mockResolvedValueOnce({ files: [] });
     const execution = await executeCodexInspectionActions({
@@ -2148,8 +2415,8 @@ describe('executeCodexInspectionActions', () => {
       },
       execution
     );
-    expect(applied.results.every((item) => item.actionHandled === true)).toBe(true);
-    expect(countHandlingStates(applied.results).pending).toBe(0);
+    expect(applied.results.every((item) => item.actionHandled === false)).toBe(true);
+    expect(countHandlingStates(applied.results).pending).toBe(2);
   });
 
   it('blocks a selected reauth deletion when the full result set has a conflicting file action', async () => {
@@ -2203,9 +2470,1418 @@ describe('executeCodexInspectionActions', () => {
     );
     expect(applied.results[0]).toMatchObject({
       key: 'mixed.json::reauth',
-      actionHandled: true,
+      actionHandled: false,
     });
+    expect(countHandlingStates(applied.results).pending).toBe(1);
+  });
+
+  it('blocks a file deletion when the full result set contains a same-file keep result', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['mixed.json'],
+      failed: [],
+    });
+    const deleteItem = createResultItem('delete', {
+      key: 'mixed.json::delete',
+      fileName: 'mixed.json',
+      authIndex: 'auth-1',
+    });
+    const keepItem = createResultItem('keep', {
+      key: 'mixed.json::keep',
+      fileName: 'mixed.json',
+      authIndex: 'auth-2',
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [deleteItem],
+      referenceItems: [deleteItem, keepItem],
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'mixed.json::delete',
+        action: 'delete',
+        status: 'needs_review',
+      }),
+    ]);
+  });
+
+  it('blocks deletion when a fresh same-file sibling is absent from the inspection results', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['shared.json'],
+      failed: [],
+    });
+    const deleteItem = createResultItem('delete', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: null,
+    });
+    const sibling = createResultItem('keep', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: null,
+    });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [deleteItem, sibling].map((item) => createCurrentAuthFile(item)),
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [deleteItem],
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'shared.json::auth-1',
+        action: 'delete',
+        status: 'needs_review',
+        error: expect.stringContaining('未完整覆盖'),
+      }),
+    ]);
+  });
+
+  it('deletes a physical file once when every fresh sibling has a matching delete result', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['shared.json'],
+      failed: [],
+    });
+    const items = ['auth-1', 'auth-2'].map((authIndex) =>
+      createResultItem('delete', {
+        key: `shared.json::${authIndex}`,
+        fileName: 'shared.json',
+        authIndex,
+        accountId: null,
+      })
+    );
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: items.map((item) => createCurrentAuthFile(item)) })
+      .mockResolvedValueOnce({ files: items.map((item) => createCurrentAuthFile(item)) })
+      .mockResolvedValueOnce({ files: [] });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items,
+      referenceItems: items,
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith('shared.json', 'shared.json', undefined, [
+      {
+        name: 'shared.json',
+        runtimeId: 'shared.json::auth-1::runtime',
+        authIndex: 'auth-1',
+        provider: 'codex',
+        accountId: null,
+        accountSnapshot: 'delete@example.com',
+      },
+      {
+        name: 'shared.json',
+        runtimeId: 'shared.json::auth-2::runtime',
+        authIndex: 'auth-2',
+        provider: 'codex',
+        accountId: null,
+        accountSnapshot: 'delete@example.com',
+      },
+    ]);
+    expect(execution.outcomes.map((outcome) => outcome.status).sort()).toEqual([
+      'skipped',
+      'success',
+    ]);
+  });
+
+  it('rejects a physical-file delete when its name collides with another runtime ID', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['shared.json'],
+      failed: [],
+    });
+    const items = ['auth-1', 'auth-2'].map((authIndex) =>
+      createResultItem('delete', {
+        key: `shared.json::${authIndex}`,
+        fileName: 'shared.json',
+        authIndex,
+        accountId: null,
+      })
+    );
+    const currentFiles = items.map((item) => createCurrentAuthFile(item));
+    const collision = createCurrentAuthFile(
+      createResultItem('keep', {
+        key: 'other.json::auth-3',
+        fileName: 'other.json',
+        authIndex: 'auth-3',
+        accountId: null,
+      }),
+      { id: 'shared.json' }
+    );
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [...currentFiles, collision],
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items,
+      referenceItems: items,
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'delete', status: 'failed', success: false }),
+        expect.objectContaining({ action: 'delete', status: 'skipped', success: true }),
+      ])
+    );
+  });
+
+  it('rejects deletion when the physical file is replaced after preflight', async () => {
+    const deleteSpy = vi.spyOn(authFilesApi, 'deleteFileByName').mockResolvedValue({
+      status: 'ok',
+      deleted: 1,
+      files: ['reauth.json'],
+      failed: [],
+    });
+    const item = toReauthDeleteExecutionItem(
+      createResultItem('reauth', {
+        fileName: 'reauth.json',
+        provider: 'xai',
+        authIndex: '1',
+        accountId: null,
+        displayAccount: 'original@example.com',
+      })
+    );
+    const original = createCurrentAuthFile(item);
+    const replacement = createCurrentAuthFile(item, { account: 'replacement@example.com' });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [original] })
+      .mockResolvedValueOnce({ files: [replacement] })
+      .mockResolvedValueOnce({ files: [replacement] });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        action: 'delete',
+        status: 'failed',
+        success: false,
+        error: expect.stringContaining('账号标识已变化'),
+      }),
+    ]);
+  });
+
+  it('uses the validated runtime ID when the path is replaced after delete validation', async () => {
+    const item = createResultItem('delete', {
+      key: 'reauth.json::original',
+      fileName: 'reauth.json',
+      runtimeId: 'runtime-original',
+      provider: 'xai',
+      authIndex: '1',
+      accountId: null,
+      displayAccount: 'original@example.com',
+    });
+    const original = createCurrentAuthFile(item);
+    const deleteSpy = vi
+      .spyOn(authFilesApi, 'deleteFileByName')
+      .mockImplementation(async (selector, physicalName) => {
+        const expectedName = physicalName ?? 'reauth.json';
+        if (selector === expectedName) {
+          throw new Error('filename selector would delete the replacement');
+        }
+        return {
+          status: 'error',
+          deleted: 0,
+          files: [],
+          failed: [{ name: expectedName, error: 'runtime auth no longer exists' }],
+        };
+      });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [original] })
+      .mockResolvedValueOnce({ files: [original] })
+      .mockResolvedValueOnce({
+        files: [createCurrentAuthFile(item, { id: 'runtime-replacement' })],
+      });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-test',
+      source: 'manual',
+    });
+
+    expect(deleteSpy).toHaveBeenCalledWith(
+      'runtime-original',
+      'reauth.json',
+      expect.any(Function),
+      [
+        {
+          name: 'reauth.json',
+          runtimeId: 'runtime-original',
+          authIndex: '1',
+          provider: 'xai',
+          accountId: null,
+          accountSnapshot: 'original@example.com',
+        },
+      ]
+    );
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        action: 'delete',
+        status: 'failed',
+        error: 'runtime auth no longer exists',
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      caseName: 'source membership grows',
+      concurrentFile: {
+        id: 'runtime-plugin-2',
+        name: 'plugin-source.json',
+        type: 'gemini-cli',
+        auth_index: 'auth-2',
+        account: 'sibling@example.com',
+      } as AuthFileItem,
+    },
+    {
+      caseName: 'the physical source name collides with another runtime ID',
+      concurrentFile: {
+        id: 'plugin-source.json',
+        name: 'other.json',
+        type: 'gemini-cli',
+        auth_index: 'auth-other',
+        account: 'other@example.com',
+      } as AuthFileItem,
+    },
+  ])(
+    'rejects plugin source fallback when $caseName after the runtime conflict',
+    async ({ concurrentFile }) => {
+      const item = createResultItem('delete', {
+        key: 'plugin-source.json::auth-1',
+        fileName: 'plugin-source.json',
+        runtimeId: 'runtime-plugin',
+        provider: 'gemini-cli',
+        authIndex: 'auth-1',
+        accountId: null,
+        displayAccount: 'original@example.com',
+      });
+      const original = createCurrentAuthFile(item);
+      const pluginConflict = Object.assign(
+        new Error(
+          'plugin virtual auth cannot be modified directly; edit or delete the source auth file'
+        ),
+        { status: 409 }
+      );
+      const httpDeleteSpy = vi
+        .spyOn(apiClient, 'delete')
+        .mockRejectedValueOnce(pluginConflict)
+        .mockResolvedValueOnce({ status: 'ok' });
+      vi.spyOn(authFilesApi, 'list')
+        .mockResolvedValueOnce({ files: [original] })
+        .mockResolvedValueOnce({ files: [original] })
+        .mockResolvedValue({ files: [original, concurrentFile] });
+
+      const execution = await executeCodexInspectionActions({
+        settings: createRunResult().settings,
+        items: [item],
+        previousFiles: [],
+        connectionFingerprint: 'scope-test',
+        source: 'manual',
+      });
+
+      expect(httpDeleteSpy).toHaveBeenCalledTimes(1);
+      expect(httpDeleteSpy).toHaveBeenCalledWith('/auth-files?name=runtime-plugin', {
+        headers: {
+          'X-CPAMP-Auth-File-Physical-Name': 'plugin-source.json',
+          'X-CPAMP-Auth-File-Delete-Identities': encodeURIComponent(
+            JSON.stringify([
+              {
+                name: 'plugin-source.json',
+                runtimeId: 'runtime-plugin',
+                authIndex: 'auth-1',
+                provider: 'gemini-cli',
+                accountSnapshot: 'original@example.com',
+              },
+            ])
+          ),
+        },
+      });
+      expect(execution.outcomes).toEqual([
+        expect.objectContaining({
+          action: 'delete',
+          status: 'failed',
+          success: false,
+          error: expect.stringContaining('账号标识已变化'),
+        }),
+      ]);
+    }
+  );
+
+  it('uses the fresh unique runtime ID for a same-name status mutation', async () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const item = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: null,
+      runtimeId: 'runtime-auth-1',
+    });
+    const sibling = createResultItem('keep', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: null,
+      runtimeId: 'runtime-auth-2',
+    });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({
+        files: [item, sibling].map((current) =>
+          createCurrentAuthFile(current, { disabled: false })
+        ),
+      })
+      .mockResolvedValueOnce({
+        files: [item, sibling].map((current) =>
+          createCurrentAuthFile(current, { disabled: false })
+        ),
+      })
+      .mockResolvedValueOnce({
+        files: [
+          createCurrentAuthFile(item, { disabled: true }),
+          createCurrentAuthFile(sibling, { disabled: false }),
+        ],
+      });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-shared-status',
+      source: 'auto',
+    });
+
+    expect(statusSpy).toHaveBeenCalledWith(
+      {
+        name: 'shared.json',
+        runtimeId: 'runtime-auth-1',
+        authIndex: 'auth-1',
+        provider: 'codex',
+        accountId: null,
+        accountSnapshot: 'disable@example.com',
+      },
+      true,
+      expect.any(Function)
+    );
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'shared.json::auth-1',
+        status: 'success',
+        success: true,
+      }),
+    ]);
+    expect(
+      getCodexInspectionOwnedDisableIdentityKeys(
+        'scope-shared-status',
+        [item, sibling].map((current) => createCurrentAuthFile(current, { disabled: true }))
+      )
+    ).toEqual(
+      new Set([
+        getCodexInspectionOwnershipIdentityKey({
+          fileName: 'shared.json',
+          provider: 'codex',
+          authIndex: 'auth-1',
+          accountId: null,
+          accountSnapshot: item.displayAccount,
+        }),
+      ])
+    );
+  });
+
+  it('uses a verified source-file fallback for a single plugin virtual credential', async () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    const item = createResultItem('disable', {
+      key: 'plugin-source.json::auth-1',
+      fileName: 'plugin-source.json',
+      runtimeId: 'runtime-plugin-1',
+      provider: 'codex',
+      authIndex: 'auth-1',
+      accountId: null,
+      displayAccount: 'plugin@example.com',
+    });
+    const currentFile = createCurrentAuthFile(item, { disabled: false });
+    let verifiedSourceIdentities: unknown;
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockImplementation(async (_target, _disabled, verifyFallback) => {
+        if (!verifyFallback) throw new Error('missing plugin source fallback verifier');
+        verifiedSourceIdentities = await verifyFallback();
+        return { status: 'ok', disabled: true, mutationScope: 'source-file' };
+      });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [{ ...currentFile, disabled: true }] });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-plugin-single-status',
+      source: 'auto',
+    });
+
+    expect(statusSpy).toHaveBeenCalledWith(
+      {
+        name: 'plugin-source.json',
+        runtimeId: 'runtime-plugin-1',
+        authIndex: 'auth-1',
+        provider: 'codex',
+        accountId: null,
+        accountSnapshot: 'plugin@example.com',
+      },
+      true,
+      expect.any(Function)
+    );
+    expect(verifiedSourceIdentities).toEqual([
+      {
+        name: 'plugin-source.json',
+        runtimeId: 'runtime-plugin-1',
+        authIndex: 'auth-1',
+        provider: 'codex',
+        accountId: null,
+        accountSnapshot: 'plugin@example.com',
+      },
+    ]);
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'plugin-source.json::auth-1',
+        status: 'success',
+        success: true,
+      }),
+    ]);
+  });
+
+  it.each([
+    { source: 'manual', action: 'disable', initialDisabled: false },
+    { source: 'auto', action: 'disable', initialDisabled: false },
+    { source: 'manual', action: 'enable', initialDisabled: true },
+    { source: 'auto', action: 'enable', initialDisabled: true },
+  ] as const)(
+    'executes a fully covered plugin virtual group without a source runtime row for $source $action',
+    async ({ source, action, initialDisabled }) => {
+      const storage = createStorage();
+      vi.stubGlobal('localStorage', storage);
+      const first = createResultItem(action, {
+        key: 'plugin-source.json::auth-1',
+        fileName: 'plugin-source.json',
+        runtimeId: 'runtime-plugin-1',
+        provider: 'codex',
+        authIndex: 'auth-1',
+        accountId: 'account-1',
+        displayAccount: 'first-plugin@example.com',
+      });
+      const second = createResultItem(action, {
+        key: 'plugin-source.json::auth-2',
+        fileName: 'plugin-source.json',
+        runtimeId: 'runtime-plugin-2',
+        provider: 'codex',
+        authIndex: 'auth-2',
+        accountId: 'account-2',
+        displayAccount: 'second-plugin@example.com',
+      });
+      const currentFiles = [first, second].map((item) =>
+        createCurrentAuthFile(item, { disabled: initialDisabled })
+      );
+      const nextDisabled = action === 'disable';
+      let verifiedSourceIdentities: unknown;
+      const statusSpy = vi
+        .spyOn(authFilesApi, 'setStatusWithFallback')
+        .mockImplementation(async (_target, disabled, verifyFallback) => {
+          if (!verifyFallback) throw new Error('missing plugin source fallback verifier');
+          verifiedSourceIdentities = await verifyFallback();
+          return { status: 'ok', disabled, mutationScope: 'source-file' };
+        });
+      vi.spyOn(authFilesApi, 'list')
+        .mockResolvedValueOnce({ files: currentFiles })
+        .mockResolvedValueOnce({ files: currentFiles })
+        .mockResolvedValueOnce({ files: currentFiles })
+        .mockResolvedValueOnce({
+          files: currentFiles.map((file) => ({ ...file, disabled: nextDisabled })),
+        });
+
+      const execution = await executeCodexInspectionActions({
+        settings: createRunResult().settings,
+        items: [first, second],
+        referenceItems: [first, second],
+        previousFiles: [],
+        connectionFingerprint: `scope-plugin-group-${source}-${action}`,
+        source,
+      });
+
+      expect(statusSpy).toHaveBeenCalledTimes(1);
+      expect(statusSpy).toHaveBeenCalledWith(
+        {
+          name: 'plugin-source.json',
+          runtimeId: 'runtime-plugin-1',
+          authIndex: 'auth-1',
+          provider: 'codex',
+          accountId: 'account-1',
+          accountSnapshot: 'first-plugin@example.com',
+        },
+        nextDisabled,
+        expect.any(Function)
+      );
+      expect(verifiedSourceIdentities).toEqual([
+        {
+          name: 'plugin-source.json',
+          runtimeId: 'runtime-plugin-1',
+          authIndex: 'auth-1',
+          provider: 'codex',
+          accountId: 'account-1',
+          accountSnapshot: null,
+        },
+        {
+          name: 'plugin-source.json',
+          runtimeId: 'runtime-plugin-2',
+          authIndex: 'auth-2',
+          provider: 'codex',
+          accountId: 'account-2',
+          accountSnapshot: null,
+        },
+      ]);
+      expect(execution.outcomes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            accountKey: first.key,
+            status: 'success',
+            success: true,
+          }),
+          expect.objectContaining({
+            accountKey: second.key,
+            status: 'skipped',
+            success: true,
+          }),
+        ])
+      );
+      if (source === 'auto' && action === 'disable') {
+        expect(
+          getCodexInspectionOwnedDisableIdentityKeys(
+            `scope-plugin-group-${source}-${action}`,
+            currentFiles.map((file) => ({ ...file, disabled: true }))
+          )
+        ).toEqual(
+          new Set(
+            [first, second].map((member) =>
+              getCodexInspectionOwnershipIdentityKey({
+                fileName: member.fileName,
+                provider: member.provider,
+                authIndex: member.authIndex,
+                accountId: member.accountId,
+                accountSnapshot: member.accountSnapshot,
+              })
+            )
+          )
+        );
+      }
+    }
+  );
+
+  it('updates every ordinary same-name credential instead of treating the group as one file', async () => {
+    const first = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      runtimeId: 'runtime-auth-1',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      displayAccount: 'first@example.com',
+    });
+    const second = createResultItem('disable', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      runtimeId: 'runtime-auth-2',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      displayAccount: 'second@example.com',
+    });
+    const currentFiles = [first, second].map((item) =>
+      createCurrentAuthFile(item, { disabled: false })
+    );
+    const statusSpy = vi.spyOn(authFilesApi, 'setStatusWithFallback').mockResolvedValue({
+      status: 'ok',
+      disabled: true,
+      mutationScope: 'credential',
+    });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({
+        files: currentFiles.map((file) => ({ ...file, disabled: true })),
+      });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [first, second],
+      referenceItems: [first, second],
+      previousFiles: [],
+      connectionFingerprint: 'scope-ordinary-status-group',
+      source: 'manual',
+    });
+
+    expect(statusSpy).toHaveBeenCalledTimes(2);
+    expect(statusSpy).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ name: 'shared.json', runtimeId: 'runtime-auth-1' }),
+      true,
+      expect.any(Function)
+    );
+    expect(statusSpy).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ name: 'shared.json', runtimeId: 'runtime-auth-2' }),
+      true
+    );
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ accountKey: first.key, status: 'success', success: true }),
+        expect.objectContaining({ accountKey: second.key, status: 'skipped', success: true }),
+      ])
+    );
+    const applied = applyCodexInspectionExecutionResult(
+      {
+        ...createRunResult(),
+        files: currentFiles,
+        results: [first, second],
+      },
+      execution
+    );
+    expect(applied.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: first.key, action: 'keep' }),
+        expect.objectContaining({ key: second.key, actionHandled: true }),
+      ])
+    );
     expect(countHandlingStates(applied.results).pending).toBe(0);
+  });
+
+  it('rolls back ordinary same-name credentials when a later status update fails', async () => {
+    const first = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      runtimeId: 'runtime-auth-1',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      displayAccount: 'first@example.com',
+    });
+    const second = createResultItem('disable', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      runtimeId: 'runtime-auth-2',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      displayAccount: 'second@example.com',
+    });
+    const currentFiles = [first, second].map((item) =>
+      createCurrentAuthFile(item, { disabled: false })
+    );
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValueOnce({ status: 'ok', disabled: true, mutationScope: 'credential' })
+      .mockRejectedValueOnce(new Error('second credential update failed'))
+      .mockResolvedValueOnce({ status: 'ok', disabled: false, mutationScope: 'credential' });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({
+        files: [
+          { ...currentFiles[0], disabled: true },
+          { ...currentFiles[1], disabled: false },
+        ],
+      })
+      .mockResolvedValueOnce({ files: currentFiles });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [first, second],
+      referenceItems: [first, second],
+      previousFiles: [],
+      connectionFingerprint: 'scope-ordinary-status-rollback',
+      source: 'manual',
+    });
+
+    expect(statusSpy).toHaveBeenCalledTimes(3);
+    expect(statusSpy).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ name: 'shared.json', runtimeId: 'runtime-auth-1' }),
+      false
+    );
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountKey: first.key,
+          status: 'failed',
+          success: false,
+          error: 'second credential update failed',
+        }),
+        expect.objectContaining({ accountKey: second.key, status: 'skipped', success: true }),
+      ])
+    );
+    const applied = applyCodexInspectionExecutionResult(
+      {
+        ...createRunResult(),
+        files: currentFiles,
+        results: [first, second],
+      },
+      execution
+    );
+    expect(applied.results.every((item) => item.actionHandled === false)).toBe(true);
+    expect(countHandlingStates(applied.results).pending).toBe(2);
+  });
+
+  it('rejects a multi-credential plugin fallback when source membership grows', async () => {
+    const first = createResultItem('disable', {
+      key: 'plugin-source.json::auth-1',
+      fileName: 'plugin-source.json',
+      runtimeId: 'runtime-plugin-1',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+    });
+    const second = createResultItem('disable', {
+      key: 'plugin-source.json::auth-2',
+      fileName: 'plugin-source.json',
+      runtimeId: 'runtime-plugin-2',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+    });
+    const added = createResultItem('disable', {
+      key: 'plugin-source.json::auth-3',
+      fileName: 'plugin-source.json',
+      runtimeId: 'runtime-plugin-3',
+      authIndex: 'auth-3',
+      accountId: 'account-3',
+    });
+    const currentFiles = [first, second].map((item) =>
+      createCurrentAuthFile(item, { disabled: false })
+    );
+    const grownFiles = [...currentFiles, createCurrentAuthFile(added, { disabled: false })];
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockImplementation(async (_target, _disabled, verifyFallback) => {
+        if (!verifyFallback) throw new Error('missing plugin source fallback verifier');
+        await verifyFallback();
+        return { status: 'ok', disabled: true, mutationScope: 'source-file' };
+      });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: grownFiles })
+      .mockResolvedValueOnce({ files: grownFiles });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [first, second],
+      referenceItems: [first, second],
+      previousFiles: [],
+      connectionFingerprint: 'scope-plugin-group-growth',
+      source: 'manual',
+    });
+
+    expect(statusSpy).toHaveBeenCalledTimes(1);
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountKey: first.key,
+          status: 'failed',
+          success: false,
+          error: expect.stringContaining('成员'),
+        }),
+        expect.objectContaining({ accountKey: second.key, status: 'skipped', success: true }),
+      ])
+    );
+  });
+
+  it('rejects plugin source fallback when source membership changes after the conflict', async () => {
+    const item = createResultItem('disable', {
+      key: 'plugin-source.json::auth-1',
+      fileName: 'plugin-source.json',
+      runtimeId: 'runtime-plugin-1',
+      provider: 'codex',
+      authIndex: 'auth-1',
+      accountId: null,
+      displayAccount: 'plugin@example.com',
+    });
+    const currentFile = createCurrentAuthFile(item, { disabled: false });
+    const addedFile = {
+      ...currentFile,
+      id: 'runtime-plugin-2',
+      auth_index: 'auth-2',
+      account: 'added@example.com',
+    } as AuthFileItem;
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockImplementation(async (_target, _disabled, verifyFallback) => {
+        if (!verifyFallback) throw new Error('missing plugin source fallback verifier');
+        await verifyFallback();
+        return { status: 'ok', disabled: true, mutationScope: 'source-file' };
+      });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [currentFile, addedFile] })
+      .mockResolvedValueOnce({ files: [currentFile, addedFile] });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-plugin-member-change',
+      source: 'auto',
+    });
+
+    expect(statusSpy).toHaveBeenCalledTimes(1);
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'plugin-source.json::auth-1',
+        status: 'failed',
+        success: false,
+        error: expect.stringContaining('成员'),
+      }),
+    ]);
+  });
+
+  it.each([
+    { label: 'missing runtime ID', runtimeId: null },
+    { label: 'runtime ID equal to the shared physical name', runtimeId: 'shared.json' },
+  ])('needs review for a shared status target with $label', async ({ runtimeId }) => {
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const item = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: null,
+      runtimeId,
+    });
+    const sibling = createResultItem('keep', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: null,
+      runtimeId: 'runtime-auth-2',
+    });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [item, sibling].map((current) => createCurrentAuthFile(current)),
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-shared-status',
+      source: 'manual',
+    });
+
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'shared.json::auth-1',
+        status: 'needs_review',
+        error: expect.stringContaining('runtime ID'),
+      }),
+    ]);
+  });
+
+  it('executes a fully covered source-file status group once and records every member', async () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    const credentialStatusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const sourceStatusSpy = vi
+      .spyOn(authFilesApi, 'setVerifiedSourceFileStatus')
+      .mockResolvedValue({ status: 'ok', disabled: true, mutationScope: 'source-file' });
+    const sourceItem = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      runtimeId: 'shared.json',
+    });
+    const childItem = createResultItem('disable', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      runtimeId: 'runtime-auth-2',
+    });
+    const currentFiles = [sourceItem, childItem].map((item) =>
+      createCurrentAuthFile(item, { disabled: false })
+    );
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({
+        files: currentFiles.map((file) => ({ ...file, disabled: true })),
+      });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [sourceItem, childItem],
+      referenceItems: [sourceItem, childItem],
+      previousFiles: [],
+      connectionFingerprint: 'scope-source-status',
+      source: 'auto',
+    });
+
+    expect(credentialStatusSpy).not.toHaveBeenCalled();
+    expect(sourceStatusSpy).toHaveBeenCalledTimes(1);
+    expect(sourceStatusSpy).toHaveBeenCalledWith(
+      {
+        name: 'shared.json',
+        runtimeId: 'shared.json',
+        authIndex: 'auth-1',
+        provider: 'codex',
+        accountId: 'account-1',
+        accountSnapshot: 'disable@example.com',
+      },
+      true,
+      [
+        {
+          name: 'shared.json',
+          runtimeId: 'shared.json',
+          authIndex: 'auth-1',
+          provider: 'codex',
+          accountId: 'account-1',
+          accountSnapshot: null,
+        },
+        {
+          name: 'shared.json',
+          runtimeId: 'runtime-auth-2',
+          authIndex: 'auth-2',
+          provider: 'codex',
+          accountId: 'account-2',
+          accountSnapshot: null,
+        },
+      ]
+    );
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountKey: 'shared.json::auth-1',
+          status: 'success',
+          success: true,
+        }),
+        expect.objectContaining({
+          accountKey: 'shared.json::auth-2',
+          status: 'skipped',
+          success: true,
+        }),
+      ])
+    );
+    expect(storage.setItem).toHaveBeenCalledTimes(1);
+    expect(
+      getCodexInspectionOwnedDisableIdentityKeys(
+        'scope-source-status',
+        currentFiles.map((file) => ({ ...file, disabled: true }))
+      )
+    ).toEqual(
+      new Set([
+        getCodexInspectionOwnershipIdentityKey({
+          fileName: 'shared.json',
+          provider: 'codex',
+          authIndex: 'auth-1',
+          accountId: 'account-1',
+        }),
+        getCodexInspectionOwnershipIdentityKey({
+          fileName: 'shared.json',
+          provider: 'codex',
+          authIndex: 'auth-2',
+          accountId: 'account-2',
+        }),
+      ])
+    );
+  });
+
+  it('rolls back automatic disable when ownership persistence fails', async () => {
+    const storage = createStorage();
+    storage.setItem = vi.fn(() => {
+      throw new Error('quota exceeded');
+    });
+    vi.stubGlobal('localStorage', storage);
+    const item = createResultItem('disable', {
+      key: 'ownership-write-failure.json::auth-1',
+      fileName: 'ownership-write-failure.json',
+      runtimeId: 'runtime-auth-1',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+    });
+    const currentFile = createCurrentAuthFile(item, { disabled: false });
+    const disabledFile = { ...currentFile, disabled: true } as AuthFileItem;
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValueOnce({ status: 'ok', disabled: true, mutationScope: 'credential' })
+      .mockResolvedValueOnce({ status: 'ok', disabled: false, mutationScope: 'credential' });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [currentFile] })
+      .mockResolvedValueOnce({ files: [disabledFile] })
+      .mockResolvedValueOnce({ files: [currentFile] });
+    const logs: Array<{ level: string; message: string }> = [];
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-ownership-write-failure',
+      source: 'auto',
+      onLog: (level, message) => logs.push({ level, message }),
+    });
+
+    expect(statusSpy).toHaveBeenCalledTimes(2);
+    expect(statusSpy).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ runtimeId: 'runtime-auth-1' }),
+      true,
+      expect.any(Function)
+    );
+    expect(statusSpy).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ runtimeId: 'runtime-auth-1' }),
+      false,
+      expect.any(Function)
+    );
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: item.key,
+        status: 'failed',
+        success: false,
+        error: '自动禁用所有权保存失败，禁用操作已回滚',
+      }),
+    ]);
+    expect(execution.refreshedFiles).toEqual([currentFile]);
+    expect(logs).toEqual([
+      {
+        level: 'info',
+        message: 'monitoring.codex_inspection_log_auto_started',
+      },
+      {
+        level: 'error',
+        message: 'monitoring.codex_inspection_log_action_failed',
+      },
+    ]);
+    expect(
+      getCodexInspectionOwnedDisableIdentityKeys('scope-ownership-write-failure', [disabledFile])
+        .size
+    ).toBe(0);
+  });
+
+  it('rejects a source-file status change when a member is replaced after preflight', async () => {
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const sourceItem = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      runtimeId: 'shared.json',
+    });
+    const childItem = createResultItem('disable', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      runtimeId: 'runtime-auth-2',
+    });
+    const currentFiles = [sourceItem, childItem].map((item) =>
+      createCurrentAuthFile(item, { disabled: false })
+    );
+    const replacedFiles = [
+      currentFiles[0],
+      { ...currentFiles[1], account_id: 'replacement-account' } as AuthFileItem,
+    ];
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: currentFiles })
+      .mockResolvedValueOnce({ files: replacedFiles })
+      .mockResolvedValueOnce({ files: replacedFiles });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [sourceItem, childItem],
+      referenceItems: [sourceItem, childItem],
+      previousFiles: [],
+      connectionFingerprint: 'scope-source-status',
+      source: 'auto',
+    });
+
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountKey: 'shared.json::auth-1',
+          status: 'failed',
+          success: false,
+          error: expect.stringContaining('账号标识已变化'),
+        }),
+        expect.objectContaining({
+          accountKey: 'shared.json::auth-2',
+          status: 'skipped',
+          success: true,
+        }),
+      ])
+    );
+  });
+
+  it.each([
+    {
+      label: 'expanded child only',
+      actions: ['keep', 'disable'] as const,
+      selectedIndex: 1,
+    },
+    {
+      label: 'mixed source and child actions',
+      actions: ['disable', 'enable'] as const,
+      selectedIndex: null,
+    },
+  ])('needs review without patching for $label', async ({ actions, selectedIndex }) => {
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const sourceItem = createResultItem(actions[0], {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      runtimeId: 'shared.json',
+    });
+    const childItem = createResultItem(actions[1], {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      runtimeId: 'runtime-auth-2',
+    });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [sourceItem, childItem].map((item) => createCurrentAuthFile(item)),
+    });
+    const allItems = [sourceItem, childItem];
+    const selectedItems = selectedIndex === null ? allItems : [allItems[selectedIndex]];
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: selectedItems,
+      referenceItems: allItems,
+      previousFiles: [],
+      connectionFingerprint: 'scope-source-status',
+      source: 'manual',
+    });
+
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes.filter((outcome) => outcome.status === 'needs_review')).toHaveLength(
+      selectedItems.length
+    );
+  });
+
+  it('fails closed when the original runtime ID is absent after preflight refresh', async () => {
+    const statusSpy = vi
+      .spyOn(authFilesApi, 'setStatusWithFallback')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
+    const item = createResultItem('disable', {
+      key: 'single.json::auth-1',
+      fileName: 'single.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      runtimeId: 'runtime-original',
+    });
+    vi.spyOn(authFilesApi, 'list').mockResolvedValue({
+      files: [createCurrentAuthFile(item, { id: 'runtime-replacement' })],
+    });
+
+    const execution = await executeCodexInspectionActions({
+      settings: createRunResult().settings,
+      items: [item],
+      previousFiles: [],
+      connectionFingerprint: 'scope-runtime-drift',
+      source: 'manual',
+    });
+
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(execution.outcomes).toEqual([
+      expect.objectContaining({
+        accountKey: 'single.json::auth-1',
+        status: 'failed',
+        success: false,
+      }),
+    ]);
+  });
+
+  it('applies same-name status outcomes independently after a partial failure', () => {
+    const first = createResultItem('disable', {
+      key: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+    });
+    const second = createResultItem('disable', {
+      key: 'shared.json::auth-2',
+      fileName: 'shared.json',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+    });
+
+    const applied = applyCodexInspectionExecutionResult(
+      {
+        ...createRunResult(),
+        files: [createCurrentAuthFile(first), createCurrentAuthFile(second)],
+        results: [first, second],
+      },
+      {
+        outcomes: [
+          {
+            accountKey: first.key,
+            action: 'disable',
+            fileName: first.fileName,
+            displayAccount: first.displayAccount,
+            status: 'success',
+            success: true,
+            error: '',
+          },
+          {
+            accountKey: second.key,
+            action: 'disable',
+            fileName: second.fileName,
+            displayAccount: second.displayAccount,
+            status: 'failed',
+            success: false,
+            error: 'status failed',
+          },
+        ],
+        refreshedFiles: [
+          createCurrentAuthFile(first, { disabled: true }),
+          createCurrentAuthFile(second, { disabled: false }),
+        ],
+        refreshError: '',
+      }
+    );
+
+    expect(applied.results.map((item) => item.key)).toEqual([
+      'shared.json::auth-1',
+      'shared.json::auth-2',
+    ]);
+    expect(applied.results.find((item) => item.key === first.key)).toMatchObject({
+      authIndex: 'auth-1',
+      disabled: true,
+      action: 'keep',
+    });
+    expect(applied.results.find((item) => item.key === second.key)).toMatchObject({
+      authIndex: 'auth-2',
+      disabled: false,
+      action: 'disable',
+    });
+  });
+
+  it('applies refreshed same-name accounts independently by snapshot without auth_index', () => {
+    const firstAccount = toInspectionAccount({
+      name: 'shared.json',
+      type: 'codex',
+      account: 'first@example.com',
+    });
+    const secondAccount = toInspectionAccount({
+      name: 'shared.json',
+      type: 'codex',
+      account: 'second@example.com',
+    });
+    const first: CodexInspectionResultItem = {
+      ...firstAccount,
+      action: 'disable',
+      actionReason: 'reason',
+      statusCode: 200,
+      usedPercent: 100,
+      isQuota: true,
+      autoRecoverEligible: false,
+      error: '',
+    };
+    const second: CodexInspectionResultItem = {
+      ...secondAccount,
+      action: 'disable',
+      actionReason: 'reason',
+      statusCode: 200,
+      usedPercent: 100,
+      isQuota: true,
+      autoRecoverEligible: false,
+      error: '',
+    };
+
+    const applied = applyCodexInspectionExecutionResult(
+      {
+        ...createRunResult(),
+        files: [first.raw, second.raw],
+        results: [first, second],
+      },
+      {
+        outcomes: [
+          {
+            accountKey: first.key,
+            action: 'disable',
+            fileName: first.fileName,
+            displayAccount: first.displayAccount,
+            status: 'success',
+            success: true,
+            error: '',
+          },
+        ],
+        refreshedFiles: [
+          { ...first.raw, disabled: true },
+          { ...second.raw, disabled: false },
+        ],
+        refreshError: '',
+      }
+    );
+
+    expect(first.key).not.toBe(second.key);
+    expect(applied.results.find((item) => item.key === first.key)).toMatchObject({
+      displayAccount: 'first@example.com',
+      disabled: true,
+      action: 'keep',
+    });
+    expect(applied.results.find((item) => item.key === second.key)).toMatchObject({
+      displayAccount: 'second@example.com',
+      disabled: false,
+      action: 'disable',
+    });
   });
 
   it('executes one canonical same-file action and logs duplicate results as skipped', async () => {
@@ -2225,6 +3901,7 @@ describe('executeCodexInspectionActions', () => {
       }),
     ];
     vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(items[0])] })
       .mockResolvedValueOnce({ files: [createCurrentAuthFile(items[0])] })
       .mockResolvedValueOnce({ files: [] });
     const execution = await executeCodexInspectionActions({
@@ -2266,7 +3943,7 @@ describe('executeCodexInspectionActions', () => {
     expect(countHandlingStates(applied.results).pending).toBe(0);
   });
 
-  it('skips a non-canonical same-file item when it is selected alone', async () => {
+  it('executes the selected same-identity item when an earlier reference item is unselected', async () => {
     const statusSpy = vi
       .spyOn(authFilesApi, 'setStatusWithFallback')
       .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
@@ -2276,8 +3953,6 @@ describe('executeCodexInspectionActions', () => {
       files: ['shared.json'],
       failed: [],
     });
-    vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
-
     const canonicalItem = createResultItem('disable', {
       key: 'shared.json::first',
       fileName: 'shared.json',
@@ -2288,6 +3963,10 @@ describe('executeCodexInspectionActions', () => {
       fileName: 'shared.json',
       displayAccount: 'second@example.com',
     });
+    vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(duplicateItem)] })
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(duplicateItem)] })
+      .mockResolvedValueOnce({ files: [] });
     const execution = await executeCodexInspectionActions({
       settings: createRunResult().settings,
       items: [duplicateItem],
@@ -2297,13 +3976,13 @@ describe('executeCodexInspectionActions', () => {
       source: 'manual',
     });
 
-    expect(statusSpy).not.toHaveBeenCalled();
+    expect(statusSpy).toHaveBeenCalledTimes(1);
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(execution.outcomes).toEqual([
       expect.objectContaining({
         accountKey: 'shared.json::second',
         action: 'disable',
-        status: 'skipped',
+        status: 'success',
         success: true,
       }),
     ]);
@@ -2318,13 +3997,19 @@ describe('executeCodexInspectionActions', () => {
     expect(applied.results).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: 'shared.json::first', actionHandled: false }),
-        expect.objectContaining({ key: 'shared.json::second', actionHandled: true }),
+        expect.objectContaining({
+          key: 'shared.json::second',
+          action: 'keep',
+          actionHandled: false,
+          disabled: true,
+        }),
       ])
     );
     expect(countHandlingStates(applied.results).pending).toBe(1);
   });
 
   it('preserves same-action grouping when automatic disable maps delete to disable', async () => {
+    vi.stubGlobal('localStorage', createStorage());
     const statusSpy = vi
       .spyOn(authFilesApi, 'setStatusWithFallback')
       .mockResolvedValue({} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>);
@@ -2346,6 +4031,7 @@ describe('executeCodexInspectionActions', () => {
     ];
     vi.spyOn(authFilesApi, 'list')
       .mockResolvedValueOnce({ files: [createCurrentAuthFile(referenceItems[0])] })
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(referenceItems[0])] })
       .mockResolvedValueOnce({ files: [] });
     const autoPlan = resolveCodexInspectionAutoActionPlan('disable', false, referenceItems);
     const execution = await executeCodexInspectionActions({
@@ -2359,7 +4045,18 @@ describe('executeCodexInspectionActions', () => {
     });
 
     expect(statusSpy).toHaveBeenCalledTimes(1);
-    expect(statusSpy).toHaveBeenCalledWith('shared.json', true);
+    expect(statusSpy).toHaveBeenCalledWith(
+      {
+        name: 'shared.json',
+        runtimeId: 'shared.json::1::runtime',
+        authIndex: '1',
+        provider: 'codex',
+        accountId: 'account-1',
+        accountSnapshot: 'delete@example.com',
+      },
+      true,
+      expect.any(Function)
+    );
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(execution.outcomes.map((outcome) => outcome.status).sort()).toEqual([
       'skipped',
@@ -2378,6 +4075,7 @@ describe('executeCodexInspectionActions', () => {
     );
     const item = createResultItem('disable', { fileName: 'disable.json' });
     vi.spyOn(authFilesApi, 'list')
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(item)] })
       .mockResolvedValueOnce({ files: [createCurrentAuthFile(item)] })
       .mockRejectedValueOnce(new Error('refresh unavailable'));
 
@@ -2415,9 +4113,11 @@ describe('executeCodexInspectionActions', () => {
       {} as Awaited<ReturnType<typeof authFilesApi.setStatusWithFallback>>
     );
     const scope = 'scope-auto-recovery';
+    const accountSnapshot = 'owned@example.com';
     const enableItem = {
       ...createResultItem('enable', {
         fileName: 'owned.json',
+        displayAccount: accountSnapshot,
         authIndex: 'auth-1',
         disabled: true,
         autoRecoverEligible: true,
@@ -2428,6 +4128,7 @@ describe('executeCodexInspectionActions', () => {
       name: 'owned.json',
       type: 'codex',
       auth_index: 'auth-1',
+      account: accountSnapshot,
       disabled: true,
     } as AuthFileItem;
     vi.spyOn(authFilesApi, 'list')
@@ -2437,6 +4138,22 @@ describe('executeCodexInspectionActions', () => {
             {
               ...createResultItem('disable', {
                 fileName: 'owned.json',
+                displayAccount: accountSnapshot,
+                authIndex: 'auth-1',
+              }),
+              accountId: null,
+            },
+            { disabled: false }
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        files: [
+          createCurrentAuthFile(
+            {
+              ...createResultItem('disable', {
+                fileName: 'owned.json',
+                displayAccount: accountSnapshot,
                 authIndex: 'auth-1',
               }),
               accountId: null,
@@ -2446,6 +4163,7 @@ describe('executeCodexInspectionActions', () => {
         ],
       })
       .mockResolvedValueOnce({ files: [disabledFile] })
+      .mockResolvedValueOnce({ files: [createCurrentAuthFile(enableItem, { disabled: true })] })
       .mockResolvedValueOnce({ files: [createCurrentAuthFile(enableItem, { disabled: true })] })
       .mockResolvedValueOnce({
         files: [createCurrentAuthFile(enableItem, { disabled: false })],
@@ -2457,6 +4175,7 @@ describe('executeCodexInspectionActions', () => {
         {
           ...createResultItem('disable', {
             fileName: 'owned.json',
+            displayAccount: accountSnapshot,
             authIndex: 'auth-1',
           }),
           accountId: null,
@@ -2466,8 +4185,14 @@ describe('executeCodexInspectionActions', () => {
       connectionFingerprint: scope,
       source: 'auto',
     });
-    expect(Array.from(getCodexInspectionOwnedDisableFileNames(scope, [disabledFile]))).toEqual([
-      'owned.json',
+    expect(Array.from(getCodexInspectionOwnedDisableIdentityKeys(scope, [disabledFile]))).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'owned.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+        accountId: null,
+        accountSnapshot,
+      }),
     ]);
 
     await executeCodexInspectionActions({
@@ -2477,11 +4202,171 @@ describe('executeCodexInspectionActions', () => {
       connectionFingerprint: scope,
       source: 'manual',
     });
-    expect(getCodexInspectionOwnedDisableFileNames(scope, [disabledFile]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys(scope, [disabledFile]).size).toBe(0);
   });
 });
 
 describe('Codex inspection disable ownership', () => {
+  it('drops malformed nested v2 scopes and records without throwing', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v2',
+      JSON.stringify({
+        'scope-string': 'invalid',
+        'scope-array': [],
+        'scope-records': {
+          string: 'invalid',
+          array: [],
+          invalidTimestamp: {
+            fileName: 'owned.json',
+            provider: 'codex',
+            authIndex: 'auth-1',
+            accountSnapshot: 'owned@example.com',
+            disabledAtMs: 'yesterday',
+          },
+          valid: {
+            fileName: 'owned.json',
+            provider: 'codex',
+            authIndex: 'auth-1',
+            accountId: null,
+            accountSnapshot: 'owned@example.com',
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    vi.stubGlobal('localStorage', storage);
+    const file = {
+      name: 'owned.json',
+      type: 'codex',
+      auth_index: 'auth-1',
+      account: 'owned@example.com',
+      disabled: true,
+    } as AuthFileItem;
+
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-string', [file]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-array', [file]).size).toBe(0);
+    expect(Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-records', [file]))).toEqual(
+      [
+        getCodexInspectionOwnershipIdentityKey({
+          fileName: 'owned.json',
+          provider: 'codex',
+          authIndex: 'auth-1',
+          accountId: null,
+          accountSnapshot: 'owned@example.com',
+        }),
+      ]
+    );
+  });
+
+  it('stores same-name credentials independently with direct account snapshots', () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    for (const authIndex of ['auth-1', 'auth-2']) {
+      recordCodexInspectionDisableOwnership('scope-shared', {
+        fileName: 'shared.json',
+        provider: 'codex',
+        authIndex,
+        accountId: null,
+        accountSnapshot: `${authIndex}@example.com`,
+      });
+    }
+    const files = ['auth-1', 'auth-2'].map(
+      (authIndex) =>
+        ({
+          name: 'shared.json',
+          type: 'codex',
+          auth_index: authIndex,
+          account: `${authIndex}@example.com`,
+          disabled: true,
+        }) as AuthFileItem
+    );
+
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-shared', files)).toEqual(
+      new Set(
+        ['auth-1', 'auth-2'].map((authIndex) =>
+          getCodexInspectionOwnershipIdentityKey({
+            fileName: 'shared.json',
+            provider: 'codex',
+            authIndex,
+            accountId: null,
+            accountSnapshot: `${authIndex}@example.com`,
+          })
+        )
+      )
+    );
+    expect(storage.setItem).toHaveBeenLastCalledWith(
+      'cli-proxy-codex-inspection-disable-ownership-v2',
+      expect.any(String)
+    );
+  });
+
+  it('persists and restores ownership for an auth-index-only credential', () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+
+    recordCodexInspectionDisableOwnership('scope-auth-index-only', {
+      fileName: 'index-only.json',
+      provider: 'codex',
+      authIndex: 'stable-auth-index',
+      accountId: null,
+      accountSnapshot: null,
+    });
+
+    const file = {
+      name: 'index-only.json',
+      type: 'codex',
+      auth_index: 'stable-auth-index',
+      disabled: true,
+    } as AuthFileItem;
+    expect(
+      Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-auth-index-only', [file]))
+    ).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'index-only.json',
+        provider: 'codex',
+        authIndex: 'stable-auth-index',
+        accountId: null,
+        accountSnapshot: null,
+      }),
+    ]);
+  });
+
+  it('permanently removes an ambiguous legacy wildcard ownership record', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v1',
+      JSON.stringify({
+        'scope-ambiguous': {
+          'shared.json': {
+            fileName: 'shared.json',
+            provider: 'codex',
+            authIndex: null,
+            accountId: null,
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    vi.stubGlobal('localStorage', storage);
+    const files = ['auth-1', 'auth-2'].map(
+      (authIndex) =>
+        ({
+          name: 'shared.json',
+          type: 'codex',
+          auth_index: authIndex,
+          disabled: true,
+        }) as AuthFileItem
+    );
+
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-ambiguous', files).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-ambiguous', [files[0]]).size).toBe(0);
+    expect(storage.getItem('cli-proxy-codex-inspection-disable-ownership-v1')).toBeNull();
+    expect(
+      JSON.parse(storage.getItem('cli-proxy-codex-inspection-disable-ownership-v2') ?? '{}')
+    ).toEqual({});
+  });
+
   it('isolates records by connection fingerprint and invalidates identity changes', () => {
     const storage = createStorage();
     vi.stubGlobal('localStorage', storage);
@@ -2489,6 +4374,7 @@ describe('Codex inspection disable ownership', () => {
       name: 'owned.json',
       type: 'codex',
       auth_index: 'auth-1',
+      account: 'owned@example.com',
       disabled: true,
     } as AuthFileItem;
 
@@ -2497,18 +4383,25 @@ describe('Codex inspection disable ownership', () => {
       provider: 'codex',
       authIndex: 'auth-1',
       accountId: null,
+      accountSnapshot: 'owned@example.com',
     });
 
-    expect(Array.from(getCodexInspectionOwnedDisableFileNames('scope-a', [file]))).toEqual([
-      'owned.json',
+    expect(Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-a', [file]))).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'owned.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+        accountId: null,
+        accountSnapshot: 'owned@example.com',
+      }),
     ]);
-    expect(getCodexInspectionOwnedDisableFileNames('scope-b', [file]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-b', [file]).size).toBe(0);
     expect(
-      getCodexInspectionOwnedDisableFileNames('scope-a', [
+      getCodexInspectionOwnedDisableIdentityKeys('scope-a', [
         { ...file, auth_index: 'auth-2' } as AuthFileItem,
       ]).size
     ).toBe(0);
-    expect(getCodexInspectionOwnedDisableFileNames('scope-a', [file]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-a', [file]).size).toBe(0);
   });
 
   it('does not transfer local disable ownership across providers', () => {
@@ -2519,18 +4412,20 @@ describe('Codex inspection disable ownership', () => {
       provider: 'codex',
       authIndex: 'shared-auth',
       accountId: null,
+      accountSnapshot: 'owned@example.com',
     });
 
     const xaiFile = {
       name: 'shared.json',
       type: 'xai',
       auth_index: 'shared-auth',
+      account: 'owned@example.com',
       disabled: true,
     } as AuthFileItem;
-    expect(getCodexInspectionOwnedDisableFileNames('scope-provider', [xaiFile]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-provider', [xaiFile]).size).toBe(0);
   });
 
-  it('treats legacy ownership records without provider as Codex', () => {
+  it('migrates legacy account-ID ownership without provider as Codex', () => {
     const storage = createStorage();
     storage.setItem(
       'cli-proxy-codex-inspection-disable-ownership-v1',
@@ -2539,7 +4434,7 @@ describe('Codex inspection disable ownership', () => {
           'legacy.json': {
             fileName: 'legacy.json',
             authIndex: 'legacy-auth',
-            accountId: null,
+            accountId: 'legacy-account',
             disabledAtMs: 1,
           },
         },
@@ -2551,11 +4446,169 @@ describe('Codex inspection disable ownership', () => {
       name: 'legacy.json',
       type: 'codex',
       auth_index: 'legacy-auth',
+      account_id: 'legacy-account',
       disabled: true,
     } as AuthFileItem;
     expect(
-      Array.from(getCodexInspectionOwnedDisableFileNames('scope-legacy', [codexFile]))
-    ).toEqual(['legacy.json']);
+      Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-legacy', [codexFile]))
+    ).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'legacy.json',
+        provider: 'codex',
+        authIndex: 'legacy-auth',
+        accountId: 'legacy-account',
+      }),
+    ]);
+    expect(storage.removeItem).toHaveBeenCalledWith(
+      'cli-proxy-codex-inspection-disable-ownership-v1'
+    );
+  });
+
+  it('migrates legacy auth-index-only ownership without provider as Codex', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v1',
+      JSON.stringify({
+        'scope-legacy-index': {
+          'legacy-index.json': {
+            fileName: 'legacy-index.json',
+            authIndex: 'legacy-auth-index',
+            accountId: null,
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    vi.stubGlobal('localStorage', storage);
+
+    const codexFile = {
+      name: 'legacy-index.json',
+      type: 'codex',
+      auth_index: 'legacy-auth-index',
+      disabled: true,
+    } as AuthFileItem;
+    expect(
+      Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-legacy-index', [codexFile]))
+    ).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'legacy-index.json',
+        provider: 'codex',
+        authIndex: 'legacy-auth-index',
+      }),
+    ]);
+  });
+
+  it('keeps legacy ownership when the v2 migration write fails', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v1',
+      JSON.stringify({
+        'scope-write-failure': {
+          'legacy.json': {
+            fileName: 'legacy.json',
+            provider: 'codex',
+            authIndex: 'legacy-auth',
+            accountId: 'legacy-account',
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    storage.setItem = vi.fn(() => {
+      throw new Error('quota exceeded');
+    });
+    vi.stubGlobal('localStorage', storage);
+
+    expect(
+      getCodexInspectionOwnedDisableIdentityKeys('scope-write-failure', [
+        {
+          name: 'legacy.json',
+          type: 'codex',
+          auth_index: 'legacy-auth',
+          account_id: 'legacy-account',
+          disabled: true,
+        } as AuthFileItem,
+      ]).size
+    ).toBe(1);
+    expect(storage.getItem('cli-proxy-codex-inspection-disable-ownership-v1')).not.toBeNull();
+    expect(storage.getItem('cli-proxy-codex-inspection-disable-ownership-v2')).toBeNull();
+    expect(storage.removeItem).not.toHaveBeenCalledWith(
+      'cli-proxy-codex-inspection-disable-ownership-v1'
+    );
+  });
+
+  it('restores stored auth-index-only ownership for the same credential locator', () => {
+    const storage = createStorage();
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v2',
+      JSON.stringify({
+        'scope-replaced': {
+          legacy: {
+            fileName: 'replaced.json',
+            provider: 'codex',
+            authIndex: 'auth-1',
+            accountId: null,
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    vi.stubGlobal('localStorage', storage);
+
+    const credential = {
+      name: 'replaced.json',
+      type: 'codex',
+      auth_index: 'auth-1',
+      disabled: true,
+    } as AuthFileItem;
+    expect(
+      Array.from(getCodexInspectionOwnedDisableIdentityKeys('scope-replaced', [credential]))
+    ).toEqual([
+      getCodexInspectionOwnershipIdentityKey({
+        fileName: 'replaced.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+      }),
+    ]);
+  });
+
+  it('treats an existing v2 key as authoritative when legacy cleanup fails', () => {
+    const storage = createStorage();
+    storage.setItem('cli-proxy-codex-inspection-disable-ownership-v2', JSON.stringify({}));
+    storage.setItem(
+      'cli-proxy-codex-inspection-disable-ownership-v1',
+      JSON.stringify({
+        'scope-stale-v1': {
+          'legacy.json': {
+            fileName: 'legacy.json',
+            provider: 'codex',
+            authIndex: 'legacy-auth',
+            accountId: null,
+            disabledAtMs: 1,
+          },
+        },
+      })
+    );
+    vi.mocked(storage.setItem).mockClear();
+    const removeItem = storage.removeItem.bind(storage);
+    storage.removeItem = vi.fn((key: string) => {
+      if (key === 'cli-proxy-codex-inspection-disable-ownership-v1') {
+        throw new Error('storage cleanup blocked');
+      }
+      removeItem(key);
+    });
+    vi.stubGlobal('localStorage', storage);
+    const file = {
+      name: 'legacy.json',
+      type: 'codex',
+      auth_index: 'legacy-auth',
+      disabled: true,
+    } as AuthFileItem;
+
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-stale-v1', [file]).size).toBe(0);
+    expect(getCodexInspectionOwnedDisableIdentityKeys('scope-stale-v1', [file]).size).toBe(0);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.getItem('cli-proxy-codex-inspection-disable-ownership-v1')).not.toBeNull();
   });
 });
 
@@ -2679,6 +4732,30 @@ describe('Codex inspection last-run cache', () => {
     );
     expect(restored?.logs[0].detail).toEqual({
       body: '{"api_key":"[redacted]","message":"missing status"}',
+    });
+  });
+
+  it('does not restore an account identity from a legacy display account', () => {
+    const payload = {
+      version: 1,
+      savedAt: 2000,
+      result: {
+        ...createRunResult(),
+        results: [
+          {
+            ...createResultItem('disable', { accountSnapshot: null }),
+            displayAccount: 'Friendly legacy label',
+          },
+        ],
+      },
+      logs: [],
+    };
+
+    const restored = hydrateCodexInspectionLastRun(payload);
+
+    expect(restored?.result.results[0]).toMatchObject({
+      displayAccount: 'Friendly legacy label',
+      accountSnapshot: null,
     });
   });
 

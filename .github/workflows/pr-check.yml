@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - dev
   push:
     branches:
       - main
+      - dev
 
 permissions:
   contents: read
@@ -201,3 +203,51 @@ jobs:
           push: false
           build-args: |
             VERSION=ci
+
+  required:
+    name: Required checks
+    needs:
+      - changes
+      - frontend
+      - manager-server
+      - manager-server-windows-sqlite
+      - native-control
+      - docker-build
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify applicable checks
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          MANAGER_SERVER_RESULT: ${{ needs['manager-server'].result }}
+          WINDOWS_SQLITE_RESULT: ${{ needs['manager-server-windows-sqlite'].result }}
+          NATIVE_CONTROL_RESULT: ${{ needs['native-control'].result }}
+          DOCKER_BUILD_RESULT: ${{ needs['docker-build'].result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          results=(
+            "Scope:${CHANGES_RESULT}"
+            "Frontend:${FRONTEND_RESULT}"
+            "Manager Server:${MANAGER_SERVER_RESULT}"
+            "Manager Server SQLite (Windows):${WINDOWS_SQLITE_RESULT}"
+            "Native Control:${NATIVE_CONTROL_RESULT}"
+            "Docker Build:${DOCKER_BUILD_RESULT}"
+          )
+
+          for check in "${results[@]}"; do
+            name="${check%%:*}"
+            result="${check#*:}"
+            case "${result}" in
+              success|skipped)
+                echo "${name}: ${result}"
+                ;;
+              *)
+                echo "${name} did not complete successfully: ${result:-missing}" >&2
+                exit 1
+                ;;
+            esac
+          done

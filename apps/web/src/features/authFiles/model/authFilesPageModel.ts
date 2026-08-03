@@ -24,6 +24,13 @@ import {
   normalizeProviderKey,
   parsePriorityValue,
 } from '@/features/authFiles/constants';
+import {
+  getAuthFileStatusIdentityKey,
+  getAuthFileStatusSelectionKey,
+  readAuthFileStatusAccountId,
+  readAuthFileStatusAccountSnapshot,
+  readAuthFileStatusProvider,
+} from '@/utils/authFileStatusMutation';
 
 export const easePower3Out = (progress: number) => 1 - (1 - progress) ** 4;
 export const easePower2In = (progress: number) => progress ** 3;
@@ -112,8 +119,11 @@ export type AuthFileCodexStatusSummary = {
 
 export type AuthFileCodexInspectionSnapshot = {
   fileName: string;
+  runtimeId?: string | null;
   provider?: string | null;
   authIndex?: string | number | null;
+  accountId?: string | null;
+  accountSnapshot?: string | null;
   statusCode?: number | string | null;
   action?: string | null;
   usedPercent?: number | string | null;
@@ -129,7 +139,11 @@ export type AuthFileCodexStatusSources = {
 
 export type AuthFilePatchTarget = {
   name: string;
+  runtimeId?: string | null;
   authIndex?: string | number | null;
+  provider?: string | null;
+  accountId?: string | null;
+  accountSnapshot?: string | null;
 };
 
 const CODEX_STATUS_FILTER_SET = new Set<AuthFilesCodexStatusFilter>(
@@ -255,24 +269,54 @@ export const normalizeAuthFilesCodexPlanFilter = (
     : null;
 
 export const getAuthFileCodexInspectionKey = (fileName: string, authIndex?: unknown) =>
-  `${fileName}::${normalizeAuthIndexKey(authIndex)}`;
+  getAuthFileStatusIdentityKey({
+    name: fileName,
+    authIndex:
+      normalizeAuthIndexKey(authIndex) === UNKNOWN_AUTH_INDEX_KEY
+        ? null
+        : normalizeAuthIndexKey(authIndex),
+  });
+
+export const getAuthFileCodexInspectionKeyForIdentity = (
+  identity: Pick<
+    AuthFileCodexInspectionSnapshot,
+    'fileName' | 'runtimeId' | 'provider' | 'authIndex' | 'accountId' | 'accountSnapshot'
+  >
+) =>
+  getAuthFileStatusIdentityKey({
+    name: identity.fileName,
+    runtimeId: identity.runtimeId,
+    provider: identity.provider,
+    authIndex: identity.authIndex,
+    accountId: identity.accountId,
+    accountSnapshot: identity.accountSnapshot,
+  });
 
 export const getAuthFileCodexInspectionKeyForFile = (file: AuthFileItem) =>
-  getAuthFileCodexInspectionKey(file.name, readAuthFileAuthIndex(file));
+  getAuthFileStatusIdentityKey(file);
 
 export const getAuthFileSelectionKey = (file: AuthFileItem): string =>
-  [file.name, normalizeAuthIndexKey(readAuthFileAuthIndex(file))].join(
-    AUTH_FILE_SELECTION_KEY_SEPARATOR
-  );
+  getAuthFileStatusSelectionKey(file);
 
 export const getAuthFileNameFromSelectionKey = (key: string): string =>
   key.split(AUTH_FILE_SELECTION_KEY_SEPARATOR, 1)[0] ?? '';
 
 export const getAuthFilePatchTarget = (file: AuthFileItem): AuthFilePatchTarget => {
+  const runtimeId = typeof file.id === 'string' ? file.id.trim() : '';
   const authIndex = readAuthFileAuthIndex(file);
-  return authIndex === null || authIndex === undefined || String(authIndex).trim() === ''
-    ? { name: file.name }
-    : { name: file.name, authIndex };
+  const provider = normalizeProviderKey(readAuthFileStatusProvider(file));
+  const accountId = readAuthFileStatusAccountId(file);
+  const accountSnapshot = readAuthFileStatusAccountSnapshot(file);
+  return {
+    name: file.name,
+    ...(runtimeId ? { runtimeId } : {}),
+    ...(authIndex === null || authIndex === undefined || String(authIndex).trim() === ''
+      ? {}
+      : { authIndex }),
+    ...(provider ? { provider } : {}),
+    ...(accountId ? { accountId } : {}),
+    ...(accountSnapshot ? { accountSnapshot } : {}),
+  };
 };
 
 export const hasPartialSharedAuthFileSelection = (
@@ -338,7 +382,7 @@ export const buildAuthFileCodexInspectionMap = (
   const map = new Map<string, AuthFileCodexInspectionSnapshot>();
   items.forEach((item) => {
     if (!item.fileName) return;
-    map.set(getAuthFileCodexInspectionKey(item.fileName, item.authIndex), item);
+    map.set(getAuthFileCodexInspectionKeyForIdentity(item), item);
   });
   return map;
 };

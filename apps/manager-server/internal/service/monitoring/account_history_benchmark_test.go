@@ -24,11 +24,7 @@ func BenchmarkAccountHistoryServiceRead(b *testing.B) {
 	defer closeStore()
 	saveAccountHistoryBenchmarkPrices(b, ctx, st)
 	insertAccountHistoryBenchmarkEvents(b, ctx, st, accountHistoryBenchmarkEvents("read", 0, 20000))
-	if result, err := st.CatchUpAccountHistoryRollups(ctx, 20000, accountHistoryBenchmarkNowMS); err != nil {
-		b.Fatalf("catch-up: %v", err)
-	} else if result.Processed != 20000 {
-		b.Fatalf("processed = %d, want 20000", result.Processed)
-	}
+	catchUpAccountHistoryBenchmarkRollups(b, ctx, st, 20000)
 	service := New(st)
 
 	for _, targetCount := range []int{20, 100, 200} {
@@ -58,11 +54,7 @@ func BenchmarkAccountHistoryServiceCatchUp(b *testing.B) {
 	defer closeStore()
 	saveAccountHistoryBenchmarkPrices(b, ctx, st)
 	insertAccountHistoryBenchmarkEvents(b, ctx, st, accountHistoryBenchmarkEvents("catchup-baseline", 0, 10000))
-	if result, err := st.CatchUpAccountHistoryRollups(ctx, 10000, accountHistoryBenchmarkNowMS); err != nil {
-		b.Fatalf("baseline catch-up: %v", err)
-	} else if result.Processed != 10000 {
-		b.Fatalf("baseline processed = %d, want 10000", result.Processed)
-	}
+	catchUpAccountHistoryBenchmarkRollups(b, ctx, st, 10000)
 	service := New(st)
 	req := AccountHistoryRequest{
 		Accounts: accountHistoryBenchmarkTargets(100),
@@ -110,10 +102,32 @@ func saveAccountHistoryBenchmarkPrices(b *testing.B, ctx context.Context, st *st
 			Cache:         0.5,
 			CacheRead:     0.25,
 			CacheCreation: 1.5,
+			ContextTiers: []store.ModelPriceContextTier{
+				{ThresholdTokens: 128, Prompt: 2, PromptConfigured: true},
+				{ThresholdTokens: 176, Prompt: 3, Completion: 4, PromptConfigured: true, CompletionConfigured: true},
+			},
 		}
 	}
 	if err := st.SaveModelPrices(ctx, prices); err != nil {
 		b.Fatalf("save prices: %v", err)
+	}
+}
+
+func catchUpAccountHistoryBenchmarkRollups(b *testing.B, ctx context.Context, st *store.Store, wantProcessed int) {
+	b.Helper()
+	result, err := st.CatchUpAccountHistoryRollups(ctx, wantProcessed, accountHistoryBenchmarkNowMS)
+	if err != nil {
+		b.Fatalf("account-history catch-up: %v", err)
+	}
+	if result.Processed != wantProcessed {
+		b.Fatalf("account-history processed = %d, want %d", result.Processed, wantProcessed)
+	}
+	pricingResult, err := st.CatchUpUsagePricing(ctx, wantProcessed, accountHistoryBenchmarkNowMS)
+	if err != nil {
+		b.Fatalf("pricing catch-up: %v", err)
+	}
+	if pricingResult.Processed != wantProcessed {
+		b.Fatalf("pricing processed = %d, want %d", pricingResult.Processed, wantProcessed)
 	}
 }
 

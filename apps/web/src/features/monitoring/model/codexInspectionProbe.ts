@@ -3,6 +3,11 @@ import type { TFunction } from 'i18next';
 import { requestCodexUsageRaw } from '@/services/api/codexQuota';
 import type { AuthFileItem, CodexRateLimitInfo } from '@/types';
 import {
+  getAuthFileStatusIdentityKey,
+  readAuthFileStatusAccountId,
+  readAuthFileStatusAccountSnapshot,
+} from '@/utils/authFileStatusMutation';
+import {
   buildCodexQuotaWindowInfos,
   classifyCodexRateLimitWindows,
   deriveCodexRateLimitUsedPercent,
@@ -11,7 +16,6 @@ import {
   isDisabledAuthFile,
   normalizePlanType,
   resolveAuthProvider,
-  resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
 import { normalizeAuthIndex } from '@/utils/usage';
@@ -60,27 +64,64 @@ const readAuthFileName = (file: AuthFileItem) => {
 };
 
 const readDisplayAccount = (file: AuthFileItem) =>
-  readString(file.account) ||
-  readString(file.email) ||
+  readAuthFileStatusAccountSnapshot(file) ||
   readString(file.label) ||
   readString(file.name) ||
   readString(file.id) ||
   normalizeAuthIndex(file['auth_index'] ?? file.authIndex) ||
   '-';
 
-export const toInspectionAccount = (file: AuthFileItem): CodexInspectionAccount => ({
-  key: `${readAuthFileName(file)}::${normalizeAuthIndex(file['auth_index'] ?? file.authIndex) || '-'}`,
-  fileName: readAuthFileName(file),
-  displayAccount: readDisplayAccount(file),
-  authIndex: normalizeAuthIndex(file['auth_index'] ?? file.authIndex),
-  accountId: resolveCodexChatgptAccountId(file),
-  provider: resolveAuthProvider(file),
-  disabled: isDisabledAuthFile(file),
-  autoRecoverOwned: false,
-  status: readString(file.status),
-  state: readString(file.state),
-  raw: file,
-});
+const buildInspectionAccountKey = ({
+  fileName,
+  runtimeId,
+  accountSnapshot,
+  authIndex,
+  accountId,
+  provider,
+}: Pick<
+  CodexInspectionAccount,
+  'fileName' | 'runtimeId' | 'accountSnapshot' | 'authIndex' | 'accountId' | 'provider'
+>): string =>
+  getAuthFileStatusIdentityKey({
+    name: fileName,
+    runtimeId,
+    authIndex,
+    provider,
+    accountId,
+    accountSnapshot,
+  });
+
+export const toInspectionAccount = (file: AuthFileItem): CodexInspectionAccount => {
+  const runtimeId = readString(file.id) || null;
+  const fileName = readAuthFileName(file);
+  const displayAccount = readDisplayAccount(file);
+  const accountSnapshot = readAuthFileStatusAccountSnapshot(file) || null;
+  const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+  const accountId = readAuthFileStatusAccountId(file);
+  const provider = resolveAuthProvider(file);
+  return {
+    key: buildInspectionAccountKey({
+      fileName,
+      runtimeId,
+      accountSnapshot,
+      authIndex,
+      accountId,
+      provider,
+    }),
+    runtimeId,
+    fileName,
+    displayAccount,
+    accountSnapshot,
+    authIndex,
+    accountId,
+    provider,
+    disabled: isDisabledAuthFile(file),
+    autoRecoverOwned: false,
+    status: readString(file.status),
+    state: readString(file.state),
+    raw: file,
+  };
+};
 
 const withRetry = async <T>(retries: number, task: () => Promise<T>): Promise<T> => {
   let lastError: unknown;

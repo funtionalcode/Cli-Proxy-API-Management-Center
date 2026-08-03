@@ -39,7 +39,7 @@ const buildRows = (
   );
 
 describe('buildEventRows', () => {
-  it('calculates output tokens per second from total latency', () => {
+  it('calculates tokens per second from total latency', () => {
     const [row] = buildRows();
 
     expect(row.latencyMs).toBe(1500);
@@ -47,7 +47,7 @@ describe('buildEventRows', () => {
     expect(row.tokensPerSecond).toBeCloseTo(20 / 1.5);
   });
 
-  it('does not let TTFT change output tokens per second', () => {
+  it('does not use TTFT to calculate tokens per second', () => {
     const [withoutTTFT] = buildRows({ ttft_ms: undefined });
     const [smallTTFT] = buildRows({ ttft_ms: 100 });
     const [invalidTTFT] = buildRows({ ttft_ms: 2000 });
@@ -57,7 +57,7 @@ describe('buildEventRows', () => {
     expect(invalidTTFT.tokensPerSecond).toBeCloseTo(20 / 1.5);
   });
 
-  it('does not calculate tokens per second without output tokens or total latency', () => {
+  it('does not calculate TPS without output tokens or total latency', () => {
     const [noOutput] = buildRows({ tokens: { output_tokens: 0 } });
     const [noLatency] = buildRows({ latency_ms: undefined });
     const [zeroLatency] = buildRows({ latency_ms: 0 });

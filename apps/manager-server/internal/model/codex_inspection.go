@@ -153,6 +153,7 @@ type CodexInspectionResult struct {
 	AccountKey          string                       `json:"accountKey"`
 	FileName            string                       `json:"fileName"`
 	DisplayAccount      string                       `json:"displayAccount"`
+	AccountSnapshot     string                       `json:"accountSnapshot,omitempty"`
 	AuthIndex           string                       `json:"authIndex,omitempty"`
 	AccountID           string                       `json:"accountId,omitempty"`
 	Provider            string                       `json:"provider"`
@@ -178,12 +179,21 @@ type CodexInspectionResult struct {
 }
 
 type CodexInspectionDisableOwnership struct {
-	FileName     string
-	Provider     string
-	AuthIndex    string
-	AccountID    string
-	DisabledAtMS int64
-	UpdatedAtMS  int64
+	FileName        string
+	Provider        string
+	AuthIndex       string
+	AccountID       string
+	AccountSnapshot string
+	DisabledAtMS    int64
+	UpdatedAtMS     int64
+}
+
+type CodexInspectionDisableOwnershipTarget struct {
+	FileName        string
+	Provider        *string
+	AuthIndex       *string
+	AccountID       *string
+	AccountSnapshot *string
 }
 
 type CodexInspectionLog struct {

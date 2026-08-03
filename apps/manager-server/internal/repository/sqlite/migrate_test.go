@@ -111,9 +111,15 @@ func TestCodexInspectionAutoRecoverySchema(t *testing.T) {
 		t.Fatalf("codex inspection results columns = %#v, want auto_recover_eligible", columns)
 	}
 	ownershipColumns := migrationTableColumns(t, db, "codex_inspection_disable_ownership")
-	for _, column := range []string{"file_name", "auth_index", "account_id", "disabled_at_ms", "updated_at_ms"} {
+	for _, column := range []string{"file_name", "provider", "auth_index", "account_id", "account_snapshot", "disabled_at_ms", "updated_at_ms"} {
 		if !ownershipColumns[column] {
 			t.Fatalf("ownership columns = %#v, missing %s", ownershipColumns, column)
+		}
+	}
+	ownershipPrimaryKey := migrationTablePrimaryKey(t, db, "codex_inspection_disable_ownership")
+	for index, column := range []string{"file_name", "provider", "auth_index", "account_id", "account_snapshot"} {
+		if ownershipPrimaryKey[column] != index+1 {
+			t.Fatalf("ownership primary key = %#v, want %s at position %d", ownershipPrimaryKey, column, index+1)
 		}
 	}
 	leaseColumns := migrationTableColumns(t, db, "codex_inspection_leases")
@@ -134,6 +140,123 @@ func TestCodexInspectionAutoRecoverySchema(t *testing.T) {
 			t.Fatalf("quota cooldown columns = %#v, missing %s", cooldownColumns, column)
 		}
 	}
+	for index, account := range []string{"alice@example.com", "bob@example.com"} {
+		if _, err := db.Exec(`insert into quota_cooldowns (
+			auth_file_name, account_snapshot, provider, recover_at_ms, owner,
+			pre_disabled_state, status, disabled_at_ms, created_at_ms, updated_at_ms
+		) values (?, ?, 'codex', ?, 'cpamp_usage_429', 0, 'active', ?, ?, ?)`,
+			"shared.json",
+			account,
+			int64(1_000+index),
+			int64(900+index),
+			int64(800+index),
+			int64(800+index),
+		); err != nil {
+			t.Fatalf("insert shared-file cooldown %q: %v", account, err)
+		}
+	}
+}
+
+func TestMigrateReplacesLegacyQuotaCooldownOwnerIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-quota-cooldown-index.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	for _, statement := range []string{
+		`drop index idx_quota_cooldowns_active_identity`,
+		`create unique index idx_quota_cooldowns_active_owner on quota_cooldowns(auth_file_name, owner) where status = 'active'`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare legacy index: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var legacyIndexCount int
+	if err := db.QueryRow(`select count(*) from sqlite_master where type = 'index' and name = 'idx_quota_cooldowns_active_owner'`).Scan(&legacyIndexCount); err != nil {
+		t.Fatalf("read legacy index state: %v", err)
+	}
+	if legacyIndexCount != 0 {
+		t.Fatalf("legacy quota cooldown index still exists")
+	}
+
+	for index, account := range []string{"alice@example.com", "bob@example.com"} {
+		if _, err := db.Exec(`insert into quota_cooldowns (
+			auth_file_name, account_snapshot, provider, recover_at_ms, owner,
+			pre_disabled_state, status, disabled_at_ms, created_at_ms, updated_at_ms
+		) values ('shared.json', ?, 'codex', ?, 'cpamp_usage_429', 0, 'active', 1, 1, 1)`,
+			account,
+			int64(1_000+index),
+		); err != nil {
+			t.Fatalf("insert migrated shared-file cooldown %q: %v", account, err)
+		}
+	}
+}
+
+func TestEnsureCodexInspectionOwnershipColumnsMigratesLegacyPrimaryKey(t *testing.T) {
+	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "legacy-ownership.sqlite")))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`create table codex_inspection_disable_ownership (
+		file_name text primary key,
+		auth_index text,
+		account_id text,
+		disabled_at_ms integer not null,
+		updated_at_ms integer not null
+	)`); err != nil {
+		t.Fatalf("create legacy ownership table: %v", err)
+	}
+	if _, err := db.Exec(`insert into codex_inspection_disable_ownership (
+		file_name, auth_index, account_id, disabled_at_ms, updated_at_ms
+	) values ('shared.json', 'auth-1', 'account-1', 10, 20)`); err != nil {
+		t.Fatalf("insert legacy ownership: %v", err)
+	}
+
+	if err := ensureCodexInspectionOwnershipColumns(db); err != nil {
+		t.Fatalf("migrate ownership table: %v", err)
+	}
+	if err := ensureCodexInspectionOwnershipColumns(db); err != nil {
+		t.Fatalf("repeat ownership migration: %v", err)
+	}
+	ownershipPrimaryKey := migrationTablePrimaryKey(t, db, "codex_inspection_disable_ownership")
+	for index, column := range []string{"file_name", "provider", "auth_index", "account_id", "account_snapshot"} {
+		if ownershipPrimaryKey[column] != index+1 {
+			t.Fatalf("migrated ownership primary key = %#v, want %s at position %d", ownershipPrimaryKey, column, index+1)
+		}
+	}
+	if _, err := db.Exec(`insert into codex_inspection_disable_ownership (
+		file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+	) values ('shared.json', 'codex', 'auth-2', 'account-2', 'bob@example.com', 30, 40)`); err != nil {
+		t.Fatalf("insert second same-file ownership: %v", err)
+	}
+	assertTableCount(t, db, "codex_inspection_disable_ownership", 2)
+	var provider, authIndex, accountID, accountSnapshot string
+	var disabledAtMS, updatedAtMS int64
+	if err := db.QueryRow(`select provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+		from codex_inspection_disable_ownership where auth_index = 'auth-1'`).Scan(
+		&provider,
+		&authIndex,
+		&accountID,
+		&accountSnapshot,
+		&disabledAtMS,
+		&updatedAtMS,
+	); err != nil {
+		t.Fatalf("read migrated ownership: %v", err)
+	}
+	if provider != "codex" || authIndex != "auth-1" || accountID != "account-1" || accountSnapshot != "" || disabledAtMS != 10 || updatedAtMS != 20 {
+		t.Fatalf("migrated ownership = %q/%q/%q/%q/%d/%d", provider, authIndex, accountID, accountSnapshot, disabledAtMS, updatedAtMS)
+	}
 }
 
 func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
@@ -147,7 +270,9 @@ func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
 		status text,
 		auth_file_name text,
 		action_type text,
-		auth_index text
+		auth_index text,
+		provider text,
+		account_snapshot text
 	)`); err != nil {
 		t.Fatalf("create account action table: %v", err)
 	}
@@ -177,9 +302,16 @@ func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
 		(2, 'pending', 'xai.json', 'review', '1', 'authentication_review', 0)`); err != nil {
 		t.Fatalf("insert distinct pending reason codes: %v", err)
 	}
+	if _, err := db.Exec(`insert into account_action_candidates (
+		id, status, auth_file_name, action_type, auth_index, account_id_snapshot, provider, reason_code
+	) values
+		(3, 'pending', 'shared.json', 'reauth', null, 'shared-account', 'codex', 'token_revoked'),
+		(4, 'pending', 'shared.json', 'reauth', null, 'shared-account', 'xai', 'token_revoked')`); err != nil {
+		t.Fatalf("insert cross-provider account identities: %v", err)
+	}
 }
 
-func TestEnsureCodexInspectionResultColumnsAddsAutoRecoveryEligibility(t *testing.T) {
+func TestEnsureCodexInspectionResultColumnsAddsIdentityAndAutoRecoveryColumns(t *testing.T) {
 	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "legacy-codex-inspection.sqlite")))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -193,8 +325,8 @@ func TestEnsureCodexInspectionResultColumnsAddsAutoRecoveryEligibility(t *testin
 		t.Fatalf("migrate codex inspection results: %v", err)
 	}
 	columns := migrationTableColumns(t, db, "codex_inspection_results")
-	if !columns["auto_recover_eligible"] {
-		t.Fatalf("legacy results columns = %#v, want auto_recover_eligible", columns)
+	if !columns["account_snapshot"] || !columns["auto_recover_eligible"] {
+		t.Fatalf("legacy results columns = %#v, want account_snapshot and auto_recover_eligible", columns)
 	}
 }
 
@@ -587,6 +719,29 @@ func TestEnsureModelPriceColumnsPreservesLegacyZeroBasePrices(t *testing.T) {
 	}
 }
 
+func TestMigrateCreatesModelPriceServiceTierTableWithCascade(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "model-price-service-tier.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`insert into model_prices (
+		model, prompt_per_1m, completion_per_1m, cache_per_1m, updated_at_ms
+	) values ('gpt-test', 1, 2, 0.1, 1)`); err != nil {
+		t.Fatalf("insert model price: %v", err)
+	}
+	if _, err := db.Exec(`insert into model_price_service_tiers (
+		model, mode, service_tier, prompt_per_1m, prompt_configured
+	) values ('gpt-test', 'fast', 'priority', 2.5, 1)`); err != nil {
+		t.Fatalf("insert model price service tier: %v", err)
+	}
+	if _, err := db.Exec(`delete from model_prices where model = 'gpt-test'`); err != nil {
+		t.Fatalf("delete model price: %v", err)
+	}
+	assertTableCount(t, db, "model_price_service_tiers", 0)
+}
+
 func migrationTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
 	t.Helper()
 	rows, err := db.Query(`pragma table_info(` + table + `)`)
@@ -611,6 +766,34 @@ func migrationTableColumns(t *testing.T, db *sql.DB, table string) map[string]bo
 		t.Fatalf("iterate %s columns: %v", table, err)
 	}
 	return columns
+}
+
+func migrationTablePrimaryKey(t *testing.T, db *sql.DB, table string) map[string]int {
+	t.Helper()
+	rows, err := db.Query(`pragma table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("read %s primary key: %v", table, err)
+	}
+	defer rows.Close()
+
+	primaryKey := map[string]int{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var position int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &position); err != nil {
+			t.Fatalf("scan %s primary key: %v", table, err)
+		}
+		if position > 0 {
+			primaryKey[name] = position
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s primary key: %v", table, err)
+	}
+	return primaryKey
 }
 
 func assertTableCount(t *testing.T, db *sql.DB, table string, want int) {

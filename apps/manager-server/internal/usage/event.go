@@ -99,6 +99,14 @@ type LongContextTokens struct {
 	LongCacheCreationTokens int64
 }
 
+// PricingBand identifies the exact price rule used to aggregate a request.
+// ContextThresholdTokens is zero only for legacy/unclassified aggregates;
+// classified base-rate requests use model.ModelPriceBaseContextThreshold.
+type PricingBand struct {
+	PricingModel           string
+	ContextThresholdTokens int64
+}
+
 func (tokens *LongContextTokens) AddIfLongContext(input, output, cached, cacheRead, cacheCreation int64) {
 	if tokens == nil || !IsLongContextInput(input) {
 		return

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import i18n from '@/i18n';
-import { resetDemoCodexInspectionRunState, usageServiceApi } from '@/services/api/usageService';
+import {
+  buildDemoCodexInspectionSourceFileStatusActionPlans,
+  getDemoCodexInspectionActionIdentityKey,
+  isDemoCodexInspectionStatusMutationAmbiguous,
+  resetDemoCodexInspectionRunState,
+  usageServiceApi,
+} from '@/services/api/usageService';
 import { apiClient } from '@/services/api/client';
 import { normalizeConfigResponse } from '@/services/api/transformers';
 import { inspectCodexAccounts } from '@/features/monitoring/codexInspection';
@@ -324,6 +330,154 @@ describe('credential health inspection demo fixtures', () => {
       status_code: 401,
       body: { error: { code: 'token_expired' } },
     });
+  });
+
+  it('uses Demo Auth File runtime IDs for source-file and expanded-child status scope', () => {
+    const base = getDemoCodexInspectionRun().results.find((item) => item.id === 503);
+    if (!base) throw new Error('missing demo Codex inspection result 503');
+    const source = {
+      ...base,
+      accountKey: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      displayAccount: 'source@example.com',
+    };
+    const child = {
+      ...source,
+      id: 9503,
+      accountKey: 'shared.json::auth-2',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      displayAccount: 'child@example.com',
+    };
+    const files = [
+      {
+        id: 'shared.json',
+        name: 'shared.json',
+        type: 'codex',
+        auth_index: 'auth-1',
+        account_id: 'account-1',
+      },
+      {
+        id: 'runtime-auth-2',
+        name: 'shared.json',
+        type: 'codex',
+        auth_index: 'auth-2',
+        account_id: 'account-2',
+      },
+    ];
+
+    expect(isDemoCodexInspectionStatusMutationAmbiguous([source, child], source, files)).toBe(
+      false
+    );
+    expect(isDemoCodexInspectionStatusMutationAmbiguous([source, child], child, files)).toBe(true);
+    expect(
+      isDemoCodexInspectionStatusMutationAmbiguous(
+        [source, child],
+        {
+          ...child,
+          action: 'delete',
+        },
+        files
+      )
+    ).toBe(false);
+    expect(
+      isDemoCodexInspectionStatusMutationAmbiguous(
+        [{ ...source, accountKey: 'not-a-runtime-id' }],
+        { ...source, accountKey: 'not-a-runtime-id' },
+        [files[0]]
+      )
+    ).toBe(false);
+  });
+
+  it('builds complete shared-file action plans with or without a source runtime row', () => {
+    const base = getDemoCodexInspectionRun().results.find((item) => item.id === 503);
+    if (!base) throw new Error('missing demo Codex inspection result 503');
+    const source = {
+      ...base,
+      id: 9501,
+      accountKey: 'shared.json::auth-1',
+      fileName: 'shared.json',
+      authIndex: 'auth-1',
+      accountId: 'account-1',
+      displayAccount: 'source@example.com',
+      action: 'disable',
+    };
+    const child = {
+      ...source,
+      id: 9502,
+      accountKey: 'shared.json::auth-2',
+      authIndex: 'auth-2',
+      accountId: 'account-2',
+      displayAccount: 'child@example.com',
+    };
+    const files = [
+      {
+        id: 'shared.json',
+        name: 'shared.json',
+        type: 'codex',
+        auth_index: 'auth-1',
+        account_id: 'account-1',
+      },
+      {
+        id: 'runtime-auth-2',
+        name: 'shared.json',
+        type: 'codex',
+        auth_index: 'auth-2',
+        account_id: 'account-2',
+      },
+    ];
+
+    const plan = buildDemoCodexInspectionSourceFileStatusActionPlans([source, child], files).get(
+      'shared.json'
+    );
+
+    expect(plan?.canonicalResultId).toBe(source.id);
+    expect(plan?.action).toBe('disable');
+    expect(Array.from(plan?.memberResultIds ?? []).sort()).toEqual([source.id, child.id]);
+    const pluginFiles = files.map((file, index) => ({
+      ...file,
+      id: `plugin-runtime-auth-${index + 1}`,
+    }));
+    const pluginPlan = buildDemoCodexInspectionSourceFileStatusActionPlans(
+      [source, child],
+      pluginFiles
+    ).get('shared.json');
+    expect(pluginPlan?.canonicalResultId).toBe(source.id);
+    expect(pluginPlan?.action).toBe('disable');
+    expect(Array.from(pluginPlan?.memberResultIds ?? []).sort()).toEqual([source.id, child.id]);
+    expect(buildDemoCodexInspectionSourceFileStatusActionPlans([source], files).size).toBe(0);
+    expect(
+      buildDemoCodexInspectionSourceFileStatusActionPlans(
+        [source, { ...child, action: 'enable' }],
+        files
+      ).size
+    ).toBe(0);
+  });
+
+  it('keeps account IDs distinct from account snapshots in demo action identity', () => {
+    const base = getDemoCodexInspectionRun().results.find((item) => item.id === 503);
+    if (!base) throw new Error('missing demo Codex inspection result 503');
+
+    const accountIdIdentity = getDemoCodexInspectionActionIdentityKey({
+      ...base,
+      fileName: 'shared.json',
+      authIndex: undefined,
+      accountId: 'shared-identity',
+      displayAccount: 'first@example.com',
+      accountSnapshot: undefined,
+    });
+    const accountSnapshotIdentity = getDemoCodexInspectionActionIdentityKey({
+      ...base,
+      fileName: 'shared.json',
+      authIndex: undefined,
+      accountId: undefined,
+      displayAccount: 'Friendly account',
+      accountSnapshot: 'shared-identity',
+    });
+
+    expect(accountIdIdentity).not.toBe(accountSnapshotIdentity);
   });
 
   it('marks executed demo actions as handled in the returned detail', async () => {

@@ -14,6 +14,36 @@ Formal release notes are technical release records. Community-facing release
 copy is authored separately so it can prioritize user value and readability
 without weakening the technical notes.
 
+## Release Branch Flow
+
+`main` is the stable default branch. `dev` is the integration branch. Every
+release follows this sequence:
+
+```text
+release/<version> -> dev -> main -> v<version> tag -> GitHub Release
+```
+
+1. Freeze the intended release scope on `dev`; do not merge unrelated work
+   until the tag is created.
+2. Create `release/<version>` from `dev`, add the two release-note files and
+   the Telegram post, then merge its release PR into `dev`.
+3. Record the resulting `dev` commit from that release PR as the release SHA.
+   Before promotion, confirm that `dev` still points to that exact SHA.
+4. Open a same-repository `dev -> main` promotion PR. It must pass the normal
+   PR checks and the `Verify dev promotion source` gate before merging.
+5. Reconfirm that the resulting `main` commit contains the recorded release
+   `dev` SHA, then create the tag from that exact `main` commit.
+
+Do not open a release PR directly to `main`: branch protection permits only
+the repository's `dev` branch to promote into `main`.
+
+`main` can contain a prior `dev -> main` merge commit that is not an ancestor
+of the current `dev` ref. This is normal. Before a new release, require that
+`main` has no non-merge commits absent from `dev`; investigate and stop if it
+does. The release scope is still invalid if `dev` advances after the release PR
+is merged: refresh the notes and repeat the release preflight rather than
+including unreviewed changes in the tag.
+
 ## Release Note Files
 
 ```text

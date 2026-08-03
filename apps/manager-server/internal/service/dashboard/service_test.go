@@ -397,6 +397,100 @@ func TestSummaryPricesPriorityAndDefaultServiceTiersSeparately(t *testing.T) {
 	}
 }
 
+func TestSummaryPricesContextTiersAcrossRawAndPricingRollup(t *testing.T) {
+	db := newDashboardTestStore(t)
+	ctx := context.Background()
+	todayStart := int64(1_800_000_000_000)
+	nowMS := todayStart + 2*hourWindowMs
+
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"tiered-resolved": {
+			Prompt:     10,
+			Completion: 4,
+			ContextTiers: []store.ModelPriceContextTier{
+				{
+					ThresholdTokens:  100_000,
+					Prompt:           20,
+					PromptConfigured: true,
+				},
+				{
+					ThresholdTokens:      200_000,
+					Prompt:               0,
+					Completion:           8,
+					PromptConfigured:     true,
+					CompletionConfigured: true,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+
+	events := []usage.Event{
+		dashboardEvent("context-tier-exact", todayStart+1_000, "tiered-alias", false, 100_000, 100_000, 0, 0, 0, 200_000, nil),
+		dashboardEvent("context-tier-first", todayStart+2_000, "tiered-alias", false, 100_001, 100_000, 0, 0, 0, 200_001, nil),
+		dashboardEvent("context-tier-highest", todayStart+3_000, "tiered-alias", false, 200_001, 100_000, 0, 0, 0, 300_001, nil),
+	}
+	for index := range events {
+		events[index].ResolvedModel = "tiered-resolved"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	const wantCost = 4.60002
+	assertCost := func(name string, got float64) {
+		t.Helper()
+		if math.Abs(got-wantCost) > 0.000001 {
+			t.Fatalf("%s cost = %v, want %v", name, got, wantCost)
+		}
+	}
+	assertSummary := func(name string, resp SummaryResponse) {
+		t.Helper()
+		if resp.Today.TotalCalls != 3 {
+			t.Fatalf("%s today = %#v", name, resp.Today)
+		}
+		assertCost(name+" today", resp.Today.TotalCost)
+		if len(resp.TopModelsToday) != 1 || resp.TopModelsToday[0].Calls != 3 {
+			t.Fatalf("%s top models = %#v", name, resp.TopModelsToday)
+		}
+		assertCost(name+" top model", resp.TopModelsToday[0].Cost)
+		if len(resp.ModelCostRank) != 1 {
+			t.Fatalf("%s model cost rank = %#v", name, resp.ModelCostRank)
+		}
+		assertCost(name+" model rank", resp.ModelCostRank[0].Cost)
+		if len(resp.ChannelHealth) != 1 {
+			t.Fatalf("%s channel health = %#v", name, resp.ChannelHealth)
+		}
+		assertCost(name+" channel", resp.ChannelHealth[0].Cost)
+	}
+
+	raw, err := New(db, false).Summary(ctx, SummaryParams{
+		TodayStartMS: todayStart,
+		NowMS:        nowMS,
+		TopModels:    5,
+	})
+	if err != nil {
+		t.Fatalf("raw summary: %v", err)
+	}
+	assertSummary("raw", raw)
+
+	catchUpDashboardHourlyForTest(t, ctx, db)
+	service := New(db, true)
+	if _, _, _, _, ok := service.loadTodayMetricsFromRollup(ctx, todayStart, nowMS); !ok {
+		t.Fatal("pricing-aware dashboard rollup was not available")
+	}
+	rolled, err := service.Summary(ctx, SummaryParams{
+		TodayStartMS: todayStart,
+		NowMS:        nowMS,
+		TopModels:    5,
+	})
+	if err != nil {
+		t.Fatalf("rolled summary: %v", err)
+	}
+	assertSummary("rolled", rolled)
+}
+
 func TestSummaryDashboardHourlyRollupMatchesRawWithTrailingEdge(t *testing.T) {
 	db := newDashboardTestStore(t)
 	ctx := context.Background()
@@ -496,7 +590,7 @@ func TestSummaryDashboardHourlyRollupMergesPendingRawDelta(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert pending event: %v", err)
 	}
-	agg, _, timeline, ok := New(db).loadTodayMetricsFromRollup(ctx, todayStart, nowMS)
+	agg, _, timeline, _, ok := New(db).loadTodayMetricsFromRollup(ctx, todayStart, nowMS)
 	if !ok || agg.TotalCalls != 2 || agg.TotalTokens != 3 || len(timeline) != 2 {
 		t.Fatalf("pending aggregate did not merge raw delta: ok=%v agg=%#v timeline=%#v", ok, agg, timeline)
 	}
@@ -521,7 +615,7 @@ func TestSummaryDashboardHourlyRollupCanBeDisabled(t *testing.T) {
 	}
 	catchUpDashboardHourlyForTest(t, ctx, db)
 	service := New(db, false)
-	if _, _, _, ok := service.loadTodayMetricsFromRollup(ctx, todayStart, nowMS); ok {
+	if _, _, _, _, ok := service.loadTodayMetricsFromRollup(ctx, todayStart, nowMS); ok {
 		t.Fatal("disabled service used hourly rollup")
 	}
 	resp, err := service.Summary(ctx, SummaryParams{TodayStartMS: todayStart, NowMS: nowMS})
@@ -539,6 +633,15 @@ func catchUpDashboardHourlyForTest(t *testing.T, ctx context.Context, db *store.
 		result, err := db.CatchUpUsageHourlyAggregate(ctx, 100, time.Now().UnixMilli())
 		if err != nil {
 			t.Fatalf("catch up dashboard hourly: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	for {
+		result, err := db.CatchUpUsagePricing(ctx, 100, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("catch up dashboard pricing: %v", err)
 		}
 		if !result.Pending {
 			return

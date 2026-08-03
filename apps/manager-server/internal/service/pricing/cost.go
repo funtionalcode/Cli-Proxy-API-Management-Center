@@ -14,6 +14,8 @@ const PerMillion = 1_000_000.0
 // CachedTokens is the remaining legacy/OpenAI-style cached input after any
 // fine-grained cache_read/cache_creation values have already been removed.
 type ModelTokens struct {
+	PricingModel            string
+	ContextThresholdTokens  int64
 	InputTokens             int64
 	OutputTokens            int64
 	CachedTokens            int64
@@ -42,10 +44,26 @@ func CostForModel(modelName string, tokens ModelTokens, prices map[string]model.
 }
 
 func costForPrice(modelName string, tokens ModelTokens, price model.ModelPrice) float64 {
+	return costForPriceWithLegacyLongContext(modelName, tokens, price, true)
+}
+
+func costForPriceWithLegacyLongContext(modelName string, tokens ModelTokens, price model.ModelPrice, allowLegacyLongContext bool) float64 {
 	if isGPT56Model(modelName) {
 		price = enrichGPT56BasePrice(modelName, price)
 	}
-	if supportsLongContextPremium(modelName) {
+	if effectivePrice, ok := activeContextPrice(tokens, price); ok {
+		return costForSegment(
+			maxInt64(tokens.InputTokens, 0),
+			maxInt64(tokens.OutputTokens, 0),
+			maxInt64(tokens.CachedTokens, 0),
+			maxInt64(tokens.CacheReadTokens, 0),
+			maxInt64(tokens.CacheCreationTokens, 0),
+			effectivePrice,
+			1,
+			1,
+		)
+	}
+	if allowLegacyLongContext && supportsLongContextPremium(modelName) {
 		return costForLongContextModel(tokens, price)
 	}
 	return costForSegment(
@@ -154,8 +172,8 @@ func ServiceTierMultiplier(modelName string, serviceTier string) float64 {
 	}
 }
 
-// CostForModelWithServiceTier computes standard token cost first, then applies
-// the multiplier for the actual service_tier recorded by usage.
+// CostForModelWithServiceTier selects context or explicit service-tier prices
+// before falling back to the compatibility multiplier for older price books.
 func CostForModelWithServiceTier(modelName string, serviceTier string, tokens ModelTokens, prices map[string]model.ModelPrice) float64 {
 	price, ok := resolveModelPrice(modelName, prices)
 	if !ok {
@@ -182,6 +200,11 @@ func CostForModelCandidatesWithServiceTier(modelNames []string, serviceTier stri
 	behaviorModel := ""
 	if len(candidates) > 0 {
 		behaviorModel = candidates[0]
+	}
+	if pricingModel := strings.TrimSpace(tokens.PricingModel); pricingModel != "" {
+		if price, ok := prices[pricingModel]; ok {
+			return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
+		}
 	}
 	for _, modelName := range candidates {
 		price, ok := prices[modelName]
@@ -251,14 +274,71 @@ func supportsLongContextPremium(modelName string) bool {
 }
 
 func costForPriceWithServiceTier(modelName, serviceTier string, tokens ModelTokens, price model.ModelPrice) float64 {
-	multiplier := ServiceTierMultiplier(modelName, serviceTier)
-	if tokens.LongInputTokens > 0 {
-		tier := strings.ToLower(strings.TrimSpace(serviceTier))
-		if tier == "priority" || tier == "fast" {
-			multiplier = 1
-		}
+	if activeContextTier(tokens, price) {
+		return costForPrice(modelName, tokens, price)
 	}
-	return costForPrice(modelName, tokens, price) * multiplier
+	legacyLongContext := len(price.ContextTiers) == 0 && supportsLongContextPremium(modelName) && tokens.LongInputTokens > 0
+	if legacyLongContext {
+		tier := strings.ToLower(strings.TrimSpace(serviceTier))
+		if tier != "priority" && tier != "fast" {
+			if effectivePrice, ok := model.ModelPriceForServiceTier(price, serviceTier); ok {
+				return costForPriceWithLegacyLongContext(modelName, tokens, effectivePrice, true)
+			}
+			return costForPrice(modelName, tokens, price) * ServiceTierMultiplier(modelName, serviceTier)
+		}
+		shortTokens, longTokens := splitLegacyLongContextTokens(tokens)
+		longCost := costForPriceWithLegacyLongContext(modelName, longTokens, price, true)
+		if effectivePrice, ok := model.ModelPriceForServiceTier(price, serviceTier); ok {
+			return costForPriceWithLegacyLongContext(modelName, shortTokens, effectivePrice, false) + longCost
+		}
+		return costForPriceWithLegacyLongContext(modelName, shortTokens, price, false)*ServiceTierMultiplier(modelName, serviceTier) + longCost
+	}
+	if effectivePrice, ok := model.ModelPriceForServiceTier(price, serviceTier); ok {
+		return costForPriceWithLegacyLongContext(modelName, tokens, effectivePrice, len(price.ContextTiers) == 0)
+	}
+	return costForPrice(modelName, tokens, price) * ServiceTierMultiplier(modelName, serviceTier)
+}
+
+func splitLegacyLongContextTokens(tokens ModelTokens) (ModelTokens, ModelTokens) {
+	longTokens := ModelTokens{
+		PricingModel:        tokens.PricingModel,
+		InputTokens:         clampTokens(tokens.LongInputTokens, maxInt64(tokens.InputTokens, 0)),
+		OutputTokens:        clampTokens(tokens.LongOutputTokens, maxInt64(tokens.OutputTokens, 0)),
+		CachedTokens:        clampTokens(tokens.LongCachedTokens, maxInt64(tokens.CachedTokens, 0)),
+		CacheReadTokens:     clampTokens(tokens.LongCacheReadTokens, maxInt64(tokens.CacheReadTokens, 0)),
+		CacheCreationTokens: clampTokens(tokens.LongCacheCreationTokens, maxInt64(tokens.CacheCreationTokens, 0)),
+	}
+	longTokens.LongInputTokens = longTokens.InputTokens
+	longTokens.LongOutputTokens = longTokens.OutputTokens
+	longTokens.LongCachedTokens = longTokens.CachedTokens
+	longTokens.LongCacheReadTokens = longTokens.CacheReadTokens
+	longTokens.LongCacheCreationTokens = longTokens.CacheCreationTokens
+
+	shortTokens := ModelTokens{
+		PricingModel:        tokens.PricingModel,
+		InputTokens:         maxInt64(tokens.InputTokens, 0) - longTokens.InputTokens,
+		OutputTokens:        maxInt64(tokens.OutputTokens, 0) - longTokens.OutputTokens,
+		CachedTokens:        maxInt64(tokens.CachedTokens, 0) - longTokens.CachedTokens,
+		CacheReadTokens:     maxInt64(tokens.CacheReadTokens, 0) - longTokens.CacheReadTokens,
+		CacheCreationTokens: maxInt64(tokens.CacheCreationTokens, 0) - longTokens.CacheCreationTokens,
+	}
+	return shortTokens, longTokens
+}
+
+func activeContextTier(tokens ModelTokens, price model.ModelPrice) bool {
+	if tokens.ContextThresholdTokens <= 0 {
+		return false
+	}
+	_, ok := model.ModelPriceForContextThreshold(price, tokens.ContextThresholdTokens)
+	return ok
+}
+
+func activeContextPrice(tokens ModelTokens, price model.ModelPrice) (model.ModelPrice, bool) {
+	if len(price.ContextTiers) == 0 || tokens.ContextThresholdTokens == 0 {
+		return model.ModelPrice{}, false
+	}
+	effective, ok := model.ModelPriceForContextThreshold(price, tokens.ContextThresholdTokens)
+	return effective, ok
 }
 
 func resolveModelPrice(modelName string, prices map[string]model.ModelPrice) (model.ModelPrice, bool) {

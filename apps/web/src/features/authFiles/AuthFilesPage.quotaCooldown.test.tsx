@@ -18,6 +18,7 @@ const { mocks } = vi.hoisted(() => {
       pageTransitionStatus: 'current' as 'current' | 'exiting' | 'stacked',
       loadExcluded: vi.fn(async () => undefined),
       loadModelAlias: vi.fn(async () => undefined),
+      loadFiles: vi.fn(async () => undefined),
       listCodexInspectionRuns: vi.fn(),
       getCodexInspectionRun: vi.fn(),
       getActiveQuotaCooldowns: vi.fn(),
@@ -173,7 +174,7 @@ vi.mock('@/features/authFiles/hooks/useAuthFilesData', () => ({
     batchStatusUpdating: false,
     batchFieldsUpdating: false,
     fileInputRef: { current: null },
-    loadFiles: vi.fn(async () => undefined),
+    loadFiles: mocks.loadFiles,
     handleUploadClick: vi.fn(),
     handleFileChange: vi.fn(),
     savePastedAuthJson: vi.fn(async () => undefined),
@@ -257,7 +258,13 @@ vi.mock('@/features/authFiles/uiState', () => ({
 
 vi.mock('@/features/authFiles/components/AuthFileCard', () => ({
   AuthFileCard: (props: {
-    file: { name: string; authIndex?: unknown; auth_index?: unknown };
+    file: {
+      name: string;
+      account?: unknown;
+      email?: unknown;
+      authIndex?: unknown;
+      auth_index?: unknown;
+    };
     quotaCooldown?: { authFileName: string; recoverAtMs: number } | null;
     accountActionCandidate?: {
       actionType?: string;
@@ -283,6 +290,7 @@ vi.mock('@/features/authFiles/components/AuthFileCard', () => ({
     return (
       <div
         data-auth-card={props.file.name}
+        data-auth-account={String(props.file.account ?? props.file.email ?? '')}
         data-auth-index={String(props.file.authIndex ?? props.file.auth_index ?? '')}
         data-file-disabled={String((props.file as { disabled?: boolean }).disabled === true)}
         data-quota-cooldown={cooldown}
@@ -396,6 +404,8 @@ const accountActionCandidate = (
     provider: string;
     authFileName: string;
     authIndex: string;
+    accountSnapshot: string;
+    accountIdSnapshot: string;
     reasonCode: string;
     reason: string;
     autoDisableEligible: boolean;
@@ -434,6 +444,7 @@ describe('AuthFilesPage quota cooldown derived badge', () => {
     mocks.apiCallRequest.mockReset();
     mocks.handleDeleteAll.mockReset();
     mocks.batchDelete.mockReset();
+    mocks.loadFiles.mockClear();
     mocks.intervalCallbacks = [];
     mocks.codexQuota = {};
     mocks.setCodexQuota = vi.fn((updater: unknown) => {
@@ -521,6 +532,90 @@ describe('AuthFilesPage quota cooldown derived badge', () => {
           'data-quota-cooldown'
         ]
       ).toBe('xai-one.json@2000000000000');
+    });
+  });
+
+  it('refreshes auth files without requesting Codex quota when an xAI cooldown recovers', async () => {
+    const recoveredAtMs = Date.now() - 1_000;
+    mocks.list.mockReturnValue([
+      { name: 'xai-one.json', type: 'xai', authIndex: 'xai-1', disabled: true },
+    ]);
+    mocks.getActiveQuotaCooldowns
+      .mockResolvedValueOnce([
+        {
+          authFileName: 'xai-one.json',
+          authIndex: 'xai-1',
+          provider: 'xai',
+          owner: 'cpamp_xai_free_usage',
+          recoverAtMs: recoveredAtMs,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AuthFilesPage />);
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        renderer!.root.findByProps({ 'data-auth-card': 'xai-one.json' }).props[
+          'data-quota-cooldown'
+        ]
+      ).toBe(`xai-one.json@${recoveredAtMs}`);
+    });
+    const loadFilesCallsBeforeRecovery = mocks.loadFiles.mock.calls.length;
+
+    const quotaInterval = mocks.intervalCallbacks.find((item) => item.delay === 60_000);
+    await act(async () => {
+      quotaInterval?.callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(loadFilesCallsBeforeRecovery + 1);
+    });
+    expect(mocks.apiCallRequest).not.toHaveBeenCalled();
+  });
+
+  it('maps account-scoped cooldowns to the exact same-file row without an auth index', async () => {
+    mocks.list.mockReturnValue([
+      {
+        id: 'runtime-alice',
+        name: 'shared-xai.json',
+        type: 'xai',
+        account: 'alice@example.com',
+      },
+      {
+        id: 'runtime-bob',
+        name: 'shared-xai.json',
+        type: 'xai',
+        account_id: 'account-bob',
+        account: 'bob@example.com',
+      },
+    ]);
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      {
+        authFileName: 'shared-xai.json',
+        accountSnapshot: 'bob@example.com',
+        provider: 'xai',
+        owner: 'cpamp_xai_free_usage',
+        recoverAtMs: 2_000_000_000_000,
+      },
+    ]);
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AuthFilesPage />);
+    });
+
+    await vi.waitFor(() => {
+      const cards = renderer!.root.findAllByProps({ 'data-auth-card': 'shared-xai.json' });
+      const alice = cards.find((card) => card.props['data-auth-account'] === 'alice@example.com');
+      const bob = cards.find((card) => card.props['data-auth-account'] === 'bob@example.com');
+      expect(alice?.props['data-quota-cooldown']).toBe('');
+      expect(bob?.props['data-quota-cooldown']).toBe('shared-xai.json@2000000000000');
     });
   });
 
@@ -1651,6 +1746,56 @@ describe('AuthFilesPage quota cooldown derived badge', () => {
           'data-account-action'
         ]
       ).toBe('review');
+    });
+  });
+
+  it('maps account actions to the exact same-file row without an auth index', async () => {
+    mocks.list.mockReturnValue([
+      {
+        id: 'runtime-alice',
+        name: 'shared-xai.json',
+        type: 'xai',
+        account_id: 'account-alice',
+        account: 'alice@example.com',
+      },
+      {
+        id: 'runtime-bob',
+        name: 'shared-xai.json',
+        type: 'xai',
+        account: 'bob@example.com',
+      },
+    ]);
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      items: [
+        accountActionCandidate({
+          id: 1,
+          actionType: 'reauth',
+          authFileName: 'shared-xai.json',
+          accountIdSnapshot: 'account-alice',
+          accountSnapshot: 'stale-alice@example.com',
+        }),
+        accountActionCandidate({
+          id: 2,
+          actionType: 'review',
+          authFileName: 'shared-xai.json',
+          accountSnapshot: 'bob@example.com',
+        }),
+      ],
+      pendingCount: 2,
+    });
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AuthFilesPage />);
+    });
+
+    await vi.waitFor(() => {
+      const cards = renderer!.root.findAllByProps({ 'data-auth-card': 'shared-xai.json' });
+      const alice = cards.find((card) => card.props['data-auth-account'] === 'alice@example.com');
+      const bob = cards.find((card) => card.props['data-auth-account'] === 'bob@example.com');
+      expect(alice?.props['data-account-action']).toBe('reauth');
+      expect(bob?.props['data-account-action']).toBe('review');
     });
   });
 

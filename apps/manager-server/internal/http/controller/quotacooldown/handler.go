@@ -17,19 +17,21 @@ type Handler struct {
 }
 
 // cooldownItem is the minimal, read-only view of an active quota cooldown that
-// the panel needs to render a derived hint on the auth file card. It deliberately
-// omits internal/account-snapshot fields.
+// the panel needs to render a derived hint on the auth file card. The account
+// snapshot is included only as the credential discriminator required to avoid
+// assigning one shared-file cooldown to a sibling account.
 type cooldownItem struct {
-	AuthFileName string                       `json:"authFileName"`
-	AuthIndex    string                       `json:"authIndex"`
-	Provider     string                       `json:"provider"`
-	Owner        string                       `json:"owner"`
-	ReasonCode   string                       `json:"reasonCode,omitempty"`
-	WindowKind   string                       `json:"windowKind,omitempty"`
-	Evidence     *usage.ProviderUsageMetadata `json:"evidence,omitempty"`
-	RecoverAtMs  int64                        `json:"recoverAtMs"`
-	DisabledAtMs int64                        `json:"disabledAtMs"`
-	CreatedAtMs  int64                        `json:"createdAtMs"`
+	AuthFileName    string                       `json:"authFileName"`
+	AuthIndex       string                       `json:"authIndex"`
+	AccountSnapshot string                       `json:"accountSnapshot,omitempty"`
+	Provider        string                       `json:"provider"`
+	Owner           string                       `json:"owner"`
+	ReasonCode      string                       `json:"reasonCode,omitempty"`
+	WindowKind      string                       `json:"windowKind,omitempty"`
+	Evidence        *usage.ProviderUsageMetadata `json:"evidence,omitempty"`
+	RecoverAtMs     int64                        `json:"recoverAtMs"`
+	DisabledAtMs    int64                        `json:"disabledAtMs"`
+	CreatedAtMs     int64                        `json:"createdAtMs"`
 }
 
 type listResponse struct {
@@ -73,16 +75,17 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 func mapCooldown(c model.QuotaCooldown) cooldownItem {
 	return cooldownItem{
-		AuthFileName: c.AuthFileName,
-		AuthIndex:    c.AuthIndex,
-		Provider:     c.Provider,
-		Owner:        c.Owner,
-		ReasonCode:   c.ReasonCode,
-		WindowKind:   c.WindowKind,
-		Evidence:     parseCooldownEvidence(c.EvidenceJSON, c.RecoverAtMS),
-		RecoverAtMs:  c.RecoverAtMS,
-		DisabledAtMs: c.DisabledAtMS,
-		CreatedAtMs:  c.CreatedAtMS,
+		AuthFileName:    c.AuthFileName,
+		AuthIndex:       c.AuthIndex,
+		AccountSnapshot: c.AccountSnapshot,
+		Provider:        c.Provider,
+		Owner:           c.Owner,
+		ReasonCode:      c.ReasonCode,
+		WindowKind:      c.WindowKind,
+		Evidence:        parseCooldownEvidence(c.EvidenceJSON, c.RecoverAtMS),
+		RecoverAtMs:     c.RecoverAtMS,
+		DisabledAtMs:    c.DisabledAtMS,
+		CreatedAtMs:     c.CreatedAtMS,
 	}
 }
 

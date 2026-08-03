@@ -755,7 +755,7 @@ func TestServerCompatPluginProxyRoutes(t *testing.T) {
 		body              string
 	}
 
-	observed := make(chan observedRequest, 9)
+	observed := make(chan observedRequest, 12)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		observed <- observedRequest{
@@ -954,7 +954,9 @@ func TestServerCompatPluginProxyRoutes(t *testing.T) {
 	)
 	testutil.RequireStatus(t, resourceTraceRR, http.StatusMethodNotAllowed)
 
-	resourceRR := requestWithHeaders(
+	// Public plugin resources may remain reachable, but an unauthenticated
+	// caller must never be elevated to the saved CPA management key.
+	resourceNoAuthRR := requestWithHeaders(
 		http.MethodGet,
 		"/v0/resource/plugins/codex-invite/invite",
 		"",
@@ -963,12 +965,54 @@ func TestServerCompatPluginProxyRoutes(t *testing.T) {
 			"X-Codex-Invite-Origin": "http://localhost:18317",
 		},
 	)
-	testutil.RequireStatus(t, resourceRR, http.StatusOK)
+	testutil.RequireStatus(t, resourceNoAuthRR, http.StatusOK)
 	assertObserved("/v0/resource/plugins/codex-invite/invite", observedRequest{
 		method:            http.MethodGet,
 		path:              "/v0/resource/plugins/codex-invite/invite",
-		authorization:     "Bearer management-key",
 		codexInviteOrigin: upstream.URL,
+	})
+
+	resourceCallerAuthRR := requestWithHeaders(
+		http.MethodGet,
+		"/v0/resource/plugins/codex-invite/invite",
+		"",
+		"plugin-management-key",
+		nil,
+	)
+	testutil.RequireStatus(t, resourceCallerAuthRR, http.StatusOK)
+	assertObserved("/v0/resource/plugins/codex-invite/invite", observedRequest{
+		method:        http.MethodGet,
+		path:          "/v0/resource/plugins/codex-invite/invite",
+		authorization: "Bearer plugin-management-key",
+	})
+
+	resourceAdminAuthRR := testutil.Request(
+		t,
+		handler,
+		http.MethodGet,
+		"/v0/resource/plugins/codex-invite/invite",
+		"",
+		testutil.AdminKey,
+	)
+	testutil.RequireStatus(t, resourceAdminAuthRR, http.StatusOK)
+	assertObserved("/v0/resource/plugins/codex-invite/invite", observedRequest{
+		method:        http.MethodGet,
+		path:          "/v0/resource/plugins/codex-invite/invite",
+		authorization: "Bearer management-key",
+	})
+
+	resourceHeadNoAuthRR := testutil.Request(
+		t,
+		handler,
+		http.MethodHead,
+		"/v0/resource/plugins/codex-invite/invite",
+		"",
+		"",
+	)
+	testutil.RequireStatus(t, resourceHeadNoAuthRR, http.StatusOK)
+	assertObserved("/v0/resource/plugins/codex-invite/invite", observedRequest{
+		method: http.MethodHead,
+		path:   "/v0/resource/plugins/codex-invite/invite",
 	})
 }
 

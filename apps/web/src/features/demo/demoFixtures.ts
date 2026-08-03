@@ -324,6 +324,7 @@ const demoAuthFiles: AuthFilesResponse = {
       failed: 2,
     },
     {
+      id: 'codex-team-01.json',
       name: 'codex-team-01.json',
       type: 'codex',
       provider: 'codex',
@@ -341,6 +342,7 @@ const demoAuthFiles: AuthFilesResponse = {
     },
     {
       // Codex OAuth-style email identity: primary should be the email, secondary "codex".
+      id: 'codex-email-user.json',
       name: 'codex-email-user.json',
       type: 'codex',
       provider: 'codex',
@@ -360,6 +362,7 @@ const demoAuthFiles: AuthFilesResponse = {
       failed: 6,
     },
     {
+      id: 'codex-pro-20x-01.json',
       name: 'codex-pro-20x-01.json',
       type: 'codex',
       provider: 'codex',
@@ -376,6 +379,7 @@ const demoAuthFiles: AuthFilesResponse = {
       failed: 8,
     },
     {
+      id: 'codex-fallback-02.json',
       name: 'codex-fallback-02.json',
       type: 'codex',
       provider: 'codex',
@@ -458,6 +462,7 @@ const demoAuthFiles: AuthFilesResponse = {
     },
     {
       // xAI OAuth-style email identity: primary should be the email, secondary "xai".
+      id: 'xai-ops.json',
       name: 'xai-ops.json',
       type: 'xai',
       provider: 'xai',
@@ -475,6 +480,7 @@ const demoAuthFiles: AuthFilesResponse = {
       failed: 4,
     },
     {
+      id: 'xai-email-user.json',
       name: 'xai-email-user.json',
       type: 'xai',
       provider: 'xai',
@@ -491,6 +497,7 @@ const demoAuthFiles: AuthFilesResponse = {
       failed: 3,
     },
     {
+      id: 'xai-expired.json',
       name: 'xai-expired.json',
       type: 'xai',
       provider: 'xai',
@@ -4104,8 +4111,10 @@ export const getDemoCodexInspectionLocalRun = (baseNow = now()): CodexInspection
       } as AuthFilesResponse['files'][number]);
     return {
       key: `${item.fileName}::${item.authIndex || '-'}`,
+      runtimeId: typeof raw.id === 'string' ? raw.id : null,
       fileName: item.fileName,
       displayAccount: item.displayAccount,
+      accountSnapshot: item.accountSnapshot ?? null,
       authIndex: item.authIndex ?? null,
       accountId: item.accountId ?? null,
       provider: item.provider,

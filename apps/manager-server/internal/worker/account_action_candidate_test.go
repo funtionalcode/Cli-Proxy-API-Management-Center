@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,37 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
+
+type workerRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn workerRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+type cancelAtEOFReadCloser struct {
+	reader io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelAtEOFReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF && r.cancel != nil {
+		r.cancel()
+	}
+	return n, err
+}
+
+func (r *cancelAtEOFReadCloser) Close() error { return nil }
+
+func workerHTTPResponse(r *http.Request, body io.ReadCloser) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     make(http.Header),
+		Body:       body,
+		Request:    r,
+	}
+}
 
 func TestAccountActionCandidateFromEventUsesSafeEvidence(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
@@ -42,6 +75,9 @@ func TestAccountActionCandidateFromEventUsesSafeEvidence(t *testing.T) {
 	if candidate.AccountID != "acct-123" {
 		t.Fatalf("account id = %q", candidate.AccountID)
 	}
+	if candidate.AccountSnapshot != "user@example.com" {
+		t.Fatalf("account snapshot = %q", candidate.AccountSnapshot)
+	}
 	if strings.Contains(candidate.EvidenceJSON, "FailBody") || strings.Contains(candidate.EvidenceJSON, "RawJSON") || strings.Contains(candidate.EvidenceJSON, "sk-sensitive") || strings.Contains(candidate.EvidenceJSON, "Bearer secret") {
 		t.Fatalf("evidence leaked sensitive raw payload: %s", candidate.EvidenceJSON)
 	}
@@ -51,6 +87,26 @@ func TestAccountActionCandidateFromEventUsesSafeEvidence(t *testing.T) {
 	}
 	if evidence["errorCode"] != "token_revoked" || evidence["errorType"] != "authentication_error" {
 		t.Fatalf("evidence = %#v", evidence)
+	}
+}
+
+func TestAccountActionCandidateDoesNotPromoteDisplayFallbackToStableIdentity(t *testing.T) {
+	event := usage.Event{
+		Failed:            true,
+		FailStatusCode:    http.StatusUnauthorized,
+		EventHash:         "evt-label-only",
+		Provider:          "codex",
+		AuthFileSnapshot:  "shared.json",
+		AuthLabelSnapshot: "Friendly account",
+		Source:            "request-source",
+		FailSummary:       "invalidated OAuth token",
+	}
+	candidate, ok := accountActionCandidateFromEvent(event, time.Now())
+	if !ok {
+		t.Fatal("candidate not detected")
+	}
+	if candidate.DisplayAccount != "Friendly account" || candidate.AccountSnapshot != "" {
+		t.Fatalf("candidate identity = %#v", candidate)
 	}
 }
 
@@ -228,6 +284,7 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 	defer st.Close()
 
 	var patched bool
+	getCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer mgmt" {
 			http.Error(w, "missing auth", http.StatusUnauthorized)
@@ -235,12 +292,20 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
+			getCalls++
+			runtimeID := "runtime-codex-7"
+			accountID := "acct-123"
+			if getCalls > 1 {
+				runtimeID = "runtime-replacement"
+				accountID = "acct-replacement"
+			}
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         runtimeID,
 				"name":       "codex-auth.json",
 				"auth_index": "7",
 				"provider":   "codex",
 				"account":    "user@example.com",
-				"account_id": "acct-123",
+				"account_id": accountID,
 				"disabled":   false,
 			}})
 		case "PATCH /v0/management/auth-files/status":
@@ -252,7 +317,7 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if payload.Name != "codex-auth.json" || !payload.Disabled {
+			if payload.Name != "runtime-codex-7" || !payload.Disabled {
 				t.Fatalf("patch payload = %#v", payload)
 			}
 			patched = true
@@ -280,6 +345,9 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 	if !patched {
 		t.Fatal("expected auto-disable PATCH")
 	}
+	if getCalls != 1 {
+		t.Fatalf("auth file reads = %d, want one verified target read", getCalls)
+	}
 	items, err := st.ListAccountActionCandidates(context.Background(), model.AccountActionStatusPending, 10)
 	if err != nil {
 		t.Fatalf("list candidates: %v", err)
@@ -289,17 +357,85 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 	}
 }
 
+func TestAccountActionCandidateWorkerRejectsAmbiguousStatusMutationScope(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	patchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"id":         "shared.json",
+					"name":       "shared.json",
+					"auth_index": "auth-1",
+					"provider":   "codex",
+					"account":    "user@example.com",
+					"account_id": "acct-123",
+					"disabled":   false,
+				},
+				{
+					"id":         "runtime-auth-2",
+					"name":       "shared.json",
+					"auth_index": "auth-2",
+					"provider":   "codex",
+					"account":    "other@example.com",
+					"account_id": "acct-456",
+					"disabled":   false,
+				},
+			})
+		case "PATCH /v0/management/auth-files/status":
+			patchCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	NewAccountActionCandidateWorker(st, true).handleCandidate(context.Background(), accountActionCandidate{
+		BaseURL:             server.URL,
+		ManagementKey:       "mgmt",
+		FileName:            "shared.json",
+		AuthIndex:           "auth-1",
+		DisplayAccount:      "user@example.com",
+		AccountID:           "acct-123",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "token revoked",
+	})
+
+	if patchCalls != 0 {
+		t.Fatalf("patch calls = %d, want 0", patchCalls)
+	}
+	items, err := st.ListAccountActionCandidates(context.Background(), model.AccountActionStatusPending, 10)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(items) != 1 || items[0].AutoDisabledAtMS != 0 || !strings.Contains(items[0].LastError, "scope is ambiguous") {
+		t.Fatalf("items = %#v, want pending ambiguous failure", items)
+	}
+}
+
 func TestAccountActionCandidateWorkerRollsBackWhenAutoDisableMarkerFails(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 
+	getCalls := 0
 	patchStates := make([]bool, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
+			getCalls++
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-codex-7",
 				"name":       "codex-auth.json",
 				"auth_index": "7",
 				"provider":   "codex",
@@ -342,6 +478,269 @@ func TestAccountActionCandidateWorkerRollsBackWhenAutoDisableMarkerFails(t *test
 	if len(patchStates) != 2 || !patchStates[0] || patchStates[1] {
 		t.Fatalf("patch states = %#v, want [true false]", patchStates)
 	}
+	if getCalls != 2 {
+		t.Fatalf("auth file reads = %d, want initial and rollback verification", getCalls)
+	}
+}
+
+func TestAccountActionCandidateWorkerCompensatesAfterParentCancellation(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	getCalls := 0
+	patchStates := make([]bool, 0, 2)
+	client := &http.Client{Transport: workerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /v0/management/auth-files":
+			getCalls++
+			disabled := len(patchStates) > 0 && patchStates[len(patchStates)-1]
+			body := `[{"id":"runtime-codex-7","name":"codex-auth.json","auth_index":"7","provider":"codex","account":"user@example.com","account_id":"acct-123","disabled":` + fmt.Sprint(disabled) + `}]`
+			return workerHTTPResponse(r, io.NopCloser(strings.NewReader(body))), nil
+		case http.MethodPatch + " /v0/management/auth-files/status":
+			var payload struct {
+				Disabled bool `json:"disabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			patchStates = append(patchStates, payload.Disabled)
+			body := io.ReadCloser(io.NopCloser(strings.NewReader(`{"ok":true}`)))
+			if payload.Disabled {
+				body = &cancelAtEOFReadCloser{reader: strings.NewReader(`{"ok":true}`), cancel: cancel}
+			}
+			return workerHTTPResponse(r, body), nil
+		default:
+			return workerHTTPResponse(r, io.NopCloser(strings.NewReader(`{"error":"not found"}`))), nil
+		}
+	})}
+	worker := NewAccountActionCandidateWorker(st, true)
+	worker.client = client
+	worker.handleCandidate(ctx, accountActionCandidate{
+		BaseURL:             "http://cpa.test",
+		ManagementKey:       "mgmt",
+		FileName:            "codex-auth.json",
+		AuthIndex:           "7",
+		DisplayAccount:      "user@example.com",
+		AccountID:           "acct-123",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "token revoked",
+	})
+
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("parent context error = %v, want context.Canceled", ctx.Err())
+	}
+	if getCalls != 2 {
+		t.Fatalf("auth file reads = %d, want initial and compensation verification", getCalls)
+	}
+	if len(patchStates) != 2 || !patchStates[0] || patchStates[1] {
+		t.Fatalf("patch states = %#v, want [true false]", patchStates)
+	}
+}
+
+func TestAccountActionCandidateWorkerCompensationHasTotalTimeout(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	getCalls := 0
+	rollbackCanceled := make(chan error, 1)
+	client := &http.Client{Transport: workerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /v0/management/auth-files":
+			getCalls++
+			if getCalls > 1 {
+				<-r.Context().Done()
+				rollbackCanceled <- r.Context().Err()
+				return nil, r.Context().Err()
+			}
+			return workerHTTPResponse(r, io.NopCloser(strings.NewReader(
+				`[{"id":"runtime-codex-7","name":"codex-auth.json","auth_index":"7","provider":"codex","account":"user@example.com","account_id":"acct-123","disabled":false}]`,
+			))), nil
+		case http.MethodPatch + " /v0/management/auth-files/status":
+			_ = st.Close()
+			return workerHTTPResponse(r, io.NopCloser(strings.NewReader(`{"ok":true}`))), nil
+		default:
+			return workerHTTPResponse(r, io.NopCloser(strings.NewReader(`{"error":"not found"}`))), nil
+		}
+	})}
+	worker := NewAccountActionCandidateWorker(st, true)
+	worker.client = client
+	worker.compensationTimeout = 25 * time.Millisecond
+	started := time.Now()
+	worker.handleCandidate(context.Background(), accountActionCandidate{
+		BaseURL:             "http://cpa.test",
+		ManagementKey:       "mgmt",
+		FileName:            "codex-auth.json",
+		AuthIndex:           "7",
+		DisplayAccount:      "user@example.com",
+		AccountID:           "acct-123",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "token revoked",
+	})
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("bounded compensation elapsed = %s, want <= 500ms", elapsed)
+	}
+	select {
+	case err := <-rollbackCanceled:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("rollback context error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rollback request did not observe the compensation deadline")
+	}
+}
+
+func TestAccountActionCandidateWorkerRollsBackWhenCandidateLeavesPendingAfterPatch(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	getCalls := 0
+	patchStates := make([]bool, 0, 2)
+	var candidateID int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v0/management/auth-files":
+			getCalls++
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-codex-7",
+				"name":       "codex-auth.json",
+				"auth_index": "7",
+				"provider":   "codex",
+				"account":    "user@example.com",
+				"account_id": "acct-123",
+				"disabled":   len(patchStates) > 0 && patchStates[len(patchStates)-1],
+			}})
+		case "PATCH /v0/management/auth-files/status":
+			var payload struct {
+				Disabled bool `json:"disabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			patchStates = append(patchStates, payload.Disabled)
+			if payload.Disabled {
+				items, err := st.ListAccountActionCandidates(context.Background(), model.AccountActionStatusPending, 10)
+				if err != nil || len(items) != 1 {
+					t.Fatalf("list pending during patch: items=%#v err=%v", items, err)
+				}
+				candidateID = items[0].ID
+				if _, err := st.UpdateAccountActionCandidateStatus(context.Background(), candidateID, model.AccountActionStatusIgnored); err != nil {
+					t.Fatalf("ignore candidate during patch: %v", err)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	NewAccountActionCandidateWorker(st, true).handleCandidate(context.Background(), accountActionCandidate{
+		BaseURL:             server.URL,
+		ManagementKey:       "mgmt",
+		FileName:            "codex-auth.json",
+		AuthIndex:           "7",
+		DisplayAccount:      "user@example.com",
+		AccountID:           "acct-123",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "token revoked",
+	})
+
+	if len(patchStates) != 2 || !patchStates[0] || patchStates[1] {
+		t.Fatalf("patch states = %#v, want [true false]", patchStates)
+	}
+	if getCalls != 2 {
+		t.Fatalf("auth file reads = %d, want initial and rollback verification", getCalls)
+	}
+	item, ok, err := st.GetAccountActionCandidate(context.Background(), candidateID)
+	if err != nil || !ok || item.Status != model.AccountActionStatusIgnored || item.AutoDisabledAtMS != 0 {
+		t.Fatalf("candidate after concurrent ignore = %#v ok=%v err=%v", item, ok, err)
+	}
+}
+
+func TestAccountActionCandidateWorkerDoesNotRollbackSamePathReplacement(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	getCalls := 0
+	patchStates := make([]bool, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v0/management/auth-files":
+			getCalls++
+			accountID := "acct-123"
+			account := "user@example.com"
+			runtimeID := "runtime-codex-7"
+			if getCalls > 1 {
+				accountID = "acct-replacement"
+				account = "replacement@example.com"
+				runtimeID = "runtime-replacement"
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         runtimeID,
+				"name":       "codex-auth.json",
+				"auth_index": "7",
+				"provider":   "codex",
+				"account":    account,
+				"account_id": accountID,
+				"disabled":   getCalls > 1,
+			}})
+		case "PATCH /v0/management/auth-files/status":
+			var payload struct {
+				Disabled bool `json:"disabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			patchStates = append(patchStates, payload.Disabled)
+			if payload.Disabled {
+				_ = st.Close()
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	NewAccountActionCandidateWorker(st, true).handleCandidate(context.Background(), accountActionCandidate{
+		BaseURL:             server.URL,
+		ManagementKey:       "mgmt",
+		FileName:            "codex-auth.json",
+		AuthIndex:           "7",
+		DisplayAccount:      "user@example.com",
+		AccountID:           "acct-123",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "token revoked",
+	})
+
+	if getCalls != 2 {
+		t.Fatalf("auth file reads = %d, want initial and rollback verification", getCalls)
+	}
+	if len(patchStates) != 1 || !patchStates[0] {
+		t.Fatalf("patch states = %#v, replacement must not be enabled", patchStates)
+	}
 }
 
 func TestAccountActionCandidateWorkerAutoDisableRejectsIdentityMismatch(t *testing.T) {
@@ -356,6 +755,7 @@ func TestAccountActionCandidateWorkerAutoDisableRejectsIdentityMismatch(t *testi
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-codex-7",
 				"name":       "codex-auth.json",
 				"auth_index": "7",
 				"provider":   "codex",
@@ -394,6 +794,43 @@ func TestAccountActionCandidateWorkerAutoDisableRejectsIdentityMismatch(t *testi
 	}
 	if len(items) != 1 || !strings.Contains(items[0].LastError, "identity mismatch") {
 		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestAccountActionCandidateWorkerAutoDisableRejectsWeakIdentity(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	requestCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	NewAccountActionCandidateWorker(st, true).handleCandidate(context.Background(), accountActionCandidate{
+		BaseURL:             server.URL,
+		ManagementKey:       "mgmt",
+		FileName:            "codex-auth.json",
+		DisplayAccount:      "codex-auth.json",
+		Provider:            "codex",
+		ActionType:          model.AccountActionTypeDelete,
+		AutoDisableEligible: true,
+		Reason:              "legacy candidate",
+	})
+
+	if requestCalls != 0 {
+		t.Fatalf("CPA request calls = %d, want 0", requestCalls)
+	}
+	items, err := st.ListAccountActionCandidates(context.Background(), model.AccountActionStatusPending, 10)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(items) != 1 || items[0].AutoDisabledAtMS != 0 || !strings.Contains(items[0].LastError, "no stable auth index") {
+		t.Fatalf("items = %#v, want weak-identity failure", items)
 	}
 }
 
@@ -456,6 +893,7 @@ func TestAccountActionCandidateWorkerAutoDisablesReauth(t *testing.T) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-codex-7",
 				"name":       "codex-auth.json",
 				"auth_index": "7",
 				"provider":   "codex",
@@ -510,6 +948,7 @@ func TestAccountActionCandidateWorkerAutoDisablesEligibleXAIReviewWithProviderAl
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-xai-1",
 				"name":       "xai-auth.json",
 				"auth_index": "xai-1",
 				"provider":   "xai",
@@ -573,6 +1012,7 @@ func TestAccountActionCandidateWorkerAutoDisableSkipsAlreadyDisabled(t *testing.
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v0/management/auth-files":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "runtime-codex-auth",
 				"name":       "codex-auth.json",
 				"auth_index": "7",
 				"provider":   "codex",

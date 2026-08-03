@@ -12,6 +12,8 @@ import {
   supportsAuthFileWebsockets,
   supportsAuthFileUsingApi,
 } from '@/features/authFiles/constants';
+import { getAuthFilePatchTarget } from '@/features/authFiles/model/authFilesPageModel';
+import { resolveAuthFileStatusMutationTarget } from '@/utils/authFileStatusMutation';
 
 type AuthFileHeaders = Record<string, string>;
 type AuthFileHeadersErrorKey =
@@ -760,7 +762,22 @@ export function useAuthFilesPrefixProxyEditor(
     });
 
     try {
-      await authFilesApi.patchFields(name, payload);
+      const response = await authFilesApi.list();
+      const currentFiles = Array.isArray(response.files) ? response.files : [];
+      const resolution = resolveAuthFileStatusMutationTarget(
+        currentFiles,
+        getAuthFilePatchTarget(prefixProxyEditor.authFile)
+      );
+      if (!resolution.target || resolution.failure !== null || resolution.scope !== 'credential') {
+        throw new Error(t('auth_files.status_mutation_scope_ambiguous', { name }));
+      }
+      await authFilesApi.patchFieldsWithPluginSourceFallback(
+        getAuthFilePatchTarget(resolution.target),
+        payload,
+        currentFiles
+          .filter((file) => file.name.trim() === resolution.target?.name.trim())
+          .map(getAuthFilePatchTarget)
+      );
       showNotification(t('auth_files.prefix_proxy_saved_success', { name }), 'success');
       await loadFiles();
       setPrefixProxyEditor(null);

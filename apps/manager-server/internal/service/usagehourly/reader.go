@@ -29,8 +29,10 @@ type Reader struct {
 type Snapshot struct {
 	Aggregate  store.Aggregate
 	ModelStats []store.ModelStat
+	Prices     map[string]store.ModelPrice
 
 	rows                   []store.UsageHourlyAggregateRow
+	pricingRows            []store.UsagePricingHourlyRow
 	fromMS                 int64
 	toMS                   int64
 	dashboardTimelineReady bool
@@ -38,16 +40,20 @@ type Snapshot struct {
 }
 
 type modelStatKey struct {
-	model        string
-	billingModel string
-	serviceTier  string
+	model                  string
+	billingModel           string
+	pricingModel           string
+	serviceTier            string
+	contextThresholdTokens int64
 }
 
 type analyticsTimelineKey struct {
-	bucketMS     int64
-	model        string
-	billingModel string
-	serviceTier  string
+	bucketMS               int64
+	model                  string
+	billingModel           string
+	pricingModel           string
+	serviceTier            string
+	contextThresholdTokens int64
 }
 
 type analyticsTimelineAccumulator struct {
@@ -126,28 +132,44 @@ func (r *Reader) loadRows(ctx context.Context, filter store.AnalyticsFilter, das
 		return Snapshot{}, false
 	}
 
-	rows, state, available, err := r.store.UsageHourlyAggregateRows(ctx, store.UsageHourlyAggregateFilter{
+	aggregateFilter := store.UsageHourlyAggregateFilter{
 		FromMS:          filter.FromMS,
 		ToMS:            filter.ToMS,
 		Models:          filter.Models,
 		IncludeFailed:   filter.IncludeFailed,
 		FailedOnly:      filter.FailedOnly,
 		CollapseBuckets: !dashboardTimelineReady && !analyticsTimelineReady,
-	})
+	}
+	pricingFilter := store.UsagePricingHourlyFilter{
+		FromMS:          filter.FromMS,
+		ToMS:            filter.ToMS,
+		Models:          filter.Models,
+		IncludeFailed:   filter.IncludeFailed,
+		FailedOnly:      filter.FailedOnly,
+		CollapseBuckets: !dashboardTimelineReady && !analyticsTimelineReady,
+	}
+	dbSnapshot, err := r.store.LoadUsageHourlyPricingSnapshot(ctx, aggregateFilter, pricingFilter)
 	if err != nil {
-		r.logFallback(fmt.Sprintf("permanent hourly rows query failed: %v", err))
+		r.logFallback(fmt.Sprintf("hourly pricing snapshot query failed: %v", err))
 		return Snapshot{}, false
 	}
-	if !available {
-		r.logFallback(fmt.Sprintf("permanent hourly aggregate unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
+	if !dbSnapshot.AggregateAvailable {
+		r.logFallback(fmt.Sprintf("permanent hourly aggregate unavailable: schema_version=%d status=%s", dbSnapshot.AggregateState.SchemaVersion, dbSnapshot.AggregateState.Status))
 		return Snapshot{}, false
 	}
-	agg, modelStats := coreFromRows(rows)
+	if !dbSnapshot.PricingAvailable {
+		r.logFallback(fmt.Sprintf("pricing hourly aggregate unavailable: schema_version=%d status=%s", dbSnapshot.PricingState.SchemaVersion, dbSnapshot.PricingState.Status))
+		return Snapshot{}, false
+	}
+	agg, _ := coreFromRows(dbSnapshot.AggregateRows)
+	modelStats := modelStatsFromPricingRows(dbSnapshot.PricingRows)
 
 	return Snapshot{
 		Aggregate:              agg,
 		ModelStats:             modelStats,
-		rows:                   rows,
+		Prices:                 dbSnapshot.Prices,
+		rows:                   dbSnapshot.AggregateRows,
+		pricingRows:            dbSnapshot.PricingRows,
 		fromMS:                 filter.FromMS,
 		toMS:                   filter.ToMS,
 		dashboardTimelineReady: dashboardTimelineReady,
@@ -190,7 +212,7 @@ func (r *Reader) AnalyticsTimeline(
 		return nil, false
 	}
 
-	return analyticsTimelineFromRows(snapshot.rows, granularity, location), true
+	return analyticsTimelineFromPricingRows(snapshot.pricingRows, granularity, location), true
 }
 
 // CanRepresentAnalyticsTimeline reports whether complete UTC hourly rows can
@@ -280,7 +302,13 @@ func coreFromRows(rows []store.UsageHourlyAggregateRow) (store.Aggregate, []stor
 }
 
 func addModelStat(grouped map[modelStatKey]*store.ModelStat, stat store.ModelStat) {
-	mapKey := modelStatKey{model: stat.Model, billingModel: stat.BillingModel, serviceTier: stat.ServiceTier}
+	mapKey := modelStatKey{
+		model:                  stat.Model,
+		billingModel:           stat.BillingModel,
+		pricingModel:           stat.PricingModel,
+		serviceTier:            stat.ServiceTier,
+		contextThresholdTokens: stat.ContextThresholdTokens,
+	}
 	entry := grouped[mapKey]
 	if entry == nil {
 		copy := stat
@@ -318,9 +346,42 @@ func sortedModelStats(grouped map[modelStatKey]*store.ModelStat) []store.ModelSt
 		if result[i].BillingModel != result[j].BillingModel {
 			return result[i].BillingModel < result[j].BillingModel
 		}
-		return result[i].ServiceTier < result[j].ServiceTier
+		if result[i].PricingModel != result[j].PricingModel {
+			return result[i].PricingModel < result[j].PricingModel
+		}
+		if result[i].ServiceTier != result[j].ServiceTier {
+			return result[i].ServiceTier < result[j].ServiceTier
+		}
+		return result[i].ContextThresholdTokens < result[j].ContextThresholdTokens
 	})
 	return result
+}
+
+func modelStatsFromPricingRows(rows []store.UsagePricingHourlyRow) []store.ModelStat {
+	grouped := make(map[modelStatKey]*store.ModelStat)
+	for _, row := range rows {
+		successCalls := int64(0)
+		if !row.Failed {
+			successCalls = row.Calls
+		}
+		addModelStat(grouped, store.ModelStat{
+			LongContextTokens:   row.LongContextTokens,
+			PricingBand:         row.PricingBand,
+			Model:               row.Model,
+			BillingModel:        row.BillingModel,
+			ServiceTier:         row.ServiceTier,
+			Calls:               row.Calls,
+			SuccessCalls:        successCalls,
+			InputTokens:         row.InputTokens,
+			OutputTokens:        row.OutputTokens,
+			ReasoningTokens:     row.ReasoningTokens,
+			CachedTokens:        row.CachedTokens,
+			CacheReadTokens:     row.CacheReadTokens,
+			CacheCreationTokens: row.CacheCreationTokens,
+			TotalTokens:         row.TotalTokens,
+		})
+	}
+	return sortedModelStats(grouped)
 }
 
 func dashboardTimelineFromRows(rows []store.UsageHourlyAggregateRow) []store.TimelinePoint {
@@ -347,11 +408,12 @@ func dashboardTimelineFromRows(rows []store.UsageHourlyAggregateRow) []store.Tim
 	return result
 }
 
-func analyticsTimelineFromRows(rows []store.UsageHourlyAggregateRow, granularity string, location *time.Location) []store.TimelinePoint {
+func analyticsTimelineFromPricingRows(rows []store.UsagePricingHourlyRow, granularity string, location *time.Location) []store.TimelinePoint {
 	grouped := make(map[analyticsTimelineKey]*analyticsTimelineAccumulator)
 	for _, row := range rows {
 		point := store.TimelinePoint{
 			LongContextTokens:   row.LongContextTokens,
+			PricingBand:         row.PricingBand,
 			BucketMS:            usage.AnalyticsBucketMS(row.BucketMS, granularity, location),
 			Model:               row.Model,
 			BillingModel:        row.BillingModel,
@@ -378,10 +440,12 @@ func analyticsTimelineFromRows(rows []store.UsageHourlyAggregateRow, granularity
 
 func addAnalyticsTimelinePoint(grouped map[analyticsTimelineKey]*analyticsTimelineAccumulator, point store.TimelinePoint, latencySumMS int64) {
 	mapKey := analyticsTimelineKey{
-		bucketMS:     point.BucketMS,
-		model:        point.Model,
-		billingModel: point.BillingModel,
-		serviceTier:  point.ServiceTier,
+		bucketMS:               point.BucketMS,
+		model:                  point.Model,
+		billingModel:           point.BillingModel,
+		pricingModel:           point.PricingModel,
+		serviceTier:            point.ServiceTier,
+		contextThresholdTokens: point.ContextThresholdTokens,
 	}
 	entry := grouped[mapKey]
 	if entry == nil {
@@ -429,7 +493,13 @@ func sortedAnalyticsTimeline(grouped map[analyticsTimelineKey]*analyticsTimeline
 		if result[i].BillingModel != result[j].BillingModel {
 			return result[i].BillingModel < result[j].BillingModel
 		}
-		return result[i].ServiceTier < result[j].ServiceTier
+		if result[i].PricingModel != result[j].PricingModel {
+			return result[i].PricingModel < result[j].PricingModel
+		}
+		if result[i].ServiceTier != result[j].ServiceTier {
+			return result[i].ServiceTier < result[j].ServiceTier
+		}
+		return result[i].ContextThresholdTokens < result[j].ContextThresholdTokens
 	})
 	return result
 }

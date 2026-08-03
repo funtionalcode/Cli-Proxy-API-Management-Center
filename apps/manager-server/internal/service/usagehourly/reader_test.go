@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -222,8 +223,9 @@ func TestReaderPreservesEmptyLiteralDashAndWhitespaceModels(t *testing.T) {
 }
 
 func TestAnalyticsTimelineAccumulatesLatencyBeforeAveraging(t *testing.T) {
-	rows := []store.UsageHourlyAggregateRow{
+	rows := []store.UsagePricingHourlyRow{
 		{
+			PricingBand:    usage.PricingBand{PricingModel: "model-a", ContextThresholdTokens: model.ModelPriceBaseContextThreshold},
 			BucketMS:       0,
 			Model:          "model-a",
 			BillingModel:   "model-a",
@@ -232,6 +234,7 @@ func TestAnalyticsTimelineAccumulatesLatencyBeforeAveraging(t *testing.T) {
 			LatencySamples: 1,
 		},
 		{
+			PricingBand:    usage.PricingBand{PricingModel: "model-a", ContextThresholdTokens: model.ModelPriceBaseContextThreshold},
 			BucketMS:       hourMS,
 			Model:          "model-a",
 			BillingModel:   "model-a",
@@ -241,7 +244,7 @@ func TestAnalyticsTimelineAccumulatesLatencyBeforeAveraging(t *testing.T) {
 		},
 	}
 
-	points := analyticsTimelineFromRows(rows, "day", time.UTC)
+	points := analyticsTimelineFromPricingRows(rows, "day", time.UTC)
 	if len(points) != 1 {
 		t.Fatalf("timeline points = %#v, want one point", points)
 	}
@@ -261,7 +264,13 @@ func sortTimelinePoints(points []store.TimelinePoint) {
 		if points[i].BillingModel != points[j].BillingModel {
 			return points[i].BillingModel < points[j].BillingModel
 		}
-		return points[i].ServiceTier < points[j].ServiceTier
+		if points[i].PricingModel != points[j].PricingModel {
+			return points[i].PricingModel < points[j].PricingModel
+		}
+		if points[i].ServiceTier != points[j].ServiceTier {
+			return points[i].ServiceTier < points[j].ServiceTier
+		}
+		return points[i].ContextThresholdTokens < points[j].ContextThresholdTokens
 	})
 }
 
@@ -303,6 +312,15 @@ func catchUpReaderRollup(t *testing.T, ctx context.Context, db *store.Store) {
 		result, err := db.CatchUpUsageHourlyAggregate(ctx, 100, time.Now().UnixMilli())
 		if err != nil {
 			t.Fatalf("catch up rollup: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	for {
+		result, err := db.CatchUpUsagePricing(ctx, 100, time.Now().UnixMilli())
+		if err != nil {
+			t.Fatalf("catch up pricing rollup: %v", err)
 		}
 		if !result.Pending {
 			return

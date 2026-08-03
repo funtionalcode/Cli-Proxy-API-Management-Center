@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -40,8 +41,9 @@ type Repository interface {
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
 	ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error)
 	UpsertDisableOwnership(ctx context.Context, item model.CodexInspectionDisableOwnership) error
-	DeleteDisableOwnership(ctx context.Context, fileName string) error
-	RevokeDisableOwnership(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error)
+	UpsertDisableOwnerships(ctx context.Context, items []model.CodexInspectionDisableOwnership) error
+	DeleteDisableOwnership(ctx context.Context, target model.CodexInspectionDisableOwnershipTarget) error
+	RevokeDisableOwnership(ctx context.Context, targets []model.CodexInspectionDisableOwnershipTarget, clearAll bool) ([]model.CodexInspectionDisableOwnership, error)
 	RestoreDisableOwnership(ctx context.Context, items []model.CodexInspectionDisableOwnership) error
 }
 
@@ -219,14 +221,15 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 		return r.db.QueryRowContext(
 			ctx,
 			`insert into codex_inspection_results (
-			run_id, account_key, file_name, display_account, auth_index, account_id,
+			run_id, account_key, file_name, display_account, account_snapshot, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
 			plan_type, quota_windows_json, error_kind, error_detail, created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(run_id, account_key) do update set
 			file_name = excluded.file_name,
 			display_account = excluded.display_account,
+			account_snapshot = excluded.account_snapshot,
 			auth_index = excluded.auth_index,
 			account_id = excluded.account_id,
 			provider = excluded.provider,
@@ -253,6 +256,7 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			result.AccountKey,
 			result.FileName,
 			result.DisplayAccount,
+			nullString(result.AccountSnapshot),
 			nullString(result.AuthIndex),
 			nullString(result.AccountID),
 			nullString(result.Provider),
@@ -420,7 +424,7 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 	rows, err := r.db.QueryContext(
 		ctx,
 		`select
-			id, run_id, account_key, file_name, display_account, auth_index, account_id,
+			id, run_id, account_key, file_name, display_account, account_snapshot, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
 			used_percent, is_quota, auto_recover_eligible, error, action_status, executed_action, action_error,
 			plan_type, quota_windows_json, error_kind, error_detail, created_at_ms
@@ -446,8 +450,9 @@ func (r *repository) ListResults(ctx context.Context, runID int64) ([]model.Code
 }
 
 func (r *repository) ListDisableOwnership(ctx context.Context) ([]model.CodexInspectionDisableOwnership, error) {
-	rows, err := r.db.QueryContext(ctx, `select file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
-		from codex_inspection_disable_ownership order by file_name asc`)
+	rows, err := r.db.QueryContext(ctx, `select file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+		from codex_inspection_disable_ownership
+		order by file_name asc, provider asc, auth_index asc, account_id asc, account_snapshot asc`)
 	if err != nil {
 		return nil, err
 	}
@@ -456,69 +461,83 @@ func (r *repository) ListDisableOwnership(ctx context.Context) ([]model.CodexIns
 	items := make([]model.CodexInspectionDisableOwnership, 0)
 	for rows.Next() {
 		var item model.CodexInspectionDisableOwnership
-		var provider, authIndex, accountID sql.NullString
-		if err := rows.Scan(&item.FileName, &provider, &authIndex, &accountID, &item.DisabledAtMS, &item.UpdatedAtMS); err != nil {
+		var provider, authIndex, accountID, accountSnapshot sql.NullString
+		if err := rows.Scan(&item.FileName, &provider, &authIndex, &accountID, &accountSnapshot, &item.DisabledAtMS, &item.UpdatedAtMS); err != nil {
 			return nil, err
 		}
 		item.Provider = provider.String
 		item.AuthIndex = authIndex.String
 		item.AccountID = accountID.String
+		item.AccountSnapshot = accountSnapshot.String
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
 func (r *repository) UpsertDisableOwnership(ctx context.Context, item model.CodexInspectionDisableOwnership) error {
-	if item.FileName == "" {
-		return errors.New("codex inspection ownership file name is required")
-	}
-	now := time.Now().UnixMilli()
-	if item.DisabledAtMS <= 0 {
-		item.DisabledAtMS = now
-	}
-	item.UpdatedAtMS = now
-	provider := item.Provider
-	if provider == "" {
-		provider = "codex"
-	}
-	return withSQLiteBusyRetry(ctx, func() error {
-		_, err := r.db.ExecContext(ctx, `insert into codex_inspection_disable_ownership (
-			file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
-		) values (?, ?, ?, ?, ?, ?)
-		on conflict(file_name) do update set
-			provider = excluded.provider,
-			auth_index = excluded.auth_index,
-			account_id = excluded.account_id,
-			disabled_at_ms = excluded.disabled_at_ms,
-			updated_at_ms = excluded.updated_at_ms`,
-			item.FileName,
-			provider,
-			nullString(item.AuthIndex),
-			nullString(item.AccountID),
-			item.DisabledAtMS,
-			item.UpdatedAtMS,
-		)
-		return err
-	})
+	return r.UpsertDisableOwnerships(ctx, []model.CodexInspectionDisableOwnership{item})
 }
 
-func (r *repository) DeleteDisableOwnership(ctx context.Context, fileName string) error {
-	if fileName == "" {
+func (r *repository) UpsertDisableOwnerships(ctx context.Context, items []model.CodexInspectionDisableOwnership) error {
+	if len(items) == 0 {
 		return nil
 	}
+	normalized := make([]model.CodexInspectionDisableOwnership, len(items))
+	now := time.Now().UnixMilli()
+	for index, item := range items {
+		item = normalizeDisableOwnership(item)
+		if item.FileName == "" {
+			return errors.New("codex inspection ownership file name is required")
+		}
+		if item.DisabledAtMS <= 0 {
+			item.DisabledAtMS = now
+		}
+		item.UpdatedAtMS = now
+		normalized[index] = item
+	}
 	return withSQLiteBusyRetry(ctx, func() error {
-		_, err := r.db.ExecContext(ctx, `delete from codex_inspection_disable_ownership where file_name = ?`, fileName)
-		return err
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, item := range normalized {
+			if _, err := tx.ExecContext(ctx, `insert into codex_inspection_disable_ownership (
+				file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+			) values (?, ?, ?, ?, ?, ?, ?)
+			on conflict(file_name, provider, auth_index, account_id, account_snapshot) do update set
+				disabled_at_ms = excluded.disabled_at_ms,
+				updated_at_ms = excluded.updated_at_ms`,
+				item.FileName,
+				item.Provider,
+				item.AuthIndex,
+				item.AccountID,
+				item.AccountSnapshot,
+				item.DisabledAtMS,
+				item.UpdatedAtMS,
+			); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
 	})
 }
 
-func (r *repository) RevokeDisableOwnership(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
-	if !clearAll && len(fileNames) == 0 {
+func (r *repository) DeleteDisableOwnership(ctx context.Context, target model.CodexInspectionDisableOwnershipTarget) error {
+	if strings.TrimSpace(target.FileName) == "" {
+		return nil
+	}
+	_, err := r.RevokeDisableOwnership(ctx, []model.CodexInspectionDisableOwnershipTarget{target}, false)
+	return err
+}
+
+func (r *repository) RevokeDisableOwnership(ctx context.Context, targets []model.CodexInspectionDisableOwnershipTarget, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
+	if !clearAll && len(targets) == 0 {
 		return nil, nil
 	}
 	var revoked []model.CodexInspectionDisableOwnership
 	err := withSQLiteBusyRetry(ctx, func() error {
-		items, err := r.revokeDisableOwnershipOnce(ctx, fileNames, clearAll)
+		items, err := r.revokeDisableOwnershipOnce(ctx, targets, clearAll)
 		if err != nil {
 			revoked = nil
 			return err
@@ -529,20 +548,14 @@ func (r *repository) RevokeDisableOwnership(ctx context.Context, fileNames []str
 	return revoked, err
 }
 
-func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, fileNames []string, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
+func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, targets []model.CodexInspectionDisableOwnershipTarget, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	targets := make(map[string]struct{}, len(fileNames))
-	for _, fileName := range fileNames {
-		if fileName != "" {
-			targets[fileName] = struct{}{}
-		}
-	}
-	rows, err := tx.QueryContext(ctx, `select file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
+	rows, err := tx.QueryContext(ctx, `select file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
 		from codex_inspection_disable_ownership`)
 	if err != nil {
 		return nil, err
@@ -550,18 +563,18 @@ func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, fileNames [
 	items := make([]model.CodexInspectionDisableOwnership, 0)
 	for rows.Next() {
 		var item model.CodexInspectionDisableOwnership
-		var provider, authIndex, accountID sql.NullString
-		if err := rows.Scan(&item.FileName, &provider, &authIndex, &accountID, &item.DisabledAtMS, &item.UpdatedAtMS); err != nil {
+		var provider, authIndex, accountID, accountSnapshot sql.NullString
+		if err := rows.Scan(&item.FileName, &provider, &authIndex, &accountID, &accountSnapshot, &item.DisabledAtMS, &item.UpdatedAtMS); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		item.Provider = provider.String
 		item.AuthIndex = authIndex.String
 		item.AccountID = accountID.String
-		if !clearAll {
-			if _, ok := targets[item.FileName]; !ok {
-				continue
-			}
+		item.AccountSnapshot = accountSnapshot.String
+		item = normalizeDisableOwnership(item)
+		if !clearAll && !disableOwnershipMatchesAnyTarget(item, targets) {
+			continue
 		}
 		items = append(items, item)
 	}
@@ -577,7 +590,9 @@ func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, fileNames [
 		_, err = tx.ExecContext(ctx, `delete from codex_inspection_disable_ownership`)
 	} else {
 		for _, item := range items {
-			if _, err = tx.ExecContext(ctx, `delete from codex_inspection_disable_ownership where file_name = ?`, item.FileName); err != nil {
+			if _, err = tx.ExecContext(ctx, `delete from codex_inspection_disable_ownership
+				where file_name = ? and provider = ? and auth_index = ? and account_id = ? and account_snapshot = ?`,
+				item.FileName, item.Provider, item.AuthIndex, item.AccountID, item.AccountSnapshot); err != nil {
 				return nil, err
 			}
 		}
@@ -607,6 +622,7 @@ func (r *repository) restoreDisableOwnershipOnce(ctx context.Context, items []mo
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, item := range items {
+		item = normalizeDisableOwnership(item)
 		if item.FileName == "" {
 			continue
 		}
@@ -614,18 +630,15 @@ func (r *repository) restoreDisableOwnershipOnce(ctx context.Context, items []mo
 			item.DisabledAtMS = time.Now().UnixMilli()
 		}
 		item.UpdatedAtMS = time.Now().UnixMilli()
-		provider := item.Provider
-		if provider == "" {
-			provider = "codex"
-		}
 		if _, err := tx.ExecContext(ctx, `insert into codex_inspection_disable_ownership (
-			file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
-		) values (?, ?, ?, ?, ?, ?)
-		on conflict(file_name) do nothing`,
+			file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?)
+		on conflict(file_name, provider, auth_index, account_id, account_snapshot) do nothing`,
 			item.FileName,
-			provider,
-			nullString(item.AuthIndex),
-			nullString(item.AccountID),
+			item.Provider,
+			item.AuthIndex,
+			item.AccountID,
+			item.AccountSnapshot,
 			item.DisabledAtMS,
 			item.UpdatedAtMS,
 		); err != nil {
@@ -633,6 +646,90 @@ func (r *repository) restoreDisableOwnershipOnce(ctx context.Context, items []mo
 		}
 	}
 	return tx.Commit()
+}
+
+func normalizeDisableOwnership(item model.CodexInspectionDisableOwnership) model.CodexInspectionDisableOwnership {
+	item.FileName = strings.TrimSpace(item.FileName)
+	item.Provider = normalizeDisableOwnershipProvider(item.Provider)
+	item.AuthIndex = strings.TrimSpace(item.AuthIndex)
+	item.AccountID = strings.TrimSpace(item.AccountID)
+	item.AccountSnapshot = strings.TrimSpace(item.AccountSnapshot)
+	if item.AccountID != "" {
+		item.AccountSnapshot = ""
+	}
+	return item
+}
+
+func normalizeDisableOwnershipProvider(value string) string {
+	provider := strings.ToLower(strings.TrimSpace(value))
+	provider = strings.ReplaceAll(provider, "_", "-")
+	switch provider {
+	case "x-ai", "grok":
+		return "xai"
+	default:
+		return provider
+	}
+}
+
+func disableOwnershipMatchesAnyTarget(item model.CodexInspectionDisableOwnership, targets []model.CodexInspectionDisableOwnershipTarget) bool {
+	for _, target := range targets {
+		if disableOwnershipMatchesTarget(item, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func disableOwnershipMatchesTarget(item model.CodexInspectionDisableOwnership, target model.CodexInspectionDisableOwnershipTarget) bool {
+	if item.FileName != strings.TrimSpace(target.FileName) {
+		return false
+	}
+	if target.Provider != nil {
+		provider := normalizeDisableOwnershipProvider(*target.Provider)
+		if item.Provider != "" && item.Provider != provider {
+			return false
+		}
+	}
+	if target.AuthIndex != nil {
+		authIndex := strings.TrimSpace(*target.AuthIndex)
+		if authIndex == "" {
+			if item.AuthIndex != "" {
+				return false
+			}
+		} else if item.AuthIndex != "" && item.AuthIndex != authIndex {
+			return false
+		}
+	}
+	if target.AccountID != nil {
+		accountID := strings.TrimSpace(*target.AccountID)
+		if accountID == "" {
+			if item.AccountID != "" {
+				return false
+			}
+			if target.AccountSnapshot == nil && item.AccountSnapshot != "" {
+				return false
+			}
+		} else if item.AccountID != "" {
+			if item.AccountID != accountID {
+				return false
+			}
+		} else if item.AccountSnapshot != "" {
+			if target.AccountSnapshot == nil || strings.TrimSpace(*target.AccountSnapshot) != item.AccountSnapshot {
+				return false
+			}
+		}
+	}
+	if (target.AccountID == nil || strings.TrimSpace(*target.AccountID) == "") && target.AccountSnapshot != nil {
+		accountSnapshot := strings.TrimSpace(*target.AccountSnapshot)
+		if accountSnapshot == "" {
+			if item.AccountSnapshot != "" {
+				return false
+			}
+		} else if item.AccountSnapshot != "" && item.AccountSnapshot != accountSnapshot {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *repository) ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error) {
@@ -704,7 +801,7 @@ func scanRun(row scanner) (model.CodexInspectionRun, error) {
 
 func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	var result model.CodexInspectionResult
-	var authIndex, accountID, provider, status, state, actionReason, errorText sql.NullString
+	var accountSnapshot, authIndex, accountID, provider, status, state, actionReason, errorText sql.NullString
 	var actionStatus, executedAction, actionError sql.NullString
 	var planType, quotaWindowsJSON, errorKind, errorDetail sql.NullString
 	var statusCode sql.NullInt64
@@ -716,6 +813,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 		&result.AccountKey,
 		&result.FileName,
 		&result.DisplayAccount,
+		&accountSnapshot,
 		&authIndex,
 		&accountID,
 		&provider,
@@ -740,6 +838,7 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	); err != nil {
 		return model.CodexInspectionResult{}, err
 	}
+	result.AccountSnapshot = accountSnapshot.String
 	result.AuthIndex = authIndex.String
 	result.AccountID = accountID.String
 	result.Provider = provider.String

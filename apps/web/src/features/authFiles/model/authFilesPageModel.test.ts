@@ -6,6 +6,7 @@ import {
   authFileMatchesCodexStatusFilter,
   buildAuthFileCodexInspectionMap,
   getAuthFileCodexInspectionKey,
+  getAuthFileCodexInspectionKeyForIdentity,
   getAuthFileCodexStatus,
   getAuthFileNameFromSelectionKey,
   getAuthFilePatchTarget,
@@ -556,6 +557,28 @@ describe('auth file Codex status helpers', () => {
     );
   });
 
+  it('keeps same-file inspection snapshots without auth indexes distinct', () => {
+    const first: AuthFileCodexInspectionSnapshot = {
+      fileName: 'shared-codex.json',
+      provider: 'codex',
+      accountId: 'account-1',
+      accountSnapshot: 'first@example.com',
+      action: 'reauth',
+    };
+    const second: AuthFileCodexInspectionSnapshot = {
+      fileName: 'shared-codex.json',
+      provider: 'codex',
+      accountSnapshot: 'second@example.com',
+      action: 'disable',
+    };
+
+    const map = buildAuthFileCodexInspectionMap([first, second]);
+
+    expect(map.size).toBe(2);
+    expect(map.get(getAuthFileCodexInspectionKeyForIdentity(first))).toBe(first);
+    expect(map.get(getAuthFileCodexInspectionKeyForIdentity(second))).toBe(second);
+  });
+
   it('does not apply a provider-mismatched inspection snapshot to a row', () => {
     const sources = getFreshAuthFileCodexStatusSources(
       codexFile(),
@@ -728,7 +751,12 @@ describe('auth file Codex status helpers', () => {
   });
 
   it('keeps active Codex quota scoped to the matching auth file row', () => {
-    const first = codexFile({ name: 'shared-codex.json', authIndex: 0 });
+    const first = codexFile({
+      id: 'runtime-shared-0',
+      name: 'shared-codex.json',
+      authIndex: 0,
+      account_id: 'account-shared-0',
+    });
     const second = codexFile({ name: 'shared-codex.json', authIndex: 1 });
     const quota = codexQuota({
       authFileKey: getAuthFileCodexInspectionKey(first.name, first.authIndex),
@@ -839,17 +867,83 @@ describe('auth file Codex plan helpers', () => {
   });
 
   it('keeps same-file auth rows distinct for selection and patch targets', () => {
-    const first = codexFile({ name: 'shared-codex.json', authIndex: 0 });
+    const first = codexFile({
+      id: 'runtime-shared-0',
+      name: 'shared-codex.json',
+      authIndex: 0,
+      account_id: 'account-shared-0',
+    });
     const second = codexFile({ name: 'shared-codex.json', authIndex: 1 });
     const firstKey = getAuthFileSelectionKey(first);
     const secondKey = getAuthFileSelectionKey(second);
 
     expect(firstKey).not.toBe(secondKey);
     expect(getAuthFileNameFromSelectionKey(firstKey)).toBe('shared-codex.json');
-    expect(getAuthFilePatchTarget(first)).toEqual({ name: 'shared-codex.json', authIndex: 0 });
-    expect(getAuthFilePatchTarget(codexFile({ authIndex: undefined }))).toEqual({
-      name: 'codex-main.json',
+    expect(getAuthFilePatchTarget(first)).toEqual({
+      name: 'shared-codex.json',
+      runtimeId: 'runtime-shared-0',
+      authIndex: 0,
+      provider: 'codex',
+      accountId: 'account-shared-0',
     });
+    expect(
+      getAuthFilePatchTarget(codexFile({ authIndex: undefined, account: 'codex-main@example.com' }))
+    ).toEqual({
+      name: 'codex-main.json',
+      provider: 'codex',
+      accountSnapshot: 'codex-main@example.com',
+    });
+    expect(
+      getAuthFilePatchTarget({
+        id: 'runtime-unknown',
+        name: 'unknown.json',
+        account: 'unknown@example.com',
+      } as AuthFileItem)
+    ).toEqual({
+      name: 'unknown.json',
+      runtimeId: 'runtime-unknown',
+      accountSnapshot: 'unknown@example.com',
+    });
+    expect(
+      getAuthFilePatchTarget({
+        id: 'runtime-xai',
+        name: 'xai.json',
+        type: '',
+        provider: 'xai',
+        account: 'xai@example.com',
+      } as AuthFileItem)
+    ).toEqual({
+      name: 'xai.json',
+      runtimeId: 'runtime-xai',
+      provider: 'xai',
+      accountSnapshot: 'xai@example.com',
+    });
+  });
+
+  it('keeps same-file rows without auth indexes distinct by stable account identity', () => {
+    const first = codexFile({
+      id: 'runtime-shared-0',
+      name: 'shared-codex.json',
+      authIndex: undefined,
+      account_id: 'account-shared-0',
+      account: 'first@example.com',
+    });
+    const renamed = codexFile({
+      ...first,
+      account: 'renamed@example.com',
+    });
+    const second = codexFile({
+      id: 'runtime-shared-1',
+      name: 'shared-codex.json',
+      authIndex: undefined,
+      account: 'second@example.com',
+    });
+
+    expect(getAuthFileSelectionKey(first)).toBe(getAuthFileSelectionKey(renamed));
+    expect(getAuthFileSelectionKey(first)).not.toBe(getAuthFileSelectionKey(second));
+    expect(getAuthFileNameFromSelectionKey(getAuthFileSelectionKey(second))).toBe(
+      'shared-codex.json'
+    );
   });
 
   it('detects partial selection for shared auth files', () => {

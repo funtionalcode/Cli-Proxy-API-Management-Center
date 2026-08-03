@@ -2,6 +2,9 @@
 
 <!-- What changed and why. Keep it short, 2-4 lines. -->
 
+> Community and maintenance PRs must target `dev`. `main` accepts only a
+> promotion PR whose source is this repository's `dev` branch.
+
 ## Scope
 
 <!-- Check all areas touched by this PR. -->

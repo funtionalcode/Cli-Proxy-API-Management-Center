@@ -21,6 +21,7 @@ import type {
   XaiQuotaState,
 } from '@/types';
 import type { UsageHeaderSnapshot } from '@/services/api/usageService';
+import { getAuthFileStatusIdentityKey } from '@/utils/authFileStatusMutation';
 import type { AntigravityQuotaData, CodexQuotaData } from '@/utils/quota';
 import { resetCodexQuota } from '@/services/api/codexQuota';
 import { QuotaInfoTooltip } from '@/components/quota/QuotaInfoTooltip';
@@ -534,7 +535,7 @@ const buildCodexQuotaAuthIdentity = (file: AuthFileItem | undefined) => {
   if (!file?.name) return {};
   const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex ?? file['auth-index']);
   return {
-    authFileKey: `${file.name}::${authIndex ?? '-'}`,
+    authFileKey: getAuthFileStatusIdentityKey(file),
     authFileName: file.name,
     authIndex,
   };

@@ -14,6 +14,7 @@ import (
 func TestDiscoverUsageCacheAccountingCompletesEmptyDatabaseWithoutResettingRollups(t *testing.T) {
 	db := openMigrationTestDB(t)
 	insertRollupFixtures(t, db)
+	insertPricingRollupFixtures(t, db, 9, 9, 9)
 
 	state, err := New(db).DiscoverUsageCacheAccounting(context.Background())
 	if err != nil {
@@ -24,6 +25,9 @@ func TestDiscoverUsageCacheAccountingCompletesEmptyDatabaseWithoutResettingRollu
 	}
 	assertCount(t, db, "usage_account_model_rollups", 1)
 	assertCount(t, db, "usage_dashboard_hourly_rollups", 1)
+	assertCount(t, db, "usage_pricing_hourly_rollups_v1", 1)
+	assertCount(t, db, "usage_pricing_account_rollups_v1", 1)
+	assertPricingAggregateState(t, db, "backfilling", 9, 9, 9)
 	assertCheckpoint(t, db, "account_history", 9)
 	assertCheckpoint(t, db, "dashboard_hourly", 9)
 }
@@ -36,6 +40,7 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	markMigrationDiscovering(t, db)
 	insertRollupFixtures(t, db)
 	insertPermanentAggregateFixture(t, db, "legacy-anthropic")
+	insertPricingRollupFixtures(t, db, 1, 1, 3)
 
 	repo := New(db)
 	state, err := repo.DiscoverUsageCacheAccounting(context.Background())
@@ -47,6 +52,9 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	}
 	assertCount(t, db, "usage_account_model_rollups", 1)
 	assertCount(t, db, "usage_dashboard_hourly_rollups", 1)
+	assertCount(t, db, "usage_pricing_hourly_rollups_v1", 1)
+	assertCount(t, db, "usage_pricing_account_rollups_v1", 1)
+	assertPricingAggregateState(t, db, "backfilling", 1, 1, 3)
 
 	if _, err := db.Exec(`insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, cache_input_mode,
@@ -71,6 +79,9 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	assertCount(t, db, "usage_account_model_rollups", 1)
 	assertCount(t, db, "usage_hourly_aggregate_v1", 1)
 	assertPermanentAggregateState(t, db, "backfilling", 1, 1, 3)
+	assertCount(t, db, "usage_pricing_hourly_rollups_v1", 1)
+	assertCount(t, db, "usage_pricing_account_rollups_v1", 1)
+	assertPricingAggregateState(t, db, "backfilling", 1, 1, 3)
 	assertCheckpoint(t, db, "account_history", 9)
 
 	second, err := repo.RunUsageCacheAccountingBatch(context.Background(), 2)
@@ -88,7 +99,10 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	assertCount(t, db, "usage_account_model_rollups", 0)
 	assertCount(t, db, "usage_dashboard_hourly_rollups", 0)
 	assertCount(t, db, "usage_hourly_aggregate_v1", 0)
+	assertCount(t, db, "usage_pricing_hourly_rollups_v1", 0)
+	assertCount(t, db, "usage_pricing_account_rollups_v1", 0)
 	assertPermanentAggregateState(t, db, "pending", 0, 0, 4)
+	assertPricingAggregateState(t, db, "pending", 0, 0, 4)
 	assertIdentityAggregateVersion(t, db, "legacy-anthropic", 0)
 	assertCheckpoint(t, db, "account_history", 0)
 	assertCheckpoint(t, db, "dashboard_hourly", 0)
@@ -484,6 +498,41 @@ func insertPermanentAggregateFixture(t *testing.T, db *sql.DB, eventHash string)
 	}
 }
 
+func insertPricingRollupFixtures(t *testing.T, db *sql.DB, checkpoint, coverage, target int64) {
+	t.Helper()
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{
+			query: `insert into usage_pricing_hourly_rollups_v1 (
+				structure_revision, bucket_ms, model, billing_model, pricing_model,
+				service_tier, context_threshold_tokens, failed, calls, updated_at_ms
+			) values ('fixture', 0, 'model', 'model', 'model', '', -1, 0, 1, 1)`,
+		},
+		{
+			query: `insert into usage_pricing_account_rollups_v1 (
+				structure_revision, account_key, model, billing_model, pricing_model,
+				service_tier, context_threshold_tokens, calls, first_seen_ms, last_seen_ms, updated_at_ms
+			) values ('fixture', 'account', 'model', 'model', 'model', '', -1, 1, 1, 1, 1)`,
+		},
+		{
+			query: `update usage_pricing_rollup_state set
+				structure_revision = 'fixture', status = 'backfilling',
+				backfill_last_event_id = ?, coverage_event_id = ?, target_event_id = ?,
+				processed_events = 1, min_bucket_ms = 0, max_bucket_ms = 0,
+				updated_at_ms = 1, finished_at_ms = null
+			where rollup_name = 'pricing_v1' and schema_version = 1`,
+			args: []any{checkpoint, coverage, target},
+		},
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement.query, statement.args...); err != nil {
+			t.Fatalf("insert pricing rollup fixture: %v", err)
+		}
+	}
+}
+
 func markMigrationDiscovering(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`update usage_data_migrations set
@@ -533,6 +582,34 @@ func assertPermanentAggregateState(t *testing.T, db *sql.DB, wantStatus string, 
 	if status != wantStatus || checkpoint != wantCheckpoint || coverage != wantCoverage || target != wantTarget {
 		t.Fatalf(
 			"permanent aggregate state = status:%q checkpoint:%d coverage:%d target:%d, want status:%q checkpoint:%d coverage:%d target:%d",
+			status,
+			checkpoint,
+			coverage,
+			target,
+			wantStatus,
+			wantCheckpoint,
+			wantCoverage,
+			wantTarget,
+		)
+	}
+}
+
+func assertPricingAggregateState(t *testing.T, db *sql.DB, wantStatus string, wantCheckpoint, wantCoverage, wantTarget int64) {
+	t.Helper()
+	var status string
+	var checkpoint, coverage, target int64
+	if err := db.QueryRow(`select status, backfill_last_event_id, coverage_event_id, target_event_id
+		from usage_pricing_rollup_state where rollup_name = 'pricing_v1'`).Scan(
+		&status,
+		&checkpoint,
+		&coverage,
+		&target,
+	); err != nil {
+		t.Fatalf("read pricing aggregate state: %v", err)
+	}
+	if status != wantStatus || checkpoint != wantCheckpoint || coverage != wantCoverage || target != wantTarget {
+		t.Fatalf(
+			"pricing aggregate state = status:%q checkpoint:%d coverage:%d target:%d, want status:%q checkpoint:%d coverage:%d target:%d",
 			status,
 			checkpoint,
 			coverage,

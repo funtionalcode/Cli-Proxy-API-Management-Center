@@ -25,7 +25,7 @@ func TestServerCompatQuotaCooldownsList(t *testing.T) {
 		Owner:           model.QuotaCooldownOwnerXAIFreeUsage,
 		RecoverAtMS:     now + 3_600_000,
 		DisabledAtMS:    now,
-		AccountSnapshot: "should-not-leak",
+		AccountSnapshot: "xai-user@example.com",
 		EventHash:       "should-not-leak",
 		EvidenceJSON:    `{"provider":"xai","kind":"included_free_usage","state":"exhausted","code":"subscription:free-usage-exhausted","model":"Bearer sk-sensitive-token","unit":"tokens","actual":1024413,"limit":1000000,"remaining":0,"overage":24413,"window_kind":"rolling_24h","recover_at_ms":1700003600000,"recover_at_estimated":true,"source":"response_body"}`,
 	})
@@ -41,14 +41,15 @@ func TestServerCompatQuotaCooldownsList(t *testing.T) {
 
 	var resp struct {
 		Items []struct {
-			AuthFileName string `json:"authFileName"`
-			AuthIndex    string `json:"authIndex"`
-			Provider     string `json:"provider"`
-			Owner        string `json:"owner"`
-			RecoverAtMs  int64  `json:"recoverAtMs"`
-			DisabledAtMs int64  `json:"disabledAtMs"`
-			CreatedAtMs  int64  `json:"createdAtMs"`
-			Evidence     struct {
+			AuthFileName    string `json:"authFileName"`
+			AuthIndex       string `json:"authIndex"`
+			AccountSnapshot string `json:"accountSnapshot"`
+			Provider        string `json:"provider"`
+			Owner           string `json:"owner"`
+			RecoverAtMs     int64  `json:"recoverAtMs"`
+			DisabledAtMs    int64  `json:"disabledAtMs"`
+			CreatedAtMs     int64  `json:"createdAtMs"`
+			Evidence        struct {
 				Provider           string `json:"provider"`
 				Actual             int64  `json:"actual"`
 				Limit              int64  `json:"limit"`
@@ -63,7 +64,7 @@ func TestServerCompatQuotaCooldownsList(t *testing.T) {
 		t.Fatalf("items = %d, want 1, body = %s", len(resp.Items), rr.Body.String())
 	}
 	item := resp.Items[0]
-	if item.AuthFileName != "xai-1.json" || item.Provider != "xai" || item.Owner != model.QuotaCooldownOwnerXAIFreeUsage {
+	if item.AuthFileName != "xai-1.json" || item.AccountSnapshot != "xai-user@example.com" || item.Provider != "xai" || item.Owner != model.QuotaCooldownOwnerXAIFreeUsage {
 		t.Fatalf("item = %#v", item)
 	}
 	if item.RecoverAtMs != now+3_600_000 || item.DisabledAtMs != now || item.CreatedAtMs <= 0 {
@@ -75,7 +76,8 @@ func TestServerCompatQuotaCooldownsList(t *testing.T) {
 	if body := rr.Body.String(); strings.Contains(body, "sk-sensitive-token") || !strings.Contains(body, "[redacted]") {
 		t.Fatalf("response evidence was not sanitized, body = %s", body)
 	}
-	// The read-only view must not leak internal/account-snapshot fields.
+	// The read-only view exposes only the account discriminator needed for exact
+	// card matching; operational internals must remain private.
 	if body := rr.Body.String(); containsInternalField(body) {
 		t.Fatalf("response leaked internal fields, body = %s", body)
 	}
@@ -95,7 +97,7 @@ func TestServerCompatQuotaCooldownsRequiresPanelAuth(t *testing.T) {
 }
 
 func containsInternalField(body string) bool {
-	for _, needle := range []string{"accountSnapshot", "account_snapshot", "eventHash", "event_hash", "preDisabledState", "lastError"} {
+	for _, needle := range []string{"account_snapshot", "eventHash", "event_hash", "preDisabledState", "lastError"} {
 		if strings.Contains(body, needle) {
 			return true
 		}

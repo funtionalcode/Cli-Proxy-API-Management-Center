@@ -22,16 +22,9 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 	ctx := context.Background()
 	fromMS := int64(1_800_000_000_000)
 	toMS := fromMS + 30*24*60*60*1000
+	saveMonitoringBenchmarkPrices(b, ctx, db)
 	insertMonitoringBenchmarkEvents(b, ctx, db, fromMS, toMS, 100_000)
-	for {
-		result, err := db.CatchUpUsageHourlyAggregate(ctx, 5_000, toMS)
-		if err != nil {
-			b.Fatalf("catch up hourly rollup: %v", err)
-		}
-		if !result.Pending {
-			break
-		}
-	}
+	catchUpMonitoringBenchmarkRollups(b, ctx, db, toMS)
 	rawService := New(db, false)
 	rollupService := New(db, true)
 
@@ -361,16 +354,9 @@ func BenchmarkUsageAnalyticsHourlyCorePaths(b *testing.B) {
 	ctx := context.Background()
 	fromMS := int64(1_800_000_000_000)
 	toMS := fromMS + 30*24*60*60*1000
+	saveMonitoringBenchmarkPrices(b, ctx, db)
 	insertMonitoringBenchmarkEvents(b, ctx, db, fromMS, toMS, 100_000)
-	for {
-		result, err := db.CatchUpUsageHourlyAggregate(ctx, 5_000, toMS)
-		if err != nil {
-			b.Fatalf("catch up hourly rollup: %v", err)
-		}
-		if !result.Pending {
-			break
-		}
-	}
+	catchUpMonitoringBenchmarkRollups(b, ctx, db, toMS)
 	filter := store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true}
 	reader := usagehourly.New(db, true)
 
@@ -422,6 +408,46 @@ func BenchmarkUsageAnalyticsHourlyCorePaths(b *testing.B) {
 			}
 		}
 	})
+}
+
+func saveMonitoringBenchmarkPrices(b *testing.B, ctx context.Context, db *store.Store) {
+	b.Helper()
+	prices := make(map[string]store.ModelPrice, 12)
+	for index := 0; index < 12; index++ {
+		prices[fmt.Sprintf("gpt-%02d", index)] = store.ModelPrice{
+			Prompt:     1,
+			Completion: 2,
+			ContextTiers: []store.ModelPriceContextTier{
+				{ThresholdTokens: 128, Prompt: 2, PromptConfigured: true},
+				{ThresholdTokens: 256, Prompt: 3, Completion: 4, PromptConfigured: true, CompletionConfigured: true},
+			},
+		}
+	}
+	if err := db.SaveModelPrices(ctx, prices); err != nil {
+		b.Fatalf("save model prices: %v", err)
+	}
+}
+
+func catchUpMonitoringBenchmarkRollups(b *testing.B, ctx context.Context, db *store.Store, nowMS int64) {
+	b.Helper()
+	for {
+		result, err := db.CatchUpUsageHourlyAggregate(ctx, 5_000, nowMS)
+		if err != nil {
+			b.Fatalf("catch up hourly rollup: %v", err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	for {
+		result, err := db.CatchUpUsagePricing(ctx, 5_000, nowMS)
+		if err != nil {
+			b.Fatalf("catch up pricing rollup: %v", err)
+		}
+		if !result.Pending {
+			return
+		}
+	}
 }
 
 func insertMonitoringBenchmarkEvents(b *testing.B, ctx context.Context, db *store.Store, fromMS, toMS int64, count int) {

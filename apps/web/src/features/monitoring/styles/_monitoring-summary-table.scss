@@ -1122,7 +1122,7 @@
 
   .realtimeFailureTooltip {
     --monitor-surface: var(--bg-primary);
-    --monitor-surface-elevated: color-mix(in srgb, var(--bg-primary) 82%, var(--surface-subtle));
+    --monitor-surface-elevated: var(--app-surface-strong);
     --monitor-surface-hover: color-mix(in srgb, var(--surface-subtle-hover) 74%, var(--bg-primary));
     --monitor-ink: var(--text-primary);
     --monitor-muted: var(--text-secondary);
@@ -1159,10 +1159,6 @@
     visibility: hidden;
     white-space: normal;
     user-select: text;
-  }
-
-  .realtimeSuccessDiagnosticTooltip {
-    --monitor-diagnostic-color: var(--monitor-green);
   }
 
   .realtimeFailureTooltip::before {

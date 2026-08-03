@@ -1,4 +1,4 @@
-import type { ModelPrice } from '@/utils/usage';
+import type { ModelPrice, ModelPriceContextTier, ModelPriceServiceTier } from '@/utils/usage';
 import type {
   ModelPriceUsageSummaryResponse,
   ModelPriceSyncCandidate,
@@ -33,6 +33,11 @@ export type ModelPriceSummary = {
   candidates: number;
 };
 
+export type ModelPriceCandidateGroup = {
+  source: string;
+  candidates: ModelPriceSyncCandidate[];
+};
+
 export const createEmptyPriceDraft = (): PriceDraft => ({
   model: '',
   prompt: '',
@@ -48,13 +53,9 @@ const createConfiguredDraftValue = (value: number | undefined, configured?: bool
 export const createPriceDraft = (model: string, price?: ModelPrice): PriceDraft => ({
   model,
   prompt: price ? createConfiguredDraftValue(price.prompt, price.promptConfigured) : '',
-  completion: price
-    ? createConfiguredDraftValue(price.completion, price.completionConfigured)
-    : '',
+  completion: price ? createConfiguredDraftValue(price.completion, price.completionConfigured) : '',
   cache: price ? String(price.cache) : '',
-  cacheRead: price
-    ? createConfiguredDraftValue(price.cacheRead, price.cacheReadConfigured)
-    : '',
+  cacheRead: price ? createConfiguredDraftValue(price.cacheRead, price.cacheReadConfigured) : '',
   cacheCreation: price
     ? createConfiguredDraftValue(price.cacheCreation, price.cacheCreationConfigured)
     : '',
@@ -82,6 +83,8 @@ export const buildPriceFromDraft = (draft: PriceDraft): ModelPrice | null => {
     cacheReadConfigured: draft.cacheRead.trim() !== '',
     cacheCreationConfigured: draft.cacheCreation.trim() !== '',
     source: 'manual',
+    contextTiers: [],
+    serviceTiers: [],
   };
 };
 
@@ -97,6 +100,31 @@ export const applyCandidatePrice = (
     sourceModelId: candidate.sourceModelId,
   },
 });
+
+export const getModelPriceCandidateSource = (candidate: ModelPriceSyncCandidate) =>
+  candidate.price.source?.trim() || 'sync';
+
+export const getModelPriceCandidateIdentity = (candidate: ModelPriceSyncCandidate) =>
+  JSON.stringify([getModelPriceCandidateSource(candidate), candidate.sourceModelId]);
+
+export const groupModelPriceCandidatesBySource = (
+  candidates: ModelPriceSyncCandidate[]
+): ModelPriceCandidateGroup[] => {
+  const groups = new Map<string, ModelPriceSyncCandidate[]>();
+  candidates.forEach((candidate) => {
+    const source = getModelPriceCandidateSource(candidate);
+    const group = groups.get(source);
+    if (group) {
+      group.push(candidate);
+      return;
+    }
+    groups.set(source, [candidate]);
+  });
+  return Array.from(groups, ([source, sourceCandidates]) => ({
+    source,
+    candidates: sourceCandidates,
+  }));
+};
 
 export const buildSyncPriceModelsFromSummary = (
   summary: ModelPriceUsageSummaryResponse | null,
@@ -198,4 +226,36 @@ export const filterModelPriceRows = (
 export const formatPriceUnit = (value: number | undefined) => {
   const num = Number(value);
   return Number.isFinite(num) ? `$${num.toFixed(4)}/1M` : '--';
+};
+
+export const resolveContextTierDisplayPrice = (
+  price: ModelPrice | undefined,
+  tier: ModelPriceContextTier
+) => ({
+  prompt: tier.promptConfigured ? tier.prompt : price?.prompt,
+  completion: tier.completionConfigured ? tier.completion : price?.completion,
+});
+
+export const resolveServiceTierDisplayPrice = (
+  price: ModelPrice | undefined,
+  tier: ModelPriceServiceTier
+) => ({
+  prompt: tier.promptConfigured ? tier.prompt : price?.prompt,
+  completion: tier.completionConfigured ? tier.completion : price?.completion,
+});
+
+export const formatServiceTierRule = (tier: ModelPriceServiceTier) => {
+  const mode = tier.mode.trim();
+  const serviceTier = tier.serviceTier.trim();
+  if (!mode) return serviceTier || '--';
+  if (!serviceTier || mode.toLowerCase() === serviceTier.toLowerCase()) return mode;
+  return `${mode}/${serviceTier}`;
+};
+
+export const formatContextThreshold = (value: number) => {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens) || tokens <= 0) return '--';
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
+  if (tokens >= 1_000 && tokens % 1_000 === 0) return `${tokens / 1_000}K`;
+  return tokens.toLocaleString('en-US', { maximumFractionDigits: 0 });
 };

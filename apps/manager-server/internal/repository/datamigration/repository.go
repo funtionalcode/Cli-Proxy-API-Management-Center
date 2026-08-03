@@ -502,6 +502,21 @@ func completeInTx(ctx context.Context, tx *sql.Tx, state State) (State, error) {
 					finished_at_ms = null,
 					last_error = null
 				where aggregate_name = 'hourly_core' and schema_version = 1`,
+			`delete from usage_pricing_hourly_rollups_v1`,
+			`delete from usage_pricing_account_rollups_v1`,
+			`update usage_pricing_rollup_state set
+					status = case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+					backfill_last_event_id = 0,
+					coverage_event_id = 0,
+					target_event_id = coalesce((select max(id) from usage_events), 0),
+					processed_events = 0,
+					min_bucket_ms = null,
+					max_bucket_ms = null,
+					last_run_started_at_ms = null,
+					updated_at_ms = 0,
+					finished_at_ms = null,
+					last_error = null
+				where rollup_name = 'pricing_v1' and schema_version = 1`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return State{}, err

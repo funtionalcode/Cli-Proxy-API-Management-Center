@@ -25,6 +25,7 @@ type Repository interface {
 	RecordFailure(ctx context.Context, aggregateErr error, nowMS int64) error
 	State(ctx context.Context) (State, error)
 	LoadRows(ctx context.Context, filter Filter) ([]Row, State, bool, error)
+	LoadRowsTx(ctx context.Context, tx *sql.Tx, filter Filter) ([]Row, State, bool, error)
 }
 
 type State struct {
@@ -250,8 +251,24 @@ func (r *repository) State(ctx context.Context) (State, error) {
 }
 
 func (r *repository) LoadRows(ctx context.Context, filter Filter) ([]Row, State, bool, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, State{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, state, available, err := r.LoadRowsTx(ctx, tx, filter)
+	if err != nil {
+		return nil, State{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, State{}, false, err
+	}
+	return rows, state, available, nil
+}
+
+func (r *repository) LoadRowsTx(ctx context.Context, tx *sql.Tx, filter Filter) ([]Row, State, bool, error) {
 	if filter.FromMS >= filter.ToMS {
-		state, err := r.State(ctx)
+		state, err := stateQuery(ctx, tx, AggregateName)
 		return []Row{}, state, err == nil && state.SchemaVersion == SchemaVersion, err
 	}
 	fullStartMS := ceilHourMS(filter.FromMS)
@@ -259,12 +276,6 @@ func (r *repository) LoadRows(ctx context.Context, filter Filter) ([]Row, State,
 	if fullStartMS >= fullEndMS {
 		return nil, State{}, false, nil
 	}
-
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, State{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	state, err := stateQuery(ctx, tx, AggregateName)
 	if err != nil {
@@ -291,9 +302,6 @@ func (r *repository) LoadRows(ctx context.Context, filter Filter) ([]Row, State,
 		if err := mergeRawRows(ctx, tx, filter, max(fullEndMS, filter.FromMS), filter.ToMS, 0, false, false, grouped); err != nil {
 			return nil, State{}, false, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, State{}, false, err
 	}
 	return sortedRows(grouped), state, true, nil
 }

@@ -215,6 +215,16 @@ type SummaryResponse struct {
 }
 
 func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse, error) {
+	var response SummaryResponse
+	err := s.store.WithModelPriceSnapshot(func() error {
+		var summaryErr error
+		response, summaryErr = s.summary(ctx, p)
+		return summaryErr
+	})
+	return response, err
+}
+
+func (s *Service) summary(ctx context.Context, p SummaryParams) (SummaryResponse, error) {
 	if p.TodayStartMS <= 0 {
 		return SummaryResponse{}, errors.New("today_start_ms is required")
 	}
@@ -278,7 +288,7 @@ func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse
 
 	runQuery(func() error {
 		var err error
-		todayAgg, modelStats, topStats, timeline, err = s.loadTodayMetrics(queryCtx, p.TodayStartMS, nowMS, topLimit)
+		todayAgg, modelStats, topStats, timeline, prices, err = s.loadTodayMetrics(queryCtx, p.TodayStartMS, nowMS, topLimit)
 		return err
 	})
 	runQuery(func() error {
@@ -289,11 +299,6 @@ func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse
 	runQuery(func() error {
 		var err error
 		recentFailures, err = s.store.RecentFailuresBetween(queryCtx, p.TodayStartMS, nowMS, recentLimit)
-		return err
-	})
-	runQuery(func() error {
-		var err error
-		prices, err = s.store.LoadModelPrices(queryCtx)
 		return err
 	})
 	runQuery(func() error {
@@ -340,40 +345,44 @@ func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse
 	}, nil
 }
 
-func (s *Service) loadTodayMetrics(ctx context.Context, fromMS, toMS int64, topLimit int) (store.Aggregate, []store.ModelStat, []store.ModelStat, []store.TimelinePoint, error) {
-	if agg, modelStats, timeline, ok := s.loadTodayMetricsFromRollup(ctx, fromMS, toMS); ok {
-		return agg, modelStats, selectTopModelStats(modelStats, topLimit), timeline, nil
+func (s *Service) loadTodayMetrics(ctx context.Context, fromMS, toMS int64, topLimit int) (store.Aggregate, []store.ModelStat, []store.ModelStat, []store.TimelinePoint, map[string]store.ModelPrice, error) {
+	if agg, modelStats, timeline, prices, ok := s.loadTodayMetricsFromRollup(ctx, fromMS, toMS); ok {
+		return agg, modelStats, selectTopModelStats(modelStats, topLimit), timeline, prices, nil
 	}
 
 	agg, err := s.store.AggregateBetween(ctx, fromMS, toMS)
 	if err != nil {
-		return store.Aggregate{}, nil, nil, nil, err
+		return store.Aggregate{}, nil, nil, nil, nil, err
 	}
 	modelStats, err := s.store.ModelStatsBetween(ctx, fromMS, toMS)
 	if err != nil {
-		return store.Aggregate{}, nil, nil, nil, err
+		return store.Aggregate{}, nil, nil, nil, nil, err
 	}
 	topStats, err := s.store.TopModelsBetween(ctx, fromMS, toMS, topLimit)
 	if err != nil {
-		return store.Aggregate{}, nil, nil, nil, err
+		return store.Aggregate{}, nil, nil, nil, nil, err
 	}
 	timeline, err := s.store.HourlyTimelineBetween(ctx, fromMS, toMS)
 	if err != nil {
-		return store.Aggregate{}, nil, nil, nil, err
+		return store.Aggregate{}, nil, nil, nil, nil, err
 	}
-	return agg, modelStats, topStats, timeline, nil
+	prices, err := s.store.LoadModelPrices(ctx)
+	if err != nil {
+		return store.Aggregate{}, nil, nil, nil, nil, err
+	}
+	return agg, modelStats, topStats, timeline, prices, nil
 }
 
-func (s *Service) loadTodayMetricsFromRollup(ctx context.Context, fromMS, toMS int64) (store.Aggregate, []store.ModelStat, []store.TimelinePoint, bool) {
+func (s *Service) loadTodayMetricsFromRollup(ctx context.Context, fromMS, toMS int64) (store.Aggregate, []store.ModelStat, []store.TimelinePoint, map[string]store.ModelPrice, bool) {
 	snapshot, ok := s.hourlyReader.Load(ctx, fromMS, toMS)
 	if !ok {
-		return store.Aggregate{}, nil, nil, false
+		return store.Aggregate{}, nil, nil, nil, false
 	}
 	timeline, ok := s.hourlyReader.DashboardTimeline(ctx, snapshot, fromMS, toMS)
 	if !ok {
-		return store.Aggregate{}, nil, nil, false
+		return store.Aggregate{}, nil, nil, nil, false
 	}
-	return snapshot.Aggregate, snapshot.ModelStats, timeline, true
+	return snapshot.Aggregate, snapshot.ModelStats, timeline, snapshot.Prices, true
 }
 
 func selectTopModelStats(stats []store.ModelStat, limit int) []store.ModelStat {
@@ -814,6 +823,8 @@ func aggregateModelStats(stats []store.ModelStat, prices map[string]store.ModelP
 
 func costForStat(stat store.ModelStat, prices map[string]store.ModelPrice) float64 {
 	return pricing.CostForModelCandidatesWithServiceTier([]string{stat.BillingModel, stat.Model}, stat.ServiceTier, pricing.ModelTokens{
+		PricingModel:            stat.PricingModel,
+		ContextThresholdTokens:  stat.ContextThresholdTokens,
 		InputTokens:             stat.InputTokens,
 		OutputTokens:            stat.OutputTokens,
 		CachedTokens:            stat.CachedTokens,
@@ -829,6 +840,8 @@ func costForStat(stat store.ModelStat, prices map[string]store.ModelPrice) float
 
 func costForChannelStat(stat store.ChannelModelStat, prices map[string]store.ModelPrice) float64 {
 	return pricing.CostForModelCandidatesWithServiceTier([]string{stat.BillingModel, stat.Model}, stat.ServiceTier, pricing.ModelTokens{
+		PricingModel:            stat.PricingModel,
+		ContextThresholdTokens:  stat.ContextThresholdTokens,
 		InputTokens:             stat.InputTokens,
 		OutputTokens:            stat.OutputTokens,
 		CachedTokens:            stat.CachedTokens,

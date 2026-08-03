@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildCandidateUsageSourceIds,
@@ -12,11 +12,16 @@ import {
   formatCompactNumber,
   getServiceTierMultiplier,
   inferCacheInputMode,
+  loadModelPrices,
   normalizeCacheAccounting,
   normalizeUsageSourceId,
 } from './usage';
 import { maskSensitiveText } from './format';
 import cacheInputAccountingFixtures from './cacheInputAccounting.fixtures.json';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('formatCompactNumber', () => {
   it('keeps large values compact as data grows beyond millions', () => {
@@ -415,9 +420,7 @@ describe('cache input accounting semantics', () => {
       totalInputTokens: fixture.expected.totalInput,
       cacheCreationTokens: fixture.expected.cacheCreation,
     });
-    expect(accounting.legacyRead + accounting.cacheReadTokens).toBe(
-      fixture.expected.cacheRead
-    );
+    expect(accounting.legacyRead + accounting.cacheReadTokens).toBe(fixture.expected.cacheRead);
   });
 
   it.each([
@@ -576,12 +579,14 @@ describe('cache input accounting semantics', () => {
     });
 
     expect(detail.tokens.input_tokens).toBe(100);
-    expect(calculateCacheHitRate({
-      inputTokens: detail.tokens.input_tokens,
-      cachedTokens: detail.tokens.cached_tokens,
-      cacheReadTokens: detail.tokens.cache_read_tokens,
-      cacheCreationTokens: detail.tokens.cache_creation_tokens,
-    })).toBeCloseTo(0.4);
+    expect(
+      calculateCacheHitRate({
+        inputTokens: detail.tokens.input_tokens,
+        cachedTokens: detail.tokens.cached_tokens,
+        cacheReadTokens: detail.tokens.cache_read_tokens,
+        cacheCreationTokens: detail.tokens.cache_creation_tokens,
+      })
+    ).toBeCloseTo(0.4);
     expect(cost).toBeCloseTo(0.000064);
   });
 });
@@ -791,6 +796,49 @@ describe('calculateCost model price preference', () => {
     expect(cost).toBeCloseTo(0.1);
   });
 
+  it('keeps flex and batch discounts for legacy long-context pricing', () => {
+    const modelPrices = { 'gpt-5.5': { prompt: 2, completion: 4, cache: 1 } };
+    const tokens = { input_tokens: 1_000_000, output_tokens: 100_000 };
+    const standard = calculateCost(
+      { tokens, __modelName: 'gpt-5.5', service_tier: 'default' },
+      modelPrices
+    );
+    for (const serviceTier of ['flex', 'batch']) {
+      expect(
+        calculateCost({ tokens, __modelName: 'gpt-5.5', service_tier: serviceTier }, modelPrices)
+      ).toBeCloseTo(standard * 0.5);
+    }
+  });
+
+  it('uses an explicit batch price with legacy long-context multipliers', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 300_000 },
+        __modelName: 'gpt-5.5',
+        service_tier: 'batch',
+      },
+      {
+        'gpt-5.5': {
+          prompt: 5,
+          completion: 30,
+          cache: 0.5,
+          serviceTiers: [
+            {
+              mode: 'batch',
+              serviceTier: 'batch',
+              prompt: 2,
+              completion: 15,
+              cache: 0.25,
+              promptConfigured: true,
+              completionConfigured: true,
+            },
+          ],
+        },
+      }
+    );
+    expect(cost).toBeCloseTo(1.2);
+  });
+
   it('keeps default and missing service tier at standard cost', () => {
     const modelPrices = {
       'gpt-5.4': { prompt: 2.5, completion: 5, cache: 1 },
@@ -979,6 +1027,277 @@ describe('calculateCost model price preference', () => {
 
     expect(cost).toBeCloseTo(2.5);
   });
+
+  it('uses explicit Fast Mode prices for fast and priority in the base context band', () => {
+    const modelPrices = {
+      'gpt-5.5': {
+        prompt: 5,
+        completion: 30,
+        cache: 0.5,
+        contextTiers: [
+          {
+            thresholdTokens: 272_000,
+            prompt: 10,
+            completion: 45,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+        serviceTiers: [
+          {
+            mode: 'fast',
+            serviceTier: 'priority',
+            prompt: 12.5,
+            completion: 75,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+      },
+    };
+
+    for (const serviceTier of ['fast', 'priority']) {
+      expect(
+        calculateCost(
+          {
+            tokens: { input_tokens: 100_000, output_tokens: 10_000 },
+            __modelName: 'gpt-5.5',
+            service_tier: serviceTier,
+          },
+          modelPrices
+        )
+      ).toBeCloseTo(2);
+    }
+    expect(
+      calculateCost(
+        {
+          tokens: { input_tokens: 100_000, output_tokens: 10_000 },
+          __modelName: 'gpt-5.5',
+          service_tier: 'default',
+        },
+        modelPrices
+      )
+    ).toBeCloseTo(0.8);
+  });
+
+  it('does not re-enable legacy long-context pricing inside an explicit base context band', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 300_000, output_tokens: 100_000 },
+        __modelName: 'gpt-5.5',
+        service_tier: 'priority',
+      },
+      {
+        'gpt-5.5': {
+          prompt: 5,
+          completion: 30,
+          cache: 0.5,
+          contextTiers: [
+            {
+              thresholdTokens: 500_000,
+              prompt: 10,
+              completion: 45,
+              cache: 0,
+              promptConfigured: true,
+              completionConfigured: true,
+            },
+          ],
+          serviceTiers: [
+            {
+              mode: 'fast',
+              serviceTier: 'priority',
+              prompt: 10,
+              completion: 20,
+              cache: 0,
+              promptConfigured: true,
+              completionConfigured: true,
+            },
+          ],
+        },
+      }
+    );
+
+    expect(cost).toBeCloseTo(5);
+  });
+
+  it('uses long-context pricing instead of an explicit Fast Mode price', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 300_000, output_tokens: 100_000 },
+        __modelName: 'gpt-5.5',
+        service_tier: 'priority',
+      },
+      {
+        'gpt-5.5': {
+          prompt: 5,
+          completion: 30,
+          cache: 0.5,
+          serviceTiers: [
+            {
+              mode: 'fast',
+              serviceTier: 'priority',
+              prompt: 12.5,
+              completion: 75,
+              cache: 0,
+              promptConfigured: true,
+              completionConfigured: true,
+            },
+          ],
+        },
+      }
+    );
+
+    expect(cost).toBeCloseTo(7.5);
+  });
+
+  it('selects the highest context tier with strict threshold semantics', () => {
+    const modelPrices = {
+      'tiered-model': {
+        prompt: 1,
+        completion: 2,
+        cache: 0.1,
+        contextTiers: [
+          {
+            thresholdTokens: 32_000,
+            prompt: 3,
+            completion: 4,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+          {
+            thresholdTokens: 200_000,
+            prompt: 5,
+            completion: 8,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+      },
+    };
+
+    expect(
+      calculateCost({ tokens: { input_tokens: 32_000 }, __modelName: 'tiered-model' }, modelPrices)
+    ).toBeCloseTo(0.032);
+    expect(
+      calculateCost({ tokens: { input_tokens: 200_000 }, __modelName: 'tiered-model' }, modelPrices)
+    ).toBeCloseTo(0.6);
+    expect(
+      calculateCost({ tokens: { input_tokens: 200_001 }, __modelName: 'tiered-model' }, modelPrices)
+    ).toBeCloseTo(1.000005);
+  });
+
+  it('does not stack priority pricing with active context-tier pricing', () => {
+    const modelPrices = {
+      'gpt-5.6-sol': {
+        prompt: 5,
+        completion: 30,
+        cache: 0.5,
+        contextTiers: [
+          {
+            thresholdTokens: 272_000,
+            prompt: 10,
+            completion: 40,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+        serviceTiers: [
+          {
+            mode: 'fast',
+            serviceTier: 'priority',
+            prompt: 12.5,
+            completion: 75,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+      },
+    };
+    const tokens = { input_tokens: 1_000_000 };
+
+    const standard = calculateCost(
+      { tokens, __modelName: 'gpt-5.6-sol', service_tier: 'default' },
+      modelPrices
+    );
+    const priority = calculateCost(
+      { tokens, __modelName: 'gpt-5.6-sol', service_tier: 'priority' },
+      modelPrices
+    );
+
+    expect(priority).toBeCloseTo(standard);
+  });
+
+  it('inherits missing tier cache rates and preserves explicit zero overrides', () => {
+    const cost = calculateCost(
+      {
+        tokens: {
+          input_tokens: 1_000_000,
+          cache_read_tokens: 200_000,
+          cache_creation_tokens: 100_000,
+        },
+        __modelName: 'tiered-cache',
+      },
+      {
+        'tiered-cache': {
+          prompt: 2,
+          completion: 4,
+          cache: 1,
+          cacheRead: 0.5,
+          cacheCreation: 3,
+          cacheReadConfigured: true,
+          cacheCreationConfigured: true,
+          contextTiers: [
+            {
+              thresholdTokens: 100,
+              prompt: 4,
+              completion: 8,
+              cache: 0,
+              cacheRead: 0,
+              promptConfigured: true,
+              completionConfigured: true,
+              cacheReadConfigured: true,
+            },
+          ],
+        },
+      }
+    );
+
+    expect(cost).toBeCloseTo(3.1);
+  });
+
+  it('uses generic context tiers instead of the hardcoded GPT long-context rule', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 1_000_000 },
+        __modelName: 'gpt-5.6-sol',
+      },
+      {
+        'gpt-5.6-sol': {
+          prompt: 5,
+          completion: 30,
+          cache: 0.5,
+          contextTiers: [
+            {
+              thresholdTokens: 272_000,
+              prompt: 10,
+              completion: 40,
+              cache: 0,
+              promptConfigured: true,
+              completionConfigured: true,
+            },
+          ],
+        },
+      }
+    );
+
+    expect(cost).toBeCloseTo(10);
+  });
 });
 
 describe('getServiceTierMultiplier', () => {
@@ -992,5 +1311,61 @@ describe('getServiceTierMultiplier', () => {
     expect(getServiceTierMultiplier('gpt-5.3-codex', 'priority')).toBe(2);
     expect(getServiceTierMultiplier('gpt-5.4', 'unknown')).toBe(1);
     expect(getServiceTierMultiplier('unknown-model', 'priority')).toBe(1);
+  });
+});
+
+describe('model price storage', () => {
+  it('normalizes persisted service-tier rules and rejects ambiguous aliases', () => {
+    const stored = {
+      'gpt-valid': {
+        prompt: 5,
+        completion: 30,
+        cache: 0.5,
+        serviceTiers: [
+          {
+            mode: ' FAST ',
+            serviceTier: ' PRIORITY ',
+            prompt: 12.5,
+            completion: 75,
+            cache: 0,
+            promptConfigured: true,
+            completionConfigured: true,
+          },
+        ],
+      },
+      'gpt-ambiguous': {
+        prompt: 5,
+        completion: 30,
+        cache: 0.5,
+        serviceTiers: [
+          {
+            mode: 'fast',
+            serviceTier: 'priority',
+            prompt: 12.5,
+            completion: 75,
+            cache: 0,
+            promptConfigured: true,
+          },
+          {
+            mode: 'priority',
+            serviceTier: 'turbo',
+            prompt: 15,
+            completion: 80,
+            cache: 0,
+            promptConfigured: true,
+          },
+        ],
+      },
+    };
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) =>
+        key === 'cli-proxy-model-prices-v2' ? JSON.stringify(stored) : null,
+    });
+
+    const prices = loadModelPrices();
+    expect(prices['gpt-valid'].serviceTiers).toEqual([
+      expect.objectContaining({ mode: 'fast', serviceTier: 'priority', prompt: 12.5 }),
+    ]);
+    expect(prices['gpt-ambiguous'].serviceTiers).toBeUndefined();
   });
 });

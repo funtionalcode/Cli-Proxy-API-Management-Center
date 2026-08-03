@@ -206,6 +206,99 @@ func Migrate(db *sql.DB) error {
 			coalesce((select max(id) from usage_events), 0),
 			0,
 			0`,
+		`create table if not exists usage_pricing_hourly_rollups_v1 (
+			structure_revision text not null,
+			bucket_ms integer not null,
+			model text not null,
+			billing_model text not null,
+			pricing_model text not null,
+			service_tier text not null,
+			context_threshold_tokens integer not null,
+			failed integer not null,
+			calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			latency_sum_ms integer not null default 0,
+			latency_samples integer not null default 0,
+			zero_token_calls integer not null default 0,
+			updated_at_ms integer not null,
+			primary key (
+				structure_revision, bucket_ms, model, billing_model, pricing_model,
+				service_tier, context_threshold_tokens, failed
+			)
+		)`,
+		`create index if not exists idx_usage_pricing_hourly_bucket
+			on usage_pricing_hourly_rollups_v1(structure_revision, bucket_ms)`,
+		`create table if not exists usage_pricing_account_rollups_v1 (
+			structure_revision text not null,
+			account_key text not null,
+			account_snapshot text,
+			auth_label_snapshot text,
+			auth_provider_snapshot text,
+			auth_index text,
+			source text,
+			source_hash text,
+			model text not null,
+			billing_model text not null,
+			pricing_model text not null,
+			service_tier text not null,
+			context_threshold_tokens integer not null,
+			calls integer not null default 0,
+			success_calls integer not null default 0,
+			failure_calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			first_seen_ms integer not null,
+			last_seen_ms integer not null,
+			updated_at_ms integer not null,
+			primary key (
+				structure_revision, account_key, billing_model, pricing_model,
+				service_tier, context_threshold_tokens
+			)
+		)`,
+		`create index if not exists idx_usage_pricing_account_key
+			on usage_pricing_account_rollups_v1(structure_revision, account_key)`,
+		`create table if not exists usage_pricing_rollup_state (
+			rollup_name text primary key,
+			schema_version integer not null,
+			structure_revision text not null default '',
+			status text not null,
+			backfill_last_event_id integer not null default 0,
+			coverage_event_id integer not null default 0,
+			target_event_id integer not null default 0,
+			processed_events integer not null default 0,
+			min_bucket_ms integer,
+			max_bucket_ms integer,
+			last_run_started_at_ms integer,
+			updated_at_ms integer not null default 0,
+			finished_at_ms integer,
+			last_error text
+		)`,
+		`insert or ignore into usage_pricing_rollup_state (
+			rollup_name, schema_version, structure_revision, status,
+			backfill_last_event_id, coverage_event_id, target_event_id,
+			processed_events, updated_at_ms
+		) values ('pricing_v1', 1, '', 'pending', 0, 0, 0, 0, 0)`,
 		`create table if not exists usage_event_identity_ledger (
 			event_hash text primary key,
 			raw_event_id integer,
@@ -275,6 +368,39 @@ func Migrate(db *sql.DB) error {
 			raw_json text,
 			updated_at_ms integer not null,
 			synced_at_ms integer
+		)`,
+		`create table if not exists model_price_context_tiers (
+			model text not null,
+			threshold_tokens integer not null,
+			prompt_per_1m real not null default 0,
+			completion_per_1m real not null default 0,
+			cache_per_1m real not null default 0,
+			cache_read_per_1m real not null default 0,
+			cache_creation_per_1m real not null default 0,
+			prompt_configured integer not null default 0,
+			completion_configured integer not null default 0,
+			cache_configured integer not null default 0,
+			cache_read_configured integer not null default 0,
+			cache_creation_configured integer not null default 0,
+			primary key (model, threshold_tokens),
+			foreign key (model) references model_prices(model) on delete cascade
+		)`,
+		`create table if not exists model_price_service_tiers (
+			model text not null,
+			mode text not null,
+			service_tier text not null,
+			prompt_per_1m real not null default 0,
+			completion_per_1m real not null default 0,
+			cache_per_1m real not null default 0,
+			cache_read_per_1m real not null default 0,
+			cache_creation_per_1m real not null default 0,
+			prompt_configured integer not null default 0,
+			completion_configured integer not null default 0,
+			cache_configured integer not null default 0,
+			cache_read_configured integer not null default 0,
+			cache_creation_configured integer not null default 0,
+			primary key (model, mode, service_tier),
+			foreign key (model) references model_prices(model) on delete cascade
 		)`,
 		`create table if not exists api_key_aliases (
 			api_key_hash text primary key,
@@ -349,6 +475,7 @@ func Migrate(db *sql.DB) error {
 			account_key text not null,
 			file_name text not null,
 			display_account text not null,
+			account_snapshot text,
 			auth_index text,
 			account_id text,
 			provider text,
@@ -385,12 +512,14 @@ func Migrate(db *sql.DB) error {
 		)`,
 		`create index if not exists idx_codex_inspection_logs_run on codex_inspection_logs(run_id, created_at_ms)`,
 		`create table if not exists codex_inspection_disable_ownership (
-			file_name text primary key,
-			provider text not null default 'codex',
-			auth_index text,
-			account_id text,
+			file_name text not null,
+			provider text not null default '',
+			auth_index text not null default '',
+			account_id text not null default '',
+			account_snapshot text not null default '',
 			disabled_at_ms integer not null,
-			updated_at_ms integer not null
+			updated_at_ms integer not null,
+			primary key (file_name, provider, auth_index, account_id, account_snapshot)
 		)`,
 		`create table if not exists quota_cooldowns (
 			id integer primary key autoincrement,
@@ -413,7 +542,6 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null
 		)`,
 		`create index if not exists idx_quota_cooldowns_due on quota_cooldowns(status, recover_at_ms)`,
-		`create unique index if not exists idx_quota_cooldowns_active_owner on quota_cooldowns(auth_file_name, owner) where status = 'active'`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -439,6 +567,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureQuotaCooldownColumns(db); err != nil {
+		return err
+	}
+	if err := ensureQuotaCooldownIdentityIndex(db); err != nil {
 		return err
 	}
 	if err := ensureUsageRollupLongContextColumns(db); err != nil {
@@ -519,28 +650,103 @@ func ensureCodexInspectionOwnershipColumns(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	existing := map[string]struct{}{}
+	type columnInfo struct {
+		notNull int
+		pk      int
+	}
+	existing := map[string]columnInfo{}
 	for rows.Next() {
 		var cid int
 		var name, columnType string
 		var notNull, pk int
 		var defaultValue any
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
 			return err
 		}
-		existing[name] = struct{}{}
+		existing[name] = columnInfo{notNull: notNull, pk: pk}
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return err
 	}
-	if _, ok := existing["provider"]; ok {
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	primaryKeyReady := existing["file_name"].pk == 1 &&
+		existing["provider"].pk == 2 &&
+		existing["auth_index"].pk == 3 &&
+		existing["account_id"].pk == 4 &&
+		existing["account_snapshot"].pk == 5 &&
+		existing["file_name"].notNull == 1 &&
+		existing["provider"].notNull == 1 &&
+		existing["auth_index"].notNull == 1 &&
+		existing["account_id"].notNull == 1 &&
+		existing["account_snapshot"].notNull == 1
+	if primaryKeyReady {
 		return nil
 	}
-	if _, err := db.Exec(`alter table codex_inspection_disable_ownership add column provider text not null default 'codex'`); err != nil {
+
+	providerExpression := `'codex'`
+	if _, ok := existing["provider"]; ok {
+		providerExpression = `case coalesce(lower(replace(trim(provider), '_', '-')), '')
+			when 'x-ai' then 'xai'
+			when 'grok' then 'xai'
+			else lower(replace(trim(provider), '_', '-'))
+		end`
+	}
+	authIndexExpression := `''`
+	if _, ok := existing["auth_index"]; ok {
+		authIndexExpression = `coalesce(trim(auth_index), '')`
+	}
+	accountIDExpression := `''`
+	if _, ok := existing["account_id"]; ok {
+		accountIDExpression = `coalesce(trim(account_id), '')`
+	}
+	accountSnapshotSourceExpression := `''`
+	if _, ok := existing["account_snapshot"]; ok {
+		accountSnapshotSourceExpression = `coalesce(trim(account_snapshot), '')`
+	}
+	accountSnapshotExpression := fmt.Sprintf(
+		`case when %s <> '' then '' else %s end`,
+		accountIDExpression,
+		accountSnapshotSourceExpression,
+	)
+
+	tx, err := db.Begin()
+	if err != nil {
 		return err
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`drop table if exists codex_inspection_disable_ownership_v2`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`create table codex_inspection_disable_ownership_v2 (
+		file_name text not null,
+		provider text not null default '',
+		auth_index text not null default '',
+		account_id text not null default '',
+		account_snapshot text not null default '',
+		disabled_at_ms integer not null,
+		updated_at_ms integer not null,
+		primary key (file_name, provider, auth_index, account_id, account_snapshot)
+	)`); err != nil {
+		return err
+	}
+	copyStatement := fmt.Sprintf(`insert or replace into codex_inspection_disable_ownership_v2 (
+		file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+	) select trim(file_name), %s, %s, %s, %s, disabled_at_ms, updated_at_ms
+	from codex_inspection_disable_ownership`, providerExpression, authIndexExpression, accountIDExpression, accountSnapshotExpression)
+	if _, err := tx.Exec(copyStatement); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`drop table codex_inspection_disable_ownership`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`alter table codex_inspection_disable_ownership_v2 rename to codex_inspection_disable_ownership`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureQuotaCooldownColumns(db *sql.DB) error {
@@ -580,6 +786,39 @@ func ensureQuotaCooldownColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureQuotaCooldownIdentityIndex(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`drop index if exists idx_quota_cooldowns_active_owner`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`create unique index if not exists idx_quota_cooldowns_active_identity
+		on quota_cooldowns (
+			auth_file_name,
+			owner,
+			coalesce(trim(auth_index), ''),
+			case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else case coalesce(lower(replace(trim(provider), '_', '-')), '')
+					when 'x-ai' then 'xai'
+					when 'grok' then 'xai'
+					else coalesce(lower(replace(trim(provider), '_', '-')), '')
+				end
+			end,
+			case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else coalesce(trim(account_snapshot), '')
+			end
+		)
+		where status = 'active'`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureUsageRollupLongContextColumns(db *sql.DB) error {
@@ -695,7 +934,23 @@ func ensureAccountActionCandidateColumns(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(`create unique index idx_account_action_candidates_pending_identity_action
-		on account_action_candidates(auth_file_name, action_type, coalesce(auth_index, ''), coalesce(account_id_snapshot, ''), coalesce(reason_code, '')) where status = 'pending'`); err != nil {
+		on account_action_candidates(
+			auth_file_name,
+			action_type,
+			coalesce(trim(reason_code), ''),
+			coalesce(trim(auth_index), ''),
+			case when coalesce(trim(auth_index), '') <> '' then '' else coalesce(trim(account_id_snapshot), '') end,
+			case when coalesce(trim(auth_index), '') <> '' then ''
+				else case coalesce(lower(replace(trim(provider), '_', '-')), '')
+					when 'x-ai' then 'xai'
+					when 'grok' then 'xai'
+					else coalesce(lower(replace(trim(provider), '_', '-')), '')
+				end
+			end,
+			case when coalesce(trim(auth_index), '') <> '' or coalesce(trim(account_id_snapshot), '') <> '' then ''
+				else coalesce(trim(account_snapshot), '')
+			end
+		) where status = 'pending'`); err != nil {
 		return err
 	}
 	_, err = db.Exec(`drop index if exists idx_account_action_candidates_pending_file_action`)
@@ -778,6 +1033,7 @@ func ensureCodexInspectionResultColumns(db *sql.DB) error {
 		{name: "action_status", definition: "text"},
 		{name: "executed_action", definition: "text"},
 		{name: "action_error", definition: "text"},
+		{name: "account_snapshot", definition: "text"},
 		{name: "plan_type", definition: "text"},
 		{name: "quota_windows_json", definition: "text"},
 		{name: "error_kind", definition: "text"},

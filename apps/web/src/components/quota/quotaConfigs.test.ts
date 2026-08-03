@@ -6,10 +6,38 @@ import type { ClaudeQuotaState, CodexQuotaState, XaiQuotaState } from '@/types';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import {
   CLAUDE_CONFIG,
+  getCodexQuotaStoreKey,
   getSortedCodexResetCreditExpiries,
   resolveQuotaDisplayState,
   XAI_CONFIG,
 } from './quotaConfigs';
+
+describe('getCodexQuotaStoreKey', () => {
+  it('preserves indexed keys and separates same-file rows without auth indexes', () => {
+    expect(
+      getCodexQuotaStoreKey({
+        name: 'shared.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      })
+    ).toBe('shared.json::auth-1');
+
+    const first = getCodexQuotaStoreKey({
+      id: 'runtime-1',
+      name: 'shared.json',
+      type: 'codex',
+      account_id: 'account-1',
+    });
+    const second = getCodexQuotaStoreKey({
+      id: 'runtime-2',
+      name: 'shared.json',
+      type: 'codex',
+      account: 'second@example.com',
+    });
+
+    expect(first).not.toBe(second);
+  });
+});
 
 type TestQuotaState = {
   status: 'idle' | 'loading' | 'success' | 'error';
