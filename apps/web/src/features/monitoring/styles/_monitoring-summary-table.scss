@@ -268,35 +268,35 @@
   }
 
   .summaryAccentBlue {
-    --summary-accent: #3b82f6;
+    --summary-accent: var(--data-blue-base);
   }
 
   .summaryAccentGreen {
-    --summary-accent: #10b981;
+    --summary-accent: var(--data-emerald-base);
   }
 
   .summaryAccentRed {
-    --summary-accent: #ef4444;
+    --summary-accent: var(--data-red-base);
   }
 
   .summaryAccentAmber {
-    --summary-accent: #f59e0b;
+    --summary-accent: var(--data-amber-base);
   }
 
   .summaryAccentIndigo {
-    --summary-accent: #6366f1;
+    --summary-accent: var(--data-violet-base);
   }
 
   .summaryAccentCyan {
-    --summary-accent: #06b6d4;
+    --summary-accent: var(--data-cyan-base);
   }
 
   .summaryAccentViolet {
-    --summary-accent: #8b5cf6;
+    --summary-accent: var(--data-violet-base);
   }
 
   .summaryAccentTeal {
-    --summary-accent: #14b8a6;
+    --summary-accent: var(--data-teal-base);
   }
 
   .statusBadge {

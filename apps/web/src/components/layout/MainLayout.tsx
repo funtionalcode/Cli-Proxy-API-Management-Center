@@ -17,7 +17,6 @@ import {
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
-  IconSidebarInspection,
   IconSidebarLogs,
   IconSidebarMonitor,
   IconSidebarOauth,
@@ -64,7 +63,6 @@ const sidebarIcons: Record<string, ReactNode> = {
   oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
   quota: <IconSidebarQuota size={SIDEBAR_ICON_SIZE} />,
   usageAnalytics: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
-  codexInspection: <IconSidebarInspection size={SIDEBAR_ICON_SIZE} />,
   monitoring: <IconSidebarMonitor size={SIDEBAR_ICON_SIZE} />,
   plugins: <IconSidebarPlugins size={SIDEBAR_ICON_SIZE} />,
   config: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
@@ -510,7 +508,8 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     return label === shortKey ? fallback : label;
   };
   const dashboardNavItem: NavItem = {
-    path: '/', label: t('nav.dashboard'),
+    path: '/',
+    label: t('nav.dashboard'),
     shortLabel: navShortLabel('nav.dashboard', t('nav.dashboard')),
     icon: sidebarIcons.dashboard,
   };
@@ -589,6 +588,15 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     ],
     [
       {
+        path: '/accounts',
+        label: t('nav.accounts', { defaultValue: t('accounts.title') }),
+        shortLabel: navShortLabel(
+          'nav.accounts',
+          t('nav.accounts', { defaultValue: t('accounts.title') })
+        ),
+        icon: sidebarIcons.authFiles,
+      },
+      {
         path: '/auth-files',
         label: t('nav.auth_files'),
         shortLabel: navShortLabel('nav.auth_files', t('nav.auth_files')),
@@ -599,18 +607,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.oauth', { defaultValue: 'OAuth' }),
         shortLabel: navShortLabel('nav.oauth', t('nav.oauth', { defaultValue: 'OAuth' })),
         icon: sidebarIcons.oauth,
-      },
-      {
-        path: '/quota',
-        label: t('nav.quota_management'),
-        shortLabel: navShortLabel('nav.quota_management', t('nav.quota_management')),
-        icon: sidebarIcons.quota,
-      },
-      {
-        path: '/codex-inspection',
-        label: t('nav.codex_inspection'),
-        shortLabel: navShortLabel('nav.codex_inspection', t('nav.codex_inspection')),
-        icon: sidebarIcons.codexInspection,
       },
     ],
     operationNavItems,
@@ -644,16 +640,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
       }
     }
 
-    const authFilesIndex = navOrder.indexOf('/auth-files');
-    if (authFilesIndex !== -1) {
-      if (normalizedPath === '/auth-files') return authFilesIndex;
-      if (normalizedPath.startsWith('/auth-files/')) {
-        if (normalizedPath.startsWith('/auth-files/oauth-excluded')) return authFilesIndex + 0.1;
-        if (normalizedPath.startsWith('/auth-files/oauth-model-alias')) return authFilesIndex + 0.2;
-        return authFilesIndex + 0.05;
-      }
-    }
-
     const exactIndex = navOrder.indexOf(normalizedPath);
     if (exactIndex !== -1) return exactIndex;
     const nestedIndex = navOrder.findIndex(
@@ -671,11 +657,10 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
 
     const from = normalize(fromPathname);
     const to = normalize(toPathname);
-    const isAuthFiles = (pathname: string) =>
-      pathname === '/auth-files' || pathname.startsWith('/auth-files/');
+    const isAccounts = (pathname: string) => pathname === '/accounts';
     const isAiProviders = (pathname: string) =>
       pathname === '/ai-providers' || pathname.startsWith('/ai-providers/');
-    if (isAuthFiles(from) && isAuthFiles(to)) return 'ios';
+    if (isAccounts(from) && isAccounts(to)) return 'ios';
     if (isAiProviders(from) && isAiProviders(to)) return 'ios';
     return 'none';
   }, []);
@@ -722,8 +707,10 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const activeNavItem =
     [...navItems]
       .sort((a, b) => b.path.length - a.path.length)
-      .find((item) => matchesNavPath(item, currentPath)) ?? navItems[0];
-  const currentRouteLabel = activeNavItem?.label ?? fullBrandName;
+      .find((item) => matchesNavPath(item, currentPath)) ?? null;
+  const standaloneRouteLabel =
+    currentPath === '/accounts' ? t('nav.accounts', { defaultValue: t('accounts.title') }) : null;
+  const currentRouteLabel = activeNavItem?.label ?? standaloneRouteLabel ?? fullBrandName;
 
   return (
     <div

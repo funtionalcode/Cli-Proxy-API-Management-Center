@@ -26,13 +26,16 @@ release/<version> -> dev -> main -> v<version> tag -> GitHub Release
 1. Freeze the intended release scope on `dev`; do not merge unrelated work
    until the tag is created.
 2. Create `release/<version>` from `dev`, add the two release-note files and
-   the Telegram post, then merge its release PR into `dev`.
+   the Telegram post, then merge its release PR into `dev` with a merge commit
+   (not squash or rebase).
 3. Record the resulting `dev` commit from that release PR as the release SHA.
    Before promotion, confirm that `dev` still points to that exact SHA.
 4. Open a same-repository `dev -> main` promotion PR. It must pass the normal
-   PR checks and the `Verify dev promotion source` gate before merging.
+   PR checks and the `Verify dev promotion source` gate before merging with a
+   merge commit. Squash and rebase merges are rejected by release preflight.
 5. Reconfirm that the resulting `main` commit contains the recorded release
-   `dev` SHA, then create the tag from that exact `main` commit.
+   `dev` SHA, then run the release workflow dry-run from that `main` commit.
+6. Create the tag from the exact `main` commit that passed the dry-run.
 
 Do not open a release PR directly to `main`: branch protection permits only
 the repository's `dev` branch to promote into `main`.
@@ -52,9 +55,8 @@ docs/release-notes/<tag>-<lang>.md
 
 - `<tag>` keeps the `v` prefix, for example `v1.0.2` or `v1.1.0-beta.1`.
 - `<lang>` is `zh` for the authored Chinese source or `en` for the English
-  mirror translation.
-- `zh-CN` is supported by CI as a compatibility fallback, but normal authored
-  files should use `zh` and `en`.
+  mirror translation. The release validator requires both exact filenames;
+  historical `zh-CN` files are not used as a publishing fallback.
 
 Examples:
 
@@ -145,7 +147,7 @@ Escape other HTML characters. Do not include inline keyboard JSON, bot tokens,
 chat IDs, thread IDs, or any other secret in the post file. The release
 workflow adds one `View Release` button at send time.
 
-After both release jobs succeed, `.github/workflows/release.yml` reads the
+After the GitHub Release job succeeds, `.github/workflows/release.yml` reads the
 tag-matched post and sends it through Telegram Bot API `sendMessage`. Configure
 these repository secrets:
 
@@ -159,23 +161,75 @@ Missing configuration or a missing post file skips the notification with an
 Actions warning. Telegram delivery failure must not roll back or invalidate an
 otherwise successful GitHub Release.
 
-## CI Lookup
+## Release CI Contract
 
-On tag pushes, the `Generate release notes` step checks the current tag in this
-priority order:
+`.github/workflows/release.yml` is intentionally fail-closed. A tag push must
+use the strict `v<major>.<minor>.<patch>` format with an optional prerelease
+suffix such as `-rc.1`; build metadata, floating tags, and malformed versions
+are rejected. Numeric prerelease identifiers must not contain leading zeroes.
 
-```text
-docs/release-notes/<tag>-zh.md
-docs/release-notes/<tag>-zh-CN.md
-docs/release-notes/<tag>-en.md
+The PR workflow automatically validates newly added versioned files under
+`docs/release-notes/` and `docs/release-posts/` before they can pass the stable
+`Required checks` aggregate. The three files for each new release tag must
+exist and satisfy the same content rules used by release preflight.
+
+The preflight validates all of the following before building or publishing:
+
+- `docs/release-notes/<tag>-zh.md`, `docs/release-notes/<tag>-en.md`, and
+  `docs/release-posts/<tag>-telegram.html` exist and are non-empty;
+- the two release notes contain reciprocal tag-pinned GitHub blob links;
+- the candidate SHA is the current `main` tip;
+- `main` is a two-parent `dev -> main` promotion merge, and `dev` is the
+  two-parent release-PR merge;
+- the final `main` tree exactly matches the promoted `dev` tree;
+- the release merge introduces exactly the three versioned release files and
+  no unrelated changes.
+
+There is no commit-log or previous-tag fallback. A missing note or post stops
+the workflow before any asset or container publishing. Run the validator
+locally with:
+
+```bash
+npm run release:validate -- --tag v1.2.3 --content-only
 ```
 
-- If a file is found, it becomes the GitHub Release body.
-- If no file is found, CI falls back to `git log --pretty="- %h %s"` for the
-  range from the previous tag to the current tag.
+For a complete topology check, provide the candidate SHA and fetched protected
+refs. The workflow's `workflow_dispatch` path performs this same validation in
+dry-run mode and may only be dispatched from `main`; it builds the HTML,
+native packages, and Docker image with publishing disabled, while skipping
+GitHub Release and Telegram delivery.
 
-The filename must match the pushed tag exactly. Otherwise, CI will use the git
-log fallback.
+Release jobs share a non-canceling `release-publish` concurrency group, so two
+tags cannot publish concurrently. Assets are uploaded as an Actions artifact
+and reused by the GitHub Release job, which prevents a second build from
+silently producing a different release payload. DockerHub publishing is
+optional when its credentials are absent; GHCR remains the configured image
+registry for normal tag runs.
+
+Telegram delivery is deliberately non-blocking after the GitHub Release is
+created. The job summary records `sent`, `skipped-config`,
+`skipped-missing-post`, `skipped-invalid-thread`, or `failed-delivery` without
+exposing secret values. A failed notification never rolls back a successful
+release.
+
+Recovery rules:
+
+1. If pre-tag dry-run fails, fix the source or release files, repeat the Release
+   PR/promotion as needed, and rerun the dry-run before creating a tag.
+2. If a tagged run fails because the immutable source is invalid, fix it under
+   a new version and create a new tag; never move the failed tag. For a transient
+   asset or Docker failure, rerun the same immutable tag only after checking
+   which registry or artifact stage already succeeded. Publishing across
+   registries is deterministic but not transactional.
+3. If GitHub Release succeeds and Telegram fails, repair the secret/post or
+   retry the workflow and verify the job summary; the release itself remains
+   valid.
+
+Before enabling production releases, repository administrators must enforce
+the remote controls that local files cannot provide: protected `dev` and
+`main` branches, a tag ruleset that permits only the release automation to
+create `v*` tags, and immutable GitHub Releases/tags. Never delete, retarget,
+or overwrite a published release tag as a recovery step.
 
 ## Writing Template
 

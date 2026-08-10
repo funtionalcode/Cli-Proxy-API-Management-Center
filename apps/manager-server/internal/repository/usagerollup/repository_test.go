@@ -12,6 +12,7 @@ import (
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func TestMigrationCreatesAccountHistoryRollupTables(t *testing.T) {
@@ -50,7 +51,9 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("first catch-up = %#v", first)
 	}
 
-	aliceRows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com"})
+	aliceKey := rollupTestAccountKey("alice@example.com", "", "auth-a")
+	teamBKey := rollupTestAccountKey("", "team-b", "auth-b")
+	aliceRows, err := repo.AccountHistoryRows(ctx, []string{aliceKey})
 	if err != nil {
 		t.Fatalf("query alice rows: %v", err)
 	}
@@ -83,7 +86,7 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("third catch-up = %#v", third)
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com", "team-b"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{aliceKey, teamBKey})
 	if err != nil {
 		t.Fatalf("query rows: %v", err)
 	}
@@ -91,10 +94,10 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("rows = %#v", rows)
 	}
 	for _, row := range rows {
-		if row.AccountKey == "alice@example.com" && row.Calls != 2 {
+		if row.AccountKey == aliceKey && row.Calls != 2 {
 			t.Fatalf("alice was double-counted: %#v", row)
 		}
-		if row.AccountKey == "team-b" && (row.Calls != 1 || row.BillingModel != "alias-b") {
+		if row.AccountKey == teamBKey && (row.Calls != 1 || row.BillingModel != "alias-b") {
 			t.Fatalf("team-b row = %#v", row)
 		}
 	}
@@ -127,7 +130,9 @@ func TestRollupsPreserveLongContextTokenBuckets(t *testing.T) {
 		t.Fatalf("dashboard catch-up: %v", err)
 	}
 
-	accountRows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com"})
+	accountRows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("alice@example.com", "", "auth-a"),
+	})
 	if err != nil || len(accountRows) != 1 {
 		t.Fatalf("account rows = %#v, err = %v", accountRows, err)
 	}
@@ -225,7 +230,9 @@ func TestCatchUpAccountHistorySerializesConcurrentCalls(t *testing.T) {
 		}
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"concurrent@example.com"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("concurrent@example.com", "", "auth-a"),
+	})
 	if err != nil {
 		t.Fatalf("query rows: %v", err)
 	}
@@ -299,12 +306,52 @@ func TestCatchUpAccountHistoryWaitsForConcurrentWriter(t *testing.T) {
 		t.Fatalf("catch-up result = %#v, latest event id = %d", outcome.result, latestEventID)
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"lock-test-account"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("lock-test-account", "", "auth-a"),
+	})
 	if err != nil {
 		t.Fatalf("query account history rows: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Calls != 1 || rows[0].TotalTokens != 3 {
 		t.Fatalf("account history rows = %#v", rows)
+	}
+}
+
+func TestCatchUpAccountHistorySeparatesSharedAccountByAuthIndex(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+
+	first := rollupTestEvent("shared-account-a", 1_700_000_001_000, "gpt-a", "", "same@example.com", "", "auth-a", false, 10, 5, 0, 0, 0, 0, 15)
+	first.AuthFileSnapshot = "shared.json"
+	second := rollupTestEvent("shared-account-b", 1_700_000_002_000, "gpt-a", "", "same@example.com", "", "auth-b", false, 20, 10, 0, 0, 0, 0, 30)
+	second.AuthFileSnapshot = "shared.json"
+	if _, err := events.InsertBatch(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert shared-account events: %v", err)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err != nil {
+		t.Fatalf("catch up shared-account history: %v", err)
+	}
+
+	firstKey := rollupTestFileAccountKey("shared.json", "same@example.com", "auth-a")
+	secondKey := rollupTestFileAccountKey("shared.json", "same@example.com", "auth-b")
+	rows, err := repo.AccountHistoryRows(ctx, []string{secondKey, firstKey})
+	if err != nil {
+		t.Fatalf("query shared-account rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("shared-account rows = %#v", rows)
+	}
+	byKey := make(map[string]AccountHistoryRow, len(rows))
+	for _, row := range rows {
+		byKey[row.AccountKey] = row
+	}
+	if byKey[firstKey].Calls != 1 || byKey[firstKey].TotalTokens != 15 {
+		t.Fatalf("first credential rollup = %#v", byKey[firstKey])
+	}
+	if byKey[secondKey].Calls != 1 || byKey[secondKey].TotalTokens != 30 {
+		t.Fatalf("second credential rollup = %#v", byKey[secondKey])
 	}
 }
 
@@ -363,4 +410,31 @@ func rollupTestEvent(
 		Failed:               failed,
 		CreatedAtMS:          timestampMS,
 	}
+}
+
+func rollupTestAccountKey(accountSnapshot, authLabelSnapshot, authIndex string) string {
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthIndex:            authIndex,
+		AuthProviderSnapshot: "openai",
+		AccountSnapshot:      accountSnapshot,
+		AuthLabelSnapshot:    authLabelSnapshot,
+		Source:               accountSnapshot,
+	})
+	if !valid {
+		panic("invalid rollup test identity")
+	}
+	return key
+}
+
+func rollupTestFileAccountKey(authFileSnapshot, accountSnapshot, authIndex string) string {
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     authFileSnapshot,
+		AuthIndex:            authIndex,
+		AuthProviderSnapshot: "openai",
+		AccountSnapshot:      accountSnapshot,
+	})
+	if !valid {
+		panic("invalid rollup test file identity")
+	}
+	return key
 }

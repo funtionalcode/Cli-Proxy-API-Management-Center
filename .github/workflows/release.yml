@@ -4,32 +4,127 @@ on:
   push:
     tags:
       - 'v*'
-      - '*-alpha*'
-      - '*-beta*'
-      - '*-rc*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to validate in dry-run mode, for example v1.12.0-rc.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
 
 jobs:
-  build-and-release:
+  preflight:
+    name: Release preflight
     runs-on: ubuntu-latest
-
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      release_tag: ${{ steps.context.outputs.release_tag }}
+      dry_run: ${{ steps.context.outputs.dry_run }}
+      prerelease: ${{ steps.context.outputs.prerelease }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Resolve release context
+        id: context
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${EVENT_REF}" != "refs/heads/main" ]; then
+              echo "Release dry-run must be dispatched from main; received ${EVENT_REF}." >&2
+              exit 1
+            fi
+            release_tag="${INPUT_VERSION}"
+            dry_run=true
+          else
+            release_tag="${EVENT_REF_NAME}"
+            dry_run=false
+          fi
+
+          prerelease="$(node --input-type=module - "${release_tag}" <<'NODE'
+          import { parseReleaseTag } from './bin/release/validate-release.mjs';
+
+          try {
+            process.stdout.write(String(parseReleaseTag(process.argv[2]).prerelease));
+          } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            process.exit(1);
+          }
+          NODE
+          )"
+
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "dry_run=${dry_run}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Fetch protected branch refs
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/dev:refs/remotes/origin/dev
+
+      - name: Validate release content and provenance
+        env:
+          RELEASE_TAG: ${{ steps.context.outputs.release_tag }}
+          RELEASE_SHA: ${{ github.sha }}
+          DRY_RUN: ${{ steps.context.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          validation_args=(
+            --tag "${RELEASE_TAG}"
+            --sha "${RELEASE_SHA}"
+            --main-ref origin/main
+            --dev-ref origin/dev
+          )
+          if [ "${DRY_RUN}" = "true" ]; then
+            validation_args+=(--dry-run)
+          fi
+          npm run --silent release:validate -- "${validation_args[@]}"
+
+  build_release_assets:
+    name: Build release assets
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          cache: 'npm'
+          cache: npm
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.24.x'
           cache-dependency-path: apps/manager-server/go.sum
@@ -40,7 +135,7 @@ jobs:
       - name: Build all-in-one HTML
         run: npm run build
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.preflight.outputs.release_tag }}
 
       - name: Check demo isolation
         run: npm run check:demo-isolation
@@ -48,110 +143,66 @@ jobs:
       - name: Build native release packages
         run: bin/release/package-native.sh
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.preflight.outputs.release_tag }}
 
-      - name: Prepare release assets
-        run: |
-          cd apps/web/dist
-          mv index.html management.html
-          ls -lh management.html
-
-      - name: Generate release notes
+      - name: Prepare release artifact
         run: |
           set -euo pipefail
-          current_tag="${GITHUB_REF_NAME}"
-          notes_dir="docs/release-notes"
-
-          # Prefer curated notes: docs/release-notes/<tag>-<lang>.md (zh -> zh-CN -> en)
-          primary=""
-          for lang in zh zh-CN en; do
-            if [ -f "${notes_dir}/${current_tag}-${lang}.md" ]; then
-              primary="${notes_dir}/${current_tag}-${lang}.md"
-              break
-            fi
-          done
-
-          if [ -n "${primary}" ]; then
-            cp "${primary}" release-notes.md
-            echo "Using curated release notes: ${primary}"
-          else
-            # Fallback: auto-list commits in range (legacy behavior)
-            previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
-            if [ -n "${previous_tag}" ]; then
-              range="${previous_tag}..${current_tag}"
-            else
-              range="${current_tag}"
-            fi
-
-            : > release-notes.md
-            git log --pretty=format:"- %h %s" "${range}" >> release-notes.md
-            echo "Looked for: ${notes_dir}/${current_tag}-{zh,zh-CN,en}.md"
-            echo "No curated notes for ${current_tag}; fell back to git log"
+          rm -rf dist/release
+          mkdir -p dist/release/native
+          panel_html=apps/web/dist/management.html
+          if [[ ! -s "${panel_html}" ]]; then
+            panel_html=apps/web/dist/index.html
           fi
+          cp "${panel_html}" dist/release/management.html
+          cp dist/native/* dist/release/native/
+          cp "docs/release-notes/${RELEASE_TAG}-zh.md" dist/release/release-notes.md
+          find dist/release -maxdepth 2 -type f -print | sort
 
-      - name: Detect release type
-        id: release_type
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
-            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          files: |
-            apps/web/dist/management.html
-            dist/native/*
-          body_path: release-notes.md
-          draft: false
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: release-assets-${{ needs.preflight.outputs.release_tag }}
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 7
 
-  build-and-push-docker:
+  build_and_push_docker:
+    name: Build and publish Docker images
+    needs:
+      - preflight
+      - build_release_assets
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       packages: write
-
     env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
       DOCKERHUB_IMAGE: seakee/cpa-manager-plus
       GHCR_IMAGE: ghcr.io/seakee/cpa-manager-plus
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Detect Docker release type
-        id: release_type
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "semver=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "semver=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "stable=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "stable=false" >> "${GITHUB_OUTPUT}"
-          fi
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Prepare Docker publish targets
         id: docker_targets
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
+
           if [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager-plus" ]; then
             echo "Docker image name must be seakee/cpa-manager-plus" >&2
             exit 1
@@ -159,16 +210,11 @@ jobs:
 
           images="${GHCR_IMAGE}"
           dockerhub_enabled=false
-          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+          if [ "${DRY_RUN}" != "true" ] && [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
             images="${images}"$'\n'"${DOCKERHUB_IMAGE}"
             dockerhub_enabled=true
-          else
-            echo "::warning::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not both configured; DockerHub publish will be skipped."
-          fi
-
-          if [ "${dockerhub_enabled}" = "true" ] && [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager-plus" ]; then
-            echo "DockerHub image name must be seakee/cpa-manager-plus" >&2
-            exit 1
+          elif [ "${DRY_RUN}" != "true" ]; then
+            echo "::warning::DockerHub credentials are not both configured; DockerHub publish will be skipped."
           fi
 
           {
@@ -177,34 +223,32 @@ jobs:
             echo "EOF"
             echo "dockerhub_enabled=${dockerhub_enabled}"
           } >> "${GITHUB_OUTPUT}"
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        if: env.DRY_RUN != 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
-        if: steps.docker_targets.outputs.dockerhub_enabled == 'true'
-        uses: docker/login-action@v3
+        if: env.DRY_RUN != 'true' && steps.docker_targets.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.docker_targets.outputs.images }}
           tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}},enable=${{ steps.release_type.outputs.semver == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.release_type.outputs.stable == 'true' }}
-            type=raw,value=latest,enable=${{ steps.release_type.outputs.stable == 'true' }}
+            type=raw,value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ needs.preflight.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.preflight.outputs.prerelease == 'false' }}
           labels: |
             org.opencontainers.image.title=CPA Manager Plus
             org.opencontainers.image.description=CPA Manager Plus Manager Server container image
@@ -212,21 +256,21 @@ jobs:
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
 
-      - name: Build and push Manager Server image
-        uses: docker/build-push-action@v6
+      - name: Build and publish Manager Server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.manager-server
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ env.DRY_RUN != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ env.RELEASE_TAG }}
 
       - name: Update DockerHub overview
-        if: steps.docker_targets.outputs.dockerhub_enabled == 'true'
-        uses: peter-evans/dockerhub-description@v4
+        if: env.DRY_RUN != 'true' && steps.docker_targets.outputs.dockerhub_enabled == 'true'
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -234,19 +278,69 @@ jobs:
           short-description: CPA Manager Plus with Dockerized Manager Server
           readme-filepath: ./README.md
 
-  notify-telegram:
-    name: Notify Telegram
+  publish_github_release:
+    name: Publish GitHub Release
     needs:
-      - build-and-release
-      - build-and-push-docker
+      - preflight
+      - build_release_assets
+      - build_and_push_docker
+    if: needs.preflight.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
-
     permissions:
-      contents: read
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
 
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-${{ needs.preflight.outputs.release_tag }}
+          path: dist/release
+
+      - name: Verify downloaded release artifact
+        run: |
+          set -euo pipefail
+          test -s dist/release/management.html
+          test -s dist/release/release-notes.md
+          test -n "$(find dist/release/native -type f -maxdepth 1 -print -quit)"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.preflight.outputs.release_tag }}
+          files: |
+            dist/release/management.html
+            dist/release/native/*
+          body_path: dist/release/release-notes.md
+          draft: false
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify_telegram:
+    name: Notify Telegram
+    needs:
+      - preflight
+      - publish_github_release
+    if: needs.preflight.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
 
       - name: Send Telegram release notification
         shell: bash
@@ -257,96 +351,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_post="docs/release-posts/${GITHUB_REF_NAME}-telegram.html"
+          release_post="docs/release-posts/${RELEASE_TAG}-telegram.html"
 
           if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
             echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured; Telegram notification skipped."
+            echo "Telegram status: skipped-config" >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
-          if [ ! -f "${release_post}" ]; then
+          if [ ! -s "${release_post}" ]; then
             echo "::warning::Telegram release post ${release_post} was not found; notification skipped."
+            echo "Telegram status: skipped-missing-post" >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
-          validation_error="$(python3 - "${release_post}" <<'PY' 2>&1 || true
-          import sys
-          from html.parser import HTMLParser
-          from pathlib import Path
-          from urllib.parse import urlparse
-
-          path = Path(sys.argv[1])
-          body = path.read_text(encoding="utf-8")
-
-          if not body.strip():
-              raise SystemExit("release post is empty")
-          if len(body) > 3500:
-              raise SystemExit(f"release post is {len(body)} characters; maximum is 3500")
-
-          class TelegramHTMLValidator(HTMLParser):
-              allowed_tags = {"b", "i", "code", "a"}
-
-              def __init__(self):
-                  super().__init__(convert_charrefs=False)
-                  self.stack = []
-
-              def handle_starttag(self, tag, attrs):
-                  if tag not in self.allowed_tags:
-                      raise ValueError(f"unsupported HTML tag: <{tag}>")
-                  if tag == "a":
-                      if len(attrs) != 1 or attrs[0][0] != "href":
-                          raise ValueError("<a> must contain only one href attribute")
-                      url = urlparse(attrs[0][1])
-                      if url.scheme != "https" or not url.netloc:
-                          raise ValueError("<a href> must use an absolute HTTPS URL")
-                  elif attrs:
-                      raise ValueError(f"<{tag}> does not support attributes")
-                  self.stack.append(tag)
-
-              def handle_endtag(self, tag):
-                  if not self.stack or self.stack[-1] != tag:
-                      raise ValueError(f"unbalanced closing tag: </{tag}>")
-                  self.stack.pop()
-
-              def handle_startendtag(self, tag, attrs):
-                  raise ValueError(f"self-closing tag is not supported: <{tag}/>")
-
-          validator = TelegramHTMLValidator()
-          try:
-              validator.feed(body)
-              validator.close()
-              if validator.stack:
-                  raise ValueError(f"unclosed HTML tag: <{validator.stack[-1]}>")
-          except ValueError as error:
-              raise SystemExit(str(error)) from error
-          PY
-          )"
-
-          if [ -n "${validation_error}" ]; then
-            echo "::warning::Telegram release post validation failed: ${validation_error}"
-            exit 0
-          fi
-
-          if [ -n "${TELEGRAM_MESSAGE_THREAD_ID}" ] && ! [[ "${TELEGRAM_MESSAGE_THREAD_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::warning::TELEGRAM_MESSAGE_THREAD_ID must be numeric; Telegram notification skipped."
-            exit 0
-          fi
-
-          release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
-
+          release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
           reply_markup="$(python3 - "${release_url}" <<'PY'
           import json
           import sys
 
           print(json.dumps({
-              "inline_keyboard": [
-                  [{"text": "查看 Release", "url": sys.argv[1]}],
-              ]
+              "inline_keyboard": [[{"text": "查看 Release", "url": sys.argv[1]}]],
           }, ensure_ascii=False, separators=(",", ":")))
           PY
           )"
 
           response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
           curl_args=(
             --silent
             --show-error
@@ -366,6 +397,11 @@ jobs:
           )
 
           if [ -n "${TELEGRAM_MESSAGE_THREAD_ID}" ]; then
+            if ! [[ "${TELEGRAM_MESSAGE_THREAD_ID}" =~ ^[0-9]+$ ]]; then
+              echo "::warning::TELEGRAM_MESSAGE_THREAD_ID must be numeric; Telegram notification skipped."
+              echo "Telegram status: skipped-invalid-thread" >> "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
             curl_args+=(--data-urlencode "message_thread_id=${TELEGRAM_MESSAGE_THREAD_ID}")
           fi
 
@@ -374,13 +410,9 @@ jobs:
           curl_status=$?
           set -e
 
-          if [ "${curl_status}" -ne 0 ]; then
-            echo "::warning::Telegram API request failed before receiving an HTTP response."
-            exit 0
-          fi
-
-          if ! [[ "${http_code}" =~ ^2[0-9][0-9]$ ]]; then
-            echo "::warning::Telegram API returned HTTP ${http_code}; release remains successful."
+          if [ "${curl_status}" -ne 0 ] || ! [[ "${http_code}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "::warning::Telegram API delivery failed; GitHub Release remains successful."
+            echo "Telegram status: failed-delivery" >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
@@ -397,8 +429,10 @@ jobs:
           raise SystemExit(0 if response.get("ok") is True else 1)
           PY
           then
-            echo "::warning::Telegram API did not confirm message delivery; release remains successful."
+            echo "::warning::Telegram API did not confirm message delivery; GitHub Release remains successful."
+            echo "Telegram status: failed-delivery" >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
           echo "Telegram release notification sent successfully."
+          echo "Telegram status: sent" >> "${GITHUB_STEP_SUMMARY}"

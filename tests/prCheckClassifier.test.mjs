@@ -1,7 +1,12 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   classifyChangedFiles,
   findForbiddenUnicode,
+  parseChangedFilesInput,
   scanChangedTextFiles,
 } from '../bin/ci/classify-pr-checks.mjs';
 
@@ -11,6 +16,8 @@ const noChecks = {
   windows_sqlite: false,
   native_control: false,
   docker: false,
+  demo_docs: false,
+  release_content: false,
 };
 
 describe('PR check classifier', () => {
@@ -21,6 +28,8 @@ describe('PR check classifier', () => {
       windows_sqlite: true,
       native_control: true,
       docker: true,
+      demo_docs: true,
+      release_content: true,
     });
   });
 
@@ -33,11 +42,45 @@ describe('PR check classifier', () => {
       ...noChecks,
       frontend: true,
       docker: true,
+      demo_docs: true,
     });
   });
 
   it('runs frontend checks for docs-site and README changes', () => {
     expect(classifyChangedFiles(['apps/docs/index.md', 'README.md'])).toEqual({
+      ...noChecks,
+      frontend: true,
+      demo_docs: true,
+    });
+  });
+
+  it('runs Demo and Docs checks for web and docs-site changes', () => {
+    expect(classifyChangedFiles(['apps/docs/index.md', 'apps/web/src/App.tsx'])).toEqual({
+      ...noChecks,
+      frontend: true,
+      docker: true,
+      demo_docs: true,
+    });
+  });
+
+  it('runs release validation for release content and its validator', () => {
+    expect(classifyChangedFiles(['docs/release-notes/v1.2.3-zh.md'])).toEqual({
+      ...noChecks,
+      release_content: true,
+    });
+    expect(classifyChangedFiles(['docs/release-posts/v1.2.3-telegram.html'])).toEqual({
+      ...noChecks,
+      release_content: true,
+    });
+    expect(classifyChangedFiles(['bin/release/validate-release.mjs'])).toEqual({
+      ...noChecks,
+      frontend: true,
+      release_content: true,
+    });
+  });
+
+  it('runs workflow integrity tests for Dependabot configuration changes', () => {
+    expect(classifyChangedFiles(['.github/dependabot.yml'])).toEqual({
       ...noChecks,
       frontend: true,
     });
@@ -84,6 +127,7 @@ describe('PR check classifier', () => {
       frontend: true,
       native_control: true,
       docker: true,
+      demo_docs: true,
     });
   });
 
@@ -100,6 +144,8 @@ describe('PR check classifier', () => {
         windows_sqlite: true,
         native_control: true,
         docker: true,
+        demo_docs: true,
+        release_content: true,
       });
     }
   });
@@ -118,12 +164,40 @@ describe('PR check classifier', () => {
       manager_server: true,
       windows_sqlite: true,
       docker: true,
+      demo_docs: true,
     });
   });
 
   it('detects forbidden invisible Unicode code points', () => {
     expect(findForbiddenUnicode('safe\u200Btext\u202E')).toEqual(['U+200B', 'U+202E']);
     expect(findForbiddenUnicode('plain text')).toEqual([]);
+  });
+
+  it('preserves Git NUL-delimited Unicode paths for classification and scanning', () => {
+    const repository = mkdtempSync(path.join(tmpdir(), 'cpamp-classifier-'));
+    const relativePath = 'apps/web/安全\u200B检查.ts';
+
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: repository });
+      mkdirSync(path.dirname(path.join(repository, relativePath)), { recursive: true });
+      writeFileSync(path.join(repository, relativePath), 'safe\u202Etext\n');
+      execFileSync('git', ['add', relativePath], { cwd: repository });
+      const changedFiles = parseChangedFilesInput(
+        execFileSync('git', ['diff', '--cached', '--name-only', '--no-renames', '-z'], {
+          cwd: repository,
+          encoding: 'utf8',
+        }),
+        { nullDelimited: true }
+      );
+
+      expect(changedFiles).toEqual([relativePath]);
+      expect(classifyChangedFiles(changedFiles)).toMatchObject({ frontend: true, docker: true });
+      expect(scanChangedTextFiles(changedFiles, { root: repository })).toEqual([
+        `${relativePath} contains U+202E`,
+      ]);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
   });
 
   it('rejects changed paths that resolve outside the repository', () => {

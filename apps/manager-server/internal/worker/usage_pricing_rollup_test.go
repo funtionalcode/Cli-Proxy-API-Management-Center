@@ -36,7 +36,7 @@ func TestUsagePricingRollupWorkerCatchUp(t *testing.T) {
 
 	worker := NewUsagePricingRollupWorker(db)
 	worker.batchLimit = 10
-	worker.maxBatches = 2
+	worker.maxBatches = 4
 	if pending := worker.catchUp(ctx); pending {
 		t.Fatal("completed catch-up reported pending work")
 	}
@@ -54,6 +54,15 @@ func TestUsagePricingRollupWorkerCatchUp(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Calls != 1 || rows[0].InputTokens != 150 || rows[0].ContextThresholdTokens != 100 {
 		t.Fatalf("pricing rows = %#v", rows)
+	}
+	for _, rollupName := range []string{"projection_v1", "metadata_v1", "stats_v1"} {
+		monitoringState, err := db.UsageMonitoringState(ctx, rollupName)
+		if err != nil {
+			t.Fatalf("monitoring state %s: %v", rollupName, err)
+		}
+		if monitoringState.Status != "ready" || monitoringState.CoverageEventID != 1 {
+			t.Fatalf("monitoring state %s = %#v", rollupName, monitoringState)
+		}
 	}
 }
 

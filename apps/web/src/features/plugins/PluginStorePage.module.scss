@@ -559,9 +559,9 @@
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  border: 1px solid var(--border-color);
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
+  border: 1px solid var(--data-badge-neutral-border);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
   overflow: hidden;
 
   img {
@@ -640,20 +640,20 @@
 }
 
 .badgeOn {
-  color: var(--success-color);
-  border-color: color-mix(in srgb, var(--success-color) 38%, var(--border-color));
-  background: color-mix(in srgb, var(--success-color) 10%, var(--bg-primary));
+  color: var(--data-badge-success-text);
+  border-color: var(--data-badge-success-border);
+  background: var(--data-badge-success-bg);
 }
 
 .badgeWarn {
-  color: var(--warning-text);
-  border-color: var(--warning-border);
-  background: var(--warning-bg);
+  color: var(--data-badge-warning-text);
+  border-color: var(--data-badge-warning-border);
+  background: var(--data-badge-warning-bg);
 }
 
 .badgeMuted {
-  color: var(--text-tertiary);
-  background: color-mix(in srgb, var(--surface-subtle) 70%, var(--bg-primary));
+  color: var(--data-badge-neutral-text);
+  background: var(--data-badge-neutral-bg);
 }
 
 .badgeThirdParty {

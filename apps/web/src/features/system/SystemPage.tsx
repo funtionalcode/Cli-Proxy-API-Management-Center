@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { IconGithub, IconBookOpen, IconExternalLink, IconCode } from '@/components/ui/icons';
+import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
+import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
   useAuthStore,
   useConfigStore,
@@ -11,6 +13,7 @@ import {
   useThemeStore,
 } from '@/stores';
 import { apiKeysApi } from '@/services/api/apiKeys';
+import { usageServiceApi, type UsageServiceStatus } from '@/services/api/usageService';
 import { classifyModels } from '@/utils/models';
 import { STORAGE_KEY_AUTH, STORAGE_KEY_QUOTA_CACHE } from '@/utils/constants';
 import iconGemini from '@/assets/icons/gemini.svg';
@@ -25,6 +28,7 @@ import iconGrok from '@/assets/icons/grok.svg';
 import iconGrokDark from '@/assets/icons/grok-dark.svg';
 import iconDeepseek from '@/assets/icons/deepseek.svg';
 import iconMinimax from '@/assets/icons/minimax.svg';
+import { DatabaseStatusCard } from './components/DatabaseStatusCard';
 import styles from './SystemPage.module.scss';
 
 const MODEL_CATEGORY_ICONS: Record<string, string | { light: string; dark: string }> = {
@@ -39,11 +43,14 @@ const MODEL_CATEGORY_ICONS: Record<string, string | { light: string; dark: strin
   minimax: iconMinimax,
 };
 
+const DATABASE_STATUS_REFRESH_INTERVAL_MS = 60_000;
+
 export function SystemPage() {
   const { t, i18n } = useTranslation();
   const { showNotification, showConfirmation } = useNotificationStore();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const auth = useAuthStore();
+  const featureAvailability = usePanelFeatureAvailability();
   const config = useConfigStore((state) => state.config);
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
 
@@ -56,6 +63,11 @@ export function SystemPage() {
     type: 'success' | 'warning' | 'error' | 'muted';
     message: string;
   }>();
+
+  const [databaseStatus, setDatabaseStatus] = useState<UsageServiceStatus | null>(null);
+  const [databaseLoading, setDatabaseLoading] = useState(false);
+  const [databaseError, setDatabaseError] = useState('');
+  const databaseRequestId = useRef(0);
 
   const apiKeysCache = useRef<string[]>([]);
 
@@ -158,6 +170,45 @@ export function SystemPage() {
     }
   };
 
+  const refreshDatabaseStatus = useCallback(async () => {
+    const requestId = databaseRequestId.current + 1;
+    databaseRequestId.current = requestId;
+
+    if (
+      !featureAvailability.managerServiceAvailable ||
+      !featureAvailability.managerServiceBase ||
+      !auth.managementKey
+    ) {
+      setDatabaseStatus(null);
+      setDatabaseError('');
+      setDatabaseLoading(false);
+      return;
+    }
+
+    setDatabaseLoading(true);
+    setDatabaseError('');
+    try {
+      const status = await usageServiceApi.getStatus(
+        featureAvailability.managerServiceBase,
+        auth.managementKey
+      );
+      if (databaseRequestId.current !== requestId) return;
+      setDatabaseStatus(status);
+    } catch (err: unknown) {
+      if (databaseRequestId.current !== requestId) return;
+      setDatabaseStatus(null);
+      setDatabaseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (databaseRequestId.current === requestId) {
+        setDatabaseLoading(false);
+      }
+    }
+  }, [
+    auth.managementKey,
+    featureAvailability.managerServiceAvailable,
+    featureAvailability.managerServiceBase,
+  ]);
+
   const handleClearLoginStorage = () => {
     showConfirmation({
       title: t('system_info.clear_login_title', { defaultValue: 'Clear Login Storage' }),
@@ -191,6 +242,21 @@ export function SystemPage() {
     fetchModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.connectionStatus, auth.apiBase]);
+
+  useEffect(() => {
+    if (featureAvailability.checking) return;
+    void refreshDatabaseStatus();
+  }, [featureAvailability.checking, refreshDatabaseStatus]);
+
+  useEffect(() => {
+    if (!featureAvailability.managerServiceAvailable) return;
+    const timer = window.setInterval(() => {
+      void refreshDatabaseStatus();
+    }, DATABASE_STATUS_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [featureAvailability.managerServiceAvailable, refreshDatabaseStatus]);
+
+  useHeaderRefresh(refreshDatabaseStatus, featureAvailability.managerServiceAvailable);
 
   return (
     <div className={styles.container}>
@@ -253,6 +319,14 @@ export function SystemPage() {
             </a>
           </div>
         </Card>
+
+        {featureAvailability.managerServiceAvailable && (
+          <DatabaseStatusCard
+            status={databaseStatus}
+            loading={databaseLoading}
+            error={databaseError}
+          />
+        )}
 
         <Card
           title={t('system_info.models_title')}

@@ -8,11 +8,11 @@ import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useAuthStore } from '@/stores';
 import { authFilesApi, configFileApi } from '@/services/api';
+import { monitoringAnalyticsApi, type UsageHeaderSnapshot } from '@/services/api/usageService';
 import {
-  monitoringAnalyticsApi,
-  type UsageHeaderSnapshot,
-} from '@/services/api/usageService';
-import { buildUsageHeaderSnapshotLookup } from '@/utils/usageHeaderSnapshots';
+  buildUsageHeaderSnapshotLookup,
+  filterFreshUsageHeaderQuotaSnapshots,
+} from '@/utils/usageHeaderSnapshots';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { IconSearch } from '@/components/ui/icons';
@@ -22,7 +22,7 @@ import {
   CLAUDE_CONFIG,
   CODEX_CONFIG,
   KIMI_CONFIG,
-  XAI_CONFIG
+  XAI_CONFIG,
 } from '@/components/quota';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
 import {
@@ -59,6 +59,7 @@ export function QuotaPage() {
   }));
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const [headerSnapshots, setHeaderSnapshots] = useState<UsageHeaderSnapshot[]>([]);
+  const [headerSnapshotGeneratedAtMs, setHeaderSnapshotGeneratedAtMs] = useState(0);
   const [accountDisplayModes, setAccountDisplayModes] = useState(() => ({
     ...initialUiState.current.accountDisplayModes,
   }));
@@ -69,7 +70,7 @@ export function QuotaPage() {
       { value: 'default', label: t('quota_management.sort_default') },
       { value: 'name-asc', label: t('quota_management.sort_name_asc') },
       { value: 'plan-desc', label: t('quota_management.sort_plan_desc') },
-      { value: 'plan-asc', label: t('quota_management.sort_plan_asc') }
+      { value: 'plan-asc', label: t('quota_management.sort_plan_asc') },
     ],
     [t]
   );
@@ -100,14 +101,20 @@ export function QuotaPage() {
   const loadHeaderSnapshots = useCallback(async () => {
     if (!managerServiceBase) {
       setHeaderSnapshots([]);
+      setHeaderSnapshotGeneratedAtMs(0);
       return;
     }
     try {
-      const response = await monitoringAnalyticsApi.getHeaderSnapshots(managerServiceBase, managementKey, {
-        days: 30,
-        limit: 1000,
-      });
+      const response = await monitoringAnalyticsApi.getHeaderSnapshots(
+        managerServiceBase,
+        managementKey,
+        {
+          days: 30,
+          limit: 1000,
+        }
+      );
       setHeaderSnapshots(response.items ?? []);
+      setHeaderSnapshotGeneratedAtMs(response.generated_at_ms || Date.now());
     } catch {
       setHeaderSnapshots((current) => current);
     }
@@ -126,8 +133,14 @@ export function QuotaPage() {
   }, [loadFiles, loadConfig, loadHeaderSnapshots]);
 
   const headerSnapshotLookup = useMemo(
-    () => buildUsageHeaderSnapshotLookup(headerSnapshots),
-    [headerSnapshots]
+    () =>
+      buildUsageHeaderSnapshotLookup(
+        filterFreshUsageHeaderQuotaSnapshots(
+          headerSnapshots,
+          headerSnapshotGeneratedAtMs || Date.now()
+        )
+      ),
+    [headerSnapshotGeneratedAtMs, headerSnapshots]
   );
 
   useEffect(() => {
@@ -241,9 +254,7 @@ export function QuotaPage() {
         viewMode={getSectionViewMode(ANTIGRAVITY_CONFIG.type)}
         onViewModeChange={(viewMode) => setSectionViewMode(ANTIGRAVITY_CONFIG.type, viewMode)}
         accountDisplayMode={getAccountDisplayMode(ANTIGRAVITY_CONFIG.type)}
-        onAccountDisplayModeChange={(mode) =>
-          setAccountDisplayMode(ANTIGRAVITY_CONFIG.type, mode)
-        }
+        onAccountDisplayModeChange={(mode) => setAccountDisplayMode(ANTIGRAVITY_CONFIG.type, mode)}
       />
       <QuotaSection
         config={KIMI_CONFIG}

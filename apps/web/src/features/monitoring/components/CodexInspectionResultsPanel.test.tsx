@@ -6,6 +6,7 @@ import type {
   CodexInspectionResultItem,
   CodexInspectionRunResult,
 } from '@/features/monitoring/codexInspection';
+import { Button } from '@/components/ui/Button';
 import inspectionStyles from '@/features/monitoring/CodexInspectionPage.module.scss';
 import tooltipStyles from './FailureDetailsTooltip.module.scss';
 import { CodexInspectionResultsPanel } from './CodexInspectionResultsPanel';
@@ -122,6 +123,43 @@ describe('CodexInspectionResultsPanel', () => {
 
     expect(renderer.root.findByProps({ 'data-testid': 'custom-operation' })).toBeDefined();
     expect(renderer.root.findAllByType('article')).toHaveLength(1);
+  });
+
+  it('opens the credential represented by a result card', () => {
+    const item = createItem({ authIndex: 'auth-1' });
+    const onOpenCredential = vi.fn();
+    const renderer = renderPanel(item, { onOpenCredential });
+    const openButton = renderer.root
+      .findAllByType(Button)
+      .find(
+        (node) => node.props.children === 'monitoring.codex_inspection_view_credential'
+      );
+
+    expect(openButton).toBeDefined();
+
+    act(() => {
+      openButton?.props.onClick();
+    });
+
+    expect(onOpenCredential).toHaveBeenCalledWith(item);
+  });
+
+  it('keeps credential navigation next to a custom server operation', () => {
+    const renderer = renderPanel(
+      createItem({ action: 'delete', actionReason: 'invalid account' }),
+      {
+        pendingActionCount: 1,
+        onOpenCredential: vi.fn(),
+        renderOperation: () => <button data-testid="custom-operation">execute</button>,
+      }
+    );
+
+    expect(renderer.root.findByProps({ 'data-testid': 'custom-operation' })).toBeDefined();
+    expect(
+      renderer.root
+        .findAllByType(Button)
+        .some((node) => node.props.children === 'monitoring.codex_inspection_view_credential')
+    ).toBe(true);
   });
 
   it('renders the xAI probe HTTP status when billing health returns one', () => {

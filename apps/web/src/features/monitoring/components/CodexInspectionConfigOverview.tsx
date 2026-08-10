@@ -13,6 +13,7 @@ type CodexInspectionConfigOverviewProps = {
   ariaLabel?: string;
   compact?: boolean;
   embedded?: boolean;
+  hideHeader?: boolean;
 };
 
 // 已存在配置的「读」面板:可点击的 label/value 概览卡,点任意卡片直达对应字段编辑。
@@ -26,6 +27,7 @@ export function CodexInspectionConfigOverview({
   ariaLabel,
   compact = false,
   embedded = false,
+  hideHeader = false,
 }: CodexInspectionConfigOverviewProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -50,15 +52,17 @@ export function CodexInspectionConfigOverview({
         .join(' ')}
       aria-label={ariaLabel ?? title}
     >
-      <header className={styles.configOverviewHeader}>
-        <div>
-          <span className={styles.configOverviewTitle}>{title}</span>
-        </div>
-        <button type="button" className={styles.configOverviewEdit} onClick={() => onEdit()}>
-          <IconSettings size={14} />
-          <span>{editLabel}</span>
-        </button>
-      </header>
+      {!hideHeader && (
+        <header className={styles.configOverviewHeader}>
+          <div>
+            <span className={styles.configOverviewTitle}>{title}</span>
+          </div>
+          <button type="button" className={styles.configOverviewEdit} onClick={() => onEdit()}>
+            <IconSettings size={14} />
+            <span>{editLabel}</span>
+          </button>
+        </header>
+      )}
       <div className={styles.configOverviewGrid}>
         {items.map((item) => (
           <div

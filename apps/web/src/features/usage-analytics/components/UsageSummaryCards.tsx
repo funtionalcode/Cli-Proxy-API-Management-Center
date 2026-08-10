@@ -23,6 +23,8 @@ import type {
 } from '../usageAnalyticsPresentation';
 import styles from '../UsageAnalyticsPage.module.scss';
 
+type UsageSummaryDensity = 'default' | 'compact';
+
 const summaryIconMap: Record<UsageSummaryCardIcon, ComponentType<IconProps>> = {
   anomaly: IconShield,
   cache: IconDatabaseZap,
@@ -51,6 +53,8 @@ const summaryAccentClassMap: Record<UsageSummaryCardAccent, string> = {
 
 function UsageSummaryCardView({
   accent = 'blue',
+  dataAttributes,
+  density = 'default',
   fullLabel,
   icon,
   label,
@@ -59,22 +63,24 @@ function UsageSummaryCardView({
   value,
   valueTitle,
   variant = 'primary',
-}: UsageSummaryCard) {
+}: UsageSummaryCard & { density?: UsageSummaryDensity }) {
   const Icon = icon ? summaryIconMap[icon] : null;
   const tooltipId = useId();
   const resolvedLabel = fullLabel ?? label;
   const tooltipValue = valueTitle ?? value;
-  const hasValueTooltip = tooltipValue !== value;
+  const isCompact = density === 'compact';
+  const hasValueTooltip = !isCompact && tooltipValue !== value;
   const cardClassName = [
     styles.usageSummaryCard,
     variant === 'secondary' ? styles.usageSummaryCardSecondary : styles.usageSummaryCardPrimary,
+    isCompact ? styles.usageSummaryCardCompact : '',
     summaryAccentClassMap[accent],
   ]
     .filter(Boolean)
     .join(' ');
 
   return (
-    <div className={cardClassName}>
+    <div className={cardClassName} {...dataAttributes}>
       <div className={styles.usageSummaryCardHeader}>
         {Icon ? (
           <span className={styles.usageSummaryIcon}>
@@ -91,6 +97,7 @@ function UsageSummaryCardView({
             className={`${styles.usageSummaryValue} ${tone ? styles[`tone${tone}`] : ''}`}
             tabIndex={hasValueTooltip ? 0 : undefined}
             aria-describedby={hasValueTooltip ? tooltipId : undefined}
+            title={valueTitle}
           >
             {value}
           </strong>
@@ -101,15 +108,47 @@ function UsageSummaryCardView({
             </span>
           ) : null}
         </span>
-        <span className={styles.usageSummaryMeta} title={meta}>
-          {meta}
-        </span>
+        {!isCompact ? (
+          <span data-usage-summary-meta="true" className={styles.usageSummaryMeta} title={meta}>
+            {meta}
+          </span>
+        ) : null}
       </div>
-      <div className={styles.usageSummaryCardChart} aria-hidden="true">
-        <svg viewBox="0 0 100 30" preserveAspectRatio="none">
-          <path d="M0,25 Q15,5 30,20 T60,10 T100,25" />
-        </svg>
-      </div>
+      {!isCompact ? (
+        <div
+          data-usage-summary-chart="true"
+          className={styles.usageSummaryCardChart}
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 100 30" preserveAspectRatio="none">
+            <path d="M0,25 Q15,5 30,20 T60,10 T100,25" />
+          </svg>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function UsageSummaryGrid({
+  cards,
+  density = 'default',
+}: {
+  cards: UsageSummaryCard[];
+  density?: UsageSummaryDensity;
+}) {
+  const isCompact = density === 'compact';
+
+  return (
+    <div
+      className={[styles.usageSummaryGrid, isCompact ? styles.usageSummaryGridCompact : '']
+        .filter(Boolean)
+        .join(' ')}
+      data-usage-summary-density={density}
+      style={{ '--usage-summary-columns': Math.min(cards.length, 8) } as CSSProperties}
+    >
+      {cards.map((card) => (
+        <UsageSummaryCardView key={`${card.label}-${card.value}`} {...card} density={density} />
+      ))}
     </div>
   );
 }
@@ -117,14 +156,7 @@ function UsageSummaryCardView({
 export function UsageSummarySection({ cards }: { cards: UsageSummaryCard[] }) {
   return (
     <section className={styles.usageSummarySection}>
-      <div
-        className={styles.usageSummaryGrid}
-        style={{ '--usage-summary-columns': Math.min(cards.length, 8) } as CSSProperties}
-      >
-        {cards.map((card) => (
-          <UsageSummaryCardView key={`${card.label}-${card.value}`} {...card} />
-        ))}
-      </div>
+      <UsageSummaryGrid cards={cards} />
     </section>
   );
 }

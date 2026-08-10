@@ -527,27 +527,27 @@
 
 .quotaBar {
   height: 8px;
-  background-color: var(--surface-subtle-strong);
+  background-color: var(--data-track-bg);
   border-radius: 999px;
   overflow: hidden;
 }
 
 .quotaBarFill {
   height: 100%;
-  background-color: var(--success-color, #22c55e);
+  background-color: var(--data-green-base);
   transition: width 0.2s ease;
 }
 
 .quotaBarFillHigh {
-  background-color: var(--success-color, #22c55e);
+  background-color: var(--data-green-base);
 }
 
 .quotaBarFillMedium {
-  background-color: var(--quota-medium-color, #e6a23c);
+  background-color: var(--data-amber-base);
 }
 
 .quotaBarFillLow {
-  background-color: var(--danger-color);
+  background-color: var(--data-red-base);
 }
 
 .quotaMeta {
@@ -639,18 +639,18 @@
 
 .quotaError {
   font-size: 12px;
-  color: var(--danger-color);
-  background-color: rgba($error-color, 0.08);
-  border: 1px solid var(--danger-color);
+  color: var(--data-badge-danger-text);
+  background-color: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
   border-radius: $radius-sm;
   padding: $spacing-xs $spacing-sm;
 }
 
 .quotaWarning {
   font-size: 12px;
-  color: var(--warning-text);
-  background-color: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  color: var(--data-badge-warning-text);
+  background-color: var(--data-badge-warning-bg);
+  border: 1px solid var(--data-badge-warning-border);
   border-radius: $radius-sm;
   padding: $spacing-xs $spacing-sm;
 }

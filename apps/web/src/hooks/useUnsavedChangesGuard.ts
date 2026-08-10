@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import type { BlockerFunction } from 'react-router';
-import { useBlocker, useLocation } from 'react-router';
+import type { BlockerFunction } from 'react-router-dom';
+import { useBlocker, useLocation } from 'react-router-dom';
 import { useNotificationStore } from '@/stores';
 
 type ConfirmationVariant = 'danger' | 'primary' | 'secondary';
@@ -17,10 +17,11 @@ export type UseUnsavedChangesGuardOptions = {
   enabled?: boolean;
   shouldBlock: boolean | BlockerFunction;
   dialog: UnsavedChangesDialog;
+  onConfirmNavigation?: () => boolean | void | Promise<boolean | void>;
 };
 
 export function useUnsavedChangesGuard(options: UseUnsavedChangesGuardOptions) {
-  const { enabled = true, shouldBlock, dialog } = options;
+  const { enabled = true, shouldBlock, dialog, onConfirmNavigation } = options;
   const { showConfirmation } = useNotificationStore();
   const lastBlockedRef = useRef<string>('');
   const allowNextNavigationUntilRef = useRef(0);
@@ -92,10 +93,20 @@ export function useUnsavedChangesGuard(options: UseUnsavedChangesGuardOptions) {
       confirmText: dialog.confirmText,
       cancelText: dialog.cancelText,
       variant: dialog.variant ?? 'danger',
-      onConfirm: () => blocker.proceed(),
+      onConfirm: () => {
+        void Promise.resolve(onConfirmNavigation?.())
+          .then((allowed) => {
+            if (allowed === false) {
+              blocker.reset();
+              return;
+            }
+            blocker.proceed();
+          })
+          .catch(() => blocker.reset());
+      },
       onCancel: () => blocker.reset(),
     });
-  }, [blockedKey, blocker, dialog, showConfirmation]);
+  }, [blockedKey, blocker, dialog, onConfirmNavigation, showConfirmation]);
 
   return { allowNextNavigation, allowNavigationTo };
 }

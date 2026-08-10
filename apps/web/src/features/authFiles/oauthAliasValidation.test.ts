@@ -7,6 +7,7 @@ import {
   isMissingOrMethodNotAllowedStatus,
   mergeOAuthAliasLink,
   normalizeOAuthAliasEntries,
+  OAuthAliasRollbackError,
   planOAuthAliasRename,
 } from './oauthAliasValidation';
 
@@ -49,6 +50,48 @@ describe('applyOAuthAliasWritePlans', () => {
     expect(stored.get('claude')).toEqual([{ name: 'claude-upstream', alias: 'shared' }]);
     expect(stored.get('codex')).toEqual([{ name: 'codex-upstream', alias: 'shared' }]);
   });
+
+  it('uses the rollback transport and reports channels that could not be restored', async () => {
+    const forwardWrites: string[] = [];
+    const rollbackWrites: string[] = [];
+    const scopeChanged = new Error('connection scope changed');
+    let thrown: unknown;
+
+    try {
+      await applyOAuthAliasWritePlans(
+        [
+          {
+            channel: 'claude',
+            previousMappings: [{ name: 'claude-upstream', alias: 'shared' }],
+            nextMappings: [{ name: 'claude-upstream', alias: 'renamed' }],
+          },
+          {
+            channel: 'codex',
+            previousMappings: [{ name: 'codex-upstream', alias: 'shared' }],
+            nextMappings: [{ name: 'codex-upstream', alias: 'renamed' }],
+          },
+        ],
+        async (channel) => {
+          forwardWrites.push(channel);
+          if (channel === 'codex') throw scopeChanged;
+        },
+        async (channel) => {
+          rollbackWrites.push(channel);
+          if (channel === 'claude') throw new Error('old CPA unavailable');
+        }
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(forwardWrites).toEqual(['claude', 'codex']);
+    expect(rollbackWrites).toEqual(['codex', 'claude']);
+    expect(thrown).toBeInstanceOf(OAuthAliasRollbackError);
+    expect(thrown).toMatchObject({
+      originalError: scopeChanged,
+      failedChannels: ['claude'],
+    });
+  });
 });
 
 describe('normalizeOAuthAliasEntries', () => {
@@ -81,12 +124,13 @@ describe('normalizeOAuthAliasEntries', () => {
     ]);
   });
 
-  it('preserves fork and forceMapping flags', () => {
+  it('preserves all optional CPA alias fields', () => {
     const result = normalizeOAuthAliasEntries([
       {
         name: 'gpt-5',
         alias: 'g5',
         fork: true,
+        displayName: 'GPT Five',
         forceMapping: true,
       },
     ]);
@@ -96,6 +140,7 @@ describe('normalizeOAuthAliasEntries', () => {
         name: 'gpt-5',
         alias: 'g5',
         fork: true,
+        displayName: 'GPT Five',
         forceMapping: true,
       },
     ]);
@@ -189,6 +234,42 @@ describe('mergeOAuthAliasLink', () => {
 });
 
 describe('planOAuthAliasRename', () => {
+  it('preserves CPA optional fields while renaming an alias', () => {
+    const result = planOAuthAliasRename(
+      {
+        codex: [
+          {
+            name: 'gpt-5-codex',
+            alias: 'team-codex',
+            fork: true,
+            displayName: 'Team Codex',
+            forceMapping: true,
+          },
+        ],
+      },
+      'team-codex',
+      'company-codex'
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      plans: [
+        {
+          channel: 'codex',
+          nextMappings: [
+            {
+              name: 'gpt-5-codex',
+              alias: 'company-codex',
+              fork: true,
+              displayName: 'Team Codex',
+              forceMapping: true,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it('validates all channels before returning plans', () => {
     const ok = planOAuthAliasRename(
       {

@@ -9,20 +9,22 @@ import type {
   AntigravityQuotaState,
   AntigravityQuotaSubscription,
   AuthFileItem,
-  ClaudeExtraUsage,
   ClaudeQuotaState,
-  ClaudeQuotaWindow,
   CodexQuotaState,
   CodexRateLimitResetCredit,
   CodexQuotaWindow,
-  KimiQuotaRow,
+  CredentialScopedQuotaState,
   KimiQuotaState,
   XaiBillingSummary,
   XaiQuotaState,
 } from '@/types';
 import type { UsageHeaderSnapshot } from '@/services/api/usageService';
-import { getAuthFileStatusIdentityKey } from '@/utils/authFileStatusMutation';
-import type { AntigravityQuotaData, CodexQuotaData } from '@/utils/quota';
+import type {
+  AntigravityQuotaData,
+  ClaudeQuotaData,
+  CodexQuotaData,
+  KimiQuotaData,
+} from '@/utils/quota';
 import { resetCodexQuota } from '@/services/api/codexQuota';
 import { QuotaInfoTooltip } from '@/components/quota/QuotaInfoTooltip';
 import {
@@ -31,12 +33,14 @@ import {
   resolveCodexPlanType,
   formatQuotaResetTime,
   formatKimiResetHint,
+  isValidQuotaResetAtMs,
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
   fetchKimiQuota,
   fetchXaiQuota,
   buildCodexQuotaWindows,
+  filterFreshCodexQuotaWindows,
   isAntigravityFile,
   isClaudeFile,
   isCodexFile,
@@ -54,8 +58,12 @@ import {
   getHeaderSnapshotUsedPercent,
   hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
-import { normalizeAuthIndex } from '@/utils/authIndex';
 import { formatXaiBillingDiagnostics } from '@/utils/quota/xaiPresentation';
+import {
+  buildQuotaCredentialIdentity,
+  getQuotaCredentialStoreKey,
+  scopeQuotaStateToCredential,
+} from '@/utils/quota/credentialScope';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import styles from '@/features/quota/QuotaPage.module.scss';
 
@@ -357,7 +365,7 @@ const getCodexPlanLabel = (planType: string | null | undefined, t: TFunction): s
 };
 
 const getCodexEffectivePlanType = (file: AuthFileItem, quota?: CodexQuotaState): string | null =>
-  resolveCodexPlanType(file) ?? quota?.planType ?? null;
+  quota?.planType ?? resolveCodexPlanType(file) ?? null;
 
 const getCodexPlanSortRank = (file: AuthFileItem, quota?: CodexQuotaState): number | null => {
   const normalized = normalizePlanType(getCodexEffectivePlanType(file, quota));
@@ -389,6 +397,11 @@ const getCodexSearchText = (
     quota?.creditsHasCredits,
     quota?.creditsUnlimited,
     quota?.creditsBalance,
+    quota?.creditsOverageLimitReached,
+    quota?.creditsApproxLocalMessages,
+    quota?.creditsApproxCloudMessages,
+    quota?.spendControlReached,
+    quota?.spendControlIndividualLimit,
     quota?.rateLimitReachedType,
     quota?.primaryOverSecondaryLimitPercent,
     quota?.observedAtMs,
@@ -422,30 +435,63 @@ const hasKnownResetLabel = (value: unknown): value is string => {
   return trimmed !== '' && trimmed !== '-';
 };
 
+const stampCodexQuotaWindows = (
+  windows: CodexQuotaWindow[] | undefined,
+  observationSource: NonNullable<CodexQuotaWindow['observationSource']>,
+  observedAtMs: number | null
+): CodexQuotaWindow[] | undefined =>
+  windows?.map((window) => ({
+    ...window,
+    observationSource: window.observationSource ?? observationSource,
+    observedAtMs: readFiniteTimestamp(window.observedAtMs) ?? observedAtMs,
+  }));
+
 const mergeCodexQuotaWindow = (
   activeWindow: CodexQuotaWindow,
   observedWindow: CodexQuotaWindow
-): CodexQuotaWindow => ({
-  ...activeWindow,
-  ...(hasHeaderValue(observedWindow.label) ? { label: observedWindow.label } : {}),
-  ...(hasHeaderValue(observedWindow.labelKey) ? { labelKey: observedWindow.labelKey } : {}),
-  ...(observedWindow.labelParams && Object.keys(observedWindow.labelParams).length > 0
-    ? { labelParams: observedWindow.labelParams }
-    : {}),
-  ...(observedWindow.usedPercent !== null &&
-  observedWindow.usedPercent !== undefined &&
-  Number.isFinite(observedWindow.usedPercent)
-    ? { usedPercent: observedWindow.usedPercent }
-    : {}),
-  ...(hasKnownResetLabel(observedWindow.resetLabel)
-    ? { resetLabel: observedWindow.resetLabel }
-    : {}),
-  ...(observedWindow.limitWindowSeconds !== null &&
-  observedWindow.limitWindowSeconds !== undefined &&
-  observedWindow.limitWindowSeconds > 0
-    ? { limitWindowSeconds: observedWindow.limitWindowSeconds }
-    : {}),
-});
+): CodexQuotaWindow => {
+  const hasObservedResetLabel = hasKnownResetLabel(observedWindow.resetLabel);
+  const hasObservedResetAt = isValidQuotaResetAtMs(observedWindow.resetAtMs);
+  const resetMetadata = hasObservedResetAt
+    ? {
+        resetLabel: hasObservedResetLabel ? observedWindow.resetLabel : '-',
+        resetAtMs: observedWindow.resetAtMs ?? null,
+        resetAccuracy: observedWindow.resetAccuracy ?? 'unknown',
+      }
+    : hasObservedResetLabel
+      ? {
+          resetLabel: observedWindow.resetLabel,
+          resetAtMs: null,
+          resetAccuracy: 'unknown' as const,
+        }
+      : {};
+
+  return {
+    ...activeWindow,
+    ...(hasHeaderValue(observedWindow.label) ? { label: observedWindow.label } : {}),
+    ...(hasHeaderValue(observedWindow.labelKey) ? { labelKey: observedWindow.labelKey } : {}),
+    ...(observedWindow.labelParams && Object.keys(observedWindow.labelParams).length > 0
+      ? { labelParams: observedWindow.labelParams }
+      : {}),
+    ...(observedWindow.usedPercent !== null &&
+    observedWindow.usedPercent !== undefined &&
+    Number.isFinite(observedWindow.usedPercent)
+      ? { usedPercent: observedWindow.usedPercent }
+      : {}),
+    ...resetMetadata,
+    ...(observedWindow.limitWindowSeconds !== null &&
+    observedWindow.limitWindowSeconds !== undefined &&
+    observedWindow.limitWindowSeconds > 0
+      ? { limitWindowSeconds: observedWindow.limitWindowSeconds }
+      : {}),
+    ...(observedWindow.observationSource
+      ? { observationSource: observedWindow.observationSource }
+      : {}),
+    ...(readFiniteTimestamp(observedWindow.observedAtMs) !== null
+      ? { observedAtMs: observedWindow.observedAtMs }
+      : {}),
+  };
+};
 
 const mergeCodexQuotaWindows = (
   activeWindows: CodexQuotaWindow[] | undefined,
@@ -477,6 +523,16 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
   const active = activeQuota as CodexQuotaMergeState;
   const observed = observedQuota as CodexQuotaMergeState;
   const merged: CodexQuotaMergeState = { ...active };
+  const activeWindows = stampCodexQuotaWindows(
+    active.windows,
+    'api_query',
+    readFiniteTimestamp(active.fetchedAtMs)
+  );
+  const observedWindows = stampCodexQuotaWindows(
+    observed.windows,
+    'response_header',
+    readFiniteTimestamp(observed.observedAtMs)
+  );
 
   const scalarKeys: Array<keyof CodexQuotaMergeState> = [
     'status',
@@ -485,6 +541,11 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
     'creditsHasCredits',
     'creditsUnlimited',
     'creditsBalance',
+    'creditsOverageLimitReached',
+    'creditsApproxLocalMessages',
+    'creditsApproxCloudMessages',
+    'spendControlReached',
+    'spendControlIndividualLimit',
     'rateLimitReachedType',
     'primaryOverSecondaryLimitPercent',
     'observedAtMs',
@@ -500,7 +561,7 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
     }
   });
 
-  merged.windows = mergeCodexQuotaWindows(active.windows, observed.windows);
+  merged.windows = mergeCodexQuotaWindows(activeWindows, observedWindows);
   if (observed.observedFromUsageHeaders === true) {
     merged.observedFromUsageHeaders = true;
   }
@@ -508,6 +569,45 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
     merged.observedResetCreditsUnknown = true;
   }
 
+  return merged as TState;
+};
+
+const appendMissingObservedQuotaWindows = <TState extends DisplayQuotaState>(
+  activeQuota: TState,
+  observedQuota: TState
+): TState => {
+  const active = activeQuota as CodexQuotaMergeState;
+  const observed = observedQuota as CodexQuotaMergeState;
+  const activeWindows =
+    stampCodexQuotaWindows(active.windows, 'api_query', readFiniteTimestamp(active.fetchedAtMs)) ??
+    [];
+  const observedWindows =
+    stampCodexQuotaWindows(
+      observed.windows,
+      'response_header',
+      readFiniteTimestamp(observed.observedAtMs)
+    ) ?? [];
+  const activeWindowIDs = new Set(activeWindows.map((window) => window.id));
+  const missingWindows = observedWindows.filter((window) => !activeWindowIDs.has(window.id));
+  if (missingWindows.length === 0) return activeQuota;
+
+  const merged: CodexQuotaMergeState = {
+    ...active,
+    windows: [...activeWindows, ...missingWindows],
+    observedFromUsageHeaders: true,
+  };
+  const observedAtMs = readFiniteTimestamp(observed.observedAtMs);
+  if (observedAtMs !== null) merged.observedAtMs = observedAtMs;
+  if (hasHeaderValue(observed.observedTraceId)) merged.observedTraceId = observed.observedTraceId;
+  if (hasHeaderValue(observed.observedErrorKind)) {
+    merged.observedErrorKind = observed.observedErrorKind;
+  }
+  if (hasHeaderValue(observed.observedErrorCode)) {
+    merged.observedErrorCode = observed.observedErrorCode;
+  }
+  if (observed.observedResetCreditsUnknown === true && !hasKnownResetCreditCount(active)) {
+    merged.observedResetCreditsUnknown = true;
+  }
   return merged as TState;
 };
 
@@ -531,28 +631,13 @@ const isObservedQuotaNewerThanFailure = <TState extends DisplayQuotaState>(
   return failedAtMs !== null && observedAtMs !== null && observedAtMs > failedAtMs;
 };
 
-const buildCodexQuotaAuthIdentity = (file: AuthFileItem | undefined) => {
-  if (!file?.name) return {};
-  const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex ?? file['auth-index']);
-  return {
-    authFileKey: getAuthFileStatusIdentityKey(file),
-    authFileName: file.name,
-    authIndex,
-  };
-};
-
 export const getCodexQuotaStoreKey = (file: AuthFileItem): string =>
-  buildCodexQuotaAuthIdentity(file).authFileKey ?? file.name;
+  getQuotaCredentialStoreKey(file);
 
-const scopeCodexQuotaStateToAuthFile = (
+const scopeCredentialQuotaState = <TState extends CredentialScopedQuotaState>(
   file: AuthFileItem,
-  state: CodexQuotaState | undefined
-): CodexQuotaState | undefined => {
-  if (!state) return undefined;
-  const identity = buildCodexQuotaAuthIdentity(file);
-  if (!state.authFileKey) return identity.authIndex === null ? state : undefined;
-  return state.authFileKey === identity.authFileKey ? state : undefined;
-};
+  state: TState | undefined
+): TState | undefined => scopeQuotaStateToCredential(file, state);
 
 const buildCodexQuotaFailureState = (
   message: string,
@@ -569,7 +654,7 @@ const buildCodexQuotaFailureState = (
     error: message,
     errorStatus: status,
     failedAtMs,
-    ...buildCodexQuotaAuthIdentity(file),
+    ...buildQuotaCredentialIdentity(file),
   };
 };
 
@@ -588,8 +673,15 @@ export const resolveQuotaDisplayState = <TState extends DisplayQuotaState>(
 
   if (activeQuota && activeQuota.status !== 'idle') {
     if (activeQuota.status === 'success' && observedQuota?.status === 'success') {
+      const activeCodexQuota = activeQuota as CodexQuotaMergeState;
       const fetchedAtMs = readFiniteTimestamp(activeQuota.fetchedAtMs);
       const observedAtMs = readFiniteTimestamp(observedQuota.observedAtMs);
+      if (activeCodexQuota.quotaInventoryObserved === false) {
+        if (fetchedAtMs !== null && observedAtMs !== null && observedAtMs > fetchedAtMs) {
+          return mergeObservedQuotaIntoActive(activeQuota, observedQuota);
+        }
+        return appendMissingObservedQuotaWindows(activeQuota, observedQuota);
+      }
       if (fetchedAtMs !== null && observedAtMs !== null && observedAtMs > fetchedAtMs) {
         return mergeObservedQuotaIntoActive(activeQuota, observedQuota);
       }
@@ -603,7 +695,8 @@ export const resolveQuotaDisplayState = <TState extends DisplayQuotaState>(
 export const buildObservedCodexQuotaState = (
   file: AuthFileItem,
   snapshot: UsageHeaderSnapshot | undefined,
-  t: TFunction
+  t: TFunction,
+  nowMs = Date.now()
 ): CodexQuotaState | undefined => {
   if (!hasUsageHeaderQuotaSignal(snapshot)) return undefined;
   const observedQuota = buildObservedCodexQuotaFromHeaderSnapshot(snapshot);
@@ -611,22 +704,36 @@ export const buildObservedCodexQuotaState = (
   const recoverAtMS = getHeaderSnapshotRecoverAtMs(snapshot);
   const recoverLabel = recoverAtMS ? new Date(recoverAtMS).toLocaleString() : '-';
   const headerPlanType = observedQuota?.planType || getHeaderSnapshotPlanType(snapshot);
-  const planType = resolveCodexPlanType(file) ?? (headerPlanType || null);
-  const observedWindows = observedQuota?.payload
-    ? buildCodexQuotaWindows(observedQuota.payload, t, planType)
+  const planType = headerPlanType || resolveCodexPlanType(file) || null;
+  const rawObservedWindows = observedQuota?.payload
+    ? buildCodexQuotaWindows(
+        observedQuota.payload,
+        t,
+        planType,
+        snapshot?.timestamp_ms ?? nowMs,
+        'response_header'
+      )
     : [];
+  const observedWindows = filterFreshCodexQuotaWindows(rawObservedWindows, nowMs);
+  const fallbackExpired = recoverAtMS !== null && recoverAtMS <= nowMs;
+  const fallbackUsedPercent = fallbackExpired ? null : usedPercent;
+  const fallbackRecoverAtMS = fallbackExpired ? null : recoverAtMS;
   const windows: CodexQuotaWindow[] =
-    observedWindows.length > 0
+    rawObservedWindows.length > 0
       ? observedWindows
-      : usedPercent !== null || recoverAtMS
+      : fallbackUsedPercent !== null || fallbackRecoverAtMS
         ? [
             {
               id: 'usage-header-observed',
               label: t('codex_quota.observed_window', {
                 defaultValue: 'Latest request',
               }),
-              usedPercent,
-              resetLabel: recoverLabel,
+              usedPercent: fallbackUsedPercent,
+              resetLabel: fallbackRecoverAtMS ? recoverLabel : '-',
+              resetAtMs: fallbackRecoverAtMS,
+              resetAccuracy: fallbackRecoverAtMS ? 'estimated' : 'unknown',
+              observationSource: 'response_header',
+              observedAtMs: snapshot?.timestamp_ms ?? null,
             },
           ]
         : [];
@@ -635,6 +742,7 @@ export const buildObservedCodexQuotaState = (
     status: 'success',
     windows,
     planType,
+    ...buildQuotaCredentialIdentity(file),
     activeLimit: observedQuota?.activeLimit ?? null,
     creditsHasCredits: observedQuota?.creditsHasCredits ?? null,
     creditsUnlimited: observedQuota?.creditsUnlimited ?? null,
@@ -793,6 +901,68 @@ const renderCodexWindowInfo = (
   });
 };
 
+const getCodexBooleanLabel = (value: boolean | null | undefined, t: TFunction): string | null => {
+  if (value === undefined || value === null) return null;
+  return value ? t('common.yes') : t('common.no');
+};
+
+const buildCodexDiagnosticRows = (quota: CodexQuotaState, t: TFunction): ReactNode[] => {
+  const { createElement: h } = React;
+  const rows: ReactNode[] = [];
+  const creditsParts = [
+    quota.creditsUnlimited === true
+      ? t('codex_quota.credits_unlimited')
+      : quota.creditsHasCredits === true
+        ? t('codex_quota.credits_available')
+        : quota.creditsHasCredits === false
+          ? t('codex_quota.credits_unavailable')
+          : '',
+    quota.creditsBalance ? `${t('codex_quota.credits_balance')}: ${quota.creditsBalance}` : '',
+    typeof quota.creditsApproxLocalMessages === 'number'
+      ? t('codex_quota.approx_local_messages', { count: quota.creditsApproxLocalMessages })
+      : '',
+    typeof quota.creditsApproxCloudMessages === 'number'
+      ? t('codex_quota.approx_cloud_messages', { count: quota.creditsApproxCloudMessages })
+      : '',
+  ].filter(Boolean);
+
+  if (creditsParts.length > 0) {
+    rows.push(
+      h(
+        'div',
+        { key: 'credits-diagnostics', className: styles.codexPlan },
+        h('span', { className: styles.codexPlanLabel }, t('codex_quota.credits_label')),
+        h('span', { className: styles.codexPlanValue }, creditsParts.join(' · '))
+      )
+    );
+  }
+
+  const spendParts = [
+    getCodexBooleanLabel(quota.spendControlReached, t)
+      ? `${t('codex_quota.spend_control_reached')}: ${getCodexBooleanLabel(quota.spendControlReached, t)}`
+      : '',
+    typeof quota.spendControlIndividualLimit === 'number'
+      ? `${t('codex_quota.spend_control_individual_limit')}: ${quota.spendControlIndividualLimit}`
+      : '',
+    getCodexBooleanLabel(quota.creditsOverageLimitReached, t)
+      ? `${t('codex_quota.credits_overage_reached')}: ${getCodexBooleanLabel(quota.creditsOverageLimitReached, t)}`
+      : '',
+  ].filter(Boolean);
+
+  if (spendParts.length > 0) {
+    rows.push(
+      h(
+        'div',
+        { key: 'spend-diagnostics', className: styles.codexPlan },
+        h('span', { className: styles.codexPlanLabel }, t('codex_quota.spend_control_label')),
+        h('span', { className: styles.codexPlanValue }, spendParts.join(' · '))
+      )
+    );
+  }
+
+  return rows;
+};
+
 const renderCodexItems = (
   quota: CodexQuotaState,
   t: TFunction,
@@ -849,6 +1019,8 @@ const renderCodexItems = (
 
     nodes.push(h('div', { key: 'plan', className: styleMap.codexPlan }, ...planNodes));
   }
+
+  nodes.push(...buildCodexDiagnosticRows(quota, t));
 
   if (windows.length === 0) {
     nodes.push(
@@ -975,10 +1147,7 @@ const renderClaudeItems = (
   return h(Fragment, null, ...nodes);
 };
 
-export const CLAUDE_CONFIG: QuotaConfig<
-  ClaudeQuotaState,
-  { windows: ClaudeQuotaWindow[]; extraUsage?: ClaudeExtraUsage | null; planType?: string | null }
-> = {
+export const CLAUDE_CONFIG: QuotaConfig<ClaudeQuotaState, ClaudeQuotaData> = {
   type: 'claude',
   i18nPrefix: 'claude_quota',
   cardIdleMessageKey: 'quota_management.card_idle_hint',
@@ -986,19 +1155,30 @@ export const CLAUDE_CONFIG: QuotaConfig<
   fetchQuota: fetchClaudeQuota,
   storeSelector: (state) => state.claudeQuota,
   storeSetter: 'setClaudeQuota',
-  buildLoadingState: () => ({ status: 'loading', windows: [] }),
-  buildSuccessState: (data) => ({
+  getStoreKey: getQuotaCredentialStoreKey,
+  buildLoadingState: (file) => ({
+    status: 'loading',
+    windows: [],
+    ...buildQuotaCredentialIdentity(file),
+  }),
+  buildSuccessState: (data, file) => ({
     status: 'success',
     windows: data.windows,
+    quotaInventoryObserved: data.quotaInventoryObserved,
     extraUsage: data.extraUsage,
     planType: data.planType,
+    ...buildQuotaCredentialIdentity(file),
+    fetchedAtMs: Date.now(),
   }),
-  buildErrorState: (message, status) => ({
+  buildErrorState: (message, status, file) => ({
     status: 'error',
     windows: [],
     error: message,
     errorStatus: status,
+    ...buildQuotaCredentialIdentity(file),
+    failedAtMs: Date.now(),
   }),
+  scopeState: scopeCredentialQuotaState,
   cardClassName: styles.claudeCard,
   controlsClassName: styles.claudeControls,
   controlClassName: styles.claudeControl,
@@ -1014,26 +1194,34 @@ export const ANTIGRAVITY_CONFIG: QuotaConfig<AntigravityQuotaState, AntigravityQ
   fetchQuota: fetchAntigravityQuota,
   storeSelector: (state) => state.antigravityQuota,
   storeSetter: 'setAntigravityQuota',
-  buildLoadingState: () => ({
+  getStoreKey: getQuotaCredentialStoreKey,
+  buildLoadingState: (file) => ({
     status: 'loading',
     groups: [],
     subscription: null,
     serverTimeOffsetMs: null,
+    ...buildQuotaCredentialIdentity(file),
   }),
-  buildSuccessState: (data) => ({
+  buildSuccessState: (data, file) => ({
     status: 'success',
     groups: data.groups,
+    quotaInventoryObserved: data.quotaInventoryObserved,
     subscription: data.subscription ?? null,
     serverTimeOffsetMs: data.serverTimeOffsetMs,
+    ...buildQuotaCredentialIdentity(file),
+    fetchedAtMs: Date.now(),
   }),
-  buildErrorState: (message, status) => ({
+  buildErrorState: (message, status, file) => ({
     status: 'error',
     groups: [],
     subscription: null,
     serverTimeOffsetMs: null,
     error: message,
     errorStatus: status,
+    ...buildQuotaCredentialIdentity(file),
+    failedAtMs: Date.now(),
   }),
+  scopeState: scopeCredentialQuotaState,
   cardClassName: styles.antigravityCard,
   controlsClassName: styles.antigravityControls,
   controlClassName: styles.antigravityControl,
@@ -1053,18 +1241,30 @@ export const CODEX_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> = {
   buildLoadingState: (file) => ({
     status: 'loading',
     windows: [],
-    ...buildCodexQuotaAuthIdentity(file),
+    ...buildQuotaCredentialIdentity(file),
   }),
   buildSuccessState: (data, file) => ({
     status: 'success',
     windows: data.windows,
+    quotaInventoryObserved: data.quotaInventoryObserved,
     planType: data.planType,
     subscriptionActiveUntil: data.subscriptionActiveUntil,
+    creditsHasCredits: data.creditsHasCredits,
+    creditsUnlimited: data.creditsUnlimited,
+    creditsBalance: data.creditsBalance,
+    creditsOverageLimitReached: data.creditsOverageLimitReached,
+    creditsApproxLocalMessages: data.creditsApproxLocalMessages,
+    creditsApproxCloudMessages: data.creditsApproxCloudMessages,
+    spendControlReached: data.spendControlReached,
+    spendControlIndividualLimit: data.spendControlIndividualLimit,
     rateLimitResetCreditsAvailableCount: data.rateLimitResetCreditsAvailableCount,
     rateLimitResetCredits: data.rateLimitResetCredits,
     rateLimitResetCreditsError: data.rateLimitResetCreditsError,
-    ...buildCodexQuotaAuthIdentity(file),
-    fetchedAtMs: Date.now(),
+    ...buildQuotaCredentialIdentity(file),
+    fetchedAtMs:
+      readFiniteTimestamp(data.observedAtMs) ??
+      readFiniteTimestamp(data.windows[0]?.observedAtMs) ??
+      Date.now(),
   }),
   buildErrorState: (message, status, file) => ({
     status: 'error',
@@ -1072,10 +1272,10 @@ export const CODEX_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> = {
     error: message,
     errorStatus: status,
     failedAtMs: Date.now(),
-    ...buildCodexQuotaAuthIdentity(file),
+    ...buildQuotaCredentialIdentity(file),
   }),
   buildFailureState: buildCodexQuotaFailureState,
-  scopeState: scopeCodexQuotaStateToAuthFile,
+  scopeState: scopeCredentialQuotaState,
   cardClassName: styles.codexCard,
   controlsClassName: styles.codexControls,
   controlClassName: styles.codexControl,
@@ -1140,7 +1340,7 @@ const renderKimiItems = (
   });
 };
 
-export const KIMI_CONFIG: QuotaConfig<KimiQuotaState, KimiQuotaRow[]> = {
+export const KIMI_CONFIG: QuotaConfig<KimiQuotaState, KimiQuotaData> = {
   type: 'kimi',
   i18nPrefix: 'kimi_quota',
   cardIdleMessageKey: 'quota_management.card_idle_hint',
@@ -1148,14 +1348,28 @@ export const KIMI_CONFIG: QuotaConfig<KimiQuotaState, KimiQuotaRow[]> = {
   fetchQuota: fetchKimiQuota,
   storeSelector: (state) => state.kimiQuota,
   storeSetter: 'setKimiQuota',
-  buildLoadingState: () => ({ status: 'loading', rows: [] }),
-  buildSuccessState: (rows) => ({ status: 'success', rows }),
-  buildErrorState: (message, status) => ({
+  getStoreKey: getQuotaCredentialStoreKey,
+  buildLoadingState: (file) => ({
+    status: 'loading',
+    rows: [],
+    ...buildQuotaCredentialIdentity(file),
+  }),
+  buildSuccessState: (data, file) => ({
+    status: 'success',
+    rows: data.rows,
+    quotaInventoryObserved: data.quotaInventoryObserved,
+    ...buildQuotaCredentialIdentity(file),
+    fetchedAtMs: Date.now(),
+  }),
+  buildErrorState: (message, status, file) => ({
     status: 'error',
     rows: [],
     error: message,
     errorStatus: status,
+    ...buildQuotaCredentialIdentity(file),
+    failedAtMs: Date.now(),
   }),
+  scopeState: scopeCredentialQuotaState,
   cardClassName: styles.kimiCard,
   controlsClassName: styles.kimiControls,
   controlClassName: styles.kimiControl,
@@ -1431,14 +1645,27 @@ export const XAI_CONFIG: QuotaConfig<XaiQuotaState, XaiBillingSummary> = {
   fetchQuota: fetchXaiQuota,
   storeSelector: (state) => state.xaiQuota,
   storeSetter: 'setXaiQuota',
-  buildLoadingState: () => ({ status: 'loading', billing: null }),
-  buildSuccessState: (billing) => ({ status: 'success', billing }),
-  buildErrorState: (message, status) => ({
+  getStoreKey: getQuotaCredentialStoreKey,
+  buildLoadingState: (file) => ({
+    status: 'loading',
+    billing: null,
+    ...buildQuotaCredentialIdentity(file),
+  }),
+  buildSuccessState: (billing, file) => ({
+    status: 'success',
+    billing,
+    ...buildQuotaCredentialIdentity(file),
+    fetchedAtMs: Date.now(),
+  }),
+  buildErrorState: (message, status, file) => ({
     status: 'error',
     billing: null,
     error: message,
     errorStatus: status,
+    ...buildQuotaCredentialIdentity(file),
+    failedAtMs: Date.now(),
   }),
+  scopeState: scopeCredentialQuotaState,
   cardClassName: styles.kimiCard,
   controlsClassName: styles.kimiControls,
   controlClassName: styles.kimiControl,

@@ -2,7 +2,15 @@ import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const CHECK_NAMES = ['frontend', 'manager_server', 'windows_sqlite', 'native_control', 'docker'];
+const CHECK_NAMES = [
+  'frontend',
+  'manager_server',
+  'windows_sqlite',
+  'native_control',
+  'docker',
+  'demo_docs',
+  'release_content',
+];
 
 const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
   0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066,
@@ -11,7 +19,8 @@ const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-const normalizePath = (filePath) => filePath.trim().replaceAll('\\', '/').replace(/^\.\//, '');
+const normalizePath = (filePath) =>
+  filePath.replace(/\r$/, '').replaceAll('\\', '/').replace(/^\.\//, '');
 
 const normalizeChangedFiles = (changedFiles) => [
   ...new Set(changedFiles.map(normalizePath).filter(Boolean)),
@@ -35,10 +44,12 @@ const triggersFrontend = (filePath) =>
   filePath === 'README_CN.md' ||
   filePath === 'package.json' ||
   filePath === 'package-lock.json' ||
+  filePath === '.github/dependabot.yml' ||
   filePath === 'eslint.config.js' ||
   filePath === 'bin/install-cpamp.sh' ||
   filePath === 'bin/release/package-native.sh' ||
-  filePath === 'bin/release/check-web-demo-isolation.mjs';
+  filePath === 'bin/release/check-web-demo-isolation.mjs' ||
+  filePath === 'bin/release/validate-release.mjs';
 
 const triggersManagerServer = (filePath) =>
   startsWithPath(filePath, 'apps/manager-server') || filePath === 'bin/release/package-native.sh';
@@ -59,6 +70,17 @@ const triggersDocker = (filePath) =>
   filePath === 'package.json' ||
   filePath === 'package-lock.json';
 
+const triggersDemoDocs = (filePath) =>
+  startsWithPath(filePath, 'apps/web') ||
+  startsWithPath(filePath, 'apps/docs') ||
+  filePath === 'package.json' ||
+  filePath === 'package-lock.json';
+
+const triggersReleaseContent = (filePath) =>
+  startsWithPath(filePath, 'docs/release-notes') ||
+  startsWithPath(filePath, 'docs/release-posts') ||
+  filePath === 'bin/release/validate-release.mjs';
+
 export const classifyChangedFiles = (changedFiles) => {
   const files = normalizeChangedFiles(changedFiles);
   if (files.length === 0 || files.some(triggersAllChecks)) return allChecks(true);
@@ -72,8 +94,13 @@ export const classifyChangedFiles = (changedFiles) => {
     windows_sqlite: managerServer,
     native_control: files.some(triggersNativeControl),
     docker: files.some(triggersDocker),
+    demo_docs: files.some(triggersDemoDocs),
+    release_content: files.some(triggersReleaseContent),
   };
 };
+
+export const parseChangedFilesInput = (input, { nullDelimited = false } = {}) =>
+  input.split(nullDelimited ? '\0' : /\r?\n/).filter(Boolean);
 
 export const findForbiddenUnicode = (text) => {
   const hits = [];
@@ -92,12 +119,12 @@ export const findForbiddenUnicode = (text) => {
   return hits;
 };
 
-export const scanChangedTextFiles = (changedFiles) => {
+export const scanChangedTextFiles = (changedFiles, { root = repoRoot } = {}) => {
   const violations = [];
 
   for (const filePath of normalizeChangedFiles(changedFiles)) {
-    const absolutePath = path.resolve(repoRoot, filePath);
-    if (!absolutePath.startsWith(`${repoRoot}${path.sep}`)) {
+    const absolutePath = path.resolve(root, filePath);
+    if (!absolutePath.startsWith(`${root}${path.sep}`)) {
       violations.push(`${filePath} resolves outside the repository`);
       continue;
     }
@@ -116,7 +143,17 @@ export const scanChangedTextFiles = (changedFiles) => {
 };
 
 const runCli = () => {
-  const changedFiles = readFileSync(0, 'utf8').split(/\r?\n/);
+  const argumentsList = process.argv.slice(2);
+  const unknownArguments = argumentsList.filter((argument) => argument !== '--null');
+  if (unknownArguments.length > 0) {
+    console.error(`Unknown classifier arguments: ${unknownArguments.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const changedFiles = parseChangedFilesInput(readFileSync(0, 'utf8'), {
+    nullDelimited: argumentsList.includes('--null'),
+  });
   const violations = scanChangedTextFiles(changedFiles);
 
   if (violations.length > 0) {

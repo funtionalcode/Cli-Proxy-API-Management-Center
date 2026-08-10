@@ -1,7 +1,22 @@
 import type { AuthFileItem } from '@/types';
-import { normalizeAuthIndex } from '@/utils/authIndex';
-import { resolveCodexChatgptAccountId } from '@/utils/quota/resolvers';
-import { resolveAuthProvider } from '@/utils/quota/validators';
+import {
+  readAuthFileStatusAccountId,
+  readAuthFileStatusAccountSnapshot,
+  readAuthFileStatusAuthIndex,
+  readAuthFileStatusPhysicalName,
+  readAuthFileStatusProvider,
+  readAuthFileStatusRuntimeId,
+  resolveCredentialIdentity,
+} from '@/utils/authFileCredentialIdentity';
+
+export {
+  readAuthFileStatusAccountId,
+  readAuthFileStatusAccountSnapshot,
+  readAuthFileStatusAuthIndex,
+  readAuthFileStatusPhysicalName,
+  readAuthFileStatusProvider,
+  readAuthFileStatusRuntimeId,
+} from '@/utils/authFileCredentialIdentity';
 
 const SELECTION_KEY_SEPARATOR = '\u0000';
 
@@ -36,102 +51,15 @@ export type AuthFileStatusMutationResolution = {
   failure: AuthFileStatusMutationFailure;
 };
 
-export const readAuthFileStatusRuntimeId = (file: AuthFileItem): string =>
-  typeof file.id === 'string' ? file.id.trim() : '';
-
-export const readAuthFileStatusPhysicalName = (file: AuthFileItem): string =>
-  String(file.name ?? '').trim();
-
-export const readAuthFileStatusAuthIndex = (file: AuthFileItem): string | null =>
-  normalizeAuthIndex(file.authIndex ?? file['auth_index'] ?? file['auth-index']);
-
-const normalizeProvider = (value: unknown): string => {
-  const normalized = String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/_/g, '-');
-  if (normalized === 'x-ai' || normalized === 'grok') return 'xai';
-  return normalized;
-};
-
-const normalizeIdentityValue = (value: unknown): string =>
-  typeof value === 'string' ? value.trim() : '';
-
-const firstNonEmptyIdentityValue = (...values: unknown[]): string => {
-  for (const value of values) {
-    const normalized = normalizeIdentityValue(value);
-    if (normalized) return normalized;
-  }
-  return '';
-};
-
-export const readAuthFileStatusProvider = (file: AuthFileItem): string =>
-  normalizeProvider(
-    firstNonEmptyIdentityValue(file.provider, file.type, file.typo) || resolveAuthProvider(file)
-  );
-
-const readRecord = (value: unknown): Record<string, unknown> | null =>
-  value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-const ACCOUNT_ID_FIELD_NAMES = [
-  'account_id',
-  'accountId',
-  'chatgpt_account_id',
-  'chatgptAccountId',
-  'project_id',
-  'projectId',
-  'gemini_virtual_project',
-  'geminiVirtualProject',
-  'sub',
-] as const;
-
-const readAccountIdFromValue = (value: unknown, seen = new Set<object>()): string => {
-  const record = readRecord(value);
-  if (!record || seen.has(record)) return '';
-  seen.add(record);
-
-  for (const field of ACCOUNT_ID_FIELD_NAMES) {
-    const normalized = normalizeIdentityValue(record[field]);
-    if (normalized) return normalized;
-  }
-  for (const field of ['id_token', 'idToken'] as const) {
-    const nested = readAccountIdFromValue(record[field], seen);
-    if (nested) return nested;
-  }
-  return '';
-};
-
-export const readAuthFileStatusAccountId = (file: AuthFileItem): string => {
-  const direct = readAccountIdFromValue(file);
-  if (direct) return direct;
-  for (const field of ['id_token', 'idToken', 'metadata', 'attributes'] as const) {
-    const nested = readAccountIdFromValue(file[field]);
-    if (nested) return nested;
-  }
-  return normalizeIdentityValue(resolveCodexChatgptAccountId(file));
-};
-
-export const readAuthFileStatusAccountSnapshot = (file: AuthFileItem): string => {
-  for (const value of [file.account, file.email, file.display_account, file.displayAccount]) {
-    const normalized = normalizeIdentityValue(value);
-    if (normalized) return normalized;
-  }
-  return '';
-};
-
 const normalizeIdentityTarget = (target: AuthFileStatusIdentityTarget) => {
-  const record = target as AuthFileItem & AuthFileStatusMutationTarget;
-  const name = String(record.name ?? '').trim();
-  const directAccountSnapshot = normalizeIdentityValue(record.accountSnapshot);
+  const identity = resolveCredentialIdentity(target as AuthFileItem & AuthFileStatusMutationTarget);
   return {
-    name,
-    runtimeId: normalizeIdentityValue(record.runtimeId) || readAuthFileStatusRuntimeId(record),
-    authIndex: normalizeAuthIndex(record.authIndex ?? record['auth_index'] ?? record['auth-index']),
-    provider: readAuthFileStatusProvider(record),
-    accountId: normalizeIdentityValue(record.accountId) || readAuthFileStatusAccountId(record),
-    accountSnapshot: directAccountSnapshot || readAuthFileStatusAccountSnapshot(record),
+    name: identity.physicalName,
+    runtimeId: identity.runtimeId,
+    authIndex: identity.authIndex,
+    provider: identity.provider,
+    accountId: identity.accountId,
+    accountSnapshot: identity.accountSnapshot,
   };
 };
 

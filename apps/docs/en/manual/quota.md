@@ -60,7 +60,7 @@ Monitoring also exposes safe diagnostic signals such as `X-Request-Id`, `tracepa
 
 - Search by file name, account, note, or index.
 - Sort by plan, quota state, or name.
-- Refresh auth files and quota to reload accounts and queryable quota.
+- Refresh auth files and quota to reload credentials and queryable quota.
 - Follow cooldown, reauth, or health hints into Auth Files, OAuth, or inspection pages.
 - When comparing accounts, rely on `auth_index` and notes, not only file names.
 

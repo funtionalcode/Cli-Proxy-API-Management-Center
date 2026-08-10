@@ -235,6 +235,8 @@ describe('credential inspection state labels', () => {
     expect(serverInspectionPageSource).not.toContain("reasonParts.join(' · ')");
     expect(serverInspectionPageSource).not.toContain('formatServerResultStateDetail');
     expect(serverInspectionPageSource).toContain('formatServerTerminalActionStatusLabel');
+    expect(serverInspectionPageSource).toContain('runtimeId: item.runtimeId ?? null');
+    expect(serverInspectionPageSource).toContain('accountSnapshot: item.accountSnapshot ?? null');
     expect(serverInspectionPageSource).toContain("errorDetail: item.errorDetail || ''");
     expect(serverInspectionPageSource).not.toContain('item.actionError || item.errorDetail');
     expect(serverInspectionPageSource).toContain('const actionError = source.actionError?.trim()');

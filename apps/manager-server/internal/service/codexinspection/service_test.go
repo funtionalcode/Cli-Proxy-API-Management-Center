@@ -22,6 +22,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
@@ -176,6 +177,193 @@ func TestToAccountBuildsStableDistinctFallbackKeys(t *testing.T) {
 	})
 	if renamedLabel.Key != labelOnly.Key {
 		t.Fatalf("label-only runtime key changed with display label: old=%q new=%q", labelOnly.Key, renamedLabel.Key)
+	}
+}
+
+func TestRunMarksOnlyRecognizedEmptyCodexQuotaInventory(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantMarker string
+	}{
+		{
+			name:       "recognized empty inventory",
+			body:       `{"status_code":200,"body":{"rate_limit":{}}}`,
+			wantMarker: "[]",
+		},
+		{
+			name:       "recognized empty code review inventory",
+			body:       `{"status_code":200,"body":{"code_review_rate_limit":{}}}`,
+			wantMarker: "[]",
+		},
+		{
+			name:       "recognized empty additional inventory",
+			body:       `{"status_code":200,"body":{"additional_rate_limits":[]}}`,
+			wantMarker: "[]",
+		},
+		{
+			name: "successful response without quota inventory",
+			body: `{"status_code":200,"body":{"status":"ok"}}`,
+		},
+		{
+			name: "malformed quota inventory",
+			body: `{"status_code":200,"body":{"rate_limit":"schema-changed"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					_, _ = w.Write([]byte(tt.body))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			detail, err := newCodexInspectionTestService(t, db).Run(
+				context.Background(),
+				RunRequest{TriggerType: "manual"},
+			)
+			if err != nil {
+				t.Fatalf("run inspection: %v", err)
+			}
+			if len(detail.Results) != 1 {
+				t.Fatalf("inspection results = %#v", detail.Results)
+			}
+			result := detail.Results[0]
+			if len(result.QuotaWindows) != 0 || result.QuotaWindowsJSON != tt.wantMarker {
+				t.Fatalf(
+					"quota inventory marker = %q windows=%#v, want %q",
+					result.QuotaWindowsJSON,
+					result.QuotaWindows,
+					tt.wantMarker,
+				)
+			}
+		})
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsKeepsGenericFamiliesDistinct(t *testing.T) {
+	genericWindow := func(usedPercent float64) map[string]any {
+		return map[string]any{
+			"primary_window": map[string]any{
+				"used_percent": usedPercent, "limit_window_seconds": 2 * 24 * 60 * 60,
+			},
+		}
+	}
+	windows := buildCodexInspectionQuotaWindows(map[string]any{
+		"rate_limit":             genericWindow(10),
+		"code_review_rate_limit": genericWindow(20),
+		"additional_rate_limits": []any{
+			map[string]any{"limit_name": "Credits", "rate_limit": genericWindow(30)},
+			map[string]any{"limit_name": "Credits", "rate_limit": genericWindow(40)},
+		},
+	}, "")
+
+	want := []string{
+		"window-2d-0",
+		"code-review-window-2d-0",
+		"credits-0-window-2d-0",
+		"credits-1-window-2d-0",
+	}
+	if len(windows) != len(want) {
+		t.Fatalf("generic quota windows = %#v, want %d", windows, len(want))
+	}
+	seen := make(map[string]bool, len(windows))
+	for index, window := range windows {
+		if window.ID != want[index] {
+			t.Fatalf("generic quota window %d id = %q, want %q", index, window.ID, want[index])
+		}
+		if seen[window.ID] {
+			t.Fatalf("duplicate generic quota window id %q: %#v", window.ID, windows)
+		}
+		seen[window.ID] = true
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsKeepsDistinctAdditionalFamiliesStableAcrossReorder(t *testing.T) {
+	family := func(name string, usedPercent float64) map[string]any {
+		return map[string]any{
+			"limit_name": name,
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent": usedPercent, "limit_window_seconds": 18_000,
+				},
+			},
+		}
+	}
+	idsByUsage := func(items []map[string]any) map[float64]string {
+		windows := buildCodexInspectionQuotaWindows(map[string]any{"additional_rate_limits": items}, "")
+		result := make(map[float64]string, len(windows))
+		for _, window := range windows {
+			if window.UsedPercent != nil {
+				result[*window.UsedPercent] = window.ID
+			}
+		}
+		return result
+	}
+	want := map[float64]string{
+		30: "credits-five-hour-0",
+		40: "review-premium-five-hour-0",
+	}
+	forward := idsByUsage([]map[string]any{family("Credits", 30), family("Review Premium", 40)})
+	reverse := idsByUsage([]map[string]any{family("Review Premium", 40), family("Credits", 30)})
+	if !reflect.DeepEqual(forward, want) || !reflect.DeepEqual(reverse, want) {
+		t.Fatalf("reordered additional family ids: forward=%#v reverse=%#v want=%#v", forward, reverse, want)
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsUsesMeteredFeatureForDuplicateNames(t *testing.T) {
+	family := func(feature string, usedPercent float64) map[string]any {
+		return map[string]any{
+			"limit_name":      "Credits",
+			"metered_feature": feature,
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent": usedPercent, "limit_window_seconds": 18_000,
+				},
+			},
+		}
+	}
+	idsByUsage := func(items []map[string]any) map[float64]string {
+		windows := buildCodexInspectionQuotaWindows(map[string]any{"additional_rate_limits": items}, "")
+		result := make(map[float64]string, len(windows))
+		for _, window := range windows {
+			if window.UsedPercent != nil {
+				result[*window.UsedPercent] = window.ID
+			}
+		}
+		return result
+	}
+	want := map[float64]string{
+		30: "credits--chat-completions-five-hour-0",
+		40: "credits--code-review-five-hour-0",
+		50: "credits-chat-completions-five-hour-0",
+	}
+	namedCollision := map[string]any{
+		"limit_name": "Credits Chat Completions",
+		"rate_limit": map[string]any{
+			"primary_window": map[string]any{
+				"used_percent": 50.0, "limit_window_seconds": 18_000,
+			},
+		},
+	}
+	forward := idsByUsage([]map[string]any{family("chat_completions", 30), family("code_review", 40), namedCollision})
+	reverse := idsByUsage([]map[string]any{namedCollision, family("code_review", 40), family("chat_completions", 30)})
+	if !reflect.DeepEqual(forward, want) || !reflect.DeepEqual(reverse, want) {
+		t.Fatalf("duplicate-name additional family ids: forward=%#v reverse=%#v want=%#v", forward, reverse, want)
 	}
 }
 
@@ -1727,6 +1915,12 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 	if windowsByID["monthly"].ResetLabel == "" || windowsByID["monthly"].ResetLabel == "-" {
 		t.Fatalf("monthly reset label = %q, want concrete reset label", windowsByID["monthly"].ResetLabel)
 	}
+	if windowsByID["monthly"].ResetAtMS != 1_782_895_966_000 || windowsByID["monthly"].ResetAccuracy != "exact" {
+		t.Fatalf("monthly normalized reset = %#v", windowsByID["monthly"])
+	}
+	if windowsByID["five-hour"].ResetAtMS <= 0 || windowsByID["five-hour"].ResetAccuracy != "derived" {
+		t.Fatalf("five-hour normalized reset = %#v", windowsByID["five-hour"])
+	}
 	if windowsByID["credits-weekly-0"].LabelParams["name"] != "credits" {
 		t.Fatalf("additional window params = %#v, want credits name", windowsByID["credits-weekly-0"].LabelParams)
 	}
@@ -1740,6 +1934,24 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 	}
 	if stored[0].ErrorKind != "http_status" || !strings.Contains(stored[0].ErrorDetail, "short window exhausted") {
 		t.Fatalf("stored error detail = %#v, want persisted HTTP detail", stored[0])
+	}
+	snapshots, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotasnapshotsvc.AccountTarget{
+				AuthFileSnapshot: "auth-a.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-1",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query inspection quota snapshots: %v", err)
+	}
+	if len(snapshots.Items) != 1 || len(snapshots.Items[0].Windows) != len(item.QuotaWindows) {
+		t.Fatalf("inspection quota snapshots = %#v", snapshots)
+	}
+	for _, window := range snapshots.Items[0].Windows {
+		if window.Source != "inspection" {
+			t.Fatalf("inspection snapshot source = %#v", window)
+		}
 	}
 }
 

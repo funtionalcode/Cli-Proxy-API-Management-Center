@@ -218,8 +218,15 @@ docker compose -f docker-compose.manager.yml up --build
 
 - `npm run build` 生成单文件 `apps/web/dist/management.html`。
 - `bin/release/package-native.sh` 将构建后的面板内置到原生包。
-- 推送 `vX.Y.Z` 这类 tag 会触发 `.github/workflows/release.yml`。
-- 发布产物包含 `management.html`、原生运行包，以及 `linux/amd64` 和 `linux/arm64` Docker 镜像。
+- 发布说明按 `release/<version> -> dev -> main` 流程合入，并从已验证的
+  `main` promotion merge 推送严格的 `vX.Y.Z` 或预发布 tag。
+- `npm run release:validate -- --tag <tag> --content-only` 会在创建 tag 前
+  校验三个必需的发布文件。
+- `.github/workflows/release.yml` 支持从 `main` 手动执行 dry-run，只做校验和
+  构建，不发布 GitHub Release、容器镜像或 Telegram 消息。
+- 发布产物包括 `management.html`、原生包及 `linux/amd64`、`linux/arm64` Docker 镜像。
+- 发布任务串行执行，缺少或不匹配的说明文件会直接失败，不再自动回退到提交
+  日志；恢复规则和远端保护要求见 [`docs/release.md`](docs/release.md)。
 
 ## 致谢
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const AccountHistoryCheckpointName = "account_history"
@@ -78,26 +79,28 @@ func New(db *sql.DB) Repository {
 }
 
 type eventRow struct {
-	ID                   int64
-	TimestampMS          int64
-	AccountSnapshot      string
-	AuthLabelSnapshot    string
-	AuthProviderSnapshot string
-	AuthIndex            string
-	Source               string
-	SourceHash           string
-	Model                string
-	BillingModel         string
-	ServiceTier          string
-	Failed               bool
-	InputTokens          int64
-	OutputTokens         int64
-	ReasoningTokens      int64
-	CachedTokens         int64
-	CacheTokens          int64
-	CacheReadTokens      int64
-	CacheCreationTokens  int64
-	TotalTokens          int64
+	ID                    int64
+	TimestampMS           int64
+	AccountSnapshot       string
+	AuthLabelSnapshot     string
+	AuthFileSnapshot      string
+	AuthProviderSnapshot  string
+	AuthProjectIDSnapshot string
+	AuthIndex             string
+	Source                string
+	SourceHash            string
+	Model                 string
+	BillingModel          string
+	ServiceTier           string
+	Failed                bool
+	InputTokens           int64
+	OutputTokens          int64
+	ReasoningTokens       int64
+	CachedTokens          int64
+	CacheTokens           int64
+	CacheReadTokens       int64
+	CacheCreationTokens   int64
+	TotalTokens           int64
 }
 
 func (r *repository) CatchUpAccountHistory(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
@@ -345,9 +348,11 @@ func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID int64, l
 	id,
 	timestamp_ms,
 	coalesce(account_snapshot, ''),
-	coalesce(auth_label_snapshot, ''),
-	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
-	coalesce(auth_index, ''),
+		coalesce(auth_label_snapshot, ''),
+		coalesce(auth_file_snapshot, ''),
+		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+		coalesce(auth_project_id_snapshot, ''),
+		coalesce(auth_index, ''),
 	coalesce(source, ''),
 	coalesce(source_hash, ''),
 	model,
@@ -380,7 +385,9 @@ limit ?`, lastEventID, limit)
 			&row.TimestampMS,
 			&row.AccountSnapshot,
 			&row.AuthLabelSnapshot,
+			&row.AuthFileSnapshot,
 			&row.AuthProviderSnapshot,
+			&row.AuthProjectIDSnapshot,
 			&row.AuthIndex,
 			&row.Source,
 			&row.SourceHash,
@@ -420,7 +427,18 @@ type accountRollupKey struct {
 func aggregateAccountHistory(events []eventRow, nowMS int64) []AccountHistoryRow {
 	grouped := map[accountRollupKey]*AccountHistoryRow{}
 	for _, event := range events {
-		accountKey := accountGroupKey(event.AccountSnapshot, event.AuthLabelSnapshot, event.Source, event.AuthIndex)
+		accountKey, valid := usageidentity.AccountKey(usageidentity.Fields{
+			AuthFileSnapshot:      event.AuthFileSnapshot,
+			AuthIndex:             event.AuthIndex,
+			AuthProviderSnapshot:  event.AuthProviderSnapshot,
+			AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
+			AccountSnapshot:       event.AccountSnapshot,
+			AuthLabelSnapshot:     event.AuthLabelSnapshot,
+			Source:                event.Source,
+		})
+		if !valid {
+			continue
+		}
 		billingModel := strings.TrimSpace(event.BillingModel)
 		if billingModel == "" {
 			billingModel = strings.TrimSpace(event.Model)
@@ -630,22 +648,6 @@ on conflict(name) do update set
 	return err
 }
 
-func accountGroupKey(accountSnapshot, authLabelSnapshot, source, authIndex string) string {
-	if strings.TrimSpace(accountSnapshot) != "" {
-		return accountSnapshot
-	}
-	if strings.TrimSpace(authLabelSnapshot) != "" {
-		return authLabelSnapshot
-	}
-	if strings.TrimSpace(source) != "" {
-		return source
-	}
-	if strings.TrimSpace(authIndex) != "" {
-		return authIndex
-	}
-	return "-"
-}
-
 func normalizeAccountKeys(values []string) []string {
 	seen := map[string]bool{}
 	result := make([]string, 0, len(values))
@@ -675,5 +677,11 @@ func nullPositiveInt64(value int64) any {
 }
 
 func AccountKey(accountSnapshot, authLabelSnapshot, source, authIndex string) string {
-	return accountGroupKey(accountSnapshot, authLabelSnapshot, source, authIndex)
+	key, _ := usageidentity.AccountKey(usageidentity.Fields{
+		AccountSnapshot:   accountSnapshot,
+		AuthLabelSnapshot: authLabelSnapshot,
+		Source:            source,
+		AuthIndex:         authIndex,
+	})
+	return key
 }

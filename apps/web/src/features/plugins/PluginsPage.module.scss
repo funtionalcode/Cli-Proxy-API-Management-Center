@@ -293,26 +293,26 @@ $plugin-table-columns: minmax(220px, 1.2fr) minmax(136px, 0.68fr) minmax(180px, 
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid var(--border-color);
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
+  border: 1px solid var(--data-badge-neutral-border);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
   white-space: nowrap;
 }
 
 .badgeOn {
-  color: var(--success-color);
-  border-color: color-mix(in srgb, var(--success-color) 38%, var(--border-color));
-  background: color-mix(in srgb, var(--success-color) 10%, var(--bg-primary));
+  color: var(--data-badge-success-text);
+  border-color: var(--data-badge-success-border);
+  background: var(--data-badge-success-bg);
 }
 
 .badgeWarn {
-  color: var(--warning-text);
-  border-color: var(--warning-border);
-  background: var(--warning-bg);
+  color: var(--data-badge-warning-text);
+  border-color: var(--data-badge-warning-border);
+  background: var(--data-badge-warning-bg);
 }
 
 .badgeMuted {
-  color: var(--text-tertiary);
+  color: var(--data-badge-neutral-text);
 }
 
 .statusDetails {

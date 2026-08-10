@@ -1,0 +1,66 @@
+.root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.timeValue {
+  white-space: nowrap;
+}
+
+.statusTrack {
+  display: grid;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  min-height: 16px;
+}
+
+.statusSlot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.statusBar {
+  display: block;
+  width: 5px;
+  min-width: 5px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.statusBarSuccess {
+  background: var(--success-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success-color) 14%, transparent);
+}
+
+.statusBarFailed {
+  background: var(--error-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--error-color) 14%, transparent);
+  cursor: help;
+}
+
+.statusBarEmpty {
+  background: color-mix(in srgb, var(--accounts-strong-border) 62%, transparent);
+}

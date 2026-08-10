@@ -5,8 +5,149 @@ import {
   isCodexRateLimitReached,
   buildCodexQuotaWindowInfos,
 } from './codexQuota';
+import type { CodexQuotaWindowInfo } from './codexQuota';
 
 describe('buildCodexQuotaWindowInfos', () => {
+  it('distinguishes exact absolute resets from relative estimates anchored to observation time', () => {
+    const observedAtMs = Date.parse('2026-07-29T10:00:00Z');
+    const exactResetAtMs = Date.parse('2026-07-29T12:00:00Z');
+    const windows = buildCodexQuotaWindowInfos(
+      {
+        rate_limit: {
+          primary_window: {
+            used_percent: 10,
+            limit_window_seconds: 18_000,
+            reset_at: exactResetAtMs / 1000,
+          },
+          secondary_window: {
+            used_percent: 20,
+            limit_window_seconds: 604_800,
+            reset_after_seconds: 7_200,
+          },
+        },
+      },
+      { observedAtMs }
+    );
+
+    expect(windows.find((window) => window.id === 'five-hour')).toMatchObject({
+      resetAtMs: exactResetAtMs,
+      resetAccuracy: 'exact',
+    });
+    expect(windows.find((window) => window.id === 'weekly')).toMatchObject({
+      resetAtMs: observedAtMs + 7_200_000,
+      resetAccuracy: 'estimated',
+    });
+  });
+
+  it('keeps provider API absolute reset evidence exact when a relative reset is also present', () => {
+    const observedAtMs = Date.parse('2026-08-05T10:00:00.638Z');
+    const storedResetAtMs = Date.parse('2026-09-04T09:59:59.000Z');
+    const windows = buildCodexQuotaWindowInfos(
+      {
+        rate_limit: {
+          primary_window: {
+            used_percent: 1,
+            limit_window_seconds: 30 * 24 * 60 * 60,
+            reset_at: storedResetAtMs / 1000,
+            reset_after_seconds: 30 * 24 * 60 * 60,
+          },
+        },
+      },
+      { observedAtMs }
+    );
+
+    expect(windows.find((window) => window.id === 'monthly')).toMatchObject({
+      resetAtMs: storedResetAtMs,
+      resetAccuracy: 'exact',
+    });
+  });
+
+  it('marks synthesized Header absolute resets as estimated when relative evidence is present', () => {
+    const observedAtMs = Date.parse('2026-08-05T10:00:00.638Z');
+    const storedResetAtMs = Date.parse('2026-09-04T09:59:59.000Z');
+    const windows = buildCodexQuotaWindowInfos(
+      {
+        rate_limit: {
+          primary_window: {
+            used_percent: 1,
+            limit_window_seconds: 30 * 24 * 60 * 60,
+            reset_at: storedResetAtMs / 1000,
+            reset_after_seconds: 30 * 24 * 60 * 60,
+          },
+        },
+      },
+      { observedAtMs, source: 'response_header' }
+    );
+
+    expect(windows.find((window) => window.id === 'monthly')).toMatchObject({
+      resetAtMs: storedResetAtMs,
+      resetAccuracy: 'estimated',
+    });
+  });
+
+  it('accepts Codex absolute resets as Unix milliseconds or ISO timestamps', () => {
+    const millisecondResetAtMs = Date.parse('2026-07-29T12:00:00Z');
+    const isoResetAt = '2026-08-05T12:00:00Z';
+    const windows = buildCodexQuotaWindowInfos({
+      rate_limit: {
+        primary_window: {
+          used_percent: 10,
+          limit_window_seconds: 18_000,
+          reset_at: millisecondResetAtMs,
+        },
+        secondary_window: {
+          used_percent: 20,
+          limit_window_seconds: 604_800,
+          reset_at: isoResetAt,
+        },
+      },
+    });
+
+    expect(windows.find((window) => window.id === 'five-hour')).toMatchObject({
+      resetAtMs: millisecondResetAtMs,
+      resetAccuracy: 'exact',
+    });
+    expect(windows.find((window) => window.id === 'weekly')).toMatchObject({
+      resetAtMs: Date.parse(isoResetAt),
+      resetAccuracy: 'exact',
+    });
+  });
+
+  it('rejects reset timestamps that exceed the JavaScript date range', () => {
+    const windows = buildCodexQuotaWindowInfos(
+      {
+        rate_limit: {
+          primary_window: {
+            used_percent: 10,
+            limit_window_seconds: 18_000,
+            reset_at: Number.MAX_VALUE,
+          },
+          secondary_window: {
+            used_percent: 20,
+            limit_window_seconds: 604_800,
+            reset_after_seconds: Number.MAX_VALUE,
+          },
+        },
+      },
+      { observedAtMs: Date.parse('2026-07-29T10:00:00Z') }
+    );
+
+    expect(windows).toMatchObject([
+      {
+        id: 'five-hour',
+        resetLabel: '-',
+        resetAtMs: null,
+        resetAccuracy: 'unknown',
+      },
+      {
+        id: 'weekly',
+        resetLabel: '-',
+        resetAtMs: null,
+        resetAccuracy: 'unknown',
+      },
+    ]);
+  });
+
   it('classifies Codex primary and weekly windows by duration', () => {
     const windows = buildCodexQuotaWindowInfos({
       rate_limit: {
@@ -186,6 +327,103 @@ describe('buildCodexQuotaWindowInfos', () => {
         usedPercent: 55,
       },
     ]);
+  });
+
+  it('keeps generic windows unique across main, code-review, and repeated additional families', () => {
+    const genericWindow = (usedPercent: number) => ({
+      primary_window: {
+        used_percent: usedPercent,
+        limit_window_seconds: 2 * 24 * 60 * 60,
+      },
+    });
+    const windows = buildCodexQuotaWindowInfos({
+      rate_limit: genericWindow(10),
+      code_review_rate_limit: genericWindow(20),
+      additional_rate_limits: [
+        { limit_name: 'Credits', rate_limit: genericWindow(30) },
+        { limit_name: 'Credits', rate_limit: genericWindow(40) },
+      ],
+    });
+
+    expect(windows.map((window) => [window.id, window.usedPercent])).toEqual([
+      ['window-2d-0', 10],
+      ['code-review-window-2d-0', 20],
+      ['credits-0-window-2d-0', 30],
+      ['credits-1-window-2d-0', 40],
+    ]);
+    expect(new Set(windows.map((window) => window.id)).size).toBe(windows.length);
+  });
+
+  it('keeps distinct additional family ids stable when the provider reorders the array', () => {
+    const family = (limitName: string, usedPercent: number) => ({
+      limit_name: limitName,
+      rate_limit: {
+        primary_window: {
+          used_percent: usedPercent,
+          limit_window_seconds: 18_000,
+        },
+      },
+    });
+    const forward = buildCodexQuotaWindowInfos({
+      additional_rate_limits: [family('Credits', 30), family('Review Premium', 40)],
+    });
+    const reverse = buildCodexQuotaWindowInfos({
+      additional_rate_limits: [family('Review Premium', 40), family('Credits', 30)],
+    });
+
+    const idsByUsage = (windows: CodexQuotaWindowInfo[]) =>
+      Object.fromEntries(windows.map((window) => [window.usedPercent, window.id]));
+    expect(idsByUsage(forward)).toEqual({
+      30: 'credits-five-hour-0',
+      40: 'review-premium-five-hour-0',
+    });
+    expect(idsByUsage(reverse)).toEqual(idsByUsage(forward));
+  });
+
+  it('uses metered feature to keep duplicate additional names stable across reorder', () => {
+    const family = (meteredFeature: string, usedPercent: number) => ({
+      limit_name: 'Credits',
+      metered_feature: meteredFeature,
+      rate_limit: {
+        primary_window: {
+          used_percent: usedPercent,
+          limit_window_seconds: 18_000,
+        },
+      },
+    });
+    const forward = buildCodexQuotaWindowInfos({
+      additional_rate_limits: [
+        family('chat_completions', 30),
+        family('code_review', 40),
+        {
+          limit_name: 'Credits Chat Completions',
+          rate_limit: {
+            primary_window: { used_percent: 50, limit_window_seconds: 18_000 },
+          },
+        },
+      ],
+    });
+    const reverse = buildCodexQuotaWindowInfos({
+      additional_rate_limits: [
+        {
+          limit_name: 'Credits Chat Completions',
+          rate_limit: {
+            primary_window: { used_percent: 50, limit_window_seconds: 18_000 },
+          },
+        },
+        family('code_review', 40),
+        family('chat_completions', 30),
+      ],
+    });
+
+    const idsByUsage = (windows: CodexQuotaWindowInfo[]) =>
+      Object.fromEntries(windows.map((window) => [window.usedPercent, window.id]));
+    expect(idsByUsage(forward)).toEqual({
+      30: 'credits--chat-completions-five-hour-0',
+      40: 'credits--code-review-five-hour-0',
+      50: 'credits-chat-completions-five-hour-0',
+    });
+    expect(idsByUsage(reverse)).toEqual(idsByUsage(forward));
   });
 
   it('shares rate-limit helpers used by Codex inspection', () => {

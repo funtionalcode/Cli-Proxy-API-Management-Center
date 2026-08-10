@@ -184,7 +184,10 @@ func accountHistoryBenchmarkTargets(count int) []AccountHistoryTarget {
 	targets := make([]AccountHistoryTarget, 0, count)
 	for index := 0; index < count; index++ {
 		targets = append(targets, AccountHistoryTarget{
-			AccountKey: fmt.Sprintf("account-%04d@example.com", index),
+			RowKey:               fmt.Sprintf("row-%04d", index),
+			AuthIndex:            fmt.Sprintf("auth-%04d", index),
+			AuthProviderSnapshot: "openai",
+			AccountSnapshot:      fmt.Sprintf("account-%04d@example.com", index),
 		})
 	}
 	return targets

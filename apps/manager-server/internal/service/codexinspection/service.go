@@ -28,6 +28,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -72,6 +73,7 @@ type Service struct {
 	managerConfigService *managerconfig.Service
 	client               *http.Client
 	authFileMutations    *cpaauthfiles.MutationCoordinator
+	quotaSnapshots       *quotasnapshotsvc.Service
 
 	mu                             sync.Mutex
 	cancelMu                       sync.Mutex
@@ -315,6 +317,7 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 		managerConfigService:           managerConfigService,
 		client:                         client,
 		authFileMutations:              authFileMutations,
+		quotaSnapshots:                 quotasnapshotsvc.New(st),
 		ownerID:                        ownerID,
 		leaseDuration:                  leaseDuration,
 		heartbeatInterval:              heartbeatInterval,
@@ -1800,6 +1803,12 @@ func (s *Service) inspectSingleAccount(
 	}
 	base.PlanType = planType
 	base.QuotaWindows = buildCodexInspectionQuotaWindows(payload, planType)
+	base.QuotaInventoryObserved = codexQuotaInventoryObserved(payload)
+	if base.QuotaInventoryObserved && len(base.QuotaWindows) == 0 {
+		// Preserve the distinction between an explicitly observed empty inventory
+		// and a successful response whose quota schema could not be recognized.
+		base.QuotaWindowsJSON = "[]"
+	}
 	base.Error = ""
 	if statusCode < 200 || statusCode >= 300 {
 		base.ErrorKind = "http_status"
@@ -3962,7 +3971,7 @@ func (s *Service) persistInspectionResults(
 		}
 		result.RunID = runID
 		writeCtx, cancel := context.WithTimeout(persistCtx, resultWriteTimeout)
-		_, err := s.store.InsertCodexInspectionResult(writeCtx, result)
+		stored, err := s.store.InsertCodexInspectionResult(writeCtx, result)
 		cancel()
 		if err != nil {
 			failures++
@@ -3971,6 +3980,17 @@ func (s *Service) persistInspectionResults(
 				"displayAccount": result.DisplayAccount,
 				"retryScheduled": true,
 				"error":          err.Error(),
+			})
+			continue
+		}
+		snapshotCtx, snapshotCancel := context.WithTimeout(persistCtx, resultWriteTimeout)
+		snapshotErr := s.quotaSnapshots.WriteCodexInspectionResult(snapshotCtx, stored)
+		snapshotCancel()
+		if snapshotErr != nil {
+			logger.warning(ctx, "写入巡检额度快照失败", map[string]any{
+				"fileName":       result.FileName,
+				"displayAccount": result.DisplayAccount,
+				"error":          snapshotErr.Error(),
 			})
 		}
 	}
@@ -4407,6 +4427,7 @@ func buildCodexInspectionQuotaWindows(payload map[string]any, planType string) [
 		codexWindowMeta{ID: "five-hour", LabelKey: "codex_quota.primary_window"},
 		codexWindowMeta{ID: "weekly", LabelKey: "codex_quota.secondary_window"},
 		codexWindowMeta{ID: "monthly", LabelKey: "codex_quota.monthly_window"},
+		"",
 		"codex_quota.generic_window",
 		nil,
 		teamPlan,
@@ -4417,6 +4438,7 @@ func buildCodexInspectionQuotaWindows(payload map[string]any, planType string) [
 		codexWindowMeta{ID: "code-review-five-hour", LabelKey: "codex_quota.code_review_primary_window"},
 		codexWindowMeta{ID: "code-review-weekly", LabelKey: "codex_quota.code_review_secondary_window"},
 		codexWindowMeta{ID: "code-review-monthly", LabelKey: "codex_quota.code_review_monthly_window"},
+		"code-review",
 		"codex_quota.code_review_generic_window",
 		nil,
 		teamPlan,
@@ -4425,12 +4447,39 @@ func buildCodexInspectionQuotaWindows(payload map[string]any, planType string) [
 	return windows
 }
 
+func codexQuotaInventoryObserved(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	for _, key := range []string{"rate_limit", "rateLimit", "code_review_rate_limit", "codeReviewRateLimit"} {
+		raw, exists := payload[key]
+		if !exists {
+			continue
+		}
+		if _, ok := raw.(map[string]any); ok {
+			return true
+		}
+	}
+	for _, key := range []string{"additional_rate_limits", "additionalRateLimits"} {
+		raw, exists := payload[key]
+		if !exists {
+			continue
+		}
+		switch raw.(type) {
+		case []any, []map[string]any:
+			return true
+		}
+	}
+	return false
+}
+
 func addCodexRateLimitWindows(
 	windows *[]model.CodexInspectionQuotaWindow,
 	limit *codexRateLimit,
 	fiveHourMeta codexWindowMeta,
 	weeklyMeta codexWindowMeta,
 	monthlyMeta codexWindowMeta,
+	genericIDPrefix string,
 	genericLabelKey string,
 	genericLabelParams map[string]any,
 	teamPlan bool,
@@ -4457,11 +4506,9 @@ func addCodexRateLimitWindows(
 			continue
 		}
 		duration := formatCodexWindowDuration(window.LimitWindowSeconds)
-		prefix := ""
-		if name, ok := genericLabelParams["name"]; ok {
-			if normalizedName := normalizeCodexWindowID(fmt.Sprint(name)); normalizedName != "" {
-				prefix = normalizedName + "-"
-			}
+		prefix := normalizeCodexWindowID(genericIDPrefix)
+		if prefix != "" {
+			prefix += "-"
 		}
 		addCodexWindowInfo(
 			windows,
@@ -4501,7 +4548,9 @@ func addCodexWindowInfo(
 	if window == nil {
 		return
 	}
-	resetLabel := formatCodexResetLabel(window)
+	observedAt := time.Now()
+	resetAtMS, resetAccuracy := resolveCodexInspectionReset(window, observedAt)
+	resetLabel := formatCodexResetLabelAt(window, observedAt)
 	usedPercent := window.UsedPercent
 	if usedPercent == nil && (limitReached || (allowed != nil && !*allowed)) && resetLabel != "-" {
 		usedPercent = ptrFloat(100)
@@ -4512,36 +4561,63 @@ func addCodexWindowInfo(
 		LabelParams:        copyCodexLabelParams(labelParams),
 		UsedPercent:        usedPercent,
 		ResetLabel:         resetLabel,
+		ResetAtMS:          resetAtMS,
+		ResetAccuracy:      resetAccuracy,
 		LimitWindowSeconds: window.LimitWindowSeconds,
 	})
 }
 
 func addAdditionalRateLimitWindows(windows *[]model.CodexInspectionQuotaWindow, additionalRateLimits []map[string]any, teamPlan bool) {
+	baseIDPrefixCounts := make(map[string]int)
+	for index, limitItem := range additionalRateLimits {
+		if parseRateLimit(readMap(limitItem, "rate_limit", "rateLimit")) == nil {
+			continue
+		}
+		_, baseIDPrefix, _ := codexAdditionalRateLimitIdentity(limitItem, index)
+		baseIDPrefixCounts[baseIDPrefix]++
+	}
+
+	occurrencesByIDPrefix := make(map[string]int)
 	for index, limitItem := range additionalRateLimits {
 		rateInfo := parseRateLimit(readMap(limitItem, "rate_limit", "rateLimit"))
 		if rateInfo == nil {
 			continue
 		}
-		limitName := firstNonEmpty(
-			readString(limitItem, "limit_name", "limitName"),
-			readString(limitItem, "metered_feature", "meteredFeature"),
-			fmt.Sprintf("additional-%d", index+1),
-		)
-		idPrefix := normalizeCodexWindowID(limitName)
-		if idPrefix == "" {
-			idPrefix = fmt.Sprintf("additional-%d", index+1)
+		limitName, idPrefix, featureIDPrefix := codexAdditionalRateLimitIdentity(limitItem, index)
+		if baseIDPrefixCounts[idPrefix] > 1 && featureIDPrefix != "" && featureIDPrefix != idPrefix {
+			// A normalized provider label cannot contain a double dash, so keep the
+			// feature namespace distinct from another quota whose actual name happens
+			// to equal "<limit name>-<metered feature>".
+			idPrefix += "--" + featureIDPrefix
 		}
+		familyIndex := occurrencesByIDPrefix[idPrefix]
+		occurrencesByIDPrefix[idPrefix] = familyIndex + 1
 		addCodexRateLimitWindows(
 			windows,
 			rateInfo,
-			codexWindowMeta{ID: fmt.Sprintf("%s-five-hour-%d", idPrefix, index), LabelKey: "codex_quota.additional_primary_window"},
-			codexWindowMeta{ID: fmt.Sprintf("%s-weekly-%d", idPrefix, index), LabelKey: "codex_quota.additional_secondary_window"},
-			codexWindowMeta{ID: fmt.Sprintf("%s-monthly-%d", idPrefix, index), LabelKey: "codex_quota.additional_monthly_window"},
+			codexWindowMeta{ID: fmt.Sprintf("%s-five-hour-%d", idPrefix, familyIndex), LabelKey: "codex_quota.additional_primary_window"},
+			codexWindowMeta{ID: fmt.Sprintf("%s-weekly-%d", idPrefix, familyIndex), LabelKey: "codex_quota.additional_secondary_window"},
+			codexWindowMeta{ID: fmt.Sprintf("%s-monthly-%d", idPrefix, familyIndex), LabelKey: "codex_quota.additional_monthly_window"},
+			fmt.Sprintf("%s-%d", idPrefix, familyIndex),
 			"codex_quota.additional_generic_window",
 			map[string]any{"name": limitName},
 			teamPlan,
 		)
 	}
+}
+
+func codexAdditionalRateLimitIdentity(limitItem map[string]any, index int) (string, string, string) {
+	meteredFeature := readString(limitItem, "metered_feature", "meteredFeature")
+	limitName := firstNonEmpty(
+		readString(limitItem, "limit_name", "limitName"),
+		meteredFeature,
+		fmt.Sprintf("additional-%d", index+1),
+	)
+	idPrefix := normalizeCodexWindowID(limitName)
+	if idPrefix == "" {
+		idPrefix = fmt.Sprintf("additional-%d", index+1)
+	}
+	return limitName, idPrefix, normalizeCodexWindowID(meteredFeature)
 }
 
 func readMapSlice(record map[string]any, keys ...string) []map[string]any {
@@ -4565,6 +4641,10 @@ func readMapSlice(record map[string]any, keys ...string) []map[string]any {
 }
 
 func formatCodexResetLabel(window *codexWindow) string {
+	return formatCodexResetLabelAt(window, time.Now())
+}
+
+func formatCodexResetLabelAt(window *codexWindow, observedAt time.Time) string {
 	if window == nil {
 		return "-"
 	}
@@ -4572,10 +4652,23 @@ func formatCodexResetLabel(window *codexWindow) string {
 		return formatUnixSeconds(*window.ResetAt)
 	}
 	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
-		targetSeconds := float64(time.Now().Unix()) + math.Floor(*window.ResetAfterSeconds)
+		targetSeconds := float64(observedAt.Unix()) + math.Floor(*window.ResetAfterSeconds)
 		return formatUnixSeconds(targetSeconds)
 	}
 	return "-"
+}
+
+func resolveCodexInspectionReset(window *codexWindow, observedAt time.Time) (int64, string) {
+	if window == nil {
+		return 0, "unknown"
+	}
+	if window.ResetAt != nil && *window.ResetAt > 0 {
+		return int64(math.Floor(*window.ResetAt)) * 1000, "exact"
+	}
+	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
+		return observedAt.Add(time.Duration(*window.ResetAfterSeconds * float64(time.Second))).UnixMilli(), "derived"
+	}
+	return 0, "unknown"
 }
 
 func formatUnixSeconds(seconds float64) string {

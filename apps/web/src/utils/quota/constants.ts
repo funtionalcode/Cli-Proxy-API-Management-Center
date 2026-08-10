@@ -111,7 +111,7 @@ export const ANTIGRAVITY_REQUEST_HEADERS = {
 export const ANTIGRAVITY_QUOTA_GROUPS: AntigravityQuotaGroupDefinition[] = [
   {
     id: 'claude-gpt',
-    label: 'Claude/GPT',
+    label: 'Claude',
     identifiers: ['claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium'],
   },
   {

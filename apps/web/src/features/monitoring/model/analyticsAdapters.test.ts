@@ -218,6 +218,7 @@ describe('buildAnalyticsFilters', () => {
     const filters = buildAnalyticsFilters(
       {
         authFile: 'codex-auth.json',
+        authIndex: 'auth-1',
         projectId: 'project-1',
         requestType: 'codex',
         minLatencyMs: 10_000,
@@ -229,6 +230,7 @@ describe('buildAnalyticsFilters', () => {
 
     expect(filters).toEqual({
       auth_files: ['codex-auth.json'],
+      auth_indices: ['auth-1'],
       project_ids: ['project-1'],
       request_types: ['codex'],
       min_latency_ms: 10_000,

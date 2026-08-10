@@ -5,6 +5,8 @@ import type { AuthFileItem } from '@/types';
 import type { PrefixProxyEditorState } from '@/features/authFiles/hooks/useAuthFilesPrefixProxyEditor';
 import { AuthFilesPrefixProxyEditorModal } from './AuthFilesPrefixProxyEditorModal';
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -33,13 +35,11 @@ const createEditor = (
 ): PrefixProxyEditorState => ({
   authFile,
   fileName: authFile.name,
+  credentialKey: `${authFile.name}::${String(authFile.authIndex ?? '-')}`,
   fileInfoText: JSON.stringify(authFile),
   loading: false,
   saving: false,
   error: null,
-  originalText: '{}',
-  rawText: '{}',
-  invalidContentPreview: '',
   json: {},
   providerKey,
   prefix: '',
@@ -121,5 +121,37 @@ describe('AuthFilesPrefixProxyEditorModal credential refresh action', () => {
     });
 
     expect(findCredentialRefreshButtons(renderer)).toHaveLength(0);
+  });
+
+  it('redacts proxy credentials and sensitive headers from preview and copied text', () => {
+    const onCopyText = vi.fn();
+    const updatedText = JSON.stringify({
+      proxy_url:
+        'socks5://proxy-user:proxy-password@127.0.0.1:1080/proxy-path-secret?token=secret',
+      headers: {
+        Authorization: 'Bearer access-secret',
+        Cookie: 'session=cookie-secret',
+        'X-Tenant': 'tenant-a',
+      },
+    });
+    const { renderer } = renderModal({ updatedText, onCopyText });
+    const sourcePreview = renderer.root
+      .findAllByType('textarea')
+      .find((node) => node.props.rows === 10);
+    const copyButton = renderer.root
+      .findAllByType('button')
+      .find((button) => button.props.title === 'auth_files.prefix_proxy_copy_redacted_hint');
+
+    expect(sourcePreview?.props.value).toContain('socks5://127.0.0.1:1080');
+    expect(sourcePreview?.props.value).toContain('tenant-a');
+    expect(sourcePreview?.props.value).not.toContain('proxy-user');
+    expect(sourcePreview?.props.value).not.toContain('proxy-password');
+    expect(sourcePreview?.props.value).not.toContain('proxy-path-secret');
+    expect(sourcePreview?.props.value).not.toContain('access-secret');
+    expect(sourcePreview?.props.value).not.toContain('cookie-secret');
+
+    expect(copyButton).toBeDefined();
+    act(() => copyButton?.props.onClick());
+    expect(onCopyText).toHaveBeenCalledWith(sourcePreview?.props.value);
   });
 });

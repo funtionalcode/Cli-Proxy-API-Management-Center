@@ -97,7 +97,7 @@
   padding: 12px;
 
   b {
-    color: #0f172a;
+    color: var(--text-primary);
     font-size: 13px;
     line-height: 1.45;
   }
@@ -108,7 +108,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 12px;
 
   span {
@@ -118,7 +118,7 @@
   }
 
   strong {
-    color: #0f172a;
+    color: var(--text-primary);
     font-weight: 800;
   }
 }
@@ -170,8 +170,8 @@
   strong {
     padding: 6px 10px;
     border-radius: 8px;
-    background: rgba(16, 185, 129, 0.12);
-    color: #34d399;
+    background: var(--data-emerald-light-9);
+    color: var(--data-emerald-base);
     font-size: 13px;
     font-weight: 800;
     line-height: 1;
@@ -268,15 +268,15 @@
 }
 
 .healthGood {
-  background: #22c55e;
+  background: var(--data-green-base);
 }
 
 .healthWarn {
-  background: #a3e635;
+  background: var(--data-health-warn-base);
 }
 
 .healthBad {
-  background: #ef4444;
+  background: var(--data-red-base);
 }
 
 .healthFuture {
@@ -460,7 +460,7 @@
   height: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--app-surface-muted), transparent 18%);
+  background: var(--data-track-bg);
 }
 
 .tokenRankBar {

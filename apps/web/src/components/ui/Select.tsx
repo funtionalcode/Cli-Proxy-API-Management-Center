@@ -6,7 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties
+  type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { IconChevronDown } from './icons';
@@ -36,7 +36,9 @@ interface SelectProps {
 const VIEWPORT_MARGIN = 8;
 const DROPDOWN_OFFSET = 6;
 const DROPDOWN_MAX_HEIGHT = 240;
+const DROPDOWN_MIN_HEIGHT = 96;
 const DROPDOWN_Z_INDEX = 2010;
+const SELECT_OPEN_EVENT = 'cpamp-select-open';
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -52,12 +54,9 @@ const resolveDropdownStyle = (element: HTMLElement): CSSProperties => {
   );
   const spaceBelow = viewportHeight - rect.bottom - VIEWPORT_MARGIN - DROPDOWN_OFFSET;
   const spaceAbove = rect.top - VIEWPORT_MARGIN - DROPDOWN_OFFSET;
-  const direction =
-    spaceBelow >= DROPDOWN_MAX_HEIGHT || spaceBelow >= spaceAbove ? 'down' : 'up';
-  const maxHeight = Math.max(
-    0,
-    Math.min(DROPDOWN_MAX_HEIGHT, direction === 'down' ? spaceBelow : spaceAbove)
-  );
+  const direction = spaceBelow >= DROPDOWN_MAX_HEIGHT || spaceBelow >= spaceAbove ? 'down' : 'up';
+  const availableHeight = direction === 'down' ? spaceBelow : spaceAbove;
+  const maxHeight = Math.max(DROPDOWN_MIN_HEIGHT, Math.min(DROPDOWN_MAX_HEIGHT, availableHeight));
 
   return direction === 'down'
     ? {
@@ -66,7 +65,7 @@ const resolveDropdownStyle = (element: HTMLElement): CSSProperties => {
         left,
         width,
         maxHeight,
-        zIndex: DROPDOWN_Z_INDEX
+        zIndex: DROPDOWN_Z_INDEX,
       }
     : {
         position: 'fixed',
@@ -74,7 +73,7 @@ const resolveDropdownStyle = (element: HTMLElement): CSSProperties => {
         left,
         width,
         maxHeight,
-        zIndex: DROPDOWN_Z_INDEX
+        zIndex: DROPDOWN_Z_INDEX,
       };
 };
 
@@ -102,7 +101,29 @@ export function Select({
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
+  const selectedIndex = useMemo(
+    () => options.findIndex((option) => option.value === value),
+    [options, value]
+  );
   const isOpen = open && !disabled;
+
+  const openSelect = useCallback(() => {
+    if (disabled) return;
+    if (typeof document !== 'undefined') {
+      document.dispatchEvent(new CustomEvent(SELECT_OPEN_EVENT, { detail: selectId }));
+    }
+    setOpen(true);
+    setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [disabled, selectId, selectedIndex]);
+
+  const toggleOpen = useCallback(() => {
+    if (disabled) return;
+    if (isOpen) {
+      setOpen(false);
+      return;
+    }
+    openSelect();
+  }, [disabled, isOpen, openSelect]);
 
   useEffect(() => {
     if (!open || disabled) return;
@@ -114,6 +135,18 @@ export function Select({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [disabled, open]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const handlePeerOpen = (event: Event) => {
+      const nextSelectId = (event as CustomEvent<string>).detail;
+      if (nextSelectId !== selectId) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener(SELECT_OPEN_EVENT, handlePeerOpen);
+    return () => document.removeEventListener(SELECT_OPEN_EVENT, handlePeerOpen);
+  }, [selectId]);
 
   const updateDropdownStyle = useCallback(() => {
     if (!wrapRef.current) return;
@@ -171,9 +204,14 @@ export function Select({
     };
   }, [isOpen, scheduleDropdownStyleUpdate, updateDropdownStyle]);
 
-  const selectedIndex = useMemo(() => options.findIndex((option) => option.value === value), [options, value]);
   const resolvedHighlightedIndex =
-    highlightedIndex >= 0 ? highlightedIndex : selectedIndex >= 0 ? selectedIndex : options.length > 0 ? 0 : -1;
+    highlightedIndex >= 0
+      ? highlightedIndex
+      : selectedIndex >= 0
+        ? selectedIndex
+        : options.length > 0
+          ? 0
+          : -1;
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
   const displayText = selected?.label ?? placeholder ?? '';
   const isPlaceholder = !selected && placeholder;
@@ -206,7 +244,7 @@ export function Select({
         case 'ArrowDown':
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openSelect();
             return;
           }
           moveHighlight(1);
@@ -214,7 +252,7 @@ export function Select({
         case 'ArrowUp':
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openSelect();
             return;
           }
           moveHighlight(-1);
@@ -233,7 +271,7 @@ export function Select({
         case ' ': {
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openSelect();
             return;
           }
           if (resolvedHighlightedIndex >= 0) {
@@ -253,48 +291,56 @@ export function Select({
           return;
       }
     },
-    [commitSelection, disabled, isOpen, moveHighlight, options.length, resolvedHighlightedIndex]
+    [
+      commitSelection,
+      disabled,
+      isOpen,
+      moveHighlight,
+      openSelect,
+      options.length,
+      resolvedHighlightedIndex,
+    ]
   );
 
   useEffect(() => {
     if (!isOpen || resolvedHighlightedIndex < 0) return;
-    const highlightedOption = document.getElementById(`${selectId}-option-${resolvedHighlightedIndex}`);
+    const highlightedOption = document.getElementById(
+      `${selectId}-option-${resolvedHighlightedIndex}`
+    );
     highlightedOption?.scrollIntoView({ block: 'nearest' });
   }, [isOpen, resolvedHighlightedIndex, selectId]);
 
   const dropdown =
-    isOpen && dropdownStyle
-      ? (
-          <div
-            ref={dropdownRef}
-            className={[styles.dropdown, dropdownClassName].filter(Boolean).join(' ')}
-            id={listboxId}
-            role="listbox"
-            aria-label={ariaLabel}
-            style={dropdownStyle}
-          >
-            {options.map((opt, index) => {
-              const active = opt.value === value;
-              const highlighted = index === resolvedHighlightedIndex;
-              return (
-                <button
-                  key={opt.value}
-                  id={`${selectId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''}`.trim()}
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  onKeyDown={handleKeyDown}
-                  onClick={() => commitSelection(index)}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-        )
-      : null;
+    isOpen && dropdownStyle ? (
+      <div
+        ref={dropdownRef}
+        className={[styles.dropdown, dropdownClassName].filter(Boolean).join(' ')}
+        id={listboxId}
+        role="listbox"
+        aria-label={ariaLabel}
+        style={dropdownStyle}
+      >
+        {options.map((opt, index) => {
+          const active = opt.value === value;
+          const highlighted = index === resolvedHighlightedIndex;
+          return (
+            <button
+              key={opt.value}
+              id={`${selectId}-option-${index}`}
+              type="button"
+              role="option"
+              aria-selected={active}
+              className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''}`.trim()}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              onKeyDown={handleKeyDown}
+              onClick={() => commitSelection(index)}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    ) : null;
 
   return (
     <>
@@ -306,7 +352,7 @@ export function Select({
           id={selectId}
           type="button"
           className={[styles.trigger, triggerClassName].filter(Boolean).join(' ')}
-          onClick={disabled ? undefined : () => setOpen((prev) => !prev)}
+          onClick={disabled ? undefined : toggleOpen}
           onKeyDown={handleKeyDown}
           aria-haspopup="listbox"
           aria-expanded={isOpen}
@@ -329,7 +375,8 @@ export function Select({
           </span>
         </button>
       </div>
-      {dropdown && (typeof document === 'undefined' ? dropdown : createPortal(dropdown, document.body))}
+      {dropdown &&
+        (typeof document === 'undefined' ? dropdown : createPortal(dropdown, document.body))}
     </>
   );
 }

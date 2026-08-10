@@ -47,6 +47,7 @@ import {
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
+  fetchKimiQuota,
   mergeXaiBillingSummaries,
   probeXaiBilling,
   probeXaiInference,
@@ -84,8 +85,21 @@ describe('fetchCodexQuota', () => {
         bodyText: '',
         body: {
           plan_type: 'plus',
+          subscription_active_until: 1_788_220_799,
           rate_limit_reset_credits: {
             available_count: 1,
+          },
+          credits: {
+            has_credits: true,
+            unlimited: false,
+            balance: '120',
+            overage_limit_reached: false,
+            approx_local_messages: 24,
+            approx_cloud_messages: 12,
+          },
+          spend_control: {
+            reached: false,
+            individual_limit: 200,
           },
         },
       })
@@ -143,6 +157,81 @@ describe('fetchCodexQuota', () => {
     expect(result.rateLimitResetCreditsAvailableCount).toBe(2);
     expect(result.rateLimitResetCredits).toHaveLength(1);
     expect(result.rateLimitResetCreditsError).toBeNull();
+    expect(result.quotaInventoryObserved).toBe(false);
+    expect(result.subscriptionActiveUntil).toBe(1_788_220_799);
+    expect(result).toMatchObject({
+      creditsHasCredits: true,
+      creditsUnlimited: false,
+      creditsBalance: '120',
+      creditsOverageLimitReached: false,
+      creditsApproxLocalMessages: 24,
+      creditsApproxCloudMessages: 12,
+      spendControlReached: false,
+      spendControlIndividualLimit: 200,
+    });
+  });
+
+  it('marks an explicit rate-limit object as a complete quota inventory', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { rate_limit: {} },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { available_count: 0, credits: [] },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.quotaInventoryObserved).toBe(true);
+    expect(result.windows).toEqual([]);
+  });
+
+  it.each([
+    ['code-review family', { code_review_rate_limit: {} }],
+    ['additional families', { additional_rate_limits: [] }],
+  ])('marks an explicit empty %s as a complete quota inventory', async (_name, body) => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body,
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { available_count: 0, credits: [] },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.quotaInventoryObserved).toBe(true);
+    expect(result.windows).toEqual([]);
   });
 
   it('keeps usage quota data when reset credit details fail', async () => {
@@ -287,11 +376,13 @@ describe('fetchClaudeQuota', () => {
       'weekly-scoped-fable%205%20max',
       'iguana-necktie',
     ]);
-    expect(result.windows[2]).toEqual({
+    expect(result.windows[2]).toMatchObject({
       id: 'weekly-scoped-fable%205%20max',
       label: 'Fable 5 Max',
       usedPercent: 100,
       resetLabel: formatQuotaResetTime(resetAt),
+      resetAtMs: Date.parse(resetAt),
+      resetAccuracy: 'exact',
     });
     expect(result.windows[3]).toMatchObject({
       id: 'iguana-necktie',
@@ -348,7 +439,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'five-hour',
         label: 'claude_quota.five_hour',
@@ -368,6 +459,65 @@ describe('fetchClaudeQuota', () => {
         label: 'Fable 5 Max',
         usedPercent: 42,
         resetLabel: formatQuotaResetTime(scopedResetAt),
+      },
+    ]);
+  });
+
+  it('normalizes Unix seconds and milliseconds from structured Claude limits', async () => {
+    const sessionResetAtMs = Date.parse('2026-07-01T10:00:00Z');
+    const weeklyResetAtMs = Date.parse('2026-07-07T10:00:00Z');
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          limits: [
+            {
+              kind: 'session',
+              group: 'session',
+              percent: 18,
+              resets_at: sessionResetAtMs / 1000,
+              is_active: true,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: 42,
+              resetsAt: weeklyResetAtMs,
+              isActive: true,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {},
+      });
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toMatchObject([
+      {
+        id: 'five-hour',
+        resetAtMs: sessionResetAtMs,
+        resetAccuracy: 'exact',
+      },
+      {
+        id: 'seven-day',
+        resetAtMs: weeklyResetAtMs,
+        resetAccuracy: 'exact',
       },
     ]);
   });
@@ -427,7 +577,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'five-hour',
         label: 'claude_quota.five_hour',
@@ -492,7 +642,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'five-hour',
         label: 'claude_quota.five_hour',
@@ -602,8 +752,8 @@ describe('fetchClaudeQuota', () => {
         resetLabel: formatQuotaResetTime(weeklyResetAt),
       },
     ];
-    expect(first.windows).toEqual(expectedWindows);
-    expect(reversed.windows).toEqual(expectedWindows);
+    expect(first.windows).toMatchObject(expectedWindows);
+    expect(reversed.windows).toMatchObject(expectedWindows);
   });
 
   it('orders base candidates by freshness, completeness, then kind precedence', async () => {
@@ -659,7 +809,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'five-hour',
         label: 'claude_quota.five_hour',
@@ -736,7 +886,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'weekly-scoped-healthy%20scoped%20model',
         label: 'Healthy scoped model',
@@ -775,12 +925,14 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'weekly-scoped-over%20limit',
         label: 'Over Limit',
         usedPercent: 125,
         resetLabel: '-',
+        resetAtMs: null,
+        resetAccuracy: 'unknown',
       },
     ]);
   });
@@ -849,7 +1001,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'weekly-scoped-id-model-dormant',
         label: 'Dormant model',
@@ -944,7 +1096,7 @@ describe('fetchClaudeQuota', () => {
       t
     );
 
-    expect(result.windows).toEqual([
+    expect(result.windows).toMatchObject([
       {
         id: 'weekly-scoped-id-model-percent',
         label: 'Fresh percent',
@@ -1019,8 +1171,8 @@ describe('fetchClaudeQuota', () => {
         resetLabel: '-',
       },
     ];
-    expect(first.windows).toEqual(expected);
-    expect(reversed.windows).toEqual(expected);
+    expect(first.windows).toMatchObject(expected);
+    expect(reversed.windows).toMatchObject(expected);
   });
 
   it('ignores unscoped duplicates, unrelated kinds, and malformed scoped limits', async () => {
@@ -1269,8 +1421,8 @@ describe('fetchClaudeQuota', () => {
         resetLabel: formatQuotaResetTime(resetAt),
       },
     ];
-    expect(withoutIdFirst.windows).toEqual(expectedWindows);
-    expect(withIdFirst.windows).toEqual(expectedWindows);
+    expect(withoutIdFirst.windows).toMatchObject(expectedWindows);
+    expect(withIdFirst.windows).toMatchObject(expectedWindows);
   });
 
   it('preserves non-equivalent label-only scoped data instead of dropping it', async () => {
@@ -1523,12 +1675,160 @@ describe('fetchClaudeQuota', () => {
       id: 'five-hour',
       usedPercent: 12,
     });
-    expect(result.windows[1]).toEqual({
+    expect(result.windows[1]).toMatchObject({
       id: 'weekly-scoped-fable%205%20max',
       label: 'Fable 5 Max',
       usedPercent: 100,
       resetLabel: formatQuotaResetTime(scopedResetAt),
+      resetAtMs: Date.parse(scopedResetAt),
+      resetAccuracy: 'exact',
     });
+  });
+
+  it('uses structured Claude limits when top-level windows are absent', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: null,
+          seven_day: null,
+          limits: [
+            {
+              kind: 'session',
+              percent: 35,
+              resets_at: '2026-07-01T10:00:00Z',
+            },
+            {
+              kind: 'weekly_all',
+              percent: 14,
+              resets_at: '2026-07-07T10:00:00Z',
+            },
+            {
+              kind: 'weekly_scoped',
+              percent: 39,
+              resets_at: '2026-07-06T10:00:00Z',
+              scope: { model: { display_name: 'Sonnet' } },
+            },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows.map((window) => window.id)).toEqual([
+      'five-hour',
+      'seven-day',
+      'weekly-scoped-sonnet',
+    ]);
+    expect(result.windows.map((window) => window.usedPercent)).toEqual([35, 14, 39]);
+    expect(result.windows).toMatchObject([
+      {
+        limitWindowSeconds: 5 * 60 * 60,
+        modelScope: { kind: 'all', complete: true },
+      },
+      {
+        limitWindowSeconds: 7 * 24 * 60 * 60,
+        modelScope: { kind: 'all', complete: true },
+      },
+      {
+        limitWindowSeconds: 7 * 24 * 60 * 60,
+        modelScope: { kind: 'models', models: [], complete: false },
+      },
+    ]);
+    expect(result.quotaInventoryObserved).toBe(true);
+  });
+
+  it('does not treat an unrecognized successful Claude payload as a complete inventory', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {},
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {},
+      });
+
+    const result = await fetchClaudeQuota(
+      { name: 'claude.json', type: 'claude', authIndex: 'claude-1' },
+      t
+    );
+
+    expect(result.windows).toEqual([]);
+    expect(result.quotaInventoryObserved).toBe(false);
+  });
+
+  it('accepts an explicit empty Claude limits array as a complete inventory', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { limits: [] },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      { name: 'claude.json', type: 'claude', authIndex: 'claude-1' },
+      t
+    );
+
+    expect(result.windows).toEqual([]);
+    expect(result.quotaInventoryObserved).toBe(true);
+  });
+});
+
+describe('fetchKimiQuota', () => {
+  it('does not treat an unrecognized successful payload as a complete inventory', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {},
+    });
+
+    const result = await fetchKimiQuota(
+      { name: 'kimi.json', type: 'kimi', authIndex: 'kimi-1' },
+      t
+    );
+
+    expect(result).toEqual({ rows: [], quotaInventoryObserved: false });
+  });
+
+  it('accepts an explicit empty limits array as a complete inventory', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: { limits: [] },
+    });
+
+    const result = await fetchKimiQuota(
+      { name: 'kimi.json', type: 'kimi', authIndex: 'kimi-1' },
+      t
+    );
+
+    expect(result).toEqual({ rows: [], quotaInventoryObserved: true });
   });
 });
 
@@ -1934,6 +2234,33 @@ describe('fetchXaiQuota', () => {
     ).rejects.toMatchObject({
       decision: { classification: 'spending_limit', suggestedAction: 'disable' },
     });
+  });
+
+  it('normalizes xAI RPC billing cycle and nested usage payloads', () => {
+    const summary = buildXaiBillingSummary({
+      billingCycle: {
+        billingPeriodStart: '2026-05-01T00:00:00Z',
+        billingPeriodEnd: '2026-06-01T00:00:00Z',
+      },
+      monthlyLimit: { val: 99900 },
+      onDemandCap: { val: 0 },
+      usage: {
+        includedUsed: { val: 12345 },
+        onDemandUsed: { val: 0 },
+        totalUsed: { val: 12345 },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      periodType: 'monthly',
+      monthlyLimitCents: 99900,
+      usedCents: 12345,
+      includedUsedCents: 12345,
+      onDemandUsedCents: 0,
+      billingPeriodStart: '2026-05-01T00:00:00Z',
+      billingPeriodEnd: '2026-06-01T00:00:00Z',
+    });
+    expect(summary?.usedPercent).toBeCloseTo(12.36, 2);
   });
 
   it('marks a one-sided xAI billing response as partial while keeping usable data', async () => {
@@ -2523,6 +2850,7 @@ describe('fetchAntigravityQuota', () => {
         },
       ],
     });
+    expect(result.quotaInventoryObserved).toBe(true);
   });
 
   it('falls back to available models when summary endpoints have no usable data', async () => {
@@ -2607,5 +2935,51 @@ describe('fetchAntigravityQuota', () => {
         'User-Agent': ANTIGRAVITY_USER_AGENT,
       }),
     });
+  });
+
+  it('does not treat unrecognized successful endpoint payloads as a complete inventory', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {},
+    });
+
+    const result = await fetchAntigravityQuota(
+      {
+        name: 'antigravity.json',
+        type: 'antigravity',
+        authIndex: 'ag-1',
+        project_id: 'project-1',
+      },
+      t
+    );
+
+    expect(result.groups).toEqual([]);
+    expect(result.quotaInventoryObserved).toBe(false);
+  });
+
+  it('accepts an explicit empty Antigravity group list as a complete inventory', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: { groups: [] },
+    });
+
+    const result = await fetchAntigravityQuota(
+      {
+        name: 'antigravity.json',
+        type: 'antigravity',
+        authIndex: 'ag-1',
+        project_id: 'project-1',
+      },
+      t
+    );
+
+    expect(result.groups).toEqual([]);
+    expect(result.quotaInventoryObserved).toBe(true);
   });
 });

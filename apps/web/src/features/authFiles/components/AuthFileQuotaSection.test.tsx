@@ -169,6 +169,28 @@ describe('AuthFileQuotaSection Codex quota scoping', () => {
     expect(text).not.toContain('codex_quota.plan_pro');
   });
 
+  it('ignores legacy Codex quota without identity even when the file has no auth index', () => {
+    const unindexedFile = { ...file, authIndex: null };
+    mocks.quotaStoreState.codexQuota = {
+      [unindexedFile.name]: legacyQuotaWithoutIdentity,
+    };
+
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <AuthFileQuotaSection
+          file={unindexedFile}
+          quotaType="codex"
+          disableControls={false}
+        />
+      );
+    });
+
+    const text = getText(renderer.root);
+    expect(text).toContain('codex_quota.idle');
+    expect(text).not.toContain('codex_quota.plan_pro');
+  });
+
   it('keeps previous Codex quota data when inline refresh fails', async () => {
     mocks.fetchCodexQuota.mockRejectedValue(new Error('refresh failed'));
     mocks.quotaStoreState.codexQuota = {

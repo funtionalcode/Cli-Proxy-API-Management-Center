@@ -6,9 +6,9 @@
   --action-line-strong: var(--border-primary);
   --action-ink: var(--text-primary);
   --action-muted: var(--text-secondary);
-  --action-accent: var(--primary-color);
-  --action-danger: var(--error-color);
-  --action-warning: var(--warning-color);
+  --action-accent: var(--data-blue-base);
+  --action-danger: var(--data-red-base);
+  --action-warning: var(--data-amber-base);
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -259,26 +259,29 @@
 }
 
 .statusPending {
-  border-color: color-mix(in srgb, var(--action-danger) 42%, var(--action-line));
-  background: color-mix(in srgb, var(--action-danger) 10%, var(--action-surface));
-  color: var(--action-danger);
+  border-color: var(--data-badge-danger-border);
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
 }
 
 .statusResolved,
 .statusDeleted,
 .statusIgnored {
-  background: var(--action-surface-muted);
-  color: var(--action-muted);
+  border-color: var(--data-badge-neutral-border);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
 }
 
 .actionDelete {
-  border-color: color-mix(in srgb, var(--action-danger) 38%, var(--action-line));
-  color: var(--action-danger);
+  border-color: var(--data-badge-danger-border);
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
 }
 
 .actionReauth {
-  border-color: color-mix(in srgb, var(--action-warning) 42%, var(--action-line));
-  color: var(--action-warning);
+  border-color: var(--data-badge-warning-border);
+  background: var(--data-badge-warning-bg);
+  color: var(--data-badge-warning-text);
 }
 
 .metaPill {

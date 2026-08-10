@@ -1,0 +1,326 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+.editorBody {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-width: 0;
+}
+
+.settingsBlock {
+  overflow: visible;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+}
+
+.settingsHeader {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+  padding: $spacing-md $spacing-lg;
+  border-bottom: 1px solid var(--border-color);
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.settingsHeaderTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.settingsHeaderHint {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.settingsSection {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  padding: $spacing-md $spacing-lg $spacing-lg;
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.settingsRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $spacing-lg;
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+    gap: $spacing-sm;
+  }
+}
+
+.settingsInfo {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settingsLabel {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settingsDesc {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.settingsControl {
+  width: min(360px, 45%);
+  min-width: 220px;
+  flex: 0 0 auto;
+
+  @include mobile {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+.tagList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-xs;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-full;
+  background-color: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: var(--primary-color);
+    background-color: var(--surface-subtle-hover);
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+.tagActive {
+  border-color: var(--primary-color);
+  background-color: var(--primary-color);
+  color: #fff;
+
+  &:hover {
+    border-color: var(--primary-color);
+    background-color: var(--primary-color);
+    color: #fff;
+  }
+}
+
+.modelsHint {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.loadingModels {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: $spacing-sm;
+  padding: $spacing-xl 0;
+  color: var(--text-secondary);
+}
+
+.modelList {
+  max-height: 420px;
+  overflow: auto;
+  padding: $spacing-sm $spacing-lg $spacing-lg;
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.modelItem {
+  width: 100%;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: $radius-sm;
+  transition: background-color $transition-fast;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background-color: var(--surface-subtle-hover);
+  }
+}
+
+.modelText {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modelId {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.modelDisplayName {
+  color: var(--text-secondary);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.emptyModels {
+  padding: $spacing-xl $spacing-lg;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.mappingsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+  padding: $spacing-md $spacing-lg;
+  border-bottom: 1px solid var(--border-color);
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.mappingsTitle {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.mappingsBody {
+  padding: $spacing-sm $spacing-lg $spacing-lg;
+
+  @include mobile {
+    padding-left: $spacing-md;
+    padding-right: $spacing-md;
+  }
+}
+
+.mappingUsageHint {
+  padding: 4px 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mappingRow {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: $spacing-sm;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.mappingCore {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: $spacing-sm;
+  min-width: 0;
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mappingOptions {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: $spacing-md;
+  min-width: 0;
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mappingToggles {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: $spacing-md;
+  flex-wrap: wrap;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
+}
+
+.mappingSeparator {
+  color: var(--text-secondary);
+  text-align: center;
+
+  @include mobile {
+    display: none;
+  }
+}
+
+.mappingAliasInput {
+  width: 100%;
+}
+
+.mappingDisplayNameInput {
+  width: 100%;
+}
+
+.mappingFork {
+  display: flex;
+  align-items: center;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
+}

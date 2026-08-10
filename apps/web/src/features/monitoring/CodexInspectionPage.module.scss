@@ -41,26 +41,6 @@
   min-width: 0;
 }
 
-.modeSwitchPanel {
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 14px;
-  padding: 8px 10px;
-  border: 1px solid var(--inspect-line);
-  border-radius: 18px;
-  background: var(--inspect-surface);
-  box-shadow: var(--shadow-md);
-}
-
-.modeSwitchMain {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  width: 100%;
-  min-width: 0;
-}
-
 .panel {
   position: relative;
   border: 1px solid var(--inspect-line);
@@ -145,6 +125,23 @@
   justify-content: flex-end;
 }
 
+.statusModeRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 38px;
+}
+
+.credentialHealthModeControl {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.credentialHealthModeTabs {
+  min-width: 232px;
+}
+
 .statusBadge {
   display: inline-flex;
   align-items: center;
@@ -169,31 +166,31 @@
 }
 
 .tone-idle {
-  color: var(--inspect-muted);
+  color: var(--data-badge-neutral-text);
 }
 
 .tone-info {
-  color: var(--inspect-accent-strong);
-  border-color: color-mix(in srgb, var(--inspect-accent) 26%, var(--inspect-line));
-  background: color-mix(in srgb, var(--inspect-accent) 10%, var(--inspect-surface));
+  color: var(--data-badge-info-text);
+  border-color: var(--data-badge-info-border);
+  background: var(--data-badge-info-bg);
 }
 
 .tone-good {
-  color: var(--inspect-green);
-  border-color: color-mix(in srgb, var(--inspect-green) 26%, var(--inspect-line));
-  background: color-mix(in srgb, var(--inspect-green) 10%, var(--inspect-surface));
+  color: var(--data-badge-success-text);
+  border-color: var(--data-badge-success-border);
+  background: var(--data-badge-success-bg);
 }
 
 .tone-warn {
-  color: var(--inspect-amber);
-  border-color: color-mix(in srgb, var(--inspect-amber) 26%, var(--inspect-line));
-  background: color-mix(in srgb, var(--inspect-amber) 10%, var(--inspect-surface));
+  color: var(--data-badge-warning-text);
+  border-color: var(--data-badge-warning-border);
+  background: var(--data-badge-warning-bg);
 }
 
 .tone-bad {
-  color: var(--inspect-red);
-  border-color: color-mix(in srgb, var(--inspect-red) 26%, var(--inspect-line));
-  background: color-mix(in srgb, var(--inspect-red) 10%, var(--inspect-surface));
+  color: var(--data-badge-danger-text);
+  border-color: var(--data-badge-danger-border);
+  background: var(--data-badge-danger-bg);
 }
 
 .statusMeta {
@@ -225,8 +222,8 @@
 }
 
 .statusMetaWarn {
-  color: var(--inspect-amber) !important;
-  background: color-mix(in srgb, var(--inspect-amber) 10%, var(--inspect-surface)) !important;
+  color: var(--data-badge-warning-text) !important;
+  background: var(--data-badge-warning-bg) !important;
 }
 
 .iconButton,
@@ -338,84 +335,6 @@
 
 .progressMeta strong {
   color: var(--inspect-amber);
-}
-
-.routeSkeletonPanel {
-  overflow: hidden;
-}
-
-.routeSkeletonHeader,
-.routeSkeletonMeta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.routeSkeletonHeader {
-  justify-content: space-between;
-}
-
-.routeSkeletonLine,
-.routeSkeletonPill,
-.routeSkeletonPillWide,
-.routeSkeletonCard,
-.routeSkeletonBlock,
-.routeSkeletonBlockTall {
-  display: block;
-  border: 1px solid color-mix(in srgb, var(--inspect-line) 62%, transparent);
-  background: color-mix(in srgb, var(--inspect-surface-muted) 64%, var(--inspect-surface));
-}
-
-.routeSkeletonLine {
-  width: min(260px, 54%);
-  height: 22px;
-  border-radius: 10px;
-}
-
-.routeSkeletonLineTitle {
-  height: 24px;
-}
-
-.routeSkeletonPill,
-.routeSkeletonPillWide {
-  width: 112px;
-  height: 30px;
-  border-radius: 999px;
-}
-
-.routeSkeletonPillWide {
-  width: min(220px, 100%);
-}
-
-.routeSkeletonGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  gap: 10px;
-}
-
-.routeSkeletonCard {
-  min-height: 96px;
-  border-radius: var(--app-radius-md);
-}
-
-.routeSkeletonDetailGrid {
-  display: grid;
-  grid-template-columns: minmax(240px, 0.55fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: stretch;
-}
-
-.routeSkeletonBlock,
-.routeSkeletonBlockTall {
-  min-height: 150px;
-  border-radius: 24px;
-  background: var(--inspect-surface);
-  box-shadow: var(--shadow-lg);
-}
-
-.routeSkeletonBlockTall {
-  min-height: 260px;
 }
 
 .summaryGrid {
@@ -1004,28 +923,28 @@
 }
 
 .actionKeep {
-  background: var(--inspect-surface-muted);
-  color: var(--inspect-muted);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
 }
 
 .actionDelete {
-  background: color-mix(in srgb, var(--inspect-red) 14%, var(--inspect-surface));
-  color: var(--inspect-red);
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
 }
 
 .actionDisable {
-  background: color-mix(in srgb, var(--inspect-amber) 14%, var(--inspect-surface));
-  color: var(--inspect-amber);
+  background: var(--data-badge-warning-bg);
+  color: var(--data-badge-warning-text);
 }
 
 .actionEnable {
-  background: color-mix(in srgb, var(--inspect-green) 14%, var(--inspect-surface));
-  color: var(--inspect-green);
+  background: var(--data-badge-success-bg);
+  color: var(--data-badge-success-text);
 }
 
 .actionReauth {
-  background: color-mix(in srgb, var(--inspect-accent) 14%, var(--inspect-surface));
-  color: var(--inspect-accent-strong);
+  background: var(--data-badge-info-bg);
+  color: var(--data-badge-info-text);
 }
 
 .logActions {
@@ -2547,12 +2466,6 @@
 }
 
 @container codex-inspection-page (max-width: 960px) {
-  .modeSwitchPanel,
-  .modeSwitchMain {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .statusBar {
     flex-direction: column;
     align-items: stretch;
@@ -2631,10 +2544,6 @@
 }
 
 @container codex-inspection-page (max-width: 640px) {
-  .modeSwitchPanel {
-    border-radius: 16px;
-  }
-
   .panel {
     border-radius: 20px;
   }
@@ -2645,6 +2554,11 @@
 
   .summaryGrid {
     grid-template-columns: 1fr;
+  }
+
+  .credentialHealthModeControl,
+  .credentialHealthModeTabs {
+    width: 100%;
   }
 
   .resultsToolbar {
@@ -2853,5 +2767,124 @@
 
   .configDrawerActions :global(button) {
     width: 100%;
+  }
+}
+
+.statusPanel {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.statusPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: color-mix(in srgb, var(--inspect-surface-muted) 30%, transparent);
+  border-bottom: 1px solid var(--inspect-line);
+  padding: 0 18px;
+  min-height: 52px;
+}
+
+.statusPanelTabs {
+  display: flex;
+  align-items: stretch;
+  height: 52px;
+}
+
+.statusPanelActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.statusPanelBody {
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+}
+
+.statusMetricsRow {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.statusMetric {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusMetricLabel {
+  color: var(--inspect-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.statusMetricValue {
+  color: var(--inspect-ink);
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statusAlertBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--inspect-amber) 10%, var(--inspect-surface));
+  color: var(--inspect-amber);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.credentialHealthTabs {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  gap: 24px;
+}
+
+.credentialHealthTab {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--inspect-muted);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s ease;
+  padding: 0 4px;
+
+  &:hover {
+    color: var(--inspect-ink);
+  }
+
+  &.credentialHealthTabActive {
+    color: var(--inspect-accent-strong);
+    &::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--inspect-accent-strong);
+      border-radius: 2px 2px 0 0;
+    }
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 }

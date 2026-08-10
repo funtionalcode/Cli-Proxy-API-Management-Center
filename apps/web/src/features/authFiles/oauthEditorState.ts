@@ -7,6 +7,7 @@ export const serializeOAuthAliasDraft = (entries: OAuthModelAliasEntry[]) =>
         name: entry.name.trim(),
         alias: entry.alias.trim(),
         fork: entry.fork === true,
+        displayName: entry.displayName?.trim() ?? '',
         forceMapping: entry.forceMapping === true,
       }))
       .filter((entry) => entry.name || entry.alias)

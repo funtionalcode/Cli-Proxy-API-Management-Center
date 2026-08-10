@@ -7,7 +7,7 @@
   z-index: $z-modal;
   display: flex;
   justify-content: flex-end;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(15, 23, 42, 0.52);
 
   @include mobile {
     align-items: flex-end;
@@ -28,8 +28,9 @@
   flex-direction: column;
   height: 100%;
   max-width: 100%;
-  background: var(--bg-primary);
-  box-shadow: $shadow-lg;
+  background: var(--app-surface-strong, var(--bg-primary));
+  border-left: 1px solid var(--border-color);
+  box-shadow: -24px 0 48px rgba(15, 23, 42, 0.18);
   outline: none;
 
   @include mobile {

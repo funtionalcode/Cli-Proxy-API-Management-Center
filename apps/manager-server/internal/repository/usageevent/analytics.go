@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 var (
@@ -57,32 +59,7 @@ type AnalyticsFilter struct {
 	HeaderTraceIDs   []string
 }
 
-var analyticsSearchTextColumns = []string{
-	"request_id",
-	"event_hash",
-	"model",
-	"resolved_model",
-	"endpoint",
-	"method",
-	"path",
-	"source",
-	"source_hash",
-	"api_key_hash",
-	"auth_index",
-	"account_snapshot",
-	"auth_label_snapshot",
-	"auth_file_snapshot",
-	"auth_provider_snapshot",
-	"auth_project_id_snapshot",
-	"reasoning_effort",
-	"service_tier",
-	"executor_type",
-	"fail_summary",
-	"header_quota_plan_type",
-	"header_error_kind",
-	"header_error_code",
-	"header_trace_id",
-}
+var analyticsSearchTextColumns = usageprojection.SearchColumns
 
 type LatencyPercentiles struct {
 	BucketMS     int64
@@ -221,27 +198,63 @@ type FailureSourceStat struct {
 type AccountModelStat struct {
 	usage.LongContextTokens
 	usage.PricingBand
-	AccountSnapshot      string
-	AuthLabelSnapshot    string
-	AuthProviderSnapshot string
-	AuthIndex            string
-	Source               string
-	SourceHash           string
-	Model                string
-	BillingModel         string
-	ServiceTier          string
-	Calls                int64
-	SuccessCalls         int64
-	FailureCalls         int64
-	InputTokens          int64
-	OutputTokens         int64
-	CachedTokens         int64
-	CacheReadTokens      int64
-	CacheCreationTokens  int64
-	TotalTokens          int64
-	LastSeenMS           int64
-	AvgLatencyMS         sql.NullFloat64
-	LatencySamples       int64
+	AccountSnapshot              string
+	AuthLabelSnapshot            string
+	AuthProviderSnapshot         string
+	Provider                     string
+	ExplicitAuthProviderSnapshot string
+	AuthIndex                    string
+	Source                       string
+	SourceHash                   string
+	Model                        string
+	BillingModel                 string
+	ServiceTier                  string
+	Calls                        int64
+	SuccessCalls                 int64
+	FailureCalls                 int64
+	InputTokens                  int64
+	OutputTokens                 int64
+	CachedTokens                 int64
+	CacheReadTokens              int64
+	CacheCreationTokens          int64
+	TotalTokens                  int64
+	LastSeenMS                   int64
+	AvgLatencyMS                 sql.NullFloat64
+	LatencySumMS                 int64
+	LatencySamples               int64
+}
+
+type AccountWindowUsageQuery struct {
+	RequestIndex          int
+	FromMS                int64
+	ToMS                  int64
+	AccountKey            string
+	AccountSnapshot       string
+	AuthLabelSnapshot     string
+	AuthFileSnapshot      string
+	AuthProviderSnapshot  string
+	AuthProjectIDSnapshot string
+	Source                string
+	AuthIndex             string
+}
+
+type AccountWindowModelStat struct {
+	usage.LongContextTokens
+	usage.PricingBand
+	RequestIndex        int
+	Model               string
+	BillingModel        string
+	ServiceTier         string
+	Calls               int64
+	SuccessCalls        int64
+	FailureCalls        int64
+	InputTokens         int64
+	OutputTokens        int64
+	CachedTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	TotalTokens         int64
+	LastSeenMS          int64
 }
 
 type CredentialModelStat struct {
@@ -1479,6 +1492,8 @@ select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(max(provider), ''),
+	coalesce(max(auth_provider_snapshot), ''),
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
@@ -1502,6 +1517,7 @@ select
 	coalesce(sum(`+longCacheCreationExpr+`), 0),
 	coalesce(sum(total_tokens), 0),
 	max(timestamp_ms),
+	coalesce(sum(case when latency_ms is not null and latency_ms != 0 then latency_ms else 0 end), 0),
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
@@ -1519,6 +1535,8 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 			&stat.AccountSnapshot,
 			&stat.AuthLabelSnapshot,
 			&stat.AuthProviderSnapshot,
+			&stat.Provider,
+			&stat.ExplicitAuthProviderSnapshot,
 			&stat.AuthIndex,
 			&stat.Source,
 			&stat.SourceHash,
@@ -1542,6 +1560,7 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 			&stat.LongCacheCreationTokens,
 			&stat.TotalTokens,
 			&stat.LastSeenMS,
+			&stat.LatencySumMS,
 			&stat.AvgLatencyMS,
 			&stat.LatencySamples,
 		); err != nil {
@@ -1550,6 +1569,112 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 		stats = append(stats, stat)
 	}
 	return stats, rows.Err()
+}
+
+func (r *repository) AccountWindowModelStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, error) {
+	if len(windows) == 0 {
+		return []AccountWindowModelStat{}, nil
+	}
+
+	values := make([]string, 0, len(windows))
+	args := make([]any, 0, len(windows)*4)
+	for _, window := range windows {
+		values = append(values, "(?, ?, ?, ?)")
+		args = append(
+			args,
+			window.RequestIndex,
+			window.FromMS,
+			window.ToMS,
+			accountWindowQueryKey(window),
+		)
+	}
+
+	rows, err := r.db.QueryContext(ctx, pricingBandedUsageEventsCTE+`, window_targets(
+	request_index, from_ms, to_ms, account_key
+) as (
+	values `+strings.Join(values, ",")+`
+)
+select
+	w.request_index,
+	e.model,
+	e.billing_model_value as billing_model,
+	e.pricing_model_value,
+	e.context_threshold_tokens_value,
+	coalesce(e.service_tier, '') as service_tier,
+	count(*),
+	sum(case when e.failed = 0 then 1 else 0 end),
+	sum(case when e.failed = 1 then 1 else 0 end),
+	coalesce(sum(`+normalizedInputExpr+`), 0),
+	coalesce(sum(e.output_tokens), 0),
+	coalesce(sum(`+compatCachedExpr+`), 0),
+	coalesce(sum(e.cache_read_tokens), 0),
+	coalesce(sum(e.cache_creation_tokens), 0),
+	coalesce(sum(`+longInputExpr+`), 0),
+	coalesce(sum(`+longOutputExpr+`), 0),
+	coalesce(sum(`+longCachedExpr+`), 0),
+	coalesce(sum(`+longCacheReadExpr+`), 0),
+	coalesce(sum(`+longCacheCreationExpr+`), 0),
+	coalesce(sum(e.total_tokens), 0),
+	max(e.timestamp_ms)
+from window_targets w
+	join banded_usage_events e
+		on e.timestamp_ms >= w.from_ms
+		and e.timestamp_ms < w.to_ms
+		and `+usageidentity.SQLAccountKeyExpression("e")+` = w.account_key
+group by w.request_index, e.model, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
+order by w.request_index, max(e.timestamp_ms) desc`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]AccountWindowModelStat, 0)
+	for rows.Next() {
+		var stat AccountWindowModelStat
+		if err := rows.Scan(
+			&stat.RequestIndex,
+			&stat.Model,
+			&stat.BillingModel,
+			&stat.PricingModel,
+			&stat.ContextThresholdTokens,
+			&stat.ServiceTier,
+			&stat.Calls,
+			&stat.SuccessCalls,
+			&stat.FailureCalls,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.CachedTokens,
+			&stat.CacheReadTokens,
+			&stat.CacheCreationTokens,
+			&stat.LongInputTokens,
+			&stat.LongOutputTokens,
+			&stat.LongCachedTokens,
+			&stat.LongCacheReadTokens,
+			&stat.LongCacheCreationTokens,
+			&stat.TotalTokens,
+			&stat.LastSeenMS,
+		); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+func accountWindowQueryKey(window AccountWindowUsageQuery) string {
+	if key := strings.TrimSpace(window.AccountKey); key != "" {
+		return key
+	}
+	key, _ := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:      window.AuthFileSnapshot,
+		AuthIndex:             window.AuthIndex,
+		AuthProviderSnapshot:  window.AuthProviderSnapshot,
+		AuthProjectIDSnapshot: window.AuthProjectIDSnapshot,
+		AccountSnapshot:       window.AccountSnapshot,
+		AuthLabelSnapshot:     window.AuthLabelSnapshot,
+		Source:                window.Source,
+	})
+	return key
 }
 
 func (r *repository) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {

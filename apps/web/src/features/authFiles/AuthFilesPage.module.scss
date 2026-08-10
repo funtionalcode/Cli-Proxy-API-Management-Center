@@ -49,10 +49,10 @@
 
 .errorBox {
   padding: $spacing-md;
-  background-color: rgba($error-color, 0.1);
-  border: 1px solid var(--danger-color);
+  background-color: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
   border-radius: $radius-md;
-  color: var(--danger-color);
+  color: var(--data-badge-danger-text);
   font-size: 14px;
   margin-bottom: $spacing-md;
 }
@@ -705,27 +705,27 @@
 
 .quotaBar {
   height: 8px;
-  background-color: var(--surface-subtle-strong);
+  background-color: var(--data-track-bg);
   border-radius: 999px;
   overflow: hidden;
 }
 
 .quotaBarFill {
   height: 100%;
-  background-color: var(--success-color, #22c55e);
+  background-color: var(--data-green-base);
   transition: width 0.2s ease;
 }
 
 .quotaBarFillHigh {
-  background-color: var(--success-color, #22c55e);
+  background-color: var(--data-green-base);
 }
 
 .quotaBarFillMedium {
-  background-color: var(--quota-medium-color, #e6a23c);
+  background-color: var(--data-amber-base);
 }
 
 .quotaBarFillLow {
-  background-color: var(--danger-color);
+  background-color: var(--data-red-base);
 }
 
 .quotaMeta {
@@ -781,18 +781,18 @@
 
 .quotaError {
   font-size: 12px;
-  color: var(--danger-color);
-  background-color: rgba($error-color, 0.08);
-  border: 1px solid var(--danger-color);
+  color: var(--data-badge-danger-text);
+  background-color: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
   border-radius: $radius-sm;
   padding: $spacing-xs $spacing-sm;
 }
 
 .quotaWarning {
   font-size: 12px;
-  color: var(--warning-text);
-  background-color: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  color: var(--data-badge-warning-text);
+  background-color: var(--data-badge-warning-bg);
+  border: 1px solid var(--data-badge-warning-border);
   border-radius: $radius-sm;
   padding: $spacing-xs $spacing-sm;
 }
@@ -1078,27 +1078,27 @@
 }
 
 .stateBadgeActive {
-  color: var(--success-badge-text, #065f46);
-  background: var(--success-badge-bg, #d1fae5);
-  border: 1px solid var(--success-badge-border, #6ee7b7);
+  color: var(--data-badge-success-text);
+  background: var(--data-badge-success-bg);
+  border: 1px solid var(--data-badge-success-border);
 }
 
 .stateBadgeWarning {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  color: var(--data-badge-warning-text);
+  background: var(--data-badge-warning-bg);
+  border: 1px solid var(--data-badge-warning-border);
 }
 
 .stateBadgeDisabled {
-  color: var(--text-secondary);
-  background: color-mix(in srgb, var(--surface-subtle) 86%, transparent);
-  border: 1px solid var(--border-subtle);
+  color: var(--data-badge-neutral-text);
+  background: var(--data-badge-neutral-bg);
+  border: 1px solid var(--data-badge-neutral-border);
 }
 
 .stateBadgeVirtual {
-  color: var(--text-secondary);
-  background: color-mix(in srgb, var(--surface-subtle) 82%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--border-subtle-dashed) 90%, transparent);
+  color: var(--data-badge-neutral-text);
+  background: var(--data-badge-neutral-bg);
+  border: 1px dashed var(--data-badge-neutral-border);
 }
 
 .codexStatusBadge {
@@ -1143,9 +1143,9 @@
   height: 18px;
   padding: 0 8px;
   border-radius: 6px;
-  border: 1px solid var(--info-border, #93c5fd);
-  color: var(--info-text, #1e40af);
-  background: var(--info-bg, #dbeafe);
+  border: 1px solid var(--data-badge-info-border);
+  color: var(--data-badge-info-text);
+  background: var(--data-badge-info-bg);
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
@@ -1164,28 +1164,28 @@
 }
 
 .subscriptionBadgePaid {
-  color: #064e3b;
-  background: #ccfbf1;
-  border: 1px solid #5eead4;
+  color: var(--data-teal-dark-2);
+  background: var(--data-teal-light-9);
+  border: 1px solid var(--data-teal-light-7);
 }
 
 .subscriptionBadgeFree {
-  color: var(--text-secondary);
-  background: color-mix(in srgb, var(--surface-subtle) 86%, transparent);
-  border: 1px solid var(--border-subtle);
+  color: var(--data-badge-neutral-text);
+  background: var(--data-badge-neutral-bg);
+  border: 1px solid var(--data-badge-neutral-border);
 }
 
 .subscriptionBadgeUnknown,
 .subscriptionBadgeLoading {
-  color: var(--info-text, #1e40af);
-  background: var(--info-bg, #dbeafe);
-  border: 1px solid var(--info-border, #93c5fd);
+  color: var(--data-badge-info-text);
+  background: var(--data-badge-info-bg);
+  border: 1px solid var(--data-badge-info-border);
 }
 
 .subscriptionBadgeError {
-  color: var(--danger-color);
-  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger-color) 35%, transparent);
+  color: var(--data-badge-danger-text);
+  background: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
 }
 
 .subscriptionError {
@@ -1193,30 +1193,30 @@
   align-items: flex-start;
   gap: 6px;
   font-size: 11px;
-  color: var(--danger-color);
-  background-color: color-mix(in srgb, var(--danger-color) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger-color) 28%, transparent);
+  color: var(--data-badge-danger-text);
+  background-color: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
   border-radius: 10px;
   padding: 8px 10px;
   word-break: break-word;
 }
 
 .codexStatusBadgeDanger {
-  color: var(--danger-color);
-  background: color-mix(in srgb, var(--danger-color) 10%, var(--bg-primary));
-  border: 1px solid color-mix(in srgb, var(--danger-color) 42%, transparent);
+  color: var(--data-badge-danger-text);
+  background: var(--data-badge-danger-bg);
+  border: 1px solid var(--data-badge-danger-border);
 }
 
 .codexStatusBadgeWarning {
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  color: var(--data-badge-warning-text);
+  background: var(--data-badge-warning-bg);
+  border: 1px solid var(--data-badge-warning-border);
 }
 
 .codexStatusBadgeInfo {
-  color: var(--primary-color);
-  background: var(--color-primary-light-9);
-  border: 1px solid var(--color-primary-light-7);
+  color: var(--data-badge-info-text);
+  background: var(--data-badge-info-bg);
+  border: 1px solid var(--data-badge-info-border);
 }
 
 .quotaCooldownBadge {
@@ -1333,9 +1333,9 @@
   align-items: flex-start;
   gap: 6px;
   font-size: 11px;
-  color: var(--warning-text);
-  background-color: color-mix(in srgb, var(--warning-bg) 60%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warning-border) 60%, transparent);
+  color: var(--data-badge-warning-text);
+  background-color: var(--data-badge-warning-bg);
+  border: 1px solid var(--data-badge-warning-border);
   border-radius: 10px;
   padding: 8px 10px;
   word-break: break-word;
@@ -1404,13 +1404,13 @@
 }
 
 .statSuccess {
-  background: color-mix(in srgb, var(--success-badge-bg, #d1fae5) 50%, transparent);
-  color: var(--success-badge-text, #065f46);
+  background: var(--data-badge-success-bg);
+  color: var(--data-badge-success-text);
 }
 
 .statFailure {
-  background: color-mix(in srgb, var(--failure-badge-bg) 50%, transparent);
-  color: var(--failure-badge-text);
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
 }
 
 .statusPanel {
@@ -1588,11 +1588,11 @@
 }
 
 .tooltipSuccess {
-  color: var(--success-color, #22c55e);
+  color: var(--data-green-base);
 }
 
 .tooltipFailure {
-  color: var(--danger-color, #ef4444);
+  color: var(--data-red-base);
 }
 
 .tooltipRate {
@@ -1620,18 +1620,18 @@
 }
 
 .statusRateHigh {
-  color: var(--success-badge-text, #065f46);
-  background: var(--success-badge-bg, #d1fae5);
+  color: var(--data-badge-success-text);
+  background: var(--data-badge-success-bg);
 }
 
 .statusRateMedium {
-  color: var(--warning-text, #92400e);
-  background: var(--warning-bg, #fef3c7);
+  color: var(--data-badge-warning-text);
+  background: var(--data-badge-warning-bg);
 }
 
 .statusRateLow {
-  color: var(--failure-badge-text);
-  background: var(--failure-badge-bg);
+  color: var(--data-badge-danger-text);
+  background: var(--data-badge-danger-bg);
 }
 
 @include mobile {
@@ -1672,6 +1672,16 @@
   font-size: 12px;
 }
 
+.prefixProxySecurityNote {
+  padding: 8px 10px;
+  border: 1px solid var(--data-badge-warning-border);
+  border-radius: $radius-md;
+  background: var(--data-badge-warning-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .prefixProxyJsonWrapper {
   display: flex;
   flex-direction: column;
@@ -1701,23 +1711,6 @@
     outline: none;
     border-color: var(--primary-color);
   }
-}
-
-.prefixProxyInvalidContentPreview {
-  width: 100%;
-  max-height: 280px;
-  overflow: auto;
-  margin: 0;
-  padding: $spacing-sm $spacing-md;
-  border: 1px solid var(--border-color);
-  border-radius: $radius-md;
-  background-color: var(--surface-subtle);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-family: monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
-  box-sizing: border-box;
 }
 
 .prefixProxyFields {
@@ -1961,55 +1954,269 @@
 .excludedList {
   display: flex;
   flex-direction: column;
-  gap: $spacing-sm;
+  gap: 8px;
+  min-width: 0;
 }
 
 .cardScopeHint {
   margin: 0 0 $spacing-sm;
-  color: var(--text-secondary);
-  font-size: 12px;
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ruleToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--surface-subtle) 72%, var(--bg-primary));
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.ruleSummary {
+  min-width: 0;
+  color: color-mix(in srgb, var(--text-secondary) 82%, var(--text-primary));
+  font-size: 13px;
+  font-weight: 600;
   line-height: 1.45;
 }
 
+.ruleSearch {
+  flex: 0 1 280px;
+  width: min(100%, 280px);
+  min-width: 180px;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  :global(.input) {
+    min-height: 34px;
+    font-size: 13px;
+  }
+
+  :global(.input-right-element) {
+    color: var(--text-secondary);
+  }
+
+  @include mobile {
+    flex-basis: auto;
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .excludedItem {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: $spacing-md;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  padding: 10px 12px;
   background-color: var(--surface-subtle);
   border-radius: $radius-md;
   border: 1px solid var(--border-subtle);
-  gap: $spacing-md;
+  gap: 12px;
+  min-width: 0;
 
   @include mobile {
-    flex-direction: column;
-    align-items: flex-start;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 .excludedInfo {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
 }
 
+.ruleItemHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
 .excludedProvider {
+  min-width: 0;
+  overflow: hidden;
   font-weight: 600;
   color: var(--text-primary);
   font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .excludedModels {
+  min-width: 0;
+  overflow: hidden;
   font-size: 12px;
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleCount {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ruleTokenList {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ruleToken {
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 7px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleExpandButton {
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--primary-active);
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid color-mix(in srgb, var(--primary-color) 36%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.aliasRuleList {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aliasRuleItem {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+
+  &:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  @include mobile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.aliasRuleRoute {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+
+  code {
+    min-width: 0;
+    color: var(--text-primary);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+.aliasRuleBadges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
+}
+
+.ruleSemanticBadge,
+.ruleSemanticBadgeMuted {
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 24%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--bg-primary));
+  color: color-mix(in srgb, var(--primary-color) 76%, var(--text-primary));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleSemanticBadgeMuted {
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: var(--bg-primary);
+  color: color-mix(in srgb, var(--text-secondary) 88%, var(--text-primary));
 }
 
 .excludedActions {
   display: flex;
+  align-items: center;
   gap: $spacing-xs;
   flex-shrink: 0;
+
+  @include mobile {
+    justify-content: flex-end;
+  }
+}
+
+.ruleMoreButton {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 5px;
+  border-radius: 8px;
 }
 
 // OAuth 模型禁用表单：提供商快捷标签
@@ -2068,6 +2275,7 @@
 
 // OAuth 模型别名 - 映射概览
 .aliasChartSection {
+  min-width: 0;
   margin-bottom: $spacing-lg;
   padding-bottom: $spacing-lg;
   border-bottom: 1px solid var(--border-color);
@@ -2090,7 +2298,10 @@
 
 .aliasChart {
   width: 100%;
+  max-width: 100%;
   min-height: 120px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .cardExtraButtons {
@@ -2158,6 +2369,10 @@
 @include mobile {
   .cardExtraButtons {
     width: 100%;
+
+    > :global(.btn) {
+      margin-left: auto;
+    }
   }
 
   .viewModeSwitch {
@@ -2303,8 +2518,8 @@
 
 .modelType {
   font-size: 11px;
-  color: var(--text-tertiary);
-  background-color: var(--surface-subtle-strong);
+  color: var(--data-badge-neutral-text);
+  background-color: var(--data-badge-neutral-bg);
   padding: 2px 8px;
   border-radius: 10px;
   flex-shrink: 0;
@@ -2328,11 +2543,11 @@
 
 .modelExcludedBadge {
   font-size: 10px;
-  color: var(--danger-color);
-  background-color: rgba($error-color, 0.1);
+  color: var(--data-badge-danger-text);
+  background-color: var(--data-badge-danger-bg);
   padding: 2px 6px;
   border-radius: 8px;
-  border: 1px solid var(--danger-color);
+  border: 1px solid var(--data-badge-danger-border);
   flex-shrink: 0;
 }
 

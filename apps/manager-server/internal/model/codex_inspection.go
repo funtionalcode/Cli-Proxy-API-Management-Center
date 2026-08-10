@@ -144,38 +144,41 @@ type CodexInspectionQuotaWindow struct {
 	LabelParams        map[string]any `json:"labelParams,omitempty"`
 	UsedPercent        *float64       `json:"usedPercent,omitempty"`
 	ResetLabel         string         `json:"resetLabel"`
+	ResetAtMS          int64          `json:"resetAtMs,omitempty"`
+	ResetAccuracy      string         `json:"resetAccuracy,omitempty"`
 	LimitWindowSeconds *float64       `json:"limitWindowSeconds,omitempty"`
 }
 
 type CodexInspectionResult struct {
-	ID                  int64                        `json:"id"`
-	RunID               int64                        `json:"runId"`
-	AccountKey          string                       `json:"accountKey"`
-	FileName            string                       `json:"fileName"`
-	DisplayAccount      string                       `json:"displayAccount"`
-	AccountSnapshot     string                       `json:"accountSnapshot,omitempty"`
-	AuthIndex           string                       `json:"authIndex,omitempty"`
-	AccountID           string                       `json:"accountId,omitempty"`
-	Provider            string                       `json:"provider"`
-	Disabled            bool                         `json:"disabled"`
-	Status              string                       `json:"status,omitempty"`
-	State               string                       `json:"state,omitempty"`
-	Action              string                       `json:"action"`
-	ActionReason        string                       `json:"actionReason"`
-	ActionStatus        string                       `json:"actionStatus,omitempty"`
-	ExecutedAction      string                       `json:"executedAction,omitempty"`
-	ActionError         string                       `json:"actionError,omitempty"`
-	StatusCode          *int                         `json:"statusCode,omitempty"`
-	UsedPercent         *float64                     `json:"usedPercent,omitempty"`
-	IsQuota             bool                         `json:"isQuota"`
-	AutoRecoverEligible bool                         `json:"autoRecoverEligible"`
-	Error               string                       `json:"error,omitempty"`
-	PlanType            string                       `json:"planType,omitempty"`
-	QuotaWindows        []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
-	QuotaWindowsJSON    string                       `json:"-"`
-	ErrorKind           string                       `json:"errorKind,omitempty"`
-	ErrorDetail         string                       `json:"errorDetail,omitempty"`
-	CreatedAtMS         int64                        `json:"createdAtMs"`
+	ID                     int64                        `json:"id"`
+	RunID                  int64                        `json:"runId"`
+	AccountKey             string                       `json:"accountKey"`
+	FileName               string                       `json:"fileName"`
+	DisplayAccount         string                       `json:"displayAccount"`
+	AccountSnapshot        string                       `json:"accountSnapshot,omitempty"`
+	AuthIndex              string                       `json:"authIndex,omitempty"`
+	AccountID              string                       `json:"accountId,omitempty"`
+	Provider               string                       `json:"provider"`
+	Disabled               bool                         `json:"disabled"`
+	Status                 string                       `json:"status,omitempty"`
+	State                  string                       `json:"state,omitempty"`
+	Action                 string                       `json:"action"`
+	ActionReason           string                       `json:"actionReason"`
+	ActionStatus           string                       `json:"actionStatus,omitempty"`
+	ExecutedAction         string                       `json:"executedAction,omitempty"`
+	ActionError            string                       `json:"actionError,omitempty"`
+	StatusCode             *int                         `json:"statusCode,omitempty"`
+	UsedPercent            *float64                     `json:"usedPercent,omitempty"`
+	IsQuota                bool                         `json:"isQuota"`
+	AutoRecoverEligible    bool                         `json:"autoRecoverEligible"`
+	Error                  string                       `json:"error,omitempty"`
+	PlanType               string                       `json:"planType,omitempty"`
+	QuotaWindows           []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
+	QuotaWindowsJSON       string                       `json:"-"`
+	QuotaInventoryObserved bool                         `json:"-"`
+	ErrorKind              string                       `json:"errorKind,omitempty"`
+	ErrorDetail            string                       `json:"errorDetail,omitempty"`
+	CreatedAtMS            int64                        `json:"createdAtMs"`
 }
 
 type CodexInspectionDisableOwnership struct {

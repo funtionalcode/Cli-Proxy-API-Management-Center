@@ -472,6 +472,7 @@ func readState(row rowScanner) (State, error) {
 }
 
 func completeInTx(ctx context.Context, tx *sql.Tx, state State) (State, error) {
+	nowMS := time.Now().UnixMilli()
 	if state.ChangedRows > 0 {
 		for _, statement := range []string{
 			`update usage_events set
@@ -516,17 +517,46 @@ func completeInTx(ctx context.Context, tx *sql.Tx, state State) (State, error) {
 					updated_at_ms = 0,
 					finished_at_ms = null,
 					last_error = null
-				where rollup_name = 'pricing_v1' and schema_version = 1`,
+					where rollup_name = 'pricing_v1' and schema_version = 1`,
+			`delete from usage_monitoring_account_daily_rollups_v1`,
+			`delete from usage_monitoring_api_key_daily_rollups_v1`,
+			`update usage_monitoring_rollup_state set
+					status = case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+					backfill_last_event_id = 0,
+					coverage_event_id = 0,
+					target_event_id = coalesce((select max(id) from usage_events), 0),
+					processed_events = 0,
+					last_run_started_at_ms = null,
+					updated_at_ms = 0,
+					finished_at_ms = null,
+					last_error = null
+				where rollup_name = 'stats_v1' and schema_version = 1`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return State{}, err
 			}
 		}
+		if _, err := tx.ExecContext(ctx, `update usage_monitoring_event_projection_v1 set
+			normalized_total_input_tokens = coalesce(
+				(select normalized_total_input_tokens from usage_events
+					where id = usage_monitoring_event_projection_v1.event_id),
+				(select input_tokens from usage_events
+					where id = usage_monitoring_event_projection_v1.event_id),
+				0
+			),
+			total_tokens = coalesce(
+				(select total_tokens from usage_events
+					where id = usage_monitoring_event_projection_v1.event_id),
+				0
+			),
+			updated_at_ms = ?
+		where event_id in (select event_id from usage_cache_accounting_v2_changes)`, nowMS); err != nil {
+			return State{}, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `delete from usage_cache_accounting_v2_changes`); err != nil {
 		return State{}, err
 	}
-	nowMS := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `update usage_data_migrations set
 		status = ?, last_event_id = ?, processed_rows = ?, changed_rows = ?,
 		updated_at_ms = ?, finished_at_ms = ?, last_error = null

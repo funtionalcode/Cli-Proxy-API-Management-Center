@@ -389,7 +389,7 @@ export function DashboardPage() {
       label: t('nav.auth_files'),
       value: stats.authFiles ?? '-',
       icon: <IconFileText size={24} />,
-      path: '/auth-files',
+      path: '/accounts',
       loading: loading && stats.authFiles === null,
       sublabel: t('dashboard.oauth_credentials'),
     },

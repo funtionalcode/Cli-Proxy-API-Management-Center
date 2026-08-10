@@ -351,6 +351,7 @@ export interface MonitoringScopeFilters {
   account?: string;
   provider?: string;
   authFile?: string;
+  authIndex?: string;
   projectId?: string;
   requestType?: string;
   model?: string;

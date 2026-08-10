@@ -114,6 +114,7 @@ export function AuthJsonPasteModal({
       : type === 'sub2api'
         ? 'auth_files.paste_sub2api_hint'
         : 'auth_files.paste_cpa_hint';
+  const canSave = !disabled && !saving && Boolean(fileName.trim()) && Boolean(jsonText.trim());
 
   const handleSave = async () => {
     if (saving || disabled) return;
@@ -153,7 +154,7 @@ export function AuthJsonPasteModal({
           <Button variant="secondary" onClick={handleClose} disabled={saving}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={handleSave} loading={saving} disabled={disabled}>
+          <Button onClick={handleSave} loading={saving} disabled={!canSave}>
             {t('auth_files.paste_save_button')}
           </Button>
         </>

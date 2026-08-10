@@ -30,6 +30,7 @@ const OAUTH_PROVIDER_PRESETS = [
   'antigravity',
   'claude',
   'codex',
+  'xai',
   'qwen',
   'kimi',
   'iflow',
@@ -44,6 +45,7 @@ const buildEmptyMappingEntry = (): OAuthModelMappingFormEntry => ({
   name: '',
   alias: '',
   fork: true,
+  displayName: '',
   forceMapping: false,
 });
 
@@ -58,6 +60,7 @@ const normalizeMappingEntries = (
     name: entry.name ?? '',
     alias: entry.alias ?? '',
     fork: Boolean(entry.fork),
+    displayName: entry.displayName ?? '',
     forceMapping: Boolean(entry.forceMapping),
   }));
 };
@@ -361,7 +364,10 @@ export function AuthFilesOAuthModelAliasEditPage() {
     }
 
     const normalized = normalization.accepted;
-    if (normalized.length === 0 && mappings.some((entry) => entry.name.trim() || entry.alias.trim())) {
+    if (
+      normalized.length === 0 &&
+      mappings.some((entry) => entry.name.trim() || entry.alias.trim())
+    ) {
       showNotification(t('oauth_model_alias.alias_incomplete'), 'error');
       return;
     }

@@ -1,0 +1,28 @@
+import { describe, expect, it } from 'vitest';
+import { resolveAccountReauthAction } from './accountReauth';
+
+describe('accountReauth', () => {
+  it('keeps Codex on the dedicated reauth dialog', () => {
+    expect(resolveAccountReauthAction({ name: 'codex.json', type: 'codex' })).toEqual({
+      kind: 'codex-dialog',
+    });
+  });
+
+  it('routes xAI and Claude accounts to their OAuth providers', () => {
+    expect(resolveAccountReauthAction({ name: 'xai.json', type: 'xai' })).toEqual({
+      kind: 'navigate',
+      path: '/oauth#oauth-provider-xai',
+    });
+    expect(resolveAccountReauthAction({ name: 'claude.json', type: 'claude' })).toEqual({
+      kind: 'navigate',
+      path: '/oauth#oauth-provider-anthropic',
+    });
+  });
+
+  it('returns an explicit unsupported action for providers without OAuth login', () => {
+    expect(resolveAccountReauthAction({ name: 'vertex.json', type: 'vertex' })).toEqual({
+      kind: 'unsupported',
+      provider: 'vertex',
+    });
+  });
+});

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ReactNode,
   type RefObject,
   type SetStateAction,
 } from 'react';
@@ -73,6 +74,12 @@ export type AuthFilesBatchPatchResult = {
   failedNames: string[];
 };
 
+export type AuthFilesBatchDeleteOptions = {
+  title?: string;
+  message?: ReactNode;
+  confirmText?: string;
+};
+
 export type UseAuthFilesDataResult = {
   files: AuthFileItem[];
   totalFiles: number;
@@ -113,7 +120,7 @@ export type UseAuthFilesDataResult = {
     targets: AuthFilePatchTarget[],
     fields: AuthFileFieldsPatch
   ) => Promise<AuthFilesBatchPatchResult | null>;
-  batchDelete: (targets: AuthFileItem[]) => void;
+  batchDelete: (targets: AuthFileItem[], options?: AuthFilesBatchDeleteOptions) => void;
 };
 
 type AuthFilePreparationFailure = {
@@ -2136,7 +2143,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   );
 
   const batchDelete = useCallback(
-    (targets: AuthFileItem[]) => {
+    (targets: AuthFileItem[], options?: AuthFilesBatchDeleteOptions) => {
       const uniqueNames = Array.from(
         new Set(targets.map(readAuthFileStatusPhysicalName).filter(Boolean))
       );
@@ -2160,10 +2167,11 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       }
 
       showConfirmation({
-        title: t('auth_files.batch_delete_title'),
-        message: t('auth_files.batch_delete_confirm', { count: uniqueNames.length }),
+        title: options?.title ?? t('auth_files.batch_delete_title'),
+        message:
+          options?.message ?? t('auth_files.batch_delete_confirm', { count: uniqueNames.length }),
         variant: 'danger',
-        confirmText: t('common.next'),
+        confirmText: options?.confirmText ?? t('common.next'),
         secondConfirmation: {
           title: t('auth_files.delete_many_second_title'),
           message: t('auth_files.delete_many_second_confirm', {

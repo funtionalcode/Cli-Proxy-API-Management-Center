@@ -1,0 +1,173 @@
+@use '@/styles/variables' as v;
+
+.card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) repeat(3, minmax(150px, 1fr));
+  gap: v.$spacing-md;
+}
+
+.summaryItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: v.$spacing-xs;
+  padding: v.$spacing-md;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--app-radius-md);
+  background: var(--surface-subtle);
+}
+
+.summaryEmphasis {
+  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--border-subtle));
+  background: var(--app-accent-soft);
+}
+
+.label {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.summaryValue {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: clamp(20px, 2vw, 28px);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailsGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: v.$spacing-sm;
+  margin-top: v.$spacing-lg;
+  padding-top: v.$spacing-lg;
+  border-top: 1px solid var(--app-border);
+}
+
+.detailItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: v.$spacing-xs;
+  padding: v.$spacing-sm v.$spacing-md;
+  border-radius: var(--app-radius-sm);
+  background: var(--surface-subtle);
+}
+
+.value {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(260px, 42vw);
+  overflow: hidden;
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.statusOk {
+  color: #10b981;
+}
+
+.statusWarn {
+  color: #f59e0b;
+}
+
+.statusPending {
+  color: var(--text-secondary);
+}
+
+.errorStack {
+  display: grid;
+  gap: v.$spacing-sm;
+  margin-top: v.$spacing-lg;
+}
+
+.errorLine {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: var(--app-radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 12px;
+
+  span {
+    color: var(--text-tertiary);
+  }
+
+  strong {
+    overflow-wrap: anywhere;
+    color: #f59e0b;
+    font-weight: 600;
+  }
+}
+
+@media (max-width: 1100px) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detailsGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .summaryGrid,
+  .detailsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .summaryGrid,
+  .detailsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .summaryValue {
+    font-size: 22px;
+  }
+
+  .statusBadge {
+    max-width: 52vw;
+  }
+}

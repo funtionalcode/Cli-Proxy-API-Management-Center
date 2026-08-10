@@ -401,7 +401,7 @@ export const getAuthFileScopedCodexQuota = (
   quota: CodexQuotaState | undefined
 ): CodexQuotaState | undefined => {
   if (!quota) return undefined;
-  if (!quota.authFileKey) return readAuthFileAuthIndex(file) == null ? quota : undefined;
+  if (!quota.authFileKey) return undefined;
   return activeCodexQuotaMatchesAuthFile(file, quota) ? quota : undefined;
 };
 

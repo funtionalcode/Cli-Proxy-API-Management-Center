@@ -24,14 +24,9 @@ import { Select } from '@/components/ui/Select';
 import { IconFilterAll, IconSearch } from '@/components/ui/icons';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
-import {
-  CODEX_CONFIG,
-  buildObservedCodexQuotaState,
-  getQuotaStoreKey,
-  resolveQuotaDisplayState,
-} from '@/components/quota';
+import { buildObservedCodexQuotaState, resolveQuotaDisplayState } from '@/components/quota';
 import { copyToClipboard } from '@/utils/clipboard';
-import { getStatusFromError, resolveAuthProvider } from '@/utils/quota';
+import { resolveAuthProvider } from '@/utils/quota';
 import {
   MAX_CARD_PAGE_SIZE,
   MIN_CARD_PAGE_SIZE,
@@ -135,14 +130,7 @@ import {
   readAuthFileStatusAuthIndex,
   readAuthFileStatusProvider,
 } from '@/utils/authFileStatusMutation';
-import {
-  captureQuotaCacheGeneration,
-  commitIfQuotaCacheCurrent,
-  useAuthStore,
-  useNotificationStore,
-  useQuotaStore,
-  useThemeStore,
-} from '@/stores';
+import { useAuthStore, useNotificationStore, useQuotaStore, useThemeStore } from '@/stores';
 import styles from './AuthFilesPage.module.scss';
 
 const hasInlineQuotaLayout = (file: AuthFileItem): boolean => {
@@ -235,7 +223,6 @@ export function AuthFilesPage() {
   const managementKey = useAuthStore((state) => state.managementKey);
   const resolvedTheme: ResolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const codexQuota = useQuotaStore((state) => state.codexQuota);
-  const setCodexQuota = useQuotaStore((state) => state.setCodexQuota);
   const featureAvailability = usePanelFeatureAvailability();
   const managerServiceBase = featureAvailability.managerServiceBase;
   const pageTransitionLayer = usePageTransitionLayer();
@@ -292,10 +279,6 @@ export function AuthFilesPage() {
     items: new Map(),
   });
   const accountActionCandidatesRef = useRef<AccountActionCandidate[]>([]);
-  const pendingRecoveredCodexQuotaRefreshRef = useRef<Set<string>>(new Set());
-  const autoRefreshingCodexQuotaRef = useRef<Set<string>>(new Set());
-  const expiredHeaderCodexQuotaRefreshRef = useRef<Set<string>>(new Set());
-  const skipNextRecoveredCooldownRefreshRef = useRef(false);
   // Generation token for in-flight cooldown fetches. Every fetch and every
   // context identity change bump it, so a slow, superseded response can be
   // detected and dropped; otherwise it would re-introduce stale badges after
@@ -467,7 +450,12 @@ export function AuthFilesPage() {
     handleToggleFork,
     handleRenameAlias,
     handleDeleteAlias,
-  } = useAuthFilesOauth({ viewMode, files });
+  } = useAuthFilesOauth({
+    viewMode,
+    files,
+    connectionKey: connectionFingerprint,
+    requestScope: { apiBase, managementKey },
+  });
 
   const {
     modelsModalOpen,
@@ -477,8 +465,9 @@ export function AuthFilesPage() {
     modelsFileType,
     modelsError,
     showModels,
+    refreshModels,
     closeModelsModal,
-  } = useAuthFilesModels();
+  } = useAuthFilesModels({ connectionKey: connectionFingerprint });
 
   const {
     prefixProxyEditor,
@@ -835,88 +824,18 @@ export function AuthFilesPage() {
         }
       );
       if (id !== headerSnapshotReqId.current) return;
-      const generatedAtMs =
+      const rawGeneratedAtMs =
         response.generated_at_ms ??
         (response as { generatedAtMs?: number }).generatedAtMs ??
         Date.now();
-      expiredHeaderCodexQuotaRefreshRef.current.clear();
+      const generatedAtMs =
+        Number.isFinite(rawGeneratedAtMs) && rawGeneratedAtMs > 0 ? rawGeneratedAtMs : Date.now();
       setHeaderSnapshots(response.items ?? []);
       setHeaderSnapshotGeneratedAtMs(generatedAtMs);
     } catch {
       // Header snapshots are passive hints; keep the current page usable if Manager data is unavailable.
     }
   }, [managementKey, managerServiceBase]);
-
-  const refreshRecoveredCodexQuotaForFile = useCallback(
-    async (file: AuthFileItem) => {
-      if (resolveAuthProvider(file) !== 'codex') return false;
-      if (isRuntimeOnlyAuthFile(file) || file.disabled) return false;
-
-      const authFileKey = getAuthFileCodexInspectionKeyForFile(file);
-      if (autoRefreshingCodexQuotaRef.current.has(authFileKey)) return false;
-      autoRefreshingCodexQuotaRef.current.add(authFileKey);
-      const cacheGeneration = captureQuotaCacheGeneration();
-
-      const storeKey = getQuotaStoreKey(CODEX_CONFIG, file);
-      const previousQuota =
-        (codexQuota[storeKey] as CodexQuotaState | undefined) ??
-        (codexQuota[file.name] as CodexQuotaState | undefined);
-      setCodexQuota((prev) => ({
-        ...prev,
-        [storeKey]: CODEX_CONFIG.buildLoadingState(file),
-      }));
-
-      try {
-        const data = await CODEX_CONFIG.fetchQuota(file, t);
-        return commitIfQuotaCacheCurrent(cacheGeneration, () => {
-          setCodexQuota((prev) => ({
-            ...prev,
-            [storeKey]: CODEX_CONFIG.buildSuccessState(data, file),
-          }));
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('common.unknown_error');
-        const status = getStatusFromError(err);
-        commitIfQuotaCacheCurrent(cacheGeneration, () => {
-          setCodexQuota((prev) => ({
-            ...prev,
-            [storeKey]: CODEX_CONFIG.buildFailureState
-              ? CODEX_CONFIG.buildFailureState(message, status, file, previousQuota, Date.now())
-              : CODEX_CONFIG.buildErrorState(message, status, file),
-          }));
-        });
-        return false;
-      } finally {
-        autoRefreshingCodexQuotaRef.current.delete(authFileKey);
-      }
-    },
-    [codexQuota, setCodexQuota, t]
-  );
-
-  const refreshPendingRecoveredCodexQuotas = useCallback(() => {
-    if (pendingRecoveredCodexQuotaRefreshRef.current.size === 0) return;
-
-    for (const file of files) {
-      const authFileKey = getQuotaCooldownIdentityKeyForFile(file);
-      const fallbackKey = getAuthFileCodexInspectionKey(file.name, null);
-      const hasExactPending = pendingRecoveredCodexQuotaRefreshRef.current.has(authFileKey);
-      const hasFallbackPending =
-        fallbackKey !== authFileKey &&
-        pendingRecoveredCodexQuotaRefreshRef.current.has(fallbackKey) &&
-        uniqueAuthFileKeyByFallbackCooldownKey.get(fallbackKey) === authFileKey;
-      if (!hasExactPending && !hasFallbackPending) continue;
-      if (
-        file.disabled ||
-        readAuthFileStatusProvider(file) !== 'codex' ||
-        isRuntimeOnlyAuthFile(file)
-      ) {
-        continue;
-      }
-      if (hasExactPending) pendingRecoveredCodexQuotaRefreshRef.current.delete(authFileKey);
-      if (hasFallbackPending) pendingRecoveredCodexQuotaRefreshRef.current.delete(fallbackKey);
-      void refreshRecoveredCodexQuotaForFile(file);
-    }
-  }, [files, refreshRecoveredCodexQuotaForFile, uniqueAuthFileKeyByFallbackCooldownKey]);
 
   // Synchronously invalidate in-flight cooldown requests when the context
   // (managerServiceBase or managementKey) changes, regardless of direction
@@ -934,8 +853,6 @@ export function AuthFilesPage() {
     cooldownReqId.current += 1;
     const contextKey = getQuotaCooldownContextKey(managerServiceBase, managementKey);
     quotaCooldownsRef.current = { contextKey, items: new Map() };
-    pendingRecoveredCodexQuotaRefreshRef.current.clear();
-    skipNextRecoveredCooldownRefreshRef.current = true;
     setQuotaCooldownState((current) =>
       current.contextKey === contextKey && current.items.size === 0
         ? current
@@ -950,7 +867,6 @@ export function AuthFilesPage() {
     }
     headerSnapshotContextRef.current = { managerServiceBase, managementKey };
     headerSnapshotReqId.current += 1;
-    expiredHeaderCodexQuotaRefreshRef.current.clear();
     setHeaderSnapshots((current) => (current.length === 0 ? current : []));
     setHeaderSnapshotGeneratedAtMs(0);
   }, [managerServiceBase, managementKey]);
@@ -1000,11 +916,8 @@ export function AuthFilesPage() {
     if (
       contextChanged ||
       previous.contextKey !== quotaCooldownState.contextKey ||
-      quotaCooldownState.contextKey !== currentContextKey ||
-      skipNextRecoveredCooldownRefreshRef.current
+      quotaCooldownState.contextKey !== currentContextKey
     ) {
-      skipNextRecoveredCooldownRefreshRef.current = false;
-      pendingRecoveredCodexQuotaRefreshRef.current.clear();
       return;
     }
     if (!isCurrentLayer || !managerServiceBase) return;
@@ -1015,13 +928,10 @@ export function AuthFilesPage() {
       if (quotaCooldowns.has(authFileKey)) return;
       if (item.recoverAtMs > nowMs + 60_000) return;
       hasRecoveredAuthFile = true;
-      if (item.owner && item.owner !== 'cpamp_usage_429') return;
-      pendingRecoveredCodexQuotaRefreshRef.current.add(authFileKey);
     });
 
     if (!hasRecoveredAuthFile) return;
     void loadFiles().catch(() => {});
-    refreshPendingRecoveredCodexQuotas();
   }, [
     isCurrentLayer,
     loadFiles,
@@ -1029,12 +939,7 @@ export function AuthFilesPage() {
     managementKey,
     quotaCooldowns,
     quotaCooldownState,
-    refreshPendingRecoveredCodexQuotas,
   ]);
-
-  useEffect(() => {
-    refreshPendingRecoveredCodexQuotas();
-  }, [files, refreshPendingRecoveredCodexQuotas]);
 
   const existingTypes = useMemo(() => {
     const types = new Set<string>(['all']);
@@ -1059,48 +964,13 @@ export function AuthFilesPage() {
     (file: AuthFileItem): CodexQuotaState | undefined => {
       if (resolveAuthProvider(file) !== 'codex') return undefined;
       const storeKey = getAuthFileCodexInspectionKeyForFile(file);
-      return getAuthFileScopedCodexQuota(file, codexQuota[storeKey] ?? codexQuota[file.name]);
+      return (
+        getAuthFileScopedCodexQuota(file, codexQuota[storeKey]) ??
+        getAuthFileScopedCodexQuota(file, codexQuota[file.name])
+      );
     },
     [codexQuota]
   );
-
-  useEffect(() => {
-    if (!isCurrentLayer || !managerServiceBase) return;
-    const nowMs = headerSnapshotGeneratedAtMs || Date.now();
-    for (const file of files) {
-      if (resolveAuthProvider(file) !== 'codex' || isRuntimeOnlyAuthFile(file) || file.disabled) {
-        continue;
-      }
-      const headerSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
-        headerSnapshotLookup,
-        file
-      );
-      if (!isUsageHeaderQuotaSnapshotExpired(headerSnapshot, nowMs)) continue;
-
-      const activeQuota = getActiveCodexQuota(file);
-      const fetchedAtMs =
-        activeQuota?.status === 'success' && typeof activeQuota.fetchedAtMs === 'number'
-          ? activeQuota.fetchedAtMs
-          : 0;
-      const headerAtMs =
-        typeof headerSnapshot?.timestamp_ms === 'number' ? headerSnapshot.timestamp_ms : 0;
-      if (fetchedAtMs > headerAtMs) continue;
-
-      const authFileKey = getAuthFileCodexInspectionKeyForFile(file);
-      const marker = `${authFileKey}:${headerSnapshot?.event_hash ?? ''}:${headerAtMs}`;
-      if (expiredHeaderCodexQuotaRefreshRef.current.has(marker)) continue;
-      expiredHeaderCodexQuotaRefreshRef.current.add(marker);
-      void refreshRecoveredCodexQuotaForFile(file);
-    }
-  }, [
-    files,
-    getActiveCodexQuota,
-    headerSnapshotGeneratedAtMs,
-    headerSnapshotLookup,
-    isCurrentLayer,
-    managerServiceBase,
-    refreshRecoveredCodexQuotaForFile,
-  ]);
 
   const codexStatusSourcesByAuthFileKey = useMemo(() => {
     const sourcesMap = new Map<string, ReturnType<typeof getFreshAuthFileCodexStatusSources>>();
@@ -1112,7 +982,7 @@ export function AuthFilesPage() {
       );
       const freshHeaderSnapshot = isUsageHeaderQuotaSnapshotExpired(
         headerSnapshot,
-        headerSnapshotGeneratedAtMs || Date.now()
+        headerSnapshotGeneratedAtMs
       )
         ? undefined
         : headerSnapshot;
@@ -1143,11 +1013,12 @@ export function AuthFilesPage() {
       const observedQuota = buildObservedCodexQuotaState(
         file,
         codexStatusSourcesByAuthFileKey.get(statusKey)?.headerSnapshot,
-        t
+        t,
+        headerSnapshotGeneratedAtMs
       );
       return resolveQuotaDisplayState(activeQuota, observedQuota);
     },
-    [codexStatusSourcesByAuthFileKey, getActiveCodexQuota, t]
+    [codexStatusSourcesByAuthFileKey, getActiveCodexQuota, headerSnapshotGeneratedAtMs, t]
   );
 
   const codexStatusByAuthFileKey = useMemo(() => {
@@ -2061,6 +1932,7 @@ export function AuthFilesPage() {
         error={modelsError}
         models={modelsList}
         excluded={excluded}
+        onRetry={() => void refreshModels()}
         onClose={closeModelsModal}
         onCopyText={copyTextWithNotification}
       />

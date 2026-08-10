@@ -57,6 +57,14 @@ func newCompatHandler(t *testing.T, cfg config.Config, setup *store.Setup) (http
 	return New(cfg, db, manager).Handler(), db
 }
 
+type staticDatabaseMaintenanceStatus struct {
+	snapshot sqliterepo.WALMaintenanceSnapshot
+}
+
+func (s staticDatabaseMaintenanceStatus) Snapshot() sqliterepo.WALMaintenanceSnapshot {
+	return s.snapshot
+}
+
 func TestServerCompatHealthInfoAndPanel(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	handler, _ := newCompatHandler(t, cfg, nil)
@@ -404,6 +412,50 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 		strings.Contains(statusRR.Body.String(), `"lastError"`) ||
 		strings.Contains(statusRR.Body.String(), "secret migration detail") {
 		t.Fatalf("status body = %s", statusRR.Body.String())
+	}
+}
+
+func TestServerCompatStatusIncludesDatabaseMaintenanceSnapshot(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	db := testutil.NewStore(t, cfg)
+	manager := collector.NewManager(cfg, db)
+	server := New(cfg, db, manager)
+	server.AppContext().DatabaseMaintenance = staticDatabaseMaintenanceStatus{
+		snapshot: sqliterepo.WALMaintenanceSnapshot{
+			DatabaseBytes:         1024,
+			WALBytes:              2048,
+			SHMBytes:              32,
+			TotalBytes:            3104,
+			JournalSizeLimitBytes: sqliterepo.WALJournalSizeLimitBytes,
+			Checkpoint: sqliterepo.WALCheckpointSnapshot{
+				Mode:               sqliterepo.WALCheckpointModePassive,
+				Busy:               1,
+				LogFrames:          20,
+				CheckpointedFrames: 12,
+				ExecutedAtMS:       1_786_000_000_000,
+				DurationMS:         250,
+				Error:              "checkpoint timed out",
+			},
+		},
+	}
+
+	rr := testutil.Request(t, server.Handler(), http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var response struct {
+		Database sqliterepo.WALMaintenanceSnapshot `json:"database"`
+	}
+	testutil.DecodeJSON(t, rr, &response)
+	if response.Database.DatabaseBytes != 1024 ||
+		response.Database.WALBytes != 2048 ||
+		response.Database.SHMBytes != 32 ||
+		response.Database.TotalBytes != 3104 ||
+		response.Database.Checkpoint.Mode != sqliterepo.WALCheckpointModePassive ||
+		response.Database.Checkpoint.Busy != 1 ||
+		response.Database.Checkpoint.LogFrames != 20 ||
+		response.Database.Checkpoint.CheckpointedFrames != 12 ||
+		response.Database.Checkpoint.DurationMS != 250 ||
+		response.Database.Checkpoint.Error != "checkpoint timed out" {
+		t.Fatalf("database maintenance status = %#v", response.Database)
 	}
 }
 

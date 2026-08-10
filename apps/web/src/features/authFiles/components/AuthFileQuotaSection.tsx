@@ -15,8 +15,9 @@ import {
   useNotificationStore,
   useQuotaStore,
 } from '@/stores';
-import type { AuthFileItem } from '@/types';
+import type { AuthFileItem, CredentialScopedQuotaState } from '@/types';
 import { getStatusFromError } from '@/utils/quota';
+import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 import {
   isRuntimeOnlyAuthFile,
   resolveQuotaErrorMessage,
@@ -25,7 +26,9 @@ import {
 import { QuotaProgressBar } from '@/features/authFiles/components/QuotaProgressBar';
 import styles from '@/features/authFiles/AuthFilesPage.module.scss';
 
-type QuotaState = { status?: string; error?: string; errorStatus?: number } | undefined;
+type QuotaState =
+  | (CredentialScopedQuotaState & { status?: string; error?: string; errorStatus?: number })
+  | undefined;
 type InlineQuotaConfig = {
   i18nPrefix: string;
   getStoreKey?: (file: AuthFileItem) => string;
@@ -67,13 +70,19 @@ export function AuthFileQuotaSection(props: AuthFileQuotaSectionProps) {
   const storeKey = getQuotaStoreKey(config, file);
 
   const storedQuota = useQuotaStore((state) => {
-    if (quotaType === 'antigravity') return state.antigravityQuota[storeKey] as QuotaState;
-    if (quotaType === 'claude') return state.claudeQuota[storeKey] as QuotaState;
-    if (quotaType === 'codex') {
-      return (state.codexQuota[storeKey] ?? state.codexQuota[file.name]) as QuotaState;
+    if (quotaType === 'antigravity') {
+      return getCredentialScopedQuotaState(state.antigravityQuota, file) as QuotaState;
     }
-    if (quotaType === 'kimi') return state.kimiQuota[storeKey] as QuotaState;
-    return state.xaiQuota[storeKey] as QuotaState;
+    if (quotaType === 'claude') {
+      return getCredentialScopedQuotaState(state.claudeQuota, file) as QuotaState;
+    }
+    if (quotaType === 'codex') {
+      return getCredentialScopedQuotaState(state.codexQuota, file) as QuotaState;
+    }
+    if (quotaType === 'kimi') {
+      return getCredentialScopedQuotaState(state.kimiQuota, file) as QuotaState;
+    }
+    return getCredentialScopedQuotaState(state.xaiQuota, file) as QuotaState;
   });
   const quota = config.scopeState ? config.scopeState(file, storedQuota) : storedQuota;
 

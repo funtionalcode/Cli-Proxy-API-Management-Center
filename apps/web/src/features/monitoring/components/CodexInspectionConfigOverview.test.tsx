@@ -40,4 +40,26 @@ describe('CodexInspectionConfigOverview', () => {
     expect(markup).toContain('Sample');
     expect(markup).toContain('All');
   });
+
+  it('can hide the redundant header while preserving the overview content', () => {
+    const markup = renderToStaticMarkup(
+      <CodexInspectionConfigOverview
+        title="Inspection config"
+        editLabel="Edit"
+        copyLabel="Copy"
+        copiedLabel="Copied"
+        items={[{ key: 'sample', label: 'Sample', value: 'All', field: 'sampleSize' }]}
+        onEdit={() => undefined}
+        compact
+        embedded
+        hideHeader
+      />
+    );
+
+    expect(markup).not.toContain('configOverviewHeader');
+    expect(markup).not.toContain('configOverviewEdit');
+    expect(markup).toContain('aria-label="Inspection config"');
+    expect(markup).toContain('Sample');
+    expect(markup).toContain('All');
+  });
 });

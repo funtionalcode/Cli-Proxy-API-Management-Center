@@ -8,6 +8,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func TestPricingRollupBandsStrictThresholdsAndMergesRawDelta(t *testing.T) {
@@ -64,12 +65,52 @@ func TestPricingRollupBandsStrictThresholdsAndMergesRawDelta(t *testing.T) {
 		t.Fatalf("tier-one row = %#v", byThreshold[100])
 	}
 
-	accountRows, _, available, err := st.UsagePricingAccountRows(ctx, []string{"team-a"})
+	accountRows, _, available, err := st.UsagePricingAccountRows(ctx, []string{pricingAccountKey("team-a.json", "auth-team-a")})
 	if err != nil {
 		t.Fatalf("load account pricing rows: %v", err)
 	}
 	if !available || len(accountRows) != 3 {
 		t.Fatalf("account pricing rows available=%v rows=%#v", available, accountRows)
+	}
+}
+
+func TestPricingAccountRollupSeparatesSharedAccountByAuthIndex(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	first := pricingEvent("shared-pricing-a", 3_600_001, 10)
+	first.AccountSnapshot = "same@example.com"
+	first.AuthFileSnapshot = "shared.json"
+	first.AuthIndex = "auth-a"
+	second := pricingEvent("shared-pricing-b", 3_600_002, 20)
+	second.AccountSnapshot = "same@example.com"
+	second.AuthFileSnapshot = "shared.json"
+	second.AuthIndex = "auth-b"
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert shared pricing events: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("catch up shared pricing events: %v", err)
+	}
+
+	firstKey := pricingAccountKey("shared.json", "auth-a")
+	secondKey := pricingAccountKey("shared.json", "auth-b")
+	rows, _, available, err := st.UsagePricingAccountRows(ctx, []string{secondKey, firstKey})
+	if err != nil {
+		t.Fatalf("load shared pricing rows: %v", err)
+	}
+	if !available || len(rows) != 2 {
+		t.Fatalf("shared pricing rows available=%v rows=%#v", available, rows)
+	}
+	byKey := make(map[string]store.UsagePricingAccountRow, len(rows))
+	for _, row := range rows {
+		byKey[row.AccountKey] = row
+	}
+	if byKey[firstKey].Calls != 1 || byKey[firstKey].TotalTokens != 20 {
+		t.Fatalf("first shared pricing row = %#v", byKey[firstKey])
+	}
+	if byKey[secondKey].Calls != 1 || byKey[secondKey].TotalTokens != 30 {
+		t.Fatalf("second shared pricing row = %#v", byKey[secondKey])
 	}
 }
 
@@ -148,15 +189,31 @@ func TestPricingRollupRateUpdatesKeepRevisionAndThresholdUpdatesRebuild(t *testi
 
 func pricingEvent(hash string, timestampMS int64, inputTokens int64) usage.Event {
 	return usage.Event{
-		EventHash:       hash,
-		TimestampMS:     timestampMS,
-		Timestamp:       "1970-01-01T01:00:00Z",
-		Model:           "display-model",
-		ResolvedModel:   "resolved-model",
-		AccountSnapshot: "team-a",
-		InputTokens:     inputTokens,
-		OutputTokens:    10,
-		TotalTokens:     inputTokens + 10,
-		CreatedAtMS:     timestampMS,
+		EventHash:            hash,
+		TimestampMS:          timestampMS,
+		Timestamp:            "1970-01-01T01:00:00Z",
+		Provider:             "openai",
+		Model:                "display-model",
+		ResolvedModel:        "resolved-model",
+		AccountSnapshot:      "team-a",
+		AuthFileSnapshot:     "team-a.json",
+		AuthProviderSnapshot: "openai",
+		AuthIndex:            "auth-team-a",
+		InputTokens:          inputTokens,
+		OutputTokens:         10,
+		TotalTokens:          inputTokens + 10,
+		CreatedAtMS:          timestampMS,
 	}
+}
+
+func pricingAccountKey(authFileSnapshot, authIndex string) string {
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     authFileSnapshot,
+		AuthIndex:            authIndex,
+		AuthProviderSnapshot: "openai",
+	})
+	if !valid {
+		panic("invalid pricing test identity")
+	}
+	return key
 }

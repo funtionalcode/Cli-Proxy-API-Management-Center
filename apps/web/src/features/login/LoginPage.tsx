@@ -41,9 +41,19 @@ import type { ApiError } from '@/types';
 import { resolveUsageServiceLoginMode } from './loginMode';
 import styles from './LoginPage.module.scss';
 
-type RedirectState = { from?: { pathname?: string } };
+type RedirectState = { from?: { pathname?: string; search?: string; hash?: string } };
 type UsageSetupStep = 'admin' | 'connection' | 'cpaKey' | 'monitoring' | 'polling' | 'review';
 const CONFIG_TAB_STORAGE_KEY = 'config-management:tab';
+
+function resolveRedirectPath(state: unknown): string {
+  const from = (state as RedirectState | null)?.from;
+  const pathname = typeof from?.pathname === 'string' ? from.pathname : '';
+  if (!pathname || pathname === '/login' || !pathname.startsWith('/')) return '/';
+
+  const search = typeof from?.search === 'string' ? from.search : '';
+  const hash = typeof from?.hash === 'string' ? from.hash : '';
+  return `${pathname}${search}${hash}`;
+}
 
 function getLocalizedErrorMessage(
   error: unknown,
@@ -142,6 +152,7 @@ export function LoginPage() {
   const detectedBase = useMemo(() => detectApiBaseFromLocation(), []);
   const isManagerServerMode = hostedByUsageService;
   const loginCredential = isManagerServerMode ? adminKey : cpaManagementKey;
+  const redirectAfterLogin = useMemo(() => resolveRedirectPath(location.state), [location.state]);
   const loginCredentialLabel = isManagerServerMode
     ? t('login.admin_key_label')
     : t('login.cpa_management_key_label');
@@ -260,9 +271,7 @@ export function LoginPage() {
           setAutoLoginSuccess(true);
           setTimeout(() => {
             const redirect =
-              autoLoggedIn.recoveryMode === 'manager_config'
-                ? '/config'
-                : (location.state as RedirectState | null)?.from?.pathname || '/';
+              autoLoggedIn.recoveryMode === 'manager_config' ? '/config' : redirectAfterLogin;
             if (autoLoggedIn.recoveryMode === 'manager_config') {
               localStorage.setItem(CONFIG_TAB_STORAGE_KEY, 'manager');
             }
@@ -441,7 +450,7 @@ export function LoginPage() {
         localStorage.setItem(CONFIG_TAB_STORAGE_KEY, 'manager');
         navigate('/config', { replace: true });
       } else {
-        navigate('/', { replace: true });
+        navigate(redirectAfterLogin, { replace: true });
       }
     } catch (err: unknown) {
       const message = getLocalizedErrorMessage(err, t);
@@ -462,6 +471,7 @@ export function LoginPage() {
     pollIntervalMs,
     rememberCredential,
     requestMonitoringEnabled,
+    redirectAfterLogin,
     setUsageServiceConfig,
     showNotification,
     t,
@@ -480,8 +490,7 @@ export function LoginPage() {
   );
 
   if (isAuthenticated && !autoLoading && !autoLoginSuccess) {
-    const redirect = (location.state as RedirectState | null)?.from?.pathname || '/';
-    return <Navigate to={redirect} replace />;
+    return <Navigate to={redirectAfterLogin} replace />;
   }
 
   const showSplash = autoLoading || autoLoginSuccess;

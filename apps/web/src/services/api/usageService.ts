@@ -2,6 +2,8 @@ import axios from 'axios';
 import type { UsagePayload } from '@/features/monitoring/hooks/useUsageData';
 import {
   getDemoAccountActionCandidates,
+  getDemoAccountHistory,
+  getDemoAccountWindowUsage,
   getDemoAccountProcessingPolicy,
   getDemoApiKeyAliases,
   getDemoAuthFiles,
@@ -93,12 +95,33 @@ export interface UsageServiceCollectorStatus {
   lastError?: string;
 }
 
+export interface UsageServiceCheckpointStatus {
+  mode?: string;
+  busy?: number;
+  logFrames?: number;
+  checkpointedFrames?: number;
+  executedAtMs?: number;
+  durationMs?: number;
+  lastTruncateAttemptAtMs?: number;
+  error?: string;
+}
+
+export interface UsageServiceDatabaseStatus {
+  databaseBytes?: number;
+  walBytes?: number;
+  shmBytes?: number;
+  totalBytes?: number;
+  journalSizeLimitBytes?: number;
+  checkpoint?: UsageServiceCheckpointStatus;
+}
+
 export interface UsageServiceStatus {
   service?: string;
   dbPath?: string;
   events?: number;
   deadLetters?: number;
   collector?: UsageServiceCollectorStatus;
+  database?: UsageServiceDatabaseStatus;
 }
 
 export interface AccountPolicyCapability {
@@ -269,6 +292,7 @@ export interface CodexInspectionResult {
   accountKey: string;
   fileName: string;
   displayAccount: string;
+  runtimeId?: string;
   accountSnapshot?: string;
   authIndex?: string;
   accountId?: string;
@@ -788,6 +812,412 @@ export interface MonitoringAnalyticsRequest {
   filters?: MonitoringAnalyticsFilters;
   include?: MonitoringAnalyticsInclude;
 }
+
+export interface MonitoringAccountHistoryTarget {
+  row_key: string;
+  account_key?: string;
+  account_snapshot?: string;
+  auth_label_snapshot?: string;
+  auth_file_snapshot?: string;
+  auth_provider_snapshot?: string;
+  auth_project_id_snapshot?: string;
+  auth_index?: string;
+  source?: string;
+}
+
+export interface MonitoringAccountHistoryRequest {
+  accounts: MonitoringAccountHistoryTarget[];
+  catch_up?: boolean;
+}
+
+export interface MonitoringAccountHistoryCheckpoint {
+  last_event_id: number;
+  latest_id: number;
+  pending: boolean;
+  processed: number;
+}
+
+export interface MonitoringAccountLatestRequest {
+  timestamp_ms: number;
+  failed: boolean;
+  fail_status_code?: number | null;
+  fail_summary?: string;
+  header_error_kind?: string;
+  header_error_code?: string;
+  header_trace_id?: string;
+}
+
+export interface MonitoringAccountHistoryItem {
+  row_key: string;
+  account_key: string;
+  generated_at_ms?: number;
+  matched: boolean;
+  total_requests: number;
+  success_calls: number;
+  failure_calls: number;
+  total_tokens: number;
+  total_cost: number;
+  success_rate: number | null;
+  first_seen_ms: number | null;
+  last_seen_ms: number | null;
+  latest_request?: MonitoringAccountLatestRequest | null;
+  recent_requests?: MonitoringAccountLatestRequest[];
+  sync_status: 'ready' | 'pending' | 'empty' | string;
+}
+
+export interface MonitoringAccountHistoryResponse {
+  generated_at_ms: number;
+  checkpoint: MonitoringAccountHistoryCheckpoint;
+  items: MonitoringAccountHistoryItem[];
+}
+
+export interface MonitoringAccountWindowUsageTarget {
+  request_key?: string;
+  row_key: string;
+  window_key?: string;
+  provider_window_id?: string;
+  period?: 'current' | 'previous' | 'previous_equal_range';
+  from_ms: number;
+  to_ms: number;
+  model_scope?: MonitoringAccountWindowModelScope;
+  account_snapshot?: string;
+  auth_label_snapshot?: string;
+  auth_file_snapshot?: string;
+  auth_provider_snapshot?: string;
+  auth_project_id_snapshot?: string;
+  auth_index?: string;
+  source?: string;
+}
+
+export interface MonitoringAccountWindowModelScope {
+  kind: 'all' | 'family' | 'models' | 'product' | 'feature';
+  key?: string;
+  models?: string[];
+}
+
+export interface MonitoringAccountWindowUsageRequest {
+  windows: MonitoringAccountWindowUsageTarget[];
+}
+
+export interface MonitoringAccountWindowUsageItem {
+  request_key?: string;
+  row_key: string;
+  window_key?: string;
+  provider_window_id?: string;
+  period?: 'current' | 'previous' | 'previous_equal_range';
+  from_ms: number;
+  to_ms: number;
+  matched: boolean;
+  total_requests: number;
+  success_calls: number;
+  failure_calls: number;
+  total_tokens: number;
+  total_cost: number;
+  success_rate: number | null;
+  last_seen_ms: number | null;
+  sync_status: 'ready' | 'empty' | string;
+  scope_match_status?: 'complete' | 'partial' | 'unmatched' | string;
+  unmatched_requests?: number;
+}
+
+export interface MonitoringAccountWindowUsageResponse {
+  generated_at_ms: number;
+  items: MonitoringAccountWindowUsageItem[];
+}
+
+export type AccountQuotaSnapshotWindowMode =
+  | 'fixed'
+  | 'calendar'
+  | 'rolling'
+  | 'non_window'
+  | 'unknown';
+export type AccountQuotaSnapshotSource =
+  | 'api_query'
+  | 'response_header'
+  | 'response_body'
+  | 'inspection';
+export type AccountQuotaSnapshotBoundaryAccuracy = 'exact' | 'derived' | 'estimated' | 'unknown';
+export type AccountQuotaSnapshotInventoryMode = 'complete' | 'partial' | 'delta';
+
+export interface AccountQuotaSnapshotTarget {
+  account_snapshot?: string;
+  auth_label_snapshot?: string;
+  auth_file_snapshot?: string;
+  auth_provider_snapshot?: string;
+  auth_project_id_snapshot?: string;
+  auth_index?: string;
+  source?: string;
+}
+
+export interface AccountQuotaSnapshotResetCredit {
+  id: string;
+  expires_at_ms: number;
+}
+
+export interface AccountQuotaSnapshotObservationInput {
+  source: AccountQuotaSnapshotSource;
+  source_observation_id?: string;
+  observed_at_ms?: number;
+  inventory_scope_key: string;
+  inventory_mode: AccountQuotaSnapshotInventoryMode;
+}
+
+export interface AccountQuotaSnapshotRemovedWindowInput {
+  provider_window_id: string;
+  model_scope_kind?: MonitoringAccountWindowModelScope['kind'];
+  model_scope_key?: string;
+  model_ids?: string[];
+}
+
+export interface AccountQuotaSnapshotWindowInput {
+  provider_window_id: string;
+  window_kind: string;
+  window_mode: AccountQuotaSnapshotWindowMode;
+  model_scope_kind: MonitoringAccountWindowModelScope['kind'];
+  model_scope_key?: string;
+  model_ids?: string[];
+  source: AccountQuotaSnapshotSource;
+  source_observation_id?: string;
+  observed_at_ms: number;
+  boundary_accuracy: AccountQuotaSnapshotBoundaryAccuracy;
+  cycle_start_ms?: number;
+  cycle_end_ms?: number;
+  duration_seconds?: number;
+  used_percent?: number;
+  remaining_percent?: number;
+  used_value?: number;
+  limit_value?: number;
+  quota_unit?: string;
+  reset_credits_available?: number;
+  reset_credits?: AccountQuotaSnapshotResetCredit[];
+  plan_type?: string;
+  relationship_kind?: string;
+  container_provider_window_id?: string;
+}
+
+export interface AccountQuotaSnapshotWriteEntry {
+  row_key?: string;
+  provider: string;
+  account: AccountQuotaSnapshotTarget;
+  observation?: AccountQuotaSnapshotObservationInput;
+  windows: AccountQuotaSnapshotWindowInput[];
+  removed_windows?: AccountQuotaSnapshotRemovedWindowInput[];
+}
+
+export interface AccountQuotaSnapshotWriteResponse {
+  observed_at_ms: number;
+  items: Array<{
+    row_key?: string;
+    account_key: string;
+    provider: string;
+    inserted_count: number;
+  }>;
+}
+
+export interface AccountQuotaSnapshotCycle {
+  id: number;
+  activation_id: number;
+  state: string;
+  scheduled_start_ms?: number;
+  scheduled_end_ms?: number;
+  actual_start_ms: number;
+  actual_end_ms?: number;
+  duration_seconds?: number;
+  boundary_accuracy: AccountQuotaSnapshotBoundaryAccuracy;
+  end_reason?: string;
+  parent_cycle_id?: number;
+  forecast_eligible: boolean;
+}
+
+export interface AccountQuotaSnapshotWindow extends AccountQuotaSnapshotWindowInput {
+  stale: boolean;
+  field_sources?: Record<string, { source: AccountQuotaSnapshotSource; observed_at_ms: number }>;
+  logical_window_id?: number;
+  activation_generation?: number;
+  availability?: string;
+  first_seen_at_ms?: number;
+  last_seen_at_ms?: number;
+  missing_since_ms?: number;
+  deactivated_at_ms?: number;
+  current_cycle?: AccountQuotaSnapshotCycle;
+  previous_cycle?: AccountQuotaSnapshotCycle;
+}
+
+export interface AccountQuotaSnapshotQueryAccount {
+  row_key: string;
+  provider: string;
+  account: AccountQuotaSnapshotTarget;
+}
+
+export interface AccountQuotaSnapshotQueryResponse {
+  generated_at_ms: number;
+  items: Array<{
+    row_key: string;
+    account_key: string;
+    provider: string;
+    windows: AccountQuotaSnapshotWindow[];
+  }>;
+}
+
+const buildDemoAccountQuotaSnapshotWindows = (
+  account: AccountQuotaSnapshotQueryAccount,
+  nowMs: number
+): AccountQuotaSnapshotWindow[] => {
+  if (account.provider === 'codex' && account.account.auth_index === 'codex-team-01') {
+    const fiveHourDuration = 5 * 60 * 60;
+    const weeklyDuration = 7 * 24 * 60 * 60;
+    const fiveHourEndMs = nowMs + 2 * 60 * 60 * 1000 + 18 * 60 * 1000;
+    const fiveHourStartMs = fiveHourEndMs - fiveHourDuration * 1000;
+    const weeklyEndMs = nowMs + (3 * 24 * 60 * 60 + 8 * 60 * 60) * 1000;
+    const weeklyStartMs = weeklyEndMs - weeklyDuration * 1000;
+    const observedAtMs = nowMs - 8 * 60 * 1000;
+    return [
+      {
+        provider_window_id: 'five-hour',
+        window_kind: 'five_hour',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        observed_at_ms: observedAtMs,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: fiveHourStartMs,
+        cycle_end_ms: fiveHourEndMs,
+        duration_seconds: fiveHourDuration,
+        used_percent: 36,
+        remaining_percent: 64,
+        relationship_kind: 'concurrent_subwindow',
+        container_provider_window_id: 'weekly',
+        stale: false,
+        logical_window_id: 101,
+        activation_generation: 2,
+        availability: 'active',
+        first_seen_at_ms: weeklyStartMs - weeklyDuration * 1000,
+        last_seen_at_ms: observedAtMs,
+        current_cycle: {
+          id: 301,
+          activation_id: 201,
+          state: 'active',
+          scheduled_start_ms: fiveHourStartMs,
+          scheduled_end_ms: fiveHourEndMs,
+          actual_start_ms: fiveHourStartMs,
+          duration_seconds: fiveHourDuration,
+          boundary_accuracy: 'exact',
+          parent_cycle_id: 302,
+          forecast_eligible: true,
+        },
+        previous_cycle: {
+          id: 299,
+          activation_id: 201,
+          state: 'closed',
+          scheduled_start_ms: fiveHourStartMs - fiveHourDuration * 1000,
+          scheduled_end_ms: fiveHourStartMs,
+          actual_start_ms: fiveHourStartMs - fiveHourDuration * 1000,
+          actual_end_ms: fiveHourStartMs,
+          duration_seconds: fiveHourDuration,
+          boundary_accuracy: 'exact',
+          end_reason: 'scheduled',
+          parent_cycle_id: 298,
+          forecast_eligible: true,
+        },
+      },
+      {
+        provider_window_id: 'weekly',
+        window_kind: 'weekly',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'api_query',
+        observed_at_ms: observedAtMs,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: weeklyStartMs,
+        cycle_end_ms: weeklyEndMs,
+        duration_seconds: weeklyDuration,
+        used_percent: 41,
+        remaining_percent: 59,
+        stale: false,
+        logical_window_id: 102,
+        activation_generation: 1,
+        availability: 'active',
+        first_seen_at_ms: weeklyStartMs - weeklyDuration * 1000,
+        last_seen_at_ms: observedAtMs,
+        current_cycle: {
+          id: 302,
+          activation_id: 202,
+          state: 'active',
+          scheduled_start_ms: weeklyStartMs,
+          scheduled_end_ms: weeklyEndMs,
+          actual_start_ms: weeklyStartMs,
+          duration_seconds: weeklyDuration,
+          boundary_accuracy: 'exact',
+          forecast_eligible: true,
+        },
+        previous_cycle: {
+          id: 300,
+          activation_id: 202,
+          state: 'closed',
+          scheduled_start_ms: weeklyStartMs - weeklyDuration * 1000,
+          scheduled_end_ms: weeklyStartMs + 3 * 24 * 60 * 60 * 1000,
+          actual_start_ms: weeklyStartMs - 3 * 24 * 60 * 60 * 1000,
+          actual_end_ms: weeklyStartMs,
+          duration_seconds: weeklyDuration,
+          boundary_accuracy: 'exact',
+          end_reason: 'early_reset',
+          forecast_eligible: false,
+        },
+      },
+      {
+        provider_window_id: 'monthly',
+        window_kind: 'monthly',
+        window_mode: 'fixed',
+        model_scope_kind: 'all',
+        source: 'inspection',
+        observed_at_ms: nowMs - 5 * 24 * 60 * 60 * 1000,
+        boundary_accuracy: 'exact',
+        cycle_start_ms: nowMs - 20 * 24 * 60 * 60 * 1000,
+        cycle_end_ms: nowMs + 10 * 24 * 60 * 60 * 1000,
+        duration_seconds: 30 * 24 * 60 * 60,
+        used_percent: 12,
+        remaining_percent: 88,
+        stale: true,
+        logical_window_id: 103,
+        activation_generation: 1,
+        availability: 'inactive',
+        first_seen_at_ms: nowMs - 20 * 24 * 60 * 60 * 1000,
+        last_seen_at_ms: nowMs - 5 * 24 * 60 * 60 * 1000,
+        missing_since_ms: nowMs - 4 * 24 * 60 * 60 * 1000,
+        deactivated_at_ms: nowMs - 4 * 24 * 60 * 60 * 1000,
+      },
+    ];
+  }
+  if (account.provider !== 'xai' || account.account.auth_index !== 'xai-ops-01') return [];
+  const observedAtMs = nowMs - 60_000;
+  return [
+    {
+      provider_window_id: 'included-free-rolling-24h',
+      window_kind: 'rolling_24h',
+      window_mode: 'rolling',
+      model_scope_kind: 'models',
+      model_scope_key: 'grok-4.5-build-free',
+      model_ids: ['grok-4.5-build-free'],
+      source: 'response_body',
+      source_observation_id: 'demo-xai-free-usage-429',
+      observed_at_ms: observedAtMs,
+      boundary_accuracy: 'estimated',
+      cycle_end_ms: observedAtMs + 24 * 60 * 60 * 1000,
+      duration_seconds: 24 * 60 * 60,
+      used_percent: 100,
+      remaining_percent: 0,
+      used_value: 1_024_413,
+      limit_value: 1_000_000,
+      quota_unit: 'tokens',
+      stale: false,
+      logical_window_id: 201,
+      activation_generation: 1,
+      availability: 'active',
+      first_seen_at_ms: observedAtMs,
+      last_seen_at_ms: observedAtMs,
+    },
+  ];
+};
 
 export interface MonitoringAnalyticsSummary {
   total_calls: number;
@@ -2902,7 +3332,8 @@ export const monitoringAnalyticsApi = {
   getHeaderSnapshots: async (
     base: string,
     managementKey: string | undefined,
-    params: { days?: number; limit?: number } = {}
+    params: { days?: number; limit?: number } = {},
+    signal?: AbortSignal
   ): Promise<UsageHeaderSnapshotsResponse> => {
     if (__DEMO_SITE__ && isDemoMode()) {
       return getDemoHeaderSnapshots();
@@ -2915,6 +3346,53 @@ export const monitoringAnalyticsApi = {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
           params,
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+  getAccountHistory: async (
+    base: string,
+    managementKey: string | undefined,
+    request: MonitoringAccountHistoryRequest,
+    signal?: AbortSignal
+  ): Promise<MonitoringAccountHistoryResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return getDemoAccountHistory(request);
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<MonitoringAccountHistoryResponse>(
+        buildUrl(base, '/v0/management/monitoring/account-history'),
+        request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+  getAccountWindowUsage: async (
+    base: string,
+    managementKey: string | undefined,
+    request: MonitoringAccountWindowUsageRequest,
+    signal?: AbortSignal
+  ): Promise<MonitoringAccountWindowUsageResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return getDemoAccountWindowUsage(request);
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<MonitoringAccountWindowUsageResponse>(
+        buildUrl(base, '/v0/management/monitoring/account-window-usage'),
+        request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
         }
       );
       return response.data;
@@ -2934,6 +3412,77 @@ export const monitoringAnalyticsApi = {
       const response = await axios.post<MonitoringAnalyticsResponse>(
         buildUrl(base, '/v0/management/monitoring/analytics'),
         request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+};
+
+export const accountQuotaSnapshotApi = {
+  write: async (
+    base: string,
+    managementKey: string | undefined,
+    entries: AccountQuotaSnapshotWriteEntry[],
+    signal?: AbortSignal
+  ): Promise<AccountQuotaSnapshotWriteResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return {
+        observed_at_ms: Date.now(),
+        items: entries.map((entry) => ({
+          row_key: entry.row_key,
+          account_key: entry.row_key ?? '',
+          provider: entry.provider,
+          inserted_count: entry.windows.length,
+        })),
+      };
+    }
+    return withUsageServiceError(async () => {
+      const response = await axios.post<AccountQuotaSnapshotWriteResponse>(
+        buildUrl(base, '/v0/management/quota-snapshots'),
+        { entries },
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+          signal,
+        }
+      );
+      return response.data;
+    });
+  },
+  query: async (
+    base: string,
+    managementKey: string | undefined,
+    accounts: AccountQuotaSnapshotQueryAccount[],
+    options: { nowMs?: number; includeInactive?: boolean } = {},
+    signal?: AbortSignal
+  ): Promise<AccountQuotaSnapshotQueryResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      const generatedAtMs = options.nowMs ?? Date.now();
+      return {
+        generated_at_ms: generatedAtMs,
+        items: accounts.map((account) => ({
+          row_key: account.row_key,
+          account_key: account.row_key,
+          provider: account.provider,
+          windows: buildDemoAccountQuotaSnapshotWindows(account, generatedAtMs).filter(
+            (window) => options.includeInactive || window.availability !== 'inactive'
+          ),
+        })),
+      };
+    }
+    return withUsageServiceError(async () => {
+      const response = await axios.post<AccountQuotaSnapshotQueryResponse>(
+        buildUrl(base, '/v0/management/quota-snapshots/query'),
+        {
+          accounts,
+          now_ms: options.nowMs,
+          include_inactive: options.includeInactive,
+        },
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),

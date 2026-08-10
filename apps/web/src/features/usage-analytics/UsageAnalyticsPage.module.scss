@@ -318,6 +318,41 @@
   padding: 12px;
 }
 
+.usageSummaryGridCompact {
+  grid-auto-rows: minmax(96px, auto);
+  gap: 8px;
+}
+
+.usageSummaryCardCompact {
+  gap: 16px;
+  min-height: 96px;
+  padding: 10px;
+
+  .usageSummaryIcon {
+    width: 24px;
+    height: 24px;
+    flex-basis: 24px;
+
+    svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+
+  .usageSummaryLabel {
+    font-size: 11px;
+  }
+
+  .usageSummaryCardBody {
+    margin-top: 0;
+  }
+
+  .usageSummaryValue {
+    font-size: 15px;
+    line-height: 1.1;
+  }
+}
+
 .usageSummaryCard:hover {
   z-index: 5;
   border-color: var(--usage-strong-border);

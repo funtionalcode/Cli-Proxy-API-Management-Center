@@ -75,6 +75,7 @@
 
 .dropdown {
   position: fixed;
+  box-sizing: border-box;
   background: var(--glass-bg);
   border: 1px solid color-mix(in srgb, var(--app-input-border-focus) 28%, var(--app-border-strong));
   border-radius: var(--app-radius-md);

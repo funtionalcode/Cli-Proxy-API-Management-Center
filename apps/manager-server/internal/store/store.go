@@ -16,10 +16,12 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/deadletter"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
@@ -50,6 +52,7 @@ type ModelUsageSummary = model.ModelUsageSummary
 type APIKeyAlias = model.APIKeyAlias
 type QuotaCooldown = model.QuotaCooldown
 type QuotaCooldownUpsert = model.QuotaCooldownUpsert
+type AccountQuotaSnapshot = model.AccountQuotaSnapshot
 type AccountActionCandidate = model.AccountActionCandidate
 type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
 type AutomationSettings = model.AutomationSettings
@@ -82,6 +85,10 @@ type TaskBucket = usageevent.TaskBucket
 type EventPageItem = usageevent.EventPageItem
 type EventsPage = usageevent.EventsPage
 type HeaderSnapshot = usageevent.HeaderSnapshot
+type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
+type AccountWindowModelStat = usageevent.AccountWindowModelStat
+type LatestAccountRequestQuery = usageevent.LatestAccountRequestQuery
+type LatestAccountRequest = usageevent.LatestAccountRequest
 type UsageRollupCheckpoint = usagerollup.Checkpoint
 type UsageRollupCatchUpResult = usagerollup.CatchUpResult
 type AccountHistoryRollupRow = usagerollup.AccountHistoryRow
@@ -95,6 +102,8 @@ type UsagePricingCatchUpResult = usagepricing.CatchUpResult
 type UsagePricingHourlyFilter = usagepricing.HourlyFilter
 type UsagePricingHourlyRow = usagepricing.HourlyRow
 type UsagePricingAccountRow = usagepricing.AccountRow
+type UsageMonitoringState = usagemonitoring.State
+type UsageMonitoringCatchUpResult = usagemonitoring.CatchUpResult
 
 type UsageHourlyPricingSnapshot struct {
 	AggregateRows      []UsageHourlyAggregateRow
@@ -126,8 +135,10 @@ type Store struct {
 	CodexInspections codexinspection.Repository
 	DataMigrations   datamigration.Repository
 	QuotaCooldowns   quotacooldown.Repository
+	QuotaSnapshots   quotasnapshot.Repository
 	UsageAggregates  usageaggregate.Repository
 	UsagePricing     usagepricing.Repository
+	UsageMonitoring  usagemonitoring.Repository
 	UsageRollups     usagerollup.Repository
 }
 
@@ -151,8 +162,10 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		CodexInspections: codexinspection.New(db),
 		DataMigrations:   datamigration.New(db),
 		QuotaCooldowns:   quotacooldown.New(db),
+		QuotaSnapshots:   quotasnapshot.New(db),
 		UsageAggregates:  usageaggregate.New(db),
 		UsagePricing:     usagepricing.New(db),
+		UsageMonitoring:  usagemonitoring.New(db),
 		UsageRollups:     usagerollup.New(db),
 	}
 }
@@ -456,6 +469,80 @@ func (s *Store) RecordUsagePricingFailure(ctx context.Context, rollupErr error, 
 	return s.UsagePricing.RecordFailure(ctx, rollupErr, nowMS)
 }
 
+func (s *Store) CatchUpUsageMonitoringStats(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
+	if err != nil {
+		return UsageMonitoringCatchUpResult{}, err
+	}
+	if !ready {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
+	return s.UsageMonitoring.CatchUpStats(ctx, limit, nowMS)
+}
+
+func (s *Store) CatchUpUsageMonitoringProjection(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
+	if err != nil {
+		return UsageMonitoringCatchUpResult{}, err
+	}
+	if !ready {
+		return UsageMonitoringCatchUpResult{Pending: true}, nil
+	}
+	return s.UsageMonitoring.CatchUpProjection(ctx, limit, nowMS)
+}
+
+func (s *Store) CatchUpUsageMonitoringMetadata(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	return s.UsageMonitoring.CatchUpMetadata(ctx, limit, nowMS)
+}
+
+func (s *Store) RecordUsageMonitoringFailure(ctx context.Context, rollupName string, rollupErr error, nowMS int64) error {
+	return s.UsageMonitoring.RecordFailure(ctx, rollupName, rollupErr, nowMS)
+}
+
+func (s *Store) UsageMonitoringState(ctx context.Context, rollupName string) (UsageMonitoringState, error) {
+	return s.UsageMonitoring.State(ctx, rollupName)
+}
+
+func (s *Store) UsageMonitoringAggregate(ctx context.Context, filter AnalyticsFilter) (Aggregate, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadAggregate(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringModelStats(ctx context.Context, filter AnalyticsFilter) ([]ModelStat, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadModelStats(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringAccountStats(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadAccountStats(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringAccountWindowStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadAccountWindowStats(ctx, windows)
+}
+
+func (s *Store) UsageMonitoringAPIKeyStats(ctx context.Context, filter AnalyticsFilter) ([]APIKeyModelStat, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadAPIKeyStats(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringFilterOptions(ctx context.Context, filter AnalyticsFilter) (FilterOptionValues, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadFilterOptions(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringFilterSelectors(ctx context.Context, filter AnalyticsFilter) (FilterSelectorValues, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadFilterSelectors(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringEventsCount(ctx context.Context, filter AnalyticsFilter) (int64, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadEventsCount(ctx, filter)
+}
+
+func (s *Store) UsageMonitoringEventsPage(ctx context.Context, filter AnalyticsFilter, beforeMS, beforeID int64, limit int) (EventsPage, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadEventsPage(ctx, filter, beforeMS, beforeID, limit)
+}
+
+func (s *Store) UsageMonitoringHeaderSnapshots(ctx context.Context, sinceMS int64, limit int) ([]HeaderSnapshot, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadHeaderSnapshots(ctx, sinceMS, limit)
+}
+
 func (s *Store) UsagePricingState(ctx context.Context) (UsagePricingState, error) {
 	return s.UsagePricing.State(ctx)
 }
@@ -566,6 +653,10 @@ func (s *Store) LatestUsageEventID(ctx context.Context) (int64, error) {
 
 func (s *Store) AccountHistoryRollupRows(ctx context.Context, accountKeys []string) ([]AccountHistoryRollupRow, error) {
 	return s.UsageRollups.AccountHistoryRows(ctx, accountKeys)
+}
+
+func (s *Store) RecentAccountRequests(ctx context.Context, targets []LatestAccountRequestQuery, limit int) ([]LatestAccountRequest, error) {
+	return s.UsageEvents.RecentAccountRequests(ctx, targets, limit)
 }
 
 func (s *Store) DashboardHourlyRollupRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRollupRow, error) {
@@ -718,6 +809,10 @@ func (s *Store) FailureSourcesWithFilter(ctx context.Context, filter AnalyticsFi
 
 func (s *Store) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, error) {
 	return s.UsageEvents.AccountModelStatsWithFilter(ctx, filter)
+}
+
+func (s *Store) AccountWindowModelStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, error) {
+	return s.UsageEvents.AccountWindowModelStats(ctx, windows)
 }
 
 func (s *Store) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -9,7 +9,6 @@ import { Select, type SelectOption } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { CodexInspectionConfigOverview } from '@/features/monitoring/components/CodexInspectionConfigOverview';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
-import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { Panel } from '@/features/monitoring/components/CodexInspectionPanels';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { CodexInspectionStopButton } from '@/features/monitoring/components/CodexInspectionStopButton';
@@ -51,6 +50,11 @@ import {
   validateInspectionConfigDraft,
   validateInspectionConfigFields,
 } from '@/features/monitoring/model/codexInspectionPresentation';
+import {
+  createServerCredentialInspectionSnapshot,
+  type CredentialInspectionSnapshot,
+  type CredentialInspectionTarget,
+} from '@/features/monitoring/model/credentialInspectionSnapshot';
 import {
   DEFAULT_CODEX_INSPECTION_SETTINGS,
   codexInspectionTargetTypesToSelection,
@@ -590,8 +594,10 @@ function toServerResultItem(
   const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, locale, t);
   return {
     key: `server-${item.id || item.accountKey}`,
+    runtimeId: item.runtimeId ?? null,
     fileName: item.fileName,
     displayAccount: item.displayAccount,
+    accountSnapshot: item.accountSnapshot ?? null,
     authIndex: item.authIndex ?? null,
     accountId: item.accountId ?? null,
     provider: item.provider,
@@ -665,7 +671,21 @@ function formatServiceHost(base: string): string {
   }
 }
 
-export function ServerCodexInspectionPage() {
+interface ServerCodexInspectionPageProps {
+  embedded?: boolean;
+  modeControl?: ReactNode;
+  onSnapshotChange?: (snapshot: CredentialInspectionSnapshot) => void;
+  onCredentialsChanged?: () => void | Promise<void>;
+  onOpenCredential?: (target: CredentialInspectionTarget) => void;
+}
+
+export function ServerCodexInspectionPage({
+  embedded = false,
+  modeControl,
+  onSnapshotChange,
+  onCredentialsChanged,
+  onOpenCredential,
+}: ServerCodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const managementKey = useAuthStore((state) => state.managementKey);
@@ -719,6 +739,11 @@ export function ServerCodexInspectionPage() {
     detailRequestGenerationRef.current += 1;
     setSelectedRunId(id);
   }, []);
+
+  useEffect(() => {
+    if (!detail || !onSnapshotChange) return;
+    onSnapshotChange(createServerCredentialInspectionSnapshot(detail, runs));
+  }, [detail, onSnapshotChange, runs]);
 
   const loadRunDetail = useCallback(
     async (base: string, id: number) => {
@@ -1268,6 +1293,7 @@ export function ServerCodexInspectionPage() {
           RUNS_LIMIT
         );
         setRuns(runsResponse.items);
+        void onCredentialsChanged?.();
 
         const outcomeSummary = response.outcomes.reduce(
           (summary, outcome) => {
@@ -1318,7 +1344,7 @@ export function ServerCodexInspectionPage() {
         setExecutingAllActions(false);
       }
     },
-    [detail, managementKey, selectRunId, serviceBase, showNotification, t]
+    [detail, managementKey, onCredentialsChanged, selectRunId, serviceBase, showNotification, t]
   );
 
   const handleExecuteServerActions = useCallback(
@@ -1401,8 +1427,9 @@ export function ServerCodexInspectionPage() {
 
   const handleCodexReauthSuccess = useCallback(async () => {
     await refreshRuns({ silent: true });
+    await onCredentialsChanged?.();
     showNotification(t('codex_reauth.rerun_hint'), 'success');
-  }, [refreshRuns, showNotification, t]);
+  }, [onCredentialsChanged, refreshRuns, showNotification, t]);
 
   const handleSelectRun = async (runID: number) => {
     if (!serviceBase || runID === selectedRunId) return;
@@ -1430,35 +1457,9 @@ export function ServerCodexInspectionPage() {
 
     return (
       <Panel className={styles.statusPanel}>
-        <div className={styles.statusBar}>
-          <div className={styles.statusInfo}>
-            <span className={`${styles.statusBadge} ${statusToneClass[activeTone]}`}>
-              <span className={styles.statusDot} aria-hidden="true" />
-              {getRunStatusLabel(activeRun, t)}
-            </span>
-            <span
-              className={`${styles.statusBadge} ${
-                selectedConfig.enabled ? statusToneClass.good : statusToneClass.idle
-              }`}
-            >
-              <span className={styles.statusDot} aria-hidden="true" />
-              {selectedConfig.enabled
-                ? t('monitoring.server_codex_inspection_schedule_enabled')
-                : t('monitoring.server_codex_inspection_schedule_disabled')}
-            </span>
-            <div className={styles.statusMeta}>
-              <span>
-                {t('monitoring.server_codex_inspection_last_run')}: {lastRunTime}
-                {activeRun?.finishedAtMs ? ` · ${durationLabel}` : ''}
-              </span>
-              {serviceHost ? (
-                <span className={styles.statusMetaHost} title={serviceBase}>
-                  {serviceHost}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className={styles.statusActions}>
+        <div className={styles.statusPanelHeader}>
+          {modeControl ? <div className={styles.statusPanelTabs}>{modeControl}</div> : <div />}
+          <div className={styles.statusPanelActions}>
             <details className={`${styles.infoNote} ${styles.infoNoteCompact}`}>
               <summary>{t('monitoring.server_codex_inspection_info_summary')}</summary>
               <ul className={styles.infoNoteList}>
@@ -1484,6 +1485,9 @@ export function ServerCodexInspectionPage() {
             >
               {t('common.refresh')}
             </Button>
+            <Button variant="secondary" size="sm" onClick={() => openConfigDrawer()}>
+              {t('monitoring.codex_inspection_config_overview_edit')}
+            </Button>
             <Button
               size="sm"
               onClick={handleRunNow}
@@ -1501,87 +1505,131 @@ export function ServerCodexInspectionPage() {
           </div>
         </div>
 
-        <CodexInspectionConfigOverview
-          title={t('monitoring.codex_inspection_config_overview_title')}
-          editLabel={t('monitoring.codex_inspection_config_overview_edit')}
-          copyLabel={t('monitoring.codex_inspection_settings_copy_prompt')}
-          copiedLabel={t('common.copied')}
-          ariaLabel={t('monitoring.server_codex_inspection_config_summary_title')}
-          items={configOverviewItems}
-          onEdit={openConfigDrawer}
-          compact
-          embedded
-        />
+        <div className={styles.statusPanelBody}>
+          <div className={styles.statusMetricsRow}>
+            <div className={styles.statusMetric}>
+              <span className={styles.statusMetricLabel}>{t('common.status')}</span>
+              <span className={styles.statusMetricValue}>
+                <span
+                  className={styles.statusDot}
+                  aria-hidden="true"
+                  style={{
+                    color: `var(--inspect-${activeTone === 'good' ? 'green' : activeTone === 'bad' ? 'red' : activeTone === 'warn' ? 'amber' : activeTone === 'info' ? 'accent' : 'muted'})`,
+                    background: 'currentColor',
+                  }}
+                />
+                {getRunStatusLabel(activeRun, t)}
+              </span>
+            </div>
+            <div className={styles.statusMetric}>
+              <span className={styles.statusMetricLabel}>
+                {t('monitoring.server_codex_inspection_last_run')}
+              </span>
+              <span className={styles.statusMetricValue}>
+                {lastRunTime} {activeRun?.finishedAtMs ? ` · ${durationLabel}` : ''}
+              </span>
+            </div>
+            {serviceHost ? (
+              <div className={styles.statusMetric}>
+                <span className={styles.statusMetricLabel}>
+                  {t('monitoring.server_codex_inspection_host')}
+                </span>
+                <span className={styles.statusMetricValue} title={serviceBase}>
+                  {serviceHost}
+                </span>
+              </div>
+            ) : null}
+          </div>
 
-        <div className={styles.summaryGrid}>
-          {[
-            {
-              key: 'probe-total',
-              label: t('monitoring.codex_inspection_total_accounts'),
-              value: activeRun ? String(activeRun.probeSetCount) : summaryBlankValue,
-              meta: t('monitoring.server_codex_inspection_total_files', {
-                count: activeRun?.totalFiles ?? 0,
-              }),
-              icon: 'probe' as const,
-              accent: 'blue' as const,
-            },
-            {
-              key: 'sampled',
-              label: t('monitoring.codex_inspection_sampled_accounts'),
-              value: activeRun ? String(activeRun.sampledCount) : summaryBlankValue,
-              meta: getRunStatusLabel(activeRun, t),
-              icon: 'sampled' as const,
-              accent: 'cyan' as const,
-            },
-            {
-              key: 'delete',
-              label: t('monitoring.codex_inspection_delete_count'),
-              value: activeRun ? String(activeRun.deleteCount) : summaryBlankValue,
-              meta: t('monitoring.codex_inspection_delete_meta'),
-              tone: 'bad' as const,
-              icon: 'delete' as const,
-              accent: 'red' as const,
-            },
-            {
-              key: 'disable',
-              label: t('monitoring.codex_inspection_disable_count'),
-              value: activeRun ? String(activeRun.disableCount) : summaryBlankValue,
-              meta: `${t('monitoring.codex_inspection_threshold')} ${selectedConfig.usedPercentThreshold}%`,
-              tone: 'warn' as const,
-              icon: 'disable' as const,
-              accent: 'amber' as const,
-            },
-            {
-              key: 'enable',
-              label: t('monitoring.codex_inspection_enable_count'),
-              value: activeRun ? String(activeRun.enableCount) : summaryBlankValue,
-              meta: t('monitoring.codex_inspection_enable_meta'),
-              tone: 'good' as const,
-              icon: 'enable' as const,
-              accent: 'green' as const,
-            },
-            {
-              key: 'reauth',
-              label: t('monitoring.codex_inspection_reauth_count'),
-              value: activeRun ? String(activeRun.reauthCount) : summaryBlankValue,
-              meta: t('monitoring.codex_inspection_reauth_meta'),
-              icon: 'reauth' as const,
-              accent: 'violet' as const,
-            },
-          ].map((card) => {
-            const tone: MonitoringSummaryCardProps['tone'] = card.tone;
-            return (
-              <MonitoringSummaryCard
-                key={card.key}
-                label={card.label}
-                value={card.value}
-                meta={card.meta}
-                icon={card.icon}
-                accent={card.accent}
-                tone={tone}
-              />
-            );
-          })}
+          {!selectedConfig.enabled ? (
+            <div className={styles.statusAlertBanner}>
+              ⚠️ {t('monitoring.server_codex_inspection_schedule_disabled')}
+            </div>
+          ) : null}
+
+          <CodexInspectionConfigOverview
+            title={t('monitoring.codex_inspection_config_overview_title')}
+            editLabel={t('monitoring.codex_inspection_config_overview_edit')}
+            copyLabel={t('monitoring.codex_inspection_settings_copy_prompt')}
+            copiedLabel={t('common.copied')}
+            ariaLabel={t('monitoring.server_codex_inspection_config_summary_title')}
+            items={configOverviewItems}
+            onEdit={openConfigDrawer}
+            compact
+            embedded
+            hideHeader
+          />
+
+          <section className={styles.summaryGrid}>
+            {[
+              {
+                key: 'probe-total',
+                label: t('monitoring.codex_inspection_total_accounts'),
+                value: activeRun ? String(activeRun.probeSetCount) : summaryBlankValue,
+                meta: t('monitoring.server_codex_inspection_total_files', {
+                  count: activeRun?.totalFiles ?? 0,
+                }),
+                icon: 'probe' as const,
+                accent: 'blue' as const,
+              },
+              {
+                key: 'sampled',
+                label: t('monitoring.codex_inspection_sampled_accounts'),
+                value: activeRun ? String(activeRun.sampledCount) : summaryBlankValue,
+                meta: getRunStatusLabel(activeRun, t),
+                icon: 'sampled' as const,
+                accent: 'cyan' as const,
+              },
+              {
+                key: 'delete',
+                label: t('monitoring.codex_inspection_delete_count'),
+                value: activeRun ? String(activeRun.deleteCount) : summaryBlankValue,
+                meta: t('monitoring.codex_inspection_delete_meta'),
+                tone: 'bad' as const,
+                icon: 'delete' as const,
+                accent: 'red' as const,
+              },
+              {
+                key: 'disable',
+                label: t('monitoring.codex_inspection_disable_count'),
+                value: activeRun ? String(activeRun.disableCount) : summaryBlankValue,
+                meta: `${t('monitoring.codex_inspection_threshold')} ${selectedConfig.usedPercentThreshold}%`,
+                tone: 'warn' as const,
+                icon: 'disable' as const,
+                accent: 'amber' as const,
+              },
+              {
+                key: 'enable',
+                label: t('monitoring.codex_inspection_enable_count'),
+                value: activeRun ? String(activeRun.enableCount) : summaryBlankValue,
+                meta: t('monitoring.codex_inspection_enable_meta'),
+                tone: 'good' as const,
+                icon: 'enable' as const,
+                accent: 'green' as const,
+              },
+              {
+                key: 'reauth',
+                label: t('monitoring.codex_inspection_reauth_count'),
+                value: activeRun ? String(activeRun.reauthCount) : summaryBlankValue,
+                meta: t('monitoring.codex_inspection_reauth_meta'),
+                icon: 'reauth' as const,
+                accent: 'violet' as const,
+              },
+            ].map((card) => {
+              const tone: MonitoringSummaryCardProps['tone'] = card.tone;
+              return (
+                <MonitoringSummaryCard
+                  key={card.key}
+                  label={card.label}
+                  value={card.value}
+                  meta={card.meta}
+                  icon={card.icon}
+                  accent={card.accent}
+                  tone={tone}
+                />
+              );
+            })}
+          </section>
         </div>
       </Panel>
     );
@@ -2024,6 +2072,19 @@ export function ServerCodexInspectionPage() {
             ? () => handleDeleteServerReauth(reauthResults, 'bulk')
             : undefined
         }
+        onOpenCredential={
+          onOpenCredential
+            ? (item) =>
+                onOpenCredential({
+                  fileName: item.fileName,
+                  runtimeId: item.runtimeId ?? null,
+                  provider: item.provider,
+                  authIndex: item.authIndex ?? null,
+                  accountId: item.accountId ?? null,
+                  accountSnapshot: item.accountSnapshot ?? null,
+                })
+            : undefined
+        }
         filterLabel={filterLabel}
         handlingFilterLabel={handlingFilterLabel}
         renderOperation={renderOperation}
@@ -2068,9 +2129,7 @@ export function ServerCodexInspectionPage() {
   }, [serverLogEntries, showNotification, t]);
 
   return (
-    <div className={styles.page}>
-      <CodexInspectionModeTabs activeMode="server" />
-
+    <div className={styles.page} data-embedded={embedded || undefined}>
       {error ? (
         <div className={styles.topErrorBar} role="alert" aria-live="polite">
           <span>{error}</span>

@@ -47,14 +47,17 @@ describe('credential health inspection demo fixtures', () => {
     });
   });
 
-  it('keeps run summary counts aligned with the eight result scenarios', () => {
+  it('keeps run summary counts aligned with all result scenarios', () => {
     const detail = getDemoCodexInspectionRun();
     const actions = detail.results.map((item) => item.action);
     const providers = new Set(detail.results.map((item) => item.provider));
     const authFiles = getDemoAuthFiles();
+    const expectedResultCount = authFiles.files.filter((file) =>
+      ['codex', 'xai'].includes(String(file.provider ?? file.type ?? '').toLowerCase())
+    ).length;
 
     expect(authFiles.total).toBe(authFiles.files.length);
-    expect(detail.results).toHaveLength(8);
+    expect(detail.results).toHaveLength(expectedResultCount);
     expect(providers).toEqual(new Set(['codex', 'xai']));
     expect(detail.run.sampledCount).toBe(detail.results.length);
     expect(detail.run.disableCount).toBe(actions.filter((action) => action === 'disable').length);
@@ -158,13 +161,19 @@ describe('credential health inspection demo fixtures', () => {
   });
 
   it('uses production-shaped xAI server logs with explicit mode, evidence, and severity', () => {
-    const logs = getDemoCodexInspectionRun().logs.filter(
+    const detail = getDemoCodexInspectionRun();
+    const logs = detail.logs.filter(
       (item) => item.message === 'monitoring.xai_inspection_log_server_complete'
     );
+    const xaiResultCount = detail.results.filter((item) => item.provider === 'xai').length;
+    const findByAccount = (displayAccount: string) =>
+      logs.find(
+        (item) =>
+          (item.detail as Record<string, unknown> | undefined)?.displayAccount === displayAccount
+      );
 
-    expect(logs).toHaveLength(3);
-    expect(logs.map((item) => item.level)).toEqual(['info', 'warning', 'error']);
-    expect(logs[0].detail).toMatchObject({
+    expect(logs).toHaveLength(xaiResultCount);
+    expect(findByAccount('oc0demo01@yijihwjw.com')?.detail).toMatchObject({
       provider: 'xai',
       inspectionMode: 'inference',
       healthEvidence: 'inference_healthy',
@@ -173,12 +182,12 @@ describe('credential health inspection demo fixtures', () => {
       inferenceHealthy: true,
       action: 'keep',
     });
-    expect(logs[1].detail).toMatchObject({
+    expect(findByAccount('oc1demo02@yijihwjw.com')?.detail).toMatchObject({
       healthEvidence: 'spending_limit',
       inferenceHealthy: false,
       action: 'disable',
     });
-    expect(logs[2].detail).toMatchObject({
+    expect(findByAccount('expired.demo@example.com')?.detail).toMatchObject({
       healthEvidence: 'auth_invalid',
       inferenceHealthy: false,
       action: 'reauth',
@@ -731,6 +740,11 @@ describe('credential health inspection demo fixtures', () => {
       t,
     });
     const byAuthIndex = new Map(result.results.map((item) => [item.authIndex, item]));
+    const expectedTargetCount = fixtureRun.files.filter((file) =>
+      ['codex', 'xai'].includes(String(file.provider ?? file.type ?? '').toLowerCase())
+    ).length;
+
+    expect(result.results).toHaveLength(expectedTargetCount);
     const fixtureByAuthIndex = new Map(
       fixtureRun.results.map((item) => [item.authIndex, item] as const)
     );
@@ -756,11 +770,10 @@ describe('credential health inspection demo fixtures', () => {
       })),
     });
 
-    expect(result.results).toHaveLength(8);
-    byAuthIndex.forEach((item, authIndex) => {
-      const fixture = fixtureByAuthIndex.get(authIndex);
-      expect(fixture, `missing fixture for ${authIndex}`).toBeDefined();
-      expect(resultShape(item)).toEqual(resultShape(fixture!));
+    fixtureByAuthIndex.forEach((fixture, authIndex) => {
+      const item = byAuthIndex.get(authIndex);
+      expect(item, `missing local result for ${authIndex}`).toBeDefined();
+      expect(resultShape(item!)).toEqual(resultShape(fixture));
     });
     expect(byAuthIndex.get('codex-upgrade-demo-01')).toMatchObject({
       action: 'keep',

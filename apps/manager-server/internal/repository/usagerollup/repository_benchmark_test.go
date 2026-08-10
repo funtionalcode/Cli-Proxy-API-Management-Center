@@ -195,7 +195,11 @@ func benchmarkRollupEvents(prefix string, start int, count int) []usage.Event {
 func benchmarkAccountKeys(count int) []string {
 	keys := make([]string, 0, count)
 	for index := 0; index < count; index++ {
-		keys = append(keys, fmt.Sprintf("account-%04d@example.com", index))
+		keys = append(keys, rollupTestAccountKey(
+			fmt.Sprintf("account-%04d@example.com", index),
+			"",
+			fmt.Sprintf("auth-%04d", index),
+		))
 	}
 	return keys
 }

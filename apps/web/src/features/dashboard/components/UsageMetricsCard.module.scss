@@ -140,9 +140,9 @@
       font-weight: 700;
       color: var(--text-tertiary);
 
-      &[data-rank="1"] { background: #f59e0b; color: white; }
-      &[data-rank="2"] { background: #94a3b8; color: white; }
-      &[data-rank="3"] { background: #b45309; color: white; }
+      &[data-rank="1"] { background: var(--data-amber-base); color: var(--primary-contrast, #fff); }
+      &[data-rank="2"] { background: var(--data-slate-light-3); color: var(--primary-contrast, #fff); }
+      &[data-rank="3"] { background: var(--data-amber-dark-2); color: var(--primary-contrast, #fff); }
     }
 
     .rankInfo {
@@ -162,14 +162,14 @@
 
       .rankTrack {
         height: 6px;
-        background: var(--app-surface-muted);
+        background: var(--data-track-bg);
         border-radius: 3px;
         overflow: hidden;
 
         .rankBar {
           width: calc(var(--share) * 100%);
           height: 100%;
-          background: var(--color-primary);
+          background: var(--data-amber-base);
           border-radius: 3px;
         }
       }

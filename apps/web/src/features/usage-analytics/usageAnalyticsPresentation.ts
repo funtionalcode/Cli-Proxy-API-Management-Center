@@ -35,6 +35,7 @@ export type UsageSummaryCardTone = 'bad' | 'good' | 'warn';
 
 export type UsageSummaryCard = {
   accent?: UsageSummaryCardAccent;
+  dataAttributes?: Record<`data-${string}`, string>;
   fullLabel?: string;
   icon?: UsageSummaryCardIcon;
   label: string;

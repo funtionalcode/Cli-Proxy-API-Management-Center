@@ -1,0 +1,79 @@
+import {
+  formatPercent,
+  formatQuotaResetDisplay,
+  type AntigravityQuotaMatrix,
+} from '@/features/accounts/model/accountsPagePresentation';
+import { useTranslation } from 'react-i18next';
+import styles from '../AccountsPage.module.scss';
+
+interface AccountQuotaMatrixProps {
+  accountKey: string;
+  matrix: AntigravityQuotaMatrix;
+}
+
+const getRemainingPercentBarClass = (remainingPercent: number | null) => {
+  if (remainingPercent === null) return styles.quotaBarNeutral;
+  if (remainingPercent <= 0) return styles.quotaBarBad;
+  if (remainingPercent < 20) return styles.quotaBarWarn;
+  return styles.quotaBarGood;
+};
+
+export function AccountQuotaMatrix({ accountKey, matrix }: AccountQuotaMatrixProps) {
+  const { t, i18n } = useTranslation();
+  return (
+    <div className={styles.quotaMatrix} data-account-quota-matrix={accountKey}>
+      {matrix.rows.map((matrixRow) => (
+        <div
+          key={matrixRow.key}
+          className={styles.quotaMatrixRow}
+          data-account-quota-matrix-row={matrixRow.key}
+        >
+          <span className={styles.quotaMatrixWindowLabel}>{matrixRow.label}</span>
+          <div className={styles.quotaMatrixCells}>
+            {matrixRow.cells.map((cell) => {
+              const windowRemaining = cell.window.remainingPercent;
+              const windowWidth = Math.max(0, Math.min(100, windowRemaining ?? 0));
+              const resetDisplay = formatQuotaResetDisplay(
+                cell.window.resetAtMs,
+                cell.window.resetLabel,
+                i18n.language
+              );
+              const title = [
+                `${cell.groupLabel} ${cell.window.label}: ${formatPercent(windowRemaining)}`,
+                resetDisplay !== '-' ? `${t('accounts.col_reset')}: ${resetDisplay}` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <div
+                  key={cell.window.key}
+                  className={styles.quotaMatrixCell}
+                  data-account-quota-matrix-cell={`${matrixRow.key}:${cell.groupLabel}`}
+                  title={title}
+                >
+                  <span className={styles.quotaMatrixGroupLabel} title={cell.groupLabel}>
+                    {cell.displayLabel}
+                  </span>
+                  <div
+                    className={`${styles.quotaTrack} ${styles.quotaMatrixTrack}`}
+                    aria-hidden="true"
+                  >
+                    <span
+                      className={`${styles.quotaBar} ${getRemainingPercentBarClass(
+                        windowRemaining
+                      )}`}
+                      style={{ width: `${windowWidth}%` }}
+                    />
+                  </div>
+                  <strong className={styles.quotaMatrixPercent}>
+                    {windowRemaining !== null ? formatPercent(windowRemaining) : '-'}
+                  </strong>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}

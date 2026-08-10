@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -166,7 +167,7 @@ func (r *repository) BackfillResponseMetadata(ctx context.Context, batchLimit in
 	}
 	defer stmt.Close()
 
-	updated := 0
+	updatedIDs := make([]int64, 0, len(updates))
 	for _, update := range updates {
 		derived := update.Derived
 		res, err := stmt.ExecContext(
@@ -182,18 +183,30 @@ func (r *repository) BackfillResponseMetadata(ctx context.Context, batchLimit in
 			update.PreviousMetadataJSON,
 		)
 		if err != nil {
-			return updated, err
+			return 0, err
 		}
 		affected, err := res.RowsAffected()
 		if err != nil {
-			return updated, err
+			return 0, err
 		}
-		updated += int(affected)
+		if affected == 1 {
+			updatedIDs = append(updatedIDs, update.ID)
+		}
+	}
+	if len(updatedIDs) == 0 {
+		return 0, nil
+	}
+	nowMS := time.Now().UnixMilli()
+	if err := usageprojection.UpsertEventIDs(ctx, tx, updatedIDs, nowMS); err != nil {
+		return 0, err
+	}
+	if err := usageprojection.UpsertHeaderIDs(ctx, tx, updatedIDs, nowMS); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return updated, err
+		return 0, err
 	}
-	return updated, nil
+	return len(updatedIDs), nil
 }
 
 func (r *repository) responseMetadataBackfillPage(ctx context.Context, afterID int64, limit int) ([]responseMetadataBackfillRow, error) {

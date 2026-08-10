@@ -5,14 +5,17 @@ import { buildCodexQuotaWindowInfos } from './quota/codexQuota';
 import {
   buildObservedCodexQuotaFromHeaderSnapshot,
   buildUsageHeaderSnapshotLookup,
+  filterFreshUsageHeaderQuotaSnapshots,
   getHeaderSnapshotReachedWindowKind,
   getHeaderSnapshotPlanType,
   getHeaderSnapshotSummaryWindowKind,
   getHeaderSnapshotWindowUsedPercent,
   getHighConfidenceUsageHeaderSnapshotForAuthFile,
   getUsageHeaderSnapshotForAuthFile,
+  hasExpiredUsageHeaderQuotaWindow,
   hasUsageHeaderDiagnosticSignal,
   hasUsageHeaderQuotaSignal,
+  isUsageHeaderQuotaSnapshotExpired,
 } from './usageHeaderSnapshots';
 
 describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
@@ -35,6 +38,7 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
           primary: {
             used_percent: 20,
             reset_at_ms: 1_784_805_897_000,
+            reset_after_seconds: 2_592_000,
             window_minutes: 43_200,
           },
           secondary: {
@@ -64,16 +68,22 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
     expect(observed?.payload?.rate_limit?.primary_window).toMatchObject({
       used_percent: 20,
       reset_at: 1_784_805_897,
+      reset_after_seconds: 2_592_000,
       limit_window_seconds: 2_592_000,
     });
     expect(observed?.payload?.rate_limit?.secondary_window).toBeUndefined();
 
-    const windows = buildCodexQuotaWindowInfos(observed?.payload ?? {});
+    const windows = buildCodexQuotaWindowInfos(observed?.payload ?? {}, {
+      observedAtMs: snapshot.timestamp_ms,
+      source: 'response_header',
+    });
     expect(windows).toMatchObject([
       {
         id: 'monthly',
         labelKey: 'codex_quota.monthly_window',
         usedPercent: 20,
+        resetAtMs: 1_784_805_897_000,
+        resetAccuracy: 'estimated',
         limitWindowSeconds: 2_592_000,
       },
     ]);
@@ -112,7 +122,10 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
       reachedWindowKind: 'five_hour',
       reachedWindowSource: 'primary',
     });
-    const windows = buildCodexQuotaWindowInfos(observed?.payload ?? {});
+    const windows = buildCodexQuotaWindowInfos(observed?.payload ?? {}, {
+      observedAtMs: snapshot.timestamp_ms,
+      source: 'response_header',
+    });
     expect(windows).toMatchObject([
       {
         id: 'five-hour',
@@ -257,7 +270,9 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
     expect(getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, file)?.event_hash).toBe(
       'shared-file-index-1'
     );
-    expect(getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, missingIndexFile)).toBeUndefined();
+    expect(
+      getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, missingIndexFile)
+    ).toBeUndefined();
   });
 
   it('does not use same-account header snapshots as high-confidence auth-file quota evidence', () => {
@@ -301,5 +316,64 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
 
     expect(getHeaderSnapshotPlanType(snapshot)).toBe('');
     expect(hasUsageHeaderQuotaSignal(snapshot)).toBe(true);
+  });
+
+  it('filters expired quota headers while retaining active and diagnostic-only snapshots', () => {
+    const nowMs = 1_800_000_000_000;
+    const snapshots: UsageHeaderSnapshot[] = [
+      {
+        event_hash: 'expired-quota',
+        timestamp_ms: nowMs - 60_000,
+        response_metadata: {
+          quota: {
+            rate_limit_reached_type: 'primary',
+            reached_window_source: 'primary',
+            primary: { used_percent: 100, reset_at_ms: nowMs - 1 },
+          },
+        },
+      },
+      {
+        event_hash: 'active-quota',
+        timestamp_ms: nowMs - 60_000,
+        response_metadata: {
+          quota: {
+            rate_limit_reached_type: 'primary',
+            reached_window_source: 'primary',
+            primary: { used_percent: 100, reset_at_ms: nowMs + 60_000 },
+          },
+        },
+      },
+      {
+        event_hash: 'mixed-quota',
+        timestamp_ms: nowMs - 60_000,
+        response_metadata: {
+          quota: {
+            rate_limit_reached_type: 'primary',
+            reached_window_source: 'primary',
+            primary: {
+              used_percent: 100,
+              reset_at_ms: nowMs - 1,
+              window_minutes: 300,
+            },
+            secondary: {
+              used_percent: 40,
+              reset_at_ms: nowMs + 60_000,
+              window_minutes: 10_080,
+            },
+          },
+        },
+      },
+      {
+        event_hash: 'diagnostic-only',
+        timestamp_ms: nowMs - 60_000,
+        header_error_kind: 'upstream_error',
+      },
+    ];
+
+    expect(
+      filterFreshUsageHeaderQuotaSnapshots(snapshots, nowMs).map((item) => item.event_hash)
+    ).toEqual(['active-quota', 'mixed-quota', 'diagnostic-only']);
+    expect(isUsageHeaderQuotaSnapshotExpired(snapshots[2], nowMs)).toBe(false);
+    expect(hasExpiredUsageHeaderQuotaWindow(snapshots[2], nowMs)).toBe(true);
   });
 });

@@ -1,0 +1,93 @@
+@use '@/styles/variables.scss' as *;
+
+/**
+ * AccountHealthBadge 共享样式
+ * 通过全局 className (.healthBadge / .healthBadgeOk ...) 输出,
+ * 让列表 / 抽屉 / 卡片各处消费同一组严重度色板。
+ */
+
+:global(.healthBadge) {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: 2px $spacing-sm;
+  border-radius: $radius-full;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  border: 1px solid transparent;
+  transition: background $transition-fast;
+}
+
+:global(.healthBadge-sm) {
+  padding: 1px $spacing-xs;
+  font-size: 11px;
+}
+
+:global(.healthBadgeDot) {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+:global(.healthBadgeOk) {
+  background: var(--data-green-light-9, #f0fdf4);
+  border-color: var(--data-green-light-7, #bbf7d0);
+  color: var(--data-green-dark-2, #166534);
+}
+
+:global(.healthBadgeOk .healthBadgeDot) {
+  background: var(--data-green-base, #16a34a);
+}
+
+:global(.healthBadgeWarning) {
+  background: var(--data-amber-light-9, #fffbeb);
+  border-color: var(--data-amber-light-7, #fde68a);
+  color: var(--data-amber-dark-2, #92400e);
+}
+
+:global(.healthBadgeWarning .healthBadgeDot) {
+  background: var(--data-amber-base, #d97706);
+}
+
+:global(.healthBadgeCooldown) {
+  background: var(--data-blue-light-9, #eff6ff);
+  border-color: var(--data-blue-light-7, #bfdbfe);
+  color: var(--data-blue-dark-2, #1e40af);
+}
+
+:global(.healthBadgeCooldown .healthBadgeDot) {
+  background: var(--data-blue-base, #2563eb);
+}
+
+:global(.healthBadgeCritical) {
+  background: var(--data-red-light-9, #fef2f2);
+  border-color: var(--data-red-light-7, #fecaca);
+  color: var(--data-red-dark-2, #991b1b);
+}
+
+:global(.healthBadgeCritical .healthBadgeDot) {
+  background: var(--data-red-base, #dc2626);
+}
+
+:global(.healthBadgeDisabled) {
+  background: var(--gray-100, #f3f4f6);
+  border-color: var(--gray-200, #e5e7eb);
+  color: var(--gray-600, #4b5563);
+}
+
+:global(.healthBadgeDisabled .healthBadgeDot) {
+  background: var(--gray-400, #9ca3af);
+}
+
+:global(.healthBadgeUnknown) {
+  background: var(--gray-100, #f3f4f6);
+  border-color: var(--gray-200, #e5e7eb);
+  color: var(--gray-500, #6b7280);
+}
+
+:global(.healthBadgeUnknown .healthBadgeDot) {
+  background: var(--gray-400, #9ca3af);
+}

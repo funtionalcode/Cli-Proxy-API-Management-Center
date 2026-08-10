@@ -1,18 +1,43 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const (
-	dashboardHourlyRollupFormatVersionKey = "usage_dashboard_hourly_format_version"
-	dashboardHourlyRollupFormatVersion    = "2"
+	accountHistoryIdentityFormatVersionKey = "usage_account_history_identity_format_version"
+	dashboardHourlyRollupFormatVersionKey  = "usage_dashboard_hourly_format_version"
+	dashboardHourlyRollupFormatVersion     = "2"
+
+	usageMonitoringAccountDailyTable  = "usage_monitoring_account_daily_rollups_v1"
+	usageMonitoringAPIKeyDailyTable   = "usage_monitoring_api_key_daily_rollups_v1"
+	usageMonitoringSelectorDailyTable = "usage_monitoring_selector_daily_rollups_v1"
+	usageMonitoringHeaderLatestTable  = "usage_monitoring_header_latest_v1"
+	usageMonitoringRollupStateTable   = "usage_monitoring_rollup_state"
+	usageMonitoringSearchStateTable   = "usage_monitoring_search_index_state"
+
+	usageMonitoringStatsRollupName      = "stats_v1"
+	usageMonitoringMetadataRollupName   = "metadata_v1"
+	usageMonitoringProjectionRollupName = "projection_v1"
 )
 
 func Migrate(db *sql.DB) error {
+	monitoringSnapshot, err := inspectUsageMonitoringMigrationSnapshot(db)
+	if err != nil {
+		return err
+	}
+	if err := resetDamagedUsageMonitoringDerivations(db, monitoringSnapshot); err != nil {
+		return err
+	}
+
 	statements := []string{
 		`pragma journal_mode = WAL`,
 		`pragma synchronous = FULL`,
@@ -299,6 +324,218 @@ func Migrate(db *sql.DB) error {
 			backfill_last_event_id, coverage_event_id, target_event_id,
 			processed_events, updated_at_ms
 		) values ('pricing_v1', 1, '', 'pending', 0, 0, 0, 0, 0)`,
+		`create table if not exists usage_monitoring_account_daily_rollups_v1 (
+			structure_revision text not null,
+			bucket_ms integer not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			provider text not null,
+			auth_provider_snapshot text not null,
+			auth_index text not null,
+			source text not null,
+			source_hash text not null,
+			auth_file_snapshot text not null,
+			api_key_hash text not null,
+			executor_type text not null,
+			model text not null,
+			billing_model text not null,
+			pricing_model text not null,
+			service_tier text not null,
+			context_threshold_tokens integer not null,
+			failed integer not null,
+			calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			zero_token_calls integer not null default 0,
+			latency_sum_ms integer not null default 0,
+			latency_samples integer not null default 0,
+			last_seen_ms integer not null,
+			updated_at_ms integer not null,
+			primary key (
+				structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
+				provider, auth_provider_snapshot, auth_index, source, source_hash,
+				auth_file_snapshot, api_key_hash, executor_type, model, billing_model,
+				pricing_model, service_tier, context_threshold_tokens, failed
+			)
+		)`,
+		`create index if not exists idx_usage_monitoring_account_daily_bucket
+			on usage_monitoring_account_daily_rollups_v1(structure_revision, bucket_ms)`,
+		`create index if not exists idx_usage_monitoring_account_daily_credential_window
+			on usage_monitoring_account_daily_rollups_v1(
+				structure_revision, trim(auth_file_snapshot), trim(auth_index), bucket_ms
+			)`,
+		`create index if not exists idx_usage_monitoring_account_daily_legacy_window
+			on usage_monitoring_account_daily_rollups_v1(
+				structure_revision, trim(source), trim(auth_index), bucket_ms
+			)`,
+		`create table if not exists usage_monitoring_api_key_daily_rollups_v1 (
+			structure_revision text not null,
+			bucket_ms integer not null,
+			api_key_hash text not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			provider text not null,
+			auth_provider_snapshot text not null,
+			auth_index text not null,
+			source text not null,
+			source_hash text not null,
+			auth_file_snapshot text not null,
+			executor_type text not null,
+			model text not null,
+			billing_model text not null,
+			pricing_model text not null,
+			service_tier text not null,
+			context_threshold_tokens integer not null,
+			failed integer not null,
+			calls integer not null default 0,
+			input_tokens integer not null default 0,
+			output_tokens integer not null default 0,
+			reasoning_tokens integer not null default 0,
+			cached_tokens integer not null default 0,
+			cache_read_tokens integer not null default 0,
+			cache_creation_tokens integer not null default 0,
+			long_input_tokens integer not null default 0,
+			long_output_tokens integer not null default 0,
+			long_cached_tokens integer not null default 0,
+			long_cache_read_tokens integer not null default 0,
+			long_cache_creation_tokens integer not null default 0,
+			total_tokens integer not null default 0,
+			zero_token_calls integer not null default 0,
+			latency_sum_ms integer not null default 0,
+			latency_samples integer not null default 0,
+			last_seen_ms integer not null,
+			updated_at_ms integer not null,
+			primary key (
+				structure_revision, bucket_ms, api_key_hash, account_snapshot,
+				auth_label_snapshot, provider, auth_provider_snapshot, auth_index,
+				source, source_hash, auth_file_snapshot, executor_type, model,
+				billing_model, pricing_model, service_tier,
+				context_threshold_tokens, failed
+			)
+		)`,
+		`create index if not exists idx_usage_monitoring_api_key_daily_bucket
+			on usage_monitoring_api_key_daily_rollups_v1(structure_revision, bucket_ms)`,
+		`create table if not exists usage_monitoring_selector_daily_rollups_v1 (
+			bucket_ms integer not null,
+			model text not null,
+			api_key_hash text not null,
+			provider text not null,
+			auth_file_snapshot text not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			auth_index text not null,
+			source text not null,
+			source_hash text not null,
+			updated_at_ms integer not null,
+			primary key (
+				bucket_ms, model, api_key_hash, provider, auth_file_snapshot,
+				account_snapshot, auth_label_snapshot, auth_index, source_hash
+			)
+		)`,
+		`create index if not exists idx_usage_monitoring_selector_daily_bucket
+			on usage_monitoring_selector_daily_rollups_v1(bucket_ms)`,
+		`create table if not exists usage_monitoring_event_projection_v1 (
+			event_id integer primary key,
+			timestamp_ms integer not null,
+			search_text text not null,
+			account_key text not null,
+			provider text not null,
+			executor_type text not null,
+			model text not null,
+			resolved_model text not null,
+			auth_index text not null,
+			source text not null,
+			source_hash text not null,
+			api_key_hash text not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			auth_file_snapshot text not null,
+			auth_provider_snapshot text not null,
+			auth_project_id_snapshot text not null,
+			reasoning_effort text not null,
+			service_tier text not null,
+			failed integer not null,
+			latency_ms integer,
+			input_tokens integer not null,
+			output_tokens integer not null,
+			reasoning_tokens integer not null,
+			cached_tokens integer not null,
+			cache_tokens integer not null,
+			cache_read_tokens integer not null,
+			cache_creation_tokens integer not null,
+			normalized_total_input_tokens integer not null,
+			total_tokens integer not null,
+			header_quota_plan_type text not null,
+			header_error_kind text not null,
+			header_error_code text not null,
+			header_trace_id text not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_usage_monitoring_event_projection_timestamp
+			on usage_monitoring_event_projection_v1(timestamp_ms desc, event_id desc)`,
+		`create table if not exists usage_monitoring_header_latest_v1 (
+			snapshot_key text primary key,
+			event_id integer not null,
+			event_hash text not null,
+			timestamp_ms integer not null,
+			auth_file_snapshot text not null,
+			auth_index text not null,
+			account_snapshot text not null,
+			auth_label_snapshot text not null,
+			auth_provider_snapshot text not null,
+			auth_project_id_snapshot text not null,
+			source text not null,
+			source_hash text not null,
+			response_metadata_json text not null,
+			header_quota_recover_at_ms integer,
+			header_quota_used_percent real,
+			header_quota_plan_type text not null,
+			header_error_kind text not null,
+			header_error_code text not null,
+			header_trace_id text not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_usage_monitoring_header_latest_timestamp
+			on usage_monitoring_header_latest_v1(timestamp_ms desc, event_id desc)`,
+		`create table if not exists usage_monitoring_rollup_state (
+			rollup_name text primary key,
+			schema_version integer not null,
+			structure_revision text not null default '',
+			status text not null,
+			backfill_last_event_id integer not null default 0,
+			coverage_event_id integer not null default 0,
+			target_event_id integer not null default 0,
+			processed_events integer not null default 0,
+			last_run_started_at_ms integer,
+			updated_at_ms integer not null default 0,
+			finished_at_ms integer,
+			last_error text
+		)`,
+		`insert or ignore into usage_monitoring_rollup_state (
+			rollup_name, schema_version, status, target_event_id, updated_at_ms
+		) select 'stats_v1', 1,
+			case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+			coalesce((select max(id) from usage_events), 0), 0`,
+		`insert or ignore into usage_monitoring_rollup_state (
+			rollup_name, schema_version, status, target_event_id, updated_at_ms
+		) select 'metadata_v1', 1,
+			case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+			coalesce((select max(id) from usage_events), 0), 0`,
+		`insert or ignore into usage_monitoring_rollup_state (
+			rollup_name, schema_version, status, target_event_id, updated_at_ms
+		) select 'projection_v1', 1,
+			case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+			coalesce((select max(id) from usage_events), 0), 0`,
 		`create table if not exists usage_event_identity_ledger (
 			event_hash text primary key,
 			raw_event_id integer,
@@ -542,16 +779,159 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null
 		)`,
 		`create index if not exists idx_quota_cooldowns_due on quota_cooldowns(status, recover_at_ms)`,
+		`create table if not exists account_quota_observations (
+			id integer primary key autoincrement,
+			observation_hash text not null unique,
+			account_key text not null,
+			provider text not null,
+			source text not null,
+			source_observation_id text,
+			inventory_scope_key text not null,
+			inventory_mode text not null,
+			observed_at_ms integer not null,
+			window_count integer not null default 0,
+			lifecycle_applied integer not null default 1,
+			created_at_ms integer not null
+		)`,
+		`create index if not exists idx_quota_observations_account_time
+			on account_quota_observations(account_key, provider, observed_at_ms desc)`,
+		`create index if not exists idx_quota_observations_inventory
+			on account_quota_observations(account_key, provider, inventory_scope_key, observed_at_ms desc)`,
+		`create table if not exists account_quota_windows (
+			id integer primary key autoincrement,
+			account_key text not null,
+			provider text not null,
+			provider_window_id text not null,
+			window_kind text not null,
+			window_mode text not null,
+			model_scope_kind text not null,
+			model_scope_key text,
+			model_ids_json text,
+			scope_fingerprint text not null,
+			inventory_scope_key text not null,
+			relationship_kind text,
+			container_provider_window_id text,
+			availability text not null,
+			generation integer not null default 1,
+			absence_count integer not null default 0,
+			first_seen_at_ms integer not null,
+			last_seen_at_ms integer not null,
+			missing_since_ms integer,
+			deactivated_at_ms integer,
+			last_observation_id integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null,
+			unique(account_key, provider, provider_window_id, scope_fingerprint),
+			foreign key(last_observation_id) references account_quota_observations(id)
+		)`,
+		`create index if not exists idx_quota_windows_account_state
+			on account_quota_windows(account_key, provider, availability, updated_at_ms desc)`,
+		`create index if not exists idx_quota_windows_inventory
+			on account_quota_windows(account_key, provider, inventory_scope_key, availability)`,
+		`create table if not exists account_quota_window_activations (
+			id integer primary key autoincrement,
+			window_id integer not null,
+			generation integer not null,
+			status text not null,
+			activated_at_ms integer not null,
+			deactivated_at_ms integer,
+			activation_accuracy text not null,
+			deactivation_reason text,
+			activate_observation_id integer,
+			deactivate_observation_id integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null,
+			unique(window_id, generation),
+			foreign key(window_id) references account_quota_windows(id),
+			foreign key(activate_observation_id) references account_quota_observations(id),
+			foreign key(deactivate_observation_id) references account_quota_observations(id)
+		)`,
+		`create unique index if not exists idx_quota_activations_active
+			on account_quota_window_activations(window_id) where deactivated_at_ms is null`,
+		`create table if not exists account_quota_cycles (
+			id integer primary key autoincrement,
+			activation_id integer not null,
+			provider_cycle_key text not null,
+			state text not null,
+			scheduled_start_ms integer,
+			scheduled_end_ms integer,
+			actual_start_ms integer not null,
+			actual_end_ms integer,
+			duration_seconds integer,
+			boundary_accuracy text not null,
+			end_reason text,
+			first_observation_id integer,
+			last_observation_id integer,
+			parent_cycle_id integer,
+			created_at_ms integer not null,
+			updated_at_ms integer not null,
+			unique(activation_id, provider_cycle_key),
+			foreign key(activation_id) references account_quota_window_activations(id),
+			foreign key(first_observation_id) references account_quota_observations(id),
+			foreign key(last_observation_id) references account_quota_observations(id),
+			foreign key(parent_cycle_id) references account_quota_cycles(id)
+		)`,
+		`create unique index if not exists idx_quota_cycles_active
+			on account_quota_cycles(activation_id) where actual_end_ms is null`,
+		`create index if not exists idx_quota_cycles_history
+			on account_quota_cycles(activation_id, actual_start_ms desc)`,
+		`create table if not exists account_quota_snapshots (
+			id integer primary key autoincrement,
+			observation_id integer,
+			logical_window_id integer,
+			activation_id integer,
+			cycle_id integer,
+			account_key text not null,
+			provider text not null,
+			provider_window_id text not null,
+			window_kind text not null,
+			window_mode text not null,
+			model_scope_kind text not null,
+			model_scope_key text,
+			model_ids_json text,
+			scope_fingerprint text not null default '',
+			content_hash text not null default '',
+			source text not null,
+			source_observation_id text,
+			observed_at_ms integer not null,
+			boundary_accuracy text not null,
+			cycle_start_ms integer,
+			cycle_end_ms integer,
+			duration_seconds integer,
+			used_percent real,
+			remaining_percent real,
+			used_value real,
+			limit_value real,
+			quota_unit text,
+			reset_credits_available integer,
+			reset_credits_json text,
+			plan_type text,
+			created_at_ms integer not null
+		)`,
+		`create index if not exists idx_quota_snapshots_latest
+			on account_quota_snapshots (
+				account_key, provider, provider_window_id,
+				model_scope_kind, model_scope_key, observed_at_ms desc
+			)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			return err
 		}
 	}
+	if err := ensureUsageMonitoringProjectionAccountKey(db); err != nil {
+		return err
+	}
+	if err := ensureUsageMonitoringSearchIndex(db); err != nil {
+		return err
+	}
 	if err := ensureUsageDataMigrationColumns(db); err != nil {
 		return err
 	}
 	if err := ensureUsageEventSnapshotColumns(db); err != nil {
+		return err
+	}
+	if err := ensureLatestAccountRequestIndexes(db); err != nil {
 		return err
 	}
 	if err := ensureCodexInspectionRunColumns(db); err != nil {
@@ -569,16 +949,358 @@ func Migrate(db *sql.DB) error {
 	if err := ensureQuotaCooldownColumns(db); err != nil {
 		return err
 	}
+	if err := ensureQuotaSnapshotLifecycleColumns(db); err != nil {
+		return err
+	}
+	if err := quotasnapshotrepo.BackfillLegacySnapshots(context.Background(), db); err != nil {
+		return err
+	}
 	if err := ensureQuotaCooldownIdentityIndex(db); err != nil {
 		return err
 	}
 	if err := ensureUsageRollupLongContextColumns(db); err != nil {
 		return err
 	}
+	if err := ensureAccountHistoryIdentityFormatVersion(db); err != nil {
+		return err
+	}
 	if err := ensureDashboardHourlyRollupFormatVersion(db); err != nil {
 		return err
 	}
 	return ensureModelPriceColumns(db)
+}
+
+type usageMonitoringMigrationSnapshot struct {
+	tables        map[string]bool
+	rollupStates  map[string]bool
+	latestEventID int64
+}
+
+func inspectUsageMonitoringMigrationSnapshot(db *sql.DB) (usageMonitoringMigrationSnapshot, error) {
+	tableNames := []string{
+		"usage_events",
+		usageMonitoringAccountDailyTable,
+		usageMonitoringAPIKeyDailyTable,
+		usageMonitoringSelectorDailyTable,
+		usageprojection.EventTable,
+		usageMonitoringHeaderLatestTable,
+		usageMonitoringRollupStateTable,
+		usageMonitoringSearchStateTable,
+	}
+	snapshot := usageMonitoringMigrationSnapshot{
+		tables:       make(map[string]bool, len(tableNames)),
+		rollupStates: make(map[string]bool, 3),
+	}
+	rows, err := db.Query(`select name from sqlite_master where type = 'table' and name in (
+		'usage_events',
+		'usage_monitoring_account_daily_rollups_v1',
+		'usage_monitoring_api_key_daily_rollups_v1',
+		'usage_monitoring_selector_daily_rollups_v1',
+		'usage_monitoring_event_projection_v1',
+		'usage_monitoring_header_latest_v1',
+		'usage_monitoring_rollup_state',
+		'usage_monitoring_search_index_state'
+	)`)
+	if err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring tables: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return usageMonitoringMigrationSnapshot{}, fmt.Errorf("scan usage monitoring table: %w", err)
+		}
+		snapshot.tables[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("close usage monitoring table inspection: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring tables: %w", err)
+	}
+
+	if snapshot.tables["usage_events"] {
+		if err := db.QueryRow(`select coalesce(max(id), 0) from usage_events`).Scan(&snapshot.latestEventID); err != nil {
+			return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect latest usage event for monitoring recovery: %w", err)
+		}
+	}
+	if !snapshot.tables[usageMonitoringRollupStateTable] {
+		return snapshot, nil
+	}
+	stateRows, err := db.Query(`select rollup_name from usage_monitoring_rollup_state where rollup_name in (?, ?, ?)`,
+		usageMonitoringStatsRollupName,
+		usageMonitoringMetadataRollupName,
+		usageMonitoringProjectionRollupName,
+	)
+	if err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring rollup states: %w", err)
+	}
+	for stateRows.Next() {
+		var name string
+		if err := stateRows.Scan(&name); err != nil {
+			_ = stateRows.Close()
+			return usageMonitoringMigrationSnapshot{}, fmt.Errorf("scan usage monitoring rollup state: %w", err)
+		}
+		snapshot.rollupStates[name] = true
+	}
+	if err := stateRows.Close(); err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("close usage monitoring rollup state inspection: %w", err)
+	}
+	if err := stateRows.Err(); err != nil {
+		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring rollup states: %w", err)
+	}
+	return snapshot, nil
+}
+
+func resetDamagedUsageMonitoringDerivations(db *sql.DB, snapshot usageMonitoringMigrationSnapshot) error {
+	statsDamaged := !snapshot.rollupStates[usageMonitoringStatsRollupName] ||
+		!snapshot.tables[usageMonitoringAccountDailyTable] ||
+		!snapshot.tables[usageMonitoringAPIKeyDailyTable]
+	metadataDamaged := !snapshot.rollupStates[usageMonitoringMetadataRollupName] ||
+		!snapshot.tables[usageMonitoringSelectorDailyTable] ||
+		!snapshot.tables[usageMonitoringHeaderLatestTable]
+	projectionDamaged := !snapshot.rollupStates[usageMonitoringProjectionRollupName] ||
+		!snapshot.tables[usageprojection.EventTable]
+	if !statsDamaged && !metadataDamaged && !projectionDamaged {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin usage monitoring derivation recovery: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if statsDamaged {
+		for _, tableName := range []string{usageMonitoringAccountDailyTable, usageMonitoringAPIKeyDailyTable} {
+			if snapshot.tables[tableName] {
+				if _, err := tx.Exec(`delete from ` + tableName); err != nil {
+					return fmt.Errorf("clear damaged usage monitoring stats table %s: %w", tableName, err)
+				}
+			}
+		}
+		if err := resetUsageMonitoringRollupState(tx, snapshot, usageMonitoringStatsRollupName); err != nil {
+			return err
+		}
+	}
+	if metadataDamaged {
+		for _, tableName := range []string{usageMonitoringSelectorDailyTable, usageMonitoringHeaderLatestTable} {
+			if snapshot.tables[tableName] {
+				if _, err := tx.Exec(`delete from ` + tableName); err != nil {
+					return fmt.Errorf("clear damaged usage monitoring metadata table %s: %w", tableName, err)
+				}
+			}
+		}
+		if err := resetUsageMonitoringRollupState(tx, snapshot, usageMonitoringMetadataRollupName); err != nil {
+			return err
+		}
+	}
+	if projectionDamaged {
+		if snapshot.tables[usageprojection.EventTable] {
+			if _, err := tx.Exec(`delete from ` + usageprojection.EventTable); err != nil {
+				return fmt.Errorf("clear damaged usage monitoring projection: %w", err)
+			}
+		}
+		if err := resetUsageMonitoringRollupState(tx, snapshot, usageMonitoringProjectionRollupName); err != nil {
+			return err
+		}
+		if snapshot.tables[usageMonitoringSearchStateTable] {
+			if _, err := tx.Exec(`update usage_monitoring_search_index_state set ready = 0, updated_at_ms = 0 where id = 1`); err != nil {
+				return fmt.Errorf("mark usage monitoring search index for recovery: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit usage monitoring derivation recovery: %w", err)
+	}
+	return nil
+}
+
+func resetUsageMonitoringRollupState(tx *sql.Tx, snapshot usageMonitoringMigrationSnapshot, rollupName string) error {
+	if !snapshot.rollupStates[rollupName] {
+		return nil
+	}
+	status := "pending"
+	if snapshot.latestEventID == 0 {
+		status = "ready"
+	}
+	if _, err := tx.Exec(`update usage_monitoring_rollup_state set
+		status = ?, backfill_last_event_id = 0, coverage_event_id = 0,
+		target_event_id = ?, processed_events = 0,
+		last_run_started_at_ms = null, updated_at_ms = 0,
+		finished_at_ms = null, last_error = null
+		where rollup_name = ?`, status, snapshot.latestEventID, rollupName); err != nil {
+		return fmt.Errorf("reset usage monitoring rollup state %s: %w", rollupName, err)
+	}
+	return nil
+}
+
+func ensureUsageMonitoringProjectionAccountKey(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(` + usageprojection.EventTable + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect usage monitoring projection columns: %w", err)
+	}
+	hasAccountKey := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan usage monitoring projection columns: %w", err)
+		}
+		if name == "account_key" {
+			hasAccountKey = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close usage monitoring projection column inspection: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect usage monitoring projection columns: %w", err)
+	}
+
+	if !hasAccountKey {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin usage monitoring account key migration: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`alter table ` + usageprojection.EventTable + ` add column account_key text not null default ''`); err != nil {
+			return fmt.Errorf("add usage monitoring projection account key: %w", err)
+		}
+		if _, err := tx.Exec(`delete from ` + usageprojection.EventTable); err != nil {
+			return fmt.Errorf("clear usage monitoring projection for account key rebuild: %w", err)
+		}
+		var latestEventID int64
+		if err := tx.QueryRow(`select coalesce(max(id), 0) from usage_events`).Scan(&latestEventID); err != nil {
+			return fmt.Errorf("read latest event for projection account key rebuild: %w", err)
+		}
+		status := "pending"
+		if latestEventID == 0 {
+			status = "ready"
+		}
+		if _, err := tx.Exec(`update usage_monitoring_rollup_state set
+			status = ?, backfill_last_event_id = 0, coverage_event_id = 0,
+			target_event_id = ?, processed_events = 0,
+			last_run_started_at_ms = null, updated_at_ms = 0,
+			finished_at_ms = null, last_error = null
+			where rollup_name = ?`, status, latestEventID, usageMonitoringProjectionRollupName); err != nil {
+			return fmt.Errorf("reset usage monitoring projection for account key rebuild: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit usage monitoring account key migration: %w", err)
+		}
+	}
+
+	if _, err := db.Exec(`create index if not exists idx_usage_monitoring_event_projection_account_window
+		on ` + usageprojection.EventTable + `(account_key, timestamp_ms, event_id)`); err != nil {
+		return fmt.Errorf("create usage monitoring account window index: %w", err)
+	}
+	return nil
+}
+
+func ensureUsageMonitoringSearchIndex(db *sql.DB) error {
+	var indexExists int
+	if err := db.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = ?`, usageprojection.SearchIndexTable).Scan(&indexExists); err != nil {
+		return fmt.Errorf("inspect usage monitoring search index: %w", err)
+	}
+	createStatements := []string{
+		fmt.Sprintf(`create virtual table if not exists %s using fts5(
+			search_text,
+			content = '%s',
+			content_rowid = 'event_id',
+			columnsize = 0,
+			detail = 'none',
+			tokenize = 'trigram'
+		)`, usageprojection.SearchIndexTable, usageprojection.EventTable),
+		`create table if not exists usage_monitoring_search_index_state (
+			id integer primary key check (id = 1),
+			ready integer not null default 0,
+			updated_at_ms integer not null default 0
+		)`,
+		`insert or ignore into usage_monitoring_search_index_state (id) values (1)`,
+		fmt.Sprintf(`create trigger if not exists usage_monitoring_event_search_v1_insert
+			after insert on %s begin
+			insert into %s(rowid, search_text) values (new.event_id, new.search_text);
+		end`, usageprojection.EventTable, usageprojection.SearchIndexTable),
+		fmt.Sprintf(`create trigger if not exists usage_monitoring_event_search_v1_update
+			after update of search_text on %s begin
+			insert into %s(%s, rowid, search_text) values ('delete', old.event_id, old.search_text);
+			insert into %s(rowid, search_text) values (new.event_id, new.search_text);
+		end`, usageprojection.EventTable, usageprojection.SearchIndexTable, usageprojection.SearchIndexTable, usageprojection.SearchIndexTable),
+		fmt.Sprintf(`create trigger if not exists usage_monitoring_event_search_v1_delete
+			after delete on %s begin
+			insert into %s(%s, rowid, search_text) values ('delete', old.event_id, old.search_text);
+		end`, usageprojection.EventTable, usageprojection.SearchIndexTable, usageprojection.SearchIndexTable),
+	}
+	for _, statement := range createStatements {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("create usage monitoring search index: %w", err)
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if indexExists == 0 {
+		if _, err := tx.Exec(`update usage_monitoring_search_index_state set ready = 0 where id = 1`); err != nil {
+			return fmt.Errorf("mark recreated usage monitoring search index pending: %w", err)
+		}
+	}
+	var ready int
+	if err := tx.QueryRow(`select ready from usage_monitoring_search_index_state where id = 1`).Scan(&ready); err != nil {
+		return err
+	}
+	if ready != 0 {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`insert into %s(%s) values ('rebuild')`, usageprojection.SearchIndexTable, usageprojection.SearchIndexTable)); err != nil {
+		return fmt.Errorf("reset usage monitoring search index: %w", err)
+	}
+	if _, err := tx.Exec(`update usage_monitoring_search_index_state set
+		ready = 1, updated_at_ms = ? where id = 1`, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func ensureAccountHistoryIdentityFormatVersion(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var version string
+	err = tx.QueryRow(`select value from settings where key = ?`, accountHistoryIdentityFormatVersionKey).Scan(&version)
+	switch {
+	case err == nil && version == usageidentity.FormatVersion:
+		return tx.Commit()
+	case err == nil && version != "1":
+		return fmt.Errorf("unsupported account history identity format version %q", version)
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+
+	for _, statement := range []string{
+		`delete from usage_account_model_rollups`,
+		`delete from usage_rollup_checkpoints where name = 'account_history'`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`insert into settings (key, value, updated_at_ms) values (?, ?, ?)
+		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
+		accountHistoryIdentityFormatVersionKey,
+		usageidentity.FormatVersion,
+		time.Now().UnixMilli(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureDashboardHourlyRollupFormatVersion(db *sql.DB) error {
@@ -957,6 +1679,105 @@ func ensureAccountActionCandidateColumns(db *sql.DB) error {
 	return err
 }
 
+func ensureQuotaSnapshotLifecycleColumns(db *sql.DB) error {
+	observationRows, err := db.Query(`pragma table_info(account_quota_observations)`)
+	if err != nil {
+		return err
+	}
+	observationColumns := map[string]struct{}{}
+	for observationRows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := observationRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = observationRows.Close()
+			return err
+		}
+		observationColumns[name] = struct{}{}
+	}
+	if err := observationRows.Err(); err != nil {
+		_ = observationRows.Close()
+		return err
+	}
+	if err := observationRows.Close(); err != nil {
+		return err
+	}
+	if _, ok := observationColumns["lifecycle_applied"]; !ok {
+		if _, err := db.Exec(`alter table account_quota_observations
+			add column lifecycle_applied integer not null default 1`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`create index if not exists idx_quota_observations_lifecycle_watermark
+		on account_quota_observations(
+			account_key, provider, inventory_scope_key, lifecycle_applied, observed_at_ms desc
+		)`); err != nil {
+		return err
+	}
+
+	rows, err := db.Query(`pragma table_info(account_quota_snapshots)`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "observation_id", definition: "integer"},
+		{name: "logical_window_id", definition: "integer"},
+		{name: "activation_id", definition: "integer"},
+		{name: "cycle_id", definition: "integer"},
+		{name: "scope_fingerprint", definition: "text not null default ''"},
+		{name: "content_hash", definition: "text not null default ''"},
+	}
+	for _, column := range columns {
+		if _, ok := existing[column.name]; ok {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(
+			`alter table account_quota_snapshots add column %s %s`,
+			column.name,
+			column.definition,
+		)); err != nil {
+			return err
+		}
+	}
+	for _, statement := range []string{
+		`create index if not exists idx_quota_snapshots_observation on account_quota_snapshots(observation_id)`,
+		`create index if not exists idx_quota_snapshots_window_cycle on account_quota_snapshots(logical_window_id, cycle_id, observed_at_ms desc)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureCodexInspectionRunColumns(db *sql.DB) error {
 	rows, err := db.Query(`pragma table_info(codex_inspection_runs)`)
 	if err != nil {
@@ -1147,6 +1968,20 @@ func ensureUsageEventSnapshotColumns(db *sql.DB) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureLatestAccountRequestIndexes(db *sql.DB) error {
+	for _, statement := range []string{
+		`create index if not exists idx_usage_events_latest_request_auth_file
+			on usage_events(auth_file_snapshot collate nocase, auth_index collate nocase, timestamp_ms desc, id desc)`,
+		`create index if not exists idx_usage_events_latest_request_source
+			on usage_events(source collate nocase, auth_index collate nocase, timestamp_ms desc, id desc)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
 	}
 	return nil
 }

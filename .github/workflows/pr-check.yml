@@ -28,10 +28,12 @@ jobs:
       windows_sqlite: ${{ steps.classify.outputs.windows_sqlite }}
       native_control: ${{ steps.classify.outputs.native_control }}
       docker: ${{ steps.classify.outputs.docker }}
+      demo_docs: ${{ steps.classify.outputs.demo_docs }}
+      release_content: ${{ steps.classify.outputs.release_content }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -47,18 +49,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          changed_files="${RUNNER_TEMP}/pr-check-changed-files.txt"
+          changed_files="${RUNNER_TEMP}/pr-check-changed-files.bin"
           if [ "${EVENT_NAME}" = "pull_request" ]; then
-            git diff --name-only "${PR_BASE_SHA}...${PR_HEAD_SHA}" > "${changed_files}"
+            git diff --name-only --no-renames -z "${PR_BASE_SHA}...${PR_HEAD_SHA}" > "${changed_files}"
           elif [ -z "${PUSH_BEFORE_SHA}" ] || [[ "${PUSH_BEFORE_SHA}" =~ ^0+$ ]]; then
-            git show --pretty=format: --name-only "${CURRENT_SHA}" > "${changed_files}"
+            git show --pretty=format: --name-only --no-renames -z "${CURRENT_SHA}" > "${changed_files}"
           else
-            git diff --name-only "${PUSH_BEFORE_SHA}..${CURRENT_SHA}" > "${changed_files}"
+            git diff --name-only --no-renames -z "${PUSH_BEFORE_SHA}..${CURRENT_SHA}" > "${changed_files}"
           fi
 
           echo "Changed files:"
-          sed 's/^/- /' "${changed_files}"
-          node bin/ci/classify-pr-checks.mjs < "${changed_files}" >> "${GITHUB_OUTPUT}"
+          while IFS= read -r -d '' file_path; do
+            printf -- '- %q\n' "${file_path}"
+          done < "${changed_files}"
+          node bin/ci/classify-pr-checks.mjs --null < "${changed_files}" >> "${GITHUB_OUTPUT}"
 
   frontend:
     name: Frontend
@@ -68,12 +72,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
@@ -106,10 +110,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.24.x'
           cache-dependency-path: apps/manager-server/go.sum
@@ -126,10 +130,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.24.x'
           cache-dependency-path: apps/manager-server/go.sum
@@ -153,10 +157,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
@@ -187,22 +191,89 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Validate Docker Compose configuration
         run: docker compose -f docker-compose.manager.yml config
 
       - name: Build Manager Server image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.manager-server
           push: false
           build-args: |
             VERSION=ci
+
+  demo-docs:
+    name: Demo and Docs
+    needs: changes
+    if: needs.changes.outputs.demo_docs == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build demo site
+        run: npm --workspace apps/web run build:demo:bundle
+        env:
+          VERSION: ci-demo
+
+      - name: Build docs site
+        run: npm run docs:build
+
+  release-content:
+    name: Release Content
+    needs: changes
+    if: needs.changes.outputs.release_content == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Validate changed release content
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          changed_files="${RUNNER_TEMP}/release-content-changed-files.bin"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            git diff --name-only --no-renames --diff-filter=A -z "${PR_BASE_SHA}...${PR_HEAD_SHA}" > "${changed_files}"
+          elif [ -z "${PUSH_BEFORE_SHA}" ] || [[ "${PUSH_BEFORE_SHA}" =~ ^0+$ ]]; then
+            git show --pretty=format: --name-only --no-renames --diff-filter=A -z "${CURRENT_SHA}" > "${changed_files}"
+          else
+            git diff --name-only --no-renames --diff-filter=A -z "${PUSH_BEFORE_SHA}..${CURRENT_SHA}" > "${changed_files}"
+          fi
+
+          npm run --silent release:validate -- --changed-content --null < "${changed_files}"
 
   required:
     name: Required checks
@@ -213,6 +284,8 @@ jobs:
       - manager-server-windows-sqlite
       - native-control
       - docker-build
+      - demo-docs
+      - release-content
     if: always()
     runs-on: ubuntu-latest
 
@@ -225,6 +298,8 @@ jobs:
           WINDOWS_SQLITE_RESULT: ${{ needs['manager-server-windows-sqlite'].result }}
           NATIVE_CONTROL_RESULT: ${{ needs['native-control'].result }}
           DOCKER_BUILD_RESULT: ${{ needs['docker-build'].result }}
+          DEMO_DOCS_RESULT: ${{ needs['demo-docs'].result }}
+          RELEASE_CONTENT_RESULT: ${{ needs['release-content'].result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -236,6 +311,8 @@ jobs:
             "Manager Server SQLite (Windows):${WINDOWS_SQLITE_RESULT}"
             "Native Control:${NATIVE_CONTROL_RESULT}"
             "Docker Build:${DOCKER_BUILD_RESULT}"
+            "Demo and Docs:${DEMO_DOCS_RESULT}"
+            "Release Content:${RELEASE_CONTENT_RESULT}"
           )
 
           for check in "${results[@]}"; do

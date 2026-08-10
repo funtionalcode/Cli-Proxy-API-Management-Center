@@ -699,7 +699,7 @@ export function OAuthPage() {
                   )}
                   {state.status === 'success' && (
                     <div className={styles.successActions}>
-                      <Button variant="secondary" size="sm" onClick={() => navigate('/auth-files')}>
+                      <Button variant="secondary" size="sm" onClick={() => navigate('/accounts')}>
                         {t('auth_login.view_auth_files')}
                       </Button>
                     </div>

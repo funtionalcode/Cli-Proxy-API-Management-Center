@@ -257,6 +257,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
   it('maps Claude usage windows into account quota entries', async () => {
     vi.mocked(fetchClaudeQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       windows: [
         {
           id: 'five-hour',
@@ -306,6 +307,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
   it('maps Codex monthly quota windows into account quota entries', async () => {
     vi.mocked(fetchCodexQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       planType: 'free',
       subscriptionActiveUntil: null,
       rateLimitResetCreditsAvailableCount: null,
@@ -850,6 +852,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
   it('maps Antigravity grouped buckets into account quota entries', async () => {
     vi.mocked(fetchAntigravityQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       serverTimeOffsetMs: null,
       groups: [
         {
@@ -887,9 +890,16 @@ describe('monitoringCenterPageModel account quota', () => {
     expect(entry.metaLabels).toEqual(['Antigravity Quota']);
     expect(entry.windows).toMatchObject([
       {
-        id: 'agent',
-        label: 'Agent',
+        id: 'agent:daily',
+        label: 'Agent · Daily',
         remainingPercent: 25,
+        resetLabel: '-',
+        usageLabel: null,
+      },
+      {
+        id: 'agent:weekly',
+        label: 'Agent · Weekly',
+        remainingPercent: 50,
         resetLabel: '-',
         usageLabel: null,
       },
@@ -897,15 +907,18 @@ describe('monitoringCenterPageModel account quota', () => {
   });
 
   it('maps Kimi quota rows without amount labels in account quota entries', async () => {
-    vi.mocked(fetchKimiQuota).mockResolvedValue([
-      {
-        id: 'daily',
-        label: 'Daily',
-        used: 25,
-        limit: 100,
-        resetHint: '2026-07-31T00:00:00Z',
-      },
-    ]);
+    vi.mocked(fetchKimiQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
+      rows: [
+        {
+          id: 'daily',
+          label: 'Daily',
+          used: 25,
+          limit: 100,
+          resetHint: '2026-07-31T00:00:00Z',
+        },
+      ],
+    });
 
     const entry = await requestAccountQuota(
       createTarget({

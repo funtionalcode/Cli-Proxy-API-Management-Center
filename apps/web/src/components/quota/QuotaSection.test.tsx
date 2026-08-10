@@ -430,7 +430,7 @@ describe('QuotaSection account display mode', () => {
     });
   });
 
-  it('limits bulk quota refresh concurrency', async () => {
+  it('serializes bulk quota refreshes for one provider', async () => {
     const scopedConfig = createScopedTestConfig();
     const files: AuthFileItem[] = Array.from({ length: 7 }, (_, index) => ({
       ...testFile,
@@ -471,8 +471,8 @@ describe('QuotaSection account display mode', () => {
       await flushMicrotasks();
     });
 
-    expect(mocks.fetchQuota).toHaveBeenCalledTimes(4);
-    expect(maxActiveRequests).toBe(4);
+    expect(mocks.fetchQuota).toHaveBeenCalledTimes(1);
+    expect(maxActiveRequests).toBe(1);
 
     while (mocks.fetchQuota.mock.calls.length < files.length) {
       resolvers.shift()?.();
@@ -486,8 +486,38 @@ describe('QuotaSection account display mode', () => {
       await loadPromise;
     });
 
-    expect(maxActiveRequests).toBe(4);
+    expect(maxActiveRequests).toBe(1);
     expect(mocks.fetchQuota).toHaveBeenCalledTimes(files.length);
+
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('deduplicates repeated quota targets by provider credential identity', async () => {
+    const scopedConfig = createScopedTestConfig();
+    const file = { ...testFile, authIndex: 0 };
+    mocks.quotaStoreState.codexQuota = {};
+    mocks.fetchQuota.mockResolvedValue({ resetCredits: 1 });
+
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <QuotaLoaderHarness
+          config={scopedConfig}
+          onLoadQuota={(nextLoadQuota) => {
+            runLoadQuota = nextLoadQuota;
+          }}
+        />
+      );
+    });
+
+    await act(async () => {
+      await runLoadQuota?.([file, { ...file }]);
+    });
+
+    expect(mocks.fetchQuota).toHaveBeenCalledTimes(1);
+    expect(mocks.quotaStoreState.codexQuota).toHaveProperty(getTestAuthFileKey(file));
 
     act(() => {
       renderer.unmount();

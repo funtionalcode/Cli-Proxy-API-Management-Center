@@ -12,6 +12,10 @@ import {
 } from '@/stores';
 import { getStatusFromError } from '@/utils/quota';
 import {
+  buildProviderCredentialTaskPlan,
+  runProviderCredentialTaskPlan,
+} from '@/utils/quota/providerRefreshScheduler';
+import {
   buildQuotaFailureState,
   getQuotaStoreKey,
   getScopedQuotaState,
@@ -33,31 +37,7 @@ interface LoadQuotaResult<TData> {
   errorStatus?: number;
 }
 
-const DEFAULT_QUOTA_REFRESH_CONCURRENCY = 4;
-
-async function runWithConcurrencyLimit<TInput, TOutput>(
-  items: TInput[],
-  concurrency: number,
-  worker: (item: TInput, index: number) => Promise<TOutput>
-): Promise<TOutput[]> {
-  if (items.length === 0) return [];
-
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results: TOutput[] = [];
-  let nextIndex = 0;
-
-  await Promise.all(
-    Array.from({ length: limit }, async () => {
-      while (nextIndex < items.length) {
-        const currentIndex = nextIndex;
-        nextIndex += 1;
-        results[currentIndex] = await worker(items[currentIndex], currentIndex);
-      }
-    })
-  );
-
-  return results;
-}
+const DEFAULT_PROVIDER_QUOTA_REFRESH_CONCURRENCY = 1;
 
 export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>) {
   const { t } = useTranslation();
@@ -82,12 +62,16 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
       setLoading(true, scope);
 
       try {
-        if (targets.length === 0) return;
+        const taskPlan = buildProviderCredentialTaskPlan(targets, {
+          getProviderKey: () => config.type,
+          getCredentialKey: (file) => getQuotaStoreKey(config, file),
+        });
+        if (taskPlan.length === 0) return;
 
         const previousStateByStoreKey = new Map<string, TState | undefined>();
         setQuota((prev) => {
           const nextState = { ...prev };
-          targets.forEach((file) => {
+          taskPlan.forEach(({ item: file }) => {
             const storeKey = getQuotaStoreKey(config, file);
             previousStateByStoreKey.set(storeKey, getScopedQuotaState(config, prev, file));
             nextState[storeKey] = config.buildLoadingState(file);
@@ -95,10 +79,13 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
           return nextState;
         });
 
-        const results = await runWithConcurrencyLimit(
-          targets,
-          DEFAULT_QUOTA_REFRESH_CONCURRENCY,
-          async (file): Promise<LoadQuotaResult<TData>> => {
+        const results = await runProviderCredentialTaskPlan(
+          taskPlan,
+          {
+            perProviderConcurrency: DEFAULT_PROVIDER_QUOTA_REFRESH_CONCURRENCY,
+            maxConcurrentProviders: 1,
+          },
+          async ({ item: file }): Promise<LoadQuotaResult<TData>> => {
             const storeKey = getQuotaStoreKey(config, file);
             try {
               const data = await config.fetchQuota(file, t);

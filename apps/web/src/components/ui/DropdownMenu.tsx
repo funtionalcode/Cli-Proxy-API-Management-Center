@@ -12,14 +12,22 @@ import {
 import { createPortal } from 'react-dom';
 import styles from './DropdownMenu.module.scss';
 
-export interface DropdownMenuItem {
-  key: string;
-  label: ReactNode;
-  icon?: ReactNode;
-  onClick: () => void;
-  disabled?: boolean;
-  tone?: 'default' | 'danger';
-}
+export type DropdownMenuItem =
+  | {
+      key: string;
+      type: 'divider';
+    }
+  | {
+      key: string;
+      type?: 'item';
+      label: ReactNode;
+      icon?: ReactNode;
+      onClick: () => void;
+      disabled?: boolean;
+      tone?: 'default' | 'danger';
+    };
+
+type DropdownMenuActionItem = Extract<DropdownMenuItem, { type?: 'item' }>;
 
 interface DropdownMenuProps {
   items: DropdownMenuItem[];
@@ -27,6 +35,7 @@ interface DropdownMenuProps {
   triggerLabel?: ReactNode;
   triggerIcon?: ReactNode;
   triggerClassName?: string;
+  triggerTitle?: string;
   align?: 'start' | 'end';
   disabled?: boolean;
 }
@@ -41,6 +50,7 @@ export function DropdownMenu({
   triggerLabel,
   triggerIcon,
   triggerClassName,
+  triggerTitle,
   align = 'end',
   disabled = false,
 }: DropdownMenuProps) {
@@ -53,7 +63,10 @@ export function DropdownMenu({
   const menuId = useId();
 
   const enabledIndices = useMemo(
-    () => items.map((item, index) => (item.disabled ? -1 : index)).filter((value) => value >= 0),
+    () =>
+      items
+        .map((item, index) => (item.type === 'divider' || item.disabled ? -1 : index))
+        .filter((value) => value >= 0),
     [items]
   );
 
@@ -187,7 +200,7 @@ export function DropdownMenu({
     }
   };
 
-  const handleItemClick = (item: DropdownMenuItem) => {
+  const handleItemClick = (item: DropdownMenuActionItem) => {
     if (item.disabled) return;
     close();
     item.onClick();
@@ -207,6 +220,7 @@ export function DropdownMenu({
         aria-expanded={isOpen}
         aria-controls={isOpen ? menuId : undefined}
         aria-label={ariaLabel}
+        title={triggerTitle}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
         onKeyDown={handleTriggerKeyDown}
@@ -231,6 +245,9 @@ export function DropdownMenu({
               onKeyDown={handleMenuKeyDown}
             >
               {items.map((item, index) => {
+                if (item.type === 'divider') {
+                  return <div key={item.key} className={styles.divider} role="separator" />;
+                }
                 const itemClasses = [
                   styles.item,
                   item.tone === 'danger' ? styles.itemDanger : '',

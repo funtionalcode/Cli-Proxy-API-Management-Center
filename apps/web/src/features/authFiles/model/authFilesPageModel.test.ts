@@ -766,10 +766,10 @@ describe('auth file Codex status helpers', () => {
     expect(getAuthFileScopedCodexQuota(second, quota)).toBeUndefined();
   });
 
-  it('keeps legacy Codex quota without identity available for files without auth index', () => {
+  it('drops legacy Codex quota without identity for files without auth index', () => {
     const quota = codexQuota();
 
-    expect(getAuthFileScopedCodexQuota(codexFile({ authIndex: undefined }), quota)).toBe(quota);
+    expect(getAuthFileScopedCodexQuota(codexFile({ authIndex: undefined }), quota)).toBeUndefined();
   });
 
   it('drops legacy Codex quota without identity for auth-indexed files', () => {

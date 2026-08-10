@@ -7,7 +7,9 @@ import {
   IconTimer,
   IconTrendingUp,
 } from '@/components/ui/icons';
+import { useThemeStore } from '@/stores';
 import type { DashboardSummaryResponse } from '@/services/api/usageService';
+import { getDataPalette } from '@/utils/dataPalette';
 import { formatCompactNumber, formatDurationMs, formatUsd } from '@/utils/usage';
 import styles from './UsageMetricsCard.module.scss';
 
@@ -76,6 +78,8 @@ export function UsageMetricsCard({
   mode = 'all',
 }: UsageMetricsCardProps) {
   const { t, i18n } = useTranslation();
+  const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
+  const dataPalette = getDataPalette(resolvedTheme);
   const today = summary?.today;
   const rolling = summary?.rolling_30m;
   const loadingText = loading ? '...' : '-';
@@ -93,7 +97,7 @@ export function UsageMetricsCard({
         ? t('dashboard.metric_failure_count', { value: formatMetric(today.failure_calls) })
         : lastRefreshedText,
       icon: <IconInbox size={20} />,
-      color: '#3b82f6',
+      color: dataPalette.blue,
     },
     {
       label: t('dashboard.rpm_30m'),
@@ -102,7 +106,7 @@ export function UsageMetricsCard({
         ? t('dashboard.metric_rolling_calls', { value: formatMetric(rolling.total_calls) })
         : undefined,
       icon: <IconChartLine size={20} />,
-      color: '#8b5cf6',
+      color: dataPalette.violet,
     },
     {
       label: t('dashboard.tpm_30m'),
@@ -111,7 +115,7 @@ export function UsageMetricsCard({
         ? t('dashboard.metric_rolling_tokens', { value: formatCompactNumber(rolling.total_tokens) })
         : undefined,
       icon: <IconTrendingUp size={20} />,
-      color: '#10b981',
+      color: dataPalette.emerald,
     },
     {
       label: t('dashboard.today_cost'),
@@ -120,7 +124,7 @@ export function UsageMetricsCard({
         ? t('dashboard.metric_total_tokens', { value: formatCompactNumber(today.total_tokens) })
         : undefined,
       icon: <IconDollarSign size={20} />,
-      color: '#f59e0b',
+      color: dataPalette.amber,
     },
     {
       label: t('dashboard.success_rate'),
@@ -129,7 +133,7 @@ export function UsageMetricsCard({
         ? `${formatMetric(today.success_calls)} / ${formatMetric(today.total_calls)}`
         : undefined,
       icon: <IconTrendingUp size={20} />,
-      color: '#10b981',
+      color: dataPalette.green,
     },
     {
       label: t('dashboard.avg_latency'),
@@ -140,7 +144,7 @@ export function UsageMetricsCard({
         ? t('dashboard.metric_zero_token_calls', { value: formatMetric(today.zero_token_calls) })
         : undefined,
       icon: <IconTimer size={20} />,
-      color: '#ef4444',
+      color: dataPalette.red,
     },
   ];
 

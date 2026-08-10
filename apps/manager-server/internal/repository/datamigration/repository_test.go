@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 )
 
 func TestDiscoverUsageCacheAccountingCompletesEmptyDatabaseWithoutResettingRollups(t *testing.T) {
@@ -107,6 +108,54 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	assertCheckpoint(t, db, "account_history", 0)
 	assertCheckpoint(t, db, "dashboard_hourly", 0)
 	assertCheckpoint(t, db, "unrelated", 9)
+}
+
+func TestUsageCacheAccountingRefreshesMonitoringProjectionAndInvalidatesStats(t *testing.T) {
+	db := openMigrationTestDB(t)
+	insertLegacyUsageEvent(t, db, "legacy-monitoring", "anthropic", "", "claude-sonnet", 100, 30, 20, 10, 0, "")
+	markMigrationDiscovering(t, db)
+
+	ctx := context.Background()
+	monitoringRepo := usagemonitoring.New(db)
+	if _, err := monitoringRepo.CatchUpProjection(ctx, 10, 1); err != nil {
+		t.Fatalf("catch up monitoring projection: %v", err)
+	}
+	if _, err := monitoringRepo.CatchUpStats(ctx, 10, 1); err != nil {
+		t.Fatalf("catch up monitoring stats: %v", err)
+	}
+	assertMonitoringProjectionTokens(t, db, "legacy-monitoring", 100, 0)
+	assertCount(t, db, "usage_monitoring_account_daily_rollups_v1", 1)
+	assertCount(t, db, "usage_monitoring_api_key_daily_rollups_v1", 1)
+
+	repo := New(db)
+	if _, err := repo.DiscoverUsageCacheAccounting(ctx); err != nil {
+		t.Fatalf("discover migration: %v", err)
+	}
+	result, err := repo.RunUsageCacheAccountingBatch(ctx, 10)
+	if err != nil {
+		t.Fatalf("run migration: %v", err)
+	}
+	if !result.Completed || result.State.ChangedRows != 1 {
+		t.Fatalf("migration result = %#v", result)
+	}
+
+	assertMonitoringProjectionTokens(t, db, "legacy-monitoring", 130, 0)
+	assertCount(t, db, "usage_monitoring_account_daily_rollups_v1", 0)
+	assertCount(t, db, "usage_monitoring_api_key_daily_rollups_v1", 0)
+	assertMonitoringRollupState(t, db, "stats_v1", "pending", 0, 1)
+	assertMonitoringRollupState(t, db, "projection_v1", "ready", 1, 1)
+
+	if _, err := monitoringRepo.CatchUpStats(ctx, 10, 2); err != nil {
+		t.Fatalf("rebuild monitoring stats: %v", err)
+	}
+	var inputTokens, totalTokens int64
+	if err := db.QueryRow(`select sum(input_tokens), sum(total_tokens)
+		from usage_monitoring_account_daily_rollups_v1`).Scan(&inputTokens, &totalTokens); err != nil {
+		t.Fatalf("read rebuilt monitoring stats: %v", err)
+	}
+	if inputTokens != 130 || totalTokens != 0 {
+		t.Fatalf("rebuilt monitoring tokens = (%d, %d), want (130, 0)", inputTokens, totalTokens)
+	}
 }
 
 func TestUsageCacheAccountingUsesPriorityAndPreservesExplicitProvenance(t *testing.T) {
@@ -552,6 +601,53 @@ func assertCount(t *testing.T, db *sql.DB, table string, want int64) {
 	}
 	if got != want {
 		t.Fatalf("count %s = %d, want %d", table, got, want)
+	}
+}
+
+func assertMonitoringProjectionTokens(t *testing.T, db *sql.DB, eventHash string, wantInput, wantTotal int64) {
+	t.Helper()
+	var inputTokens, totalTokens int64
+	if err := db.QueryRow(`select normalized_total_input_tokens, total_tokens
+		from usage_monitoring_event_projection_v1
+		where event_id = (select id from usage_events where event_hash = ?)`, eventHash).Scan(
+		&inputTokens,
+		&totalTokens,
+	); err != nil {
+		t.Fatalf("read monitoring projection tokens for %s: %v", eventHash, err)
+	}
+	if inputTokens != wantInput || totalTokens != wantTotal {
+		t.Fatalf("monitoring projection tokens for %s = (%d, %d), want (%d, %d)",
+			eventHash,
+			inputTokens,
+			totalTokens,
+			wantInput,
+			wantTotal,
+		)
+	}
+}
+
+func assertMonitoringRollupState(t *testing.T, db *sql.DB, name, wantStatus string, wantCoverage, wantTarget int64) {
+	t.Helper()
+	var status string
+	var coverage, target int64
+	if err := db.QueryRow(`select status, coverage_event_id, target_event_id
+		from usage_monitoring_rollup_state where rollup_name = ?`, name).Scan(
+		&status,
+		&coverage,
+		&target,
+	); err != nil {
+		t.Fatalf("read monitoring rollup state %s: %v", name, err)
+	}
+	if status != wantStatus || coverage != wantCoverage || target != wantTarget {
+		t.Fatalf("monitoring rollup state %s = (%s, %d, %d), want (%s, %d, %d)",
+			name,
+			status,
+			coverage,
+			target,
+			wantStatus,
+			wantCoverage,
+			wantTarget,
+		)
 	}
 }
 

@@ -18,6 +18,7 @@
     "check:demo-isolation": "node bin/release/check-web-demo-isolation.mjs",
     "preview": "npm --workspace apps/web run preview",
     "preview:demo": "npm --workspace apps/web run preview:demo",
+    "release:validate": "node bin/release/validate-release.mjs",
     "test": "npm --workspace apps/web run test -- src ../../tests",
     "lint": "npm --workspace apps/web run lint",
     "format": "npm --workspace apps/web run format",

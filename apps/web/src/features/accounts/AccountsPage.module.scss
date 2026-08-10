@@ -1,0 +1,6271 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+@mixin accounts-theme-vars {
+  --accounts-surface: var(--bg-primary);
+  --accounts-strong-surface: var(--app-surface-strong, var(--bg-primary));
+  --accounts-muted-surface: var(--surface-subtle);
+  --accounts-border: var(--border-color);
+  --accounts-strong-border: var(--border-primary);
+  --accounts-text: var(--text-primary);
+  --accounts-muted: var(--text-secondary);
+  --accounts-brand: var(--data-blue-base);
+  --accounts-brand-active: var(--primary-active, var(--primary-color));
+  --accounts-primary: var(--accounts-brand);
+  --accounts-success: var(--data-green-base);
+  --accounts-warning: var(--data-amber-base);
+  --accounts-danger: var(--data-red-base);
+  --accounts-info: var(--data-blue-base);
+  --accounts-indigo: var(--data-violet-base, var(--primary-color));
+  --accounts-neutral: var(--accounts-muted);
+  --accounts-overlay: color-mix(in srgb, var(--accounts-brand-active) 30%, transparent);
+}
+
+.container {
+  @include accounts-theme-vars;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.headerActions,
+.batchActions,
+.drawerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+
+  :global(svg) {
+    display: block;
+  }
+}
+
+.accountDisplayButton:global(.btn.btn-sm) {
+  gap: 6px;
+}
+
+.accountDisplayButtonActive:global(.btn.btn-sm) {
+  border-color: color-mix(in srgb, var(--primary-color) 48%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+  color: var(--primary-color);
+}
+
+.metricsSection {
+  --monitor-surface: var(--accounts-surface);
+  --monitor-ink: var(--accounts-text);
+  --monitor-muted: var(--accounts-muted);
+  --monitor-line: var(--accounts-border);
+  --monitor-line-strong: var(--accounts-strong-border);
+  --monitor-accent: var(--accounts-brand);
+  --monitor-accent-strong: var(--accounts-brand-active);
+  --monitor-green: var(--accounts-success);
+  --monitor-amber: var(--accounts-warning);
+  --monitor-red: var(--accounts-danger);
+
+  container: monitoring-page / inline-size;
+  min-width: 0;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-rows: minmax(112px, auto);
+  gap: 10px;
+  min-width: 0;
+}
+
+@container monitoring-page (max-width: 1240px) {
+  .metricsGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container monitoring-page (max-width: 900px) {
+  .metricsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container monitoring-page (max-width: 768px) {
+  .metricsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 2fr) repeat(4, minmax(128px, 1fr)) minmax(118px, auto);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-md;
+  background: var(--glass-bg);
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  :global(.input),
+  :global(button) {
+    min-height: 36px;
+  }
+
+  @include tablet {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.searchField {
+  min-width: 0;
+}
+
+.selectionModeButton:global(.btn.btn-sm) {
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 12px;
+}
+
+.selectionControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+
+  > span {
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+  }
+}
+
+.errorBox {
+  padding: 12px;
+  border: 1px solid var(--danger-color);
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+  color: var(--danger-color);
+  font-size: 13px;
+}
+
+.loadingPanel,
+.tablePanel {
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-md;
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+.panelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+
+  h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 17px;
+    line-height: 1.25;
+  }
+
+  p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.loadingPanel {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.batchBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.batchSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  > span {
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  > small {
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: 12px;
+  }
+}
+
+.tableScroller {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+
+  @include mobile {
+    border-top: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+  }
+}
+
+.rowActions {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 64px 1px 54px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 131px;
+  min-width: 131px;
+  white-space: nowrap;
+
+  :global(.btn) {
+    justify-content: center;
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+    min-height: 30px;
+    padding: 0;
+    border-radius: 8px;
+  }
+}
+
+.accountCardList {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.accountCardHeader,
+.accountCard {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 180px)
+    96px
+    144px
+    196px
+    minmax(190px, 1fr)
+    124px;
+  column-gap: clamp(10px, 0.8vw, 14px);
+  min-width: 0;
+}
+
+.accountCardHeader {
+  align-items: center;
+  min-height: 34px;
+  padding: 2px 12px 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  font-weight: 700;
+
+  > span {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 0;
+    line-height: 1.25;
+  }
+
+  > span:nth-child(2),
+  > span:nth-child(3),
+  > span:nth-child(4),
+  > span:last-child {
+    justify-content: center;
+    text-align: center;
+  }
+
+  > span:first-child,
+  > span:nth-child(5) {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+.accountCard {
+  position: relative;
+  align-items: stretch;
+  row-gap: 10px;
+  min-height: 104px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  cursor: default;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 24%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-color) 4%, var(--bg-primary));
+  }
+}
+
+@media (min-width: 1360px) {
+  .accountCardHeader,
+  .accountCard {
+    grid-template-columns:
+      minmax(180px, 1.15fr)
+      104px
+      150px
+      196px
+      minmax(268px, 2fr)
+      176px;
+    justify-content: space-between;
+    column-gap: clamp(16px, 1.15vw, 22px);
+  }
+
+  .rowActions {
+    grid-template-columns: 98px 1px 54px;
+    width: 165px;
+    min-width: 165px;
+  }
+}
+
+@media (max-width: $breakpoint-tablet) {
+  .accountCardHeader {
+    display: none;
+  }
+
+  .accountCardHealth::before,
+  .accountCardLatestRequest::before,
+  .accountCardEvidence::before,
+  .accountCardBusiness::before,
+  .accountCardRecommendation::before {
+    display: none;
+  }
+}
+
+.accountCardSelected {
+  border-color: color-mix(in srgb, var(--primary-color) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 7%, var(--bg-primary));
+}
+
+.accountCardBulkSelected {
+  border-color: color-mix(in srgb, var(--primary-color) 56%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 9%, var(--bg-primary));
+  box-shadow: inset 3px 0 0 var(--primary-color);
+}
+
+.accountCardSelectionMode {
+  cursor: pointer;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 42%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-color) 7%, var(--bg-primary));
+  }
+}
+
+.accountCardIdentity,
+.accountCardHealth,
+.accountCardLatestRequest,
+.accountCardEvidence,
+.accountCardBusiness,
+.accountCardRecommendation {
+  box-sizing: border-box;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.accountCardIdentity,
+.accountCardHealth,
+.accountCardLatestRequest,
+.accountCardEvidence,
+.accountCardBusiness {
+  padding-right: 6px;
+}
+
+.accountCardHealth,
+.accountCardLatestRequest,
+.accountCardEvidence,
+.accountCardBusiness,
+.accountCardRecommendation {
+  position: relative;
+  padding-left: 10px;
+}
+
+.accountCardHealth::before,
+.accountCardLatestRequest::before,
+.accountCardEvidence::before,
+.accountCardBusiness::before,
+.accountCardRecommendation::before {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 1px;
+  border-radius: $radius-full;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--accounts-strong-border) 68%, transparent),
+    transparent
+  );
+  content: '';
+  opacity: 0.68;
+  pointer-events: none;
+}
+
+.accountCardIdentity {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.accountIdentityBadgeRow,
+.accountCardLine,
+.accountHealthMetaRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.accountIdentityBadgeRow {
+  gap: 6px;
+}
+
+.accountCardLine {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.accountIdentityTitle {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountCardFile {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountIdentityCopyLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.accountIdentityCopyTarget {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  cursor: copy;
+  font: inherit;
+  overflow: hidden;
+  text-align: left;
+
+  &:hover {
+    .accountIdentityTitle,
+    .accountCardFile {
+      color: var(--primary-color);
+    }
+  }
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--primary-color) 42%, transparent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+.accountIdentityCopyHint {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 56px;
+  min-height: 18px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accounts-success) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-success) 10%, var(--bg-primary));
+  color: var(--accounts-success);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountCardQuotaMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.accountMetaPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  max-width: 96px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountCardSectionTitle {
+  display: none;
+}
+
+.accountCardAlerts {
+  min-width: 0;
+}
+
+.accountCardHealth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  text-align: center;
+
+  .accountCardLine,
+  .accountHealthMetaRow {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .badge {
+    min-height: 24px;
+    padding-inline: 10px;
+    font-size: 13px;
+  }
+
+  small {
+    max-width: 100%;
+  }
+}
+
+.accountCardLatestRequest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.accountCardEvidence {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.accountHistoryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 76px));
+  justify-content: center;
+  gap: 10px 8px;
+  min-width: 0;
+}
+
+.accountHistoryMetric {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 76px;
+  color: var(--text-primary);
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12.75px;
+    font-weight: 800;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.accountHistoryIcon {
+  display: inline-grid;
+  flex: 0 0 17px;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-secondary) 7%, transparent);
+  color: color-mix(in srgb, var(--text-secondary) 76%, var(--text-primary));
+}
+
+.accountHistoryMetricRequests .accountHistoryIcon {
+  background: color-mix(in srgb, var(--accounts-info) 12%, transparent);
+  color: var(--accounts-info);
+}
+
+.accountHistoryMetricTokens .accountHistoryIcon {
+  background: color-mix(in srgb, var(--data-violet-base) 12%, transparent);
+  color: var(--data-violet-base);
+}
+
+.accountHistoryMetricCost .accountHistoryIcon {
+  background: color-mix(in srgb, var(--accounts-warning) 13%, transparent);
+  color: var(--accounts-warning);
+}
+
+.accountHistoryMetricSuccess .accountHistoryIcon {
+  background: color-mix(in srgb, var(--accounts-success) 12%, transparent);
+  color: var(--accounts-success);
+}
+
+.accountHistoryFootnote {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountHealthMetaRow {
+  flex-wrap: wrap;
+  gap: 6px;
+
+  small {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.accountPriorityMeta,
+.accountPriorityMetaDanger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-height: 16px;
+  padding: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountPriorityMeta {
+  color: var(--accounts-muted);
+}
+
+.accountPriorityMetaDanger {
+  color: var(--accounts-danger);
+}
+
+.accountCardBusiness {
+  display: flex;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  overflow: hidden;
+
+  .quotaTrack {
+    max-width: none;
+  }
+}
+
+.quotaEmptyState {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 20px;
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.accountCardQuotaMeta {
+  span {
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.quotaResetMeta {
+  flex-shrink: 0 !important;
+  color: var(--text-secondary) !important;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountCardRecommendation {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+
+  :global(.btn) {
+    max-width: 100%;
+  }
+
+  :global(.btn > span) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rowActions {
+    align-self: center;
+    justify-content: center;
+  }
+}
+
+.accountQuickActionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 30px);
+  grid-auto-rows: 30px;
+  gap: 4px;
+}
+
+@media (min-width: 1360px) {
+  .accountQuickActionsGrid {
+    grid-template-columns: repeat(3, 30px);
+  }
+}
+
+.accountActionsDivider {
+  width: 1px;
+  height: auto;
+  min-height: 58px;
+  align-self: center;
+  border-radius: $radius-full;
+  background: color-mix(in srgb, var(--border-color) 34%, transparent);
+}
+
+.accountSideActions {
+  display: grid;
+  grid-template-rows: 30px 30px;
+  align-items: center;
+  justify-items: center;
+  gap: 4px;
+  width: 54px;
+}
+
+.accountStatusSwitch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 30px;
+
+  :global(label) {
+    transform: scale(0.9);
+    transform-origin: center;
+  }
+}
+
+.accountIconButton:global(.btn.btn-sm),
+.rowDetailButton:global(.btn.btn-xs) {
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+.accountIconButtonRefresh:global(.btn) {
+  background: color-mix(in srgb, var(--accounts-info) 10%, var(--bg-primary));
+  color: var(--accounts-info);
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accounts-info) 24%, transparent);
+    background: color-mix(in srgb, var(--accounts-info) 16%, var(--bg-primary));
+  }
+}
+
+.accountIconButtonModels:global(.btn) {
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-primary));
+  color: var(--primary-color);
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 24%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 16%, var(--bg-primary));
+  }
+}
+
+.accountIconButtonDownload:global(.btn) {
+  background: color-mix(in srgb, var(--text-secondary) 8%, var(--bg-primary));
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+    background: color-mix(in srgb, var(--text-secondary) 12%, var(--bg-primary));
+    color: var(--text-primary);
+  }
+}
+
+.accountIconButtonDelete:global(.btn) {
+  background: color-mix(in srgb, var(--danger-color) 10%, var(--bg-primary));
+  color: var(--danger-color);
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--danger-color) 24%, transparent);
+    background: color-mix(in srgb, var(--danger-color) 16%, var(--bg-primary));
+  }
+}
+
+.rowDetailButton:global(.btn.btn-xs) {
+  flex: 0 0 auto;
+  width: 54px;
+  min-width: 54px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--primary-color) 7%, var(--bg-primary));
+  color: var(--primary-color);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 20%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 13%, var(--bg-primary));
+  }
+
+  > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.accountCardActions {
+  justify-self: end;
+}
+
+.accountCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  strong,
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+}
+
+.quotaWindowGrid {
+  --quota-window-label-width: 40px;
+  --quota-window-track-width: 168px;
+  --quota-window-percent-width: 42px;
+  --quota-window-reset-width: 98px;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: 9px;
+  position: relative;
+  height: 100%;
+  min-width: 0;
+}
+
+.quotaWindowGridHasMore {
+  padding-right: 34px;
+}
+
+.quotaWindowCard {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  padding: 0;
+
+  & + & {
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--border-color) 34%, transparent);
+  }
+}
+
+.quotaWindowPrimaryLine {
+  display: grid;
+  grid-template-columns:
+    var(--quota-window-label-width)
+    minmax(44px, 1fr)
+    var(--quota-window-percent-width)
+    minmax(0, var(--quota-window-reset-width));
+  align-items: center;
+  gap: 8px;
+  justify-content: start;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.quotaWindowSummary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--quota-window-label-width);
+  min-width: var(--quota-window-label-width);
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accounts-brand) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-brand) 8%, transparent);
+  overflow: hidden;
+  color: var(--accounts-brand);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quotaWindowPercent {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.quotaMatrix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quotaMatrixRow {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+
+  & + & {
+    padding-top: 7px;
+    border-top: 1px solid color-mix(in srgb, var(--border-color) 34%, transparent);
+  }
+}
+
+.quotaMatrixWindowLabel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--accounts-brand) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-brand) 8%, transparent);
+  color: var(--accounts-brand);
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.quotaMatrixCells {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quotaMatrixCell {
+  display: grid;
+  grid-template-columns: 52px minmax(24px, 1fr) 32px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.quotaMatrixGroupLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quotaMatrixTrack {
+  height: 4px;
+  min-width: 0;
+}
+
+.quotaMatrixPercent {
+  color: var(--text-primary);
+  font-size: 10.5px;
+  font-weight: 850;
+  line-height: 1;
+  text-align: right;
+}
+
+.quotaMoreButton {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 82%, var(--accounts-surface));
+  color: var(--accounts-muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accounts-primary) 36%, var(--accounts-border));
+    background: color-mix(in srgb, var(--accounts-primary) 8%, var(--accounts-surface));
+    color: var(--accounts-primary);
+  }
+}
+
+.providerPill,
+.badge,
+.priority,
+.priorityBad {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.providerPill {
+  background: var(--data-badge-info-bg);
+  color: var(--data-badge-info-text);
+}
+
+.badgeGood {
+  background: var(--data-badge-success-bg);
+  color: var(--data-badge-success-text);
+}
+
+.badgeWarn {
+  background: var(--data-badge-warning-bg);
+  color: var(--data-badge-warning-text);
+}
+
+.badgeBad {
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
+}
+
+.badgeMuted {
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
+}
+
+.badgeInfo {
+  background: var(--data-badge-info-bg);
+  color: var(--data-badge-info-text);
+}
+
+.badgeNeutral {
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
+}
+
+.statusStack {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+
+  small {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+}
+
+.inspectionHint {
+  color: var(--accounts-warning) !important;
+}
+
+.statusBadgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.statusBadge,
+.statusBadgeButton {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.statusBadgeButton {
+  border-color: color-mix(in srgb, var(--primary-color) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+  color: var(--primary-color);
+  cursor: pointer;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.statusBadgedanger {
+  background: color-mix(in srgb, var(--accounts-danger) 12%, transparent);
+  color: var(--accounts-danger);
+}
+
+.statusBadgewarning {
+  background: color-mix(in srgb, var(--accounts-warning) 14%, transparent);
+  color: var(--accounts-warning);
+}
+
+.statusBadgeinfo {
+  background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+  color: var(--primary-color);
+}
+
+.quotaCell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.quotaCellHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  justify-content: start;
+  gap: 2px;
+
+  strong {
+    font-size: 13px;
+  }
+}
+
+.quotaTrack {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-color) 58%, transparent);
+}
+
+.quotaSubtext {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quotaBar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.quotaBarGood {
+  background: var(--accounts-success);
+}
+
+.quotaBarWarn {
+  background: var(--accounts-warning);
+}
+
+.quotaBarBad {
+  background: var(--accounts-danger);
+}
+
+.quotaBarNeutral {
+  background: var(--text-secondary);
+}
+
+.priority {
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+}
+
+.priorityBad {
+  background: color-mix(in srgb, var(--accounts-danger) 12%, transparent);
+  color: var(--accounts-danger);
+}
+
+.accountsPagination {
+  --monitor-surface: var(--accounts-surface);
+  --monitor-surface-elevated: color-mix(
+    in srgb,
+    var(--accounts-surface) 82%,
+    var(--accounts-muted-surface)
+  );
+  --monitor-muted: var(--accounts-muted);
+  --monitor-line: var(--accounts-border);
+  --monitor-ink: var(--accounts-text);
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 28%, var(--accounts-surface));
+}
+
+.compactTable {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  table-layout: fixed;
+
+  th,
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  th {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 800;
+    background: color-mix(in srgb, var(--surface-subtle) 72%, transparent);
+  }
+
+  tbody tr:hover {
+    background: color-mix(in srgb, var(--primary-color) 5%, transparent);
+  }
+
+  @include mobile {
+    min-width: 760px;
+  }
+}
+
+.accountDetailDrawer {
+  @include accounts-theme-vars;
+  --accounts-surface: var(--accounts-strong-surface);
+  background: var(--accounts-surface);
+  color: var(--accounts-text);
+
+  @include mobile {
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+}
+
+.drawerBodyShell {
+  display: grid;
+  gap: 12px;
+  margin-top: -$spacing-md;
+  min-width: 0;
+  min-height: 0;
+}
+
+.drawerTabPanel {
+  min-width: 0;
+  padding-bottom: 10px;
+}
+
+.drawerTitleStack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drawerTitleIdentity {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drawerProviderIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+
+  img {
+    display: block;
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+  }
+}
+
+.drawerTitlePrimary {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  line-height: 1.3;
+  @include text-ellipsis;
+}
+
+.drawerTitleMeta {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  @include text-ellipsis;
+}
+
+.drawerFileNameCopy {
+  @include button-reset;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  margin: -2px 0;
+  border-radius: $radius-sm;
+  font-family: $font-mono;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background $transition-fast,
+    color $transition-fast;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--surface-subtle-hover, rgba(0, 0, 0, 0.05));
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary, #{$primary-color});
+    outline-offset: 1px;
+  }
+}
+
+.drawerTabs {
+  position: sticky;
+  top: -$spacing-md;
+  z-index: 4;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+  height: 43px;
+  min-height: 43px;
+  overflow-x: auto;
+  margin-inline: -$spacing-lg;
+  padding: 0 calc(#{$spacing-lg} + 3px);
+  border: 1px solid var(--accounts-border);
+  border-top-color: color-mix(in srgb, var(--accounts-border) 76%, transparent);
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: var(--accounts-surface);
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  button {
+    flex: 0 0 auto;
+    position: relative;
+    align-self: stretch;
+    min-height: 0;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--accounts-muted);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover {
+      color: var(--accounts-primary);
+      background: transparent;
+    }
+  }
+
+  @include mobile {
+    gap: 3px;
+    padding-inline: 10px;
+
+    button {
+      padding-inline: 15px;
+    }
+  }
+}
+
+.drawerTabActive {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--accounts-primary) !important;
+  font-weight: 700 !important;
+
+  &::after {
+    position: absolute;
+    right: 8px;
+    bottom: -1px;
+    left: 8px;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: var(--accounts-primary);
+    content: '';
+  }
+}
+
+.drawerDisabledNotice {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accounts-danger) 35%, transparent);
+  border-left: 3px solid var(--accounts-danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-danger) 8%, var(--accounts-surface));
+  color: var(--accounts-text);
+
+  span {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accounts-danger);
+  }
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+.collapsibleHeader {
+  @include button-reset;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 0 0 8px;
+  cursor: pointer;
+
+  strong {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accounts-text);
+  }
+}
+
+.collapsibleChevron {
+  color: var(--accounts-muted);
+  font-size: 12px;
+}
+
+.drawerDetailStack {
+  display: grid;
+  gap: 12px;
+}
+
+.overviewStack {
+  display: grid;
+  gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.overviewDecisionCard,
+.overviewRecentStatusCard,
+.overviewCard,
+.overviewActivityCard,
+.overviewAttentionCard {
+  min-width: 0;
+  border: 1px solid var(--accounts-border);
+  border-radius: 12px;
+  background: var(--accounts-surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accounts-text) 4%, transparent);
+}
+
+.overviewDecisionCard {
+  --overview-accent: var(--accounts-primary);
+  position: relative;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--overview-accent) 34%, var(--accounts-border));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--overview-accent) 11%, var(--accounts-surface)),
+      color-mix(in srgb, var(--overview-accent) 3%, var(--accounts-surface)) 62%
+    ),
+    var(--accounts-surface);
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: -54px;
+    right: -38px;
+    width: 148px;
+    height: 148px;
+    border: 28px solid color-mix(in srgb, var(--overview-accent) 8%, transparent);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  &[data-overview-health='available'] {
+    --overview-accent: var(--accounts-success);
+  }
+
+  &[data-overview-health='five_hour_cooldown'],
+  &[data-overview-health='weekly_cooldown'],
+  &[data-overview-health='monthly_cooldown'],
+  &[data-overview-health='limited'],
+  &[data-overview-health='partial'] {
+    --overview-accent: var(--accounts-warning);
+  }
+
+  &[data-overview-health='reauth'],
+  &[data-overview-health='five_hour_exhausted'],
+  &[data-overview-health='weekly_exhausted'],
+  &[data-overview-health='monthly_exhausted'],
+  &[data-overview-health='exception'] {
+    --overview-accent: var(--accounts-danger);
+  }
+
+  &[data-overview-health='disabled'],
+  &[data-overview-health='raw'] {
+    --overview-accent: var(--accounts-neutral);
+  }
+}
+
+.overviewRecentStatusCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px;
+  background: color-mix(in srgb, var(--accounts-primary) 3%, var(--accounts-surface));
+}
+
+.overviewRecentStatusLayout {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.overviewRecentStatusStats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.overviewRecentStatusMetric {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 78%, transparent);
+  border-radius: 9px;
+  background: var(--accounts-surface);
+
+  span {
+    min-width: 0;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    flex: 0 0 auto;
+    color: var(--accounts-text);
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+}
+
+.overviewRecentStatusMetricSuccess {
+  border-color: color-mix(in srgb, var(--accounts-success) 26%, var(--accounts-border));
+
+  strong {
+    color: var(--accounts-success);
+  }
+}
+
+.overviewRecentStatusMetricFailure {
+  border-color: color-mix(in srgb, var(--accounts-danger) 24%, var(--accounts-border));
+
+  strong {
+    color: var(--accounts-danger);
+  }
+}
+
+.overviewRecentStatusTimeline {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accounts-primary) 15%, var(--accounts-border));
+  border-radius: 9px;
+  background: var(--accounts-surface);
+}
+
+.overviewRecentStatusTimelineHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+
+  span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 11px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span:last-child {
+    flex: 0 0 auto;
+    color: var(--accounts-muted);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+}
+
+.overviewRecentStatusMessage {
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accounts-danger) 30%, var(--accounts-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accounts-danger) 7%, var(--accounts-surface));
+
+  span {
+    color: var(--accounts-danger);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+
+  p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--accounts-text);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.overviewCardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.overviewCard,
+.overviewActivityCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 44%, var(--accounts-surface));
+}
+
+.overviewActivityCard {
+  --usage-surface: var(--accounts-surface);
+  --usage-border: var(--accounts-border);
+  --usage-strong-border: var(--accounts-strong-border);
+  --usage-text: var(--accounts-text);
+  --usage-muted: var(--accounts-muted);
+  --usage-primary: var(--accounts-primary);
+  background: color-mix(in srgb, var(--accounts-primary) 3%, var(--accounts-surface));
+}
+
+.overviewCardHeader {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.overviewSectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+
+  h3 {
+    min-width: 0;
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 14px;
+    line-height: 1.35;
+  }
+}
+
+.overviewSectionIcon,
+.overviewAttentionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accounts-primary) 10%, var(--accounts-surface));
+  color: var(--accounts-primary);
+}
+
+.overviewDecisionCard .overviewSectionIcon {
+  background: color-mix(in srgb, var(--overview-accent) 13%, var(--accounts-surface));
+  color: var(--overview-accent);
+}
+
+.overviewDecisionReason {
+  position: relative;
+  z-index: 1;
+  max-width: 620px;
+  margin: 0;
+  color: var(--accounts-text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.overviewEvidenceRow {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+
+  > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--overview-accent) 16%, var(--accounts-border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accounts-surface) 84%, transparent);
+  }
+
+  span {
+    color: var(--accounts-muted);
+    font-size: 11px;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.overviewPrimaryRow,
+.overviewCredentialState {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.overviewPrimaryValue {
+  min-width: 0;
+  color: var(--accounts-text);
+  font-size: clamp(20px, 3vw, 28px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.overviewStatusPill,
+.overviewScopePill,
+.overviewCredentialState span {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-primary) 9%, transparent);
+  color: var(--accounts-primary);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.overviewCredentialState strong {
+  color: var(--accounts-text);
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.overviewCardDescription {
+  margin: 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.overviewFieldGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 7px;
+  margin: 0;
+
+  > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--accounts-border) 76%, transparent);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accounts-surface) 86%, transparent);
+  }
+
+  dt {
+    color: var(--accounts-muted);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--accounts-text);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.35;
+  }
+}
+
+.overviewTabLink {
+  @include button-reset;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 5px;
+  margin-top: auto;
+  padding: 3px 1px;
+  color: var(--accounts-primary);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--accounts-brand-active);
+  }
+
+  &:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid color-mix(in srgb, var(--accounts-primary) 58%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.overviewScopePillFallback {
+  background: color-mix(in srgb, var(--accounts-warning) 12%, transparent);
+  color: var(--accounts-warning);
+}
+
+.overviewEmptyState {
+  padding: 16px;
+  border: 1px dashed var(--accounts-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 54%, var(--accounts-surface));
+  color: var(--accounts-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.overviewAttentionCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-color: color-mix(in srgb, var(--accounts-warning) 42%, var(--accounts-border));
+  background: color-mix(in srgb, var(--accounts-warning) 7%, var(--accounts-surface));
+
+  &[data-overview-attention-priority='critical'],
+  &[data-overview-attention-priority='high'] {
+    border-color: color-mix(in srgb, var(--accounts-danger) 42%, var(--accounts-border));
+    background: color-mix(in srgb, var(--accounts-danger) 7%, var(--accounts-surface));
+
+    .overviewAttentionIcon {
+      background: color-mix(in srgb, var(--accounts-danger) 13%, transparent);
+      color: var(--accounts-danger);
+    }
+  }
+
+  .overviewTabLink {
+    margin-top: 0;
+  }
+}
+
+.overviewAttentionIcon {
+  background: color-mix(in srgb, var(--accounts-warning) 13%, transparent);
+  color: var(--accounts-warning);
+}
+
+.overviewAttentionBody {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.overviewAttentionHeading {
+  margin: 0;
+  color: var(--accounts-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.credentialDefaultState {
+  display: grid;
+  gap: 3px;
+  padding: 11px 12px;
+  border: 1px dashed color-mix(in srgb, var(--accounts-border) 84%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 72%, var(--accounts-surface));
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 13px;
+  }
+
+  p {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.configurationStack {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.configurationLoading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 180px;
+  color: var(--accounts-muted);
+  font-size: 13px;
+}
+
+.configurationToolbar {
+  position: sticky;
+  top: 33px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.configurationDirtyBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-warning) 13%, transparent);
+  color: var(--accounts-warning);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.configurationToolbarActions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.configurationToolbarButton:global(.btn.btn-secondary) {
+  opacity: 1;
+  border-color: var(--accounts-strong-border);
+  background: var(--accounts-strong-surface);
+  color: var(--accounts-text);
+
+  &:hover:not(:disabled) {
+    border-color: var(--border-hover);
+    background: var(--surface-subtle-hover);
+    color: var(--primary-color);
+  }
+}
+
+.configurationToolbarButton:global(.btn.btn-secondary:disabled) {
+  opacity: 1;
+  border-color: var(--accounts-border);
+  background: var(--accounts-strong-surface);
+  color: var(--text-tertiary, var(--accounts-muted));
+}
+
+.configurationToolbarButton:global(.btn.btn-primary) {
+  opacity: 1;
+}
+
+.configurationToolbarButton:global(.btn.btn-primary:disabled) {
+  opacity: 1;
+  border-color: color-mix(
+    in srgb,
+    var(--primary-solid, var(--primary-color)) 38%,
+    var(--accounts-strong-surface)
+  );
+  background: color-mix(
+    in srgb,
+    var(--primary-solid, var(--primary-color)) 38%,
+    var(--accounts-strong-surface)
+  );
+  color: var(--text-tertiary, var(--accounts-muted));
+}
+
+.configurationReadOnlyNotice {
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accounts-warning) 30%, var(--accounts-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-warning) 7%, var(--accounts-surface));
+  color: var(--accounts-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.accountModelsStack {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.accountModelsHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.accountModelsSummary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  strong {
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.accountModelsInlineStatus,
+.accountModelsWarning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 8px;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.accountModelsInlineStatus {
+  background: color-mix(in srgb, var(--accounts-muted-surface) 50%, var(--accounts-surface));
+}
+
+.accountModelsWarning {
+  border-color: color-mix(in srgb, var(--accounts-warning) 32%, var(--accounts-border));
+  background: color-mix(in srgb, var(--accounts-warning) 7%, var(--accounts-surface));
+
+  :global(.btn) {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+}
+
+.accountModelsChangeSummary {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+}
+
+.accountModelsControls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.85fr) minmax(260px, 1.15fr);
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  :global(.input) {
+    min-height: 34px;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  :global([role='tablist']) {
+    min-height: 34px;
+    gap: 2px;
+    padding: 1px;
+  }
+
+  :global([role='tablist'] [role='tab']) {
+    min-height: 30px;
+    padding: 0 12px;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+}
+
+.accountModelsRuleStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.accountModelsRuleChip {
+  max-width: 100%;
+  padding: 5px 8px;
+  overflow: hidden;
+  border: 1px solid var(--accounts-border);
+  border-radius: 999px;
+  background: var(--accounts-surface);
+  color: var(--accounts-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accounts-primary) 52%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.accountModelsRuleChipCredential {
+  border-color: color-mix(in srgb, var(--accounts-warning) 32%, var(--accounts-border));
+  background: color-mix(in srgb, var(--accounts-warning) 8%, var(--accounts-surface));
+  color: var(--accounts-warning);
+}
+
+.accountModelsRuleChipGlobal {
+  border-color: color-mix(in srgb, var(--accounts-danger) 28%, var(--accounts-border));
+  background: color-mix(in srgb, var(--accounts-danger) 7%, var(--accounts-surface));
+  color: var(--accounts-danger);
+}
+
+.accountModelsList {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.accountModelRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 9px;
+  background: var(--accounts-surface);
+}
+
+.accountModelRowExcluded {
+  border-color: color-mix(in srgb, var(--accounts-warning) 26%, var(--accounts-border));
+  background: color-mix(in srgb, var(--accounts-warning) 4%, var(--accounts-surface));
+}
+
+.accountModelMain {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.accountModelIdentity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.accountModelIdButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--accounts-text);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  svg {
+    flex: 0 0 auto;
+    color: var(--accounts-muted);
+  }
+
+  &:focus-visible {
+    border-radius: 3px;
+    outline: 2px solid color-mix(in srgb, var(--accounts-primary) 52%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.accountModelScopeBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.accountModelScopeAvailable {
+  background: color-mix(in srgb, var(--accounts-success) 11%, transparent);
+  color: var(--accounts-success);
+}
+
+.accountModelScopeUnknown {
+  background: color-mix(in srgb, var(--accounts-muted) 11%, transparent);
+  color: var(--accounts-muted);
+}
+
+.accountModelScopeCredential {
+  background: color-mix(in srgb, var(--accounts-warning) 13%, transparent);
+  color: var(--accounts-warning);
+}
+
+.accountModelScopeGlobal {
+  background: color-mix(in srgb, var(--accounts-danger) 11%, transparent);
+  color: var(--accounts-danger);
+}
+
+.accountModelScopeBoth {
+  background: color-mix(in srgb, var(--accounts-primary) 11%, transparent);
+  color: var(--accounts-primary);
+}
+
+.accountModelDisplayName,
+.accountModelMeta {
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+}
+
+.accountModelDisplayName {
+  white-space: nowrap;
+}
+
+.accountModelMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+}
+
+.accountModelActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.configurationSection {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 32%, var(--accounts-surface));
+
+  :global(.form-group) {
+    margin-bottom: 0;
+  }
+
+  :global(.form-group > label) {
+    color: var(--accounts-text);
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  :global(.form-group .hint) {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  :global(.input) {
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
+
+.configurationSectionTitle {
+  min-width: 0;
+  margin: 0;
+  color: var(--accounts-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.configurationFieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 13px;
+  min-width: 0;
+}
+
+.configurationFieldFull {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.configurationProviderGroup {
+  display: grid;
+  gap: 13px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--accounts-primary) 17%, var(--accounts-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accounts-primary) 4%, var(--accounts-surface));
+}
+
+.configurationFieldLabel {
+  color: var(--accounts-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.configurationFieldHint {
+  margin: -5px 0 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.configurationToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 82%, transparent);
+  border-radius: 9px;
+  background: var(--accounts-surface);
+
+  > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  strong,
+  p {
+    margin: 0;
+  }
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 13px;
+  }
+
+  p {
+    color: var(--accounts-muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.configurationTextareaInvalid {
+  border-color: var(--accounts-danger) !important;
+}
+
+.configurationRawDataDetails {
+  overflow: hidden;
+  border: 1px solid var(--accounts-border);
+  border-radius: 10px;
+  background: var(--accounts-surface);
+
+  > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  &[open] > summary {
+    border-bottom: 1px solid var(--accounts-border);
+    color: var(--accounts-text);
+  }
+}
+
+.configurationRawDataSummaryLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.configurationRawDataBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-primary) 9%, transparent);
+  color: var(--accounts-primary);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.configurationRawDataBody {
+  display: grid;
+  gap: 13px;
+  padding: 14px;
+}
+
+.configurationTechnicalMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+
+  > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--accounts-border) 78%, transparent);
+    border-radius: 8px;
+    background: var(--accounts-muted-surface);
+  }
+
+  dt,
+  dd {
+    min-width: 0;
+    margin: 0;
+  }
+
+  dt {
+    color: var(--accounts-muted);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  dd {
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    color: var(--accounts-text);
+    font-family: $font-mono;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: normal;
+  }
+}
+
+.configurationRawDataHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+}
+
+.configurationRawData {
+  width: 100%;
+  max-height: 360px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 11px 12px;
+  overflow: auto;
+  border: 1px solid var(--accounts-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 66%, var(--accounts-surface));
+  color: var(--accounts-text);
+  font-family: $font-mono;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accounts-primary) 55%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.configurationLoadError {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+
+  strong {
+    color: var(--accounts-danger);
+  }
+
+  p {
+    line-height: 1.5;
+  }
+}
+
+.drawerSection {
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+
+  h3 {
+    margin: 0 0 10px;
+    color: var(--text-primary);
+    font-size: 14px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+
+  dl {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+  }
+
+  dl > div {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  dt {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 700;
+  }
+}
+
+.detailQuotaDiagnostics {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+
+  h4 {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.35;
+  }
+}
+
+.quotaTab {
+  --color-surface: var(--accounts-surface);
+  --color-surface-muted: var(--accounts-muted-surface);
+  --color-border: var(--accounts-border);
+  --color-text: var(--accounts-text);
+  --color-text-secondary: var(--accounts-muted);
+  --color-text-tertiary: var(--accounts-muted);
+  --color-primary: var(--accounts-brand);
+  --color-success: var(--accounts-success);
+  --color-warning: var(--accounts-warning);
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.quotaTabHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.quotaPageHeading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+}
+
+.quotaPageTitle {
+  margin: 0;
+  color: var(--accounts-text);
+  font-size: 18px;
+  line-height: 25px;
+  font-weight: 750;
+}
+
+.quotaTabActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  :global(svg) {
+    display: block;
+  }
+}
+
+.quotaSummaryPanel {
+  min-width: 0;
+  background: var(--accounts-surface);
+}
+
+.quotaSection {
+  min-width: 0;
+  padding: 0;
+}
+
+.quotaSummaryPanel {
+  display: grid;
+  gap: 12px;
+}
+
+.quotaSummaryHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+
+  h3 {
+    flex: 0 0 auto;
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 15px;
+    line-height: 21px;
+    font-weight: 750;
+  }
+}
+
+.quotaSummaryMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: $spacing-sm;
+  min-width: 0;
+}
+
+.quotaSummaryMetric {
+  display: grid;
+  align-content: center;
+  justify-items: left;
+  gap: $spacing-xs;
+  min-width: 0;
+  min-height: 84px;
+  padding: $spacing-sm;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 78%, transparent);
+  border-radius: $radius-md;
+  background: var(--accounts-surface);
+}
+
+.quotaSummaryMetricBlue {
+  --quota-summary-accent: var(--accounts-brand);
+}
+
+.quotaSummaryMetricGreen {
+  --quota-summary-accent: var(--accounts-success);
+}
+
+.quotaSummaryMetricTeal {
+  --quota-summary-accent: var(--data-teal-base, var(--accounts-primary));
+}
+
+.quotaSummaryMetricAmber {
+  --quota-summary-accent: var(--accounts-warning);
+}
+
+.quotaSummaryMetricHeader {
+  display: inline-flex;
+  align-items: center;
+  justify-content: left;
+  gap: $spacing-xs;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.quotaSummaryMetricLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quotaSummaryValueWrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.quotaSummaryValue {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--accounts-text);
+  font-size: 18px;
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quotaSummaryValue[tabindex='0'] {
+  cursor: help;
+  outline: 0;
+}
+
+.quotaSummaryValue[tabindex='0']:focus-visible {
+  border-radius: $radius-sm;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accounts-brand) 28%, transparent);
+}
+
+.quotaSummaryValueTooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + $spacing-sm);
+  z-index: $z-dropdown;
+  display: grid;
+  gap: 3px;
+  width: max-content;
+  min-width: 140px;
+  max-width: min(240px, calc(100vw - 32px));
+  padding: $spacing-sm $spacing-md;
+  border: 1px solid color-mix(in srgb, var(--quota-summary-accent) 78%, var(--accounts-border));
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--quota-summary-accent) 92%, var(--accounts-text));
+  color: var(--primary-contrast, #fff);
+  box-shadow: $shadow-md;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity $transition-fast,
+    transform $transition-fast;
+}
+
+.quotaSummaryValueTooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  border-right: 1px solid
+    color-mix(in srgb, var(--quota-summary-accent) 78%, var(--accounts-border));
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--quota-summary-accent) 78%, var(--accounts-border));
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.quotaSummaryValueWrap:hover .quotaSummaryValueTooltip,
+.quotaSummaryValueWrap:focus-within .quotaSummaryValueTooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.quotaSummaryValueTooltipLabel {
+  color: color-mix(in srgb, var(--primary-contrast, #fff) 72%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.quotaSummaryValueTooltipValue {
+  color: var(--primary-contrast, #fff);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.quotaSummaryMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: $spacing-xs $spacing-sm;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  text-align: right;
+
+  strong {
+    min-width: 0;
+    max-width: 100%;
+    color: var(--accounts-text);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+}
+
+.quotaTabStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accounts-muted);
+  font-size: 12px;
+}
+
+.quotaSection {
+  display: grid;
+  gap: $spacing-sm;
+}
+
+.quotaSectionHeading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+
+  h3 {
+    flex: 0 0 auto;
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 15px;
+    line-height: 21px;
+    font-weight: 750;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.quotaCardList {
+  display: grid;
+  gap: $spacing-md;
+  min-width: 0;
+}
+
+.quotaEmpty {
+  margin: 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+}
+
+.detailQuotaUsageSummary {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+  background: color-mix(in srgb, var(--accounts-accent-soft) 48%, var(--accounts-surface));
+}
+
+.detailQuotaUsageSummaryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--accounts-muted);
+    font-size: 11px;
+  }
+}
+
+.detailQuotaUsageTitle,
+.detailQuotaUsageRange {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.detailQuotaUsageTitle {
+  gap: 8px;
+}
+
+.detailQuotaUsageTitle strong {
+  font-size: 14px;
+}
+
+.detailQuotaUsageTitleIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-primary) 12%, transparent);
+  color: var(--accounts-primary);
+}
+
+.detailQuotaUsageRange {
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 3px;
+  text-align: right;
+
+  strong {
+    overflow: hidden;
+    max-width: 100%;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.detailQuotaUsageMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--accounts-muted);
+  font-size: 11px;
+
+  span {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  strong {
+    color: var(--accounts-text);
+    font-weight: 700;
+  }
+}
+
+.detailQuotaUsageMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+
+  > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 8px;
+    border-radius: 8px;
+    background: var(--accounts-surface);
+  }
+
+  > div > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  span {
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.metricIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.metricIconBlue {
+  background: color-mix(in srgb, var(--accounts-brand) 12%, transparent);
+  color: var(--accounts-brand);
+}
+
+.metricIconGreen {
+  background: color-mix(in srgb, var(--accounts-success) 12%, transparent);
+  color: var(--accounts-success);
+}
+
+.metricIconTeal {
+  background: color-mix(in srgb, var(--data-teal-base, var(--accounts-primary)) 12%, transparent);
+  color: var(--data-teal-base, var(--accounts-primary));
+}
+
+.metricIconAmber {
+  background: color-mix(in srgb, var(--accounts-warning) 12%, transparent);
+  color: var(--accounts-warning);
+}
+
+.detailInlineNote {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+
+  strong {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.detailQuotaWindowList,
+.detailCandidateList {
+  display: grid;
+  gap: 8px;
+}
+
+.detailQuotaWindowCard,
+.detailCandidateItem {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 84%, transparent);
+  border-radius: 8px;
+  background: var(--accounts-surface);
+}
+
+.detailQuotaWindowHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  min-width: 0;
+
+  > div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  b {
+    color: var(--accounts-text);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.detailQuotaWindowMeta,
+.detailEvidenceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+
+.detailQuotaWindowMeta span,
+.detailEvidenceGrid span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailEvidenceGrid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 72%, transparent);
+  border-radius: 8px;
+  background: var(--accounts-surface);
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.detailBadgeList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detailCandidateItem {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  strong,
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 13px;
+  }
+
+  span,
+  small {
+    color: var(--accounts-muted);
+    font-size: 11px;
+  }
+
+  small {
+    flex: 0 0 auto;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  > div > span {
+    overflow: visible;
+    line-height: 1.45;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+
+    small {
+      text-align: left;
+    }
+  }
+}
+
+.detailCandidateHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.detailCandidateStatus {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 120px;
+  padding: 0 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-primary) 9%, transparent);
+  color: var(--accounts-primary) !important;
+  font-size: 11px !important;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionHeaderInline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+
+  h3 {
+    margin-bottom: 4px;
+  }
+}
+
+.quotaResetCard {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--accounts-border);
+  border-radius: $radius-md;
+  background: var(--accounts-surface);
+}
+
+.quotaResetHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.quotaResetHeaderMain {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quotaResetHeaderActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.quotaResetIcon {
+  margin-right: 0;
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--accounts-surface));
+  color: var(--primary-color);
+}
+
+.quotaResetAction:global(.btn.btn-secondary) {
+  min-height: 30px;
+  border-color: color-mix(in srgb, var(--primary-color) 36%, var(--accounts-border));
+  background: color-mix(in srgb, var(--primary-color) 7%, var(--accounts-surface));
+  color: var(--primary-color);
+  font-weight: 750;
+
+  &:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary-color) 58%, var(--accounts-border));
+    background: color-mix(in srgb, var(--primary-color) 12%, var(--accounts-surface));
+    color: var(--primary-color);
+  }
+
+  &:disabled {
+    border-color: var(--accounts-border);
+    background: var(--accounts-muted-surface);
+    color: var(--accounts-muted);
+    opacity: 0.58;
+  }
+}
+
+.quotaResetTitle {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+
+  h3 {
+    margin: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 14px;
+    font-weight: 750;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 10px;
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.quotaResetCount {
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  white-space: nowrap;
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    line-height: 22px;
+  }
+}
+
+.quotaResetCountUnit {
+  color: var(--accounts-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.quotaResetAvailabilityNote {
+  padding: 7px 10px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 8px;
+  background: var(--accounts-muted-surface);
+  color: var(--accounts-muted);
+  font-size: 11px;
+}
+
+.quotaResetExpirySection {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--accounts-border);
+}
+
+.quotaResetExpiryLabel {
+  color: var(--accounts-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.quotaResetExpiryList {
+  display: grid;
+  gap: 6px;
+}
+
+.quotaResetExpiryItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 84%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 26%, var(--accounts-surface));
+  color: var(--accounts-muted);
+  font-size: 11px;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    flex: 0 0 auto;
+    color: var(--accounts-text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.quotaResetCooldown {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--accounts-border);
+  color: var(--accounts-muted);
+  font-size: 11px;
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.quotaPanelIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accounts-primary) 10%, var(--accounts-surface));
+  color: var(--accounts-primary);
+}
+
+.quotaWindowFilters {
+  display: inline-flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--accounts-border);
+  border-radius: 8px;
+
+  button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-right: 1px solid var(--accounts-border);
+    background: var(--accounts-surface);
+    color: var(--accounts-muted);
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+
+    &:last-child {
+      border-right: 0;
+    }
+
+    &:hover {
+      background: var(--accounts-muted-surface);
+      color: var(--accounts-text);
+    }
+  }
+}
+
+.quotaWindowHeaderActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.quotaWindowFilterActive {
+  background: color-mix(in srgb, var(--accounts-primary) 10%, var(--accounts-surface)) !important;
+  color: var(--accounts-primary) !important;
+}
+
+.quotaWindowGroups {
+  display: grid;
+  gap: 14px;
+}
+
+.quotaWindowGroup {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quotaWindowGroupHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+
+  > div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  h4 {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > strong {
+    flex: 0 0 auto;
+    min-width: 22px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--accounts-muted-surface);
+    color: var(--accounts-muted);
+    font-size: 11px;
+    text-align: center;
+  }
+}
+
+@include mobile {
+  .quotaTabHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .quotaTabActions {
+    justify-content: flex-start;
+
+    :global(.btn) {
+      flex: 1 1 auto;
+    }
+  }
+
+  .quotaSummaryMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quotaSectionHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+
+    span {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+  }
+
+  .quotaResetHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .quotaResetHeaderMain {
+    align-items: flex-start;
+  }
+
+  .quotaResetHeaderActions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    gap: 8px;
+
+    button {
+      width: 100%;
+    }
+  }
+
+  .quotaResetCount {
+    justify-self: start;
+  }
+
+  .quotaResetExpiryItem,
+  .quotaResetCooldown {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .detailQuotaUsageSummaryHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .detailQuotaUsageRange {
+    align-items: flex-start;
+    text-align: left;
+
+    strong {
+      white-space: normal;
+    }
+  }
+
+  .detailQuotaUsageMeta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .quotaWindowSection .sectionHeaderInline {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .quotaWindowHeaderActions {
+    align-items: stretch;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .quotaWindowFilters {
+    align-self: stretch;
+
+    button {
+      flex: 1 1 0;
+    }
+  }
+
+  .quotaWindowGroupHeader span {
+    white-space: normal;
+  }
+}
+
+.inlineLoading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.monoCell {
+  font-family: var(--font-mono, 'SFMono-Regular', Consolas, monospace);
+}
+
+.eventStatus {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  padding: 2px 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventStatusSuccess {
+  background: color-mix(in srgb, var(--accounts-success) 13%, transparent);
+  color: var(--accounts-success);
+}
+
+.eventStatusFailed {
+  background: color-mix(in srgb, var(--accounts-danger) 13%, transparent);
+  color: var(--accounts-danger);
+}
+
+.drawerActions {
+  justify-content: flex-end;
+
+  :global(.btn) {
+    min-height: 36px;
+  }
+}
+
+.drawerMoreActions {
+  min-height: 36px;
+  border-radius: 8px;
+  background: var(--accounts-surface);
+}
+
+.rulesGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+
+  @include tablet {
+    grid-template-columns: 1fr;
+  }
+}
+
+.splitGrid,
+.oauthGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 12px;
+  align-items: start;
+
+  @include tablet {
+    grid-template-columns: 1fr;
+  }
+}
+
+.oauthCardStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rulePanel {
+  padding: 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-md;
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-sm);
+
+  h2 {
+    margin: 0 0 12px;
+    color: var(--text-primary);
+    font-size: 17px;
+  }
+
+  :global(.form-group) {
+    margin: 0 0 12px;
+  }
+}
+
+.ruleList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  div {
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--app-radius-sm);
+    background: var(--surface-subtle);
+  }
+
+  strong {
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+
+  p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+.ruleColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+
+  section {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--app-radius-md);
+    background: var(--surface-subtle);
+  }
+
+  h3 {
+    margin: 0 0 10px;
+    color: var(--text-primary);
+    font-size: 14px;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ruleRow {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.28fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-color);
+
+  &:first-of-type {
+    border-top: 0;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+}
+
+.emptyText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.previewList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding-right: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.previewPanelHeader {
+  min-width: 0;
+}
+
+.previewScope {
+  margin: 4px 0 0;
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.previewControls {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+}
+
+.previewProviderFilter {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+
+  label {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+}
+
+.previewEmpty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--accounts-border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.previewRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--app-radius-sm);
+  background: var(--surface-subtle);
+
+  small {
+    color: color-mix(in srgb, var(--text-secondary) 86%, var(--text-primary));
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.previewRow[data-oauth-preview-status='excluded'] {
+  border-color: color-mix(in srgb, var(--error-color) 34%, var(--border-color));
+
+  .previewStatus {
+    background: color-mix(in srgb, var(--error-color) 10%, var(--accounts-surface));
+    color: var(--error-color);
+  }
+}
+
+.previewRow[data-oauth-preview-status='aliased'] {
+  border-color: color-mix(in srgb, var(--primary-color) 34%, var(--border-color));
+
+  .previewStatus {
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--accounts-surface));
+    color: var(--primary-active);
+  }
+}
+
+.previewRowHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+
+  strong {
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+}
+
+.previewStatus {
+  padding: 2px 7px;
+  border-radius: $radius-full;
+  background: var(--accounts-muted-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.previewDetails {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+
+  div {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  dt {
+    color: color-mix(in srgb, var(--text-secondary) 86%, var(--text-primary));
+    font-size: 12px;
+  }
+
+  dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+}
+
+.previewDirectSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--primary-color) 30%, var(--accounts-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--primary-color) 5%, var(--accounts-surface));
+  color: var(--accounts-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+
+  span:last-child {
+    flex-shrink: 0;
+    color: var(--primary-color);
+  }
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 48%, var(--accounts-border));
+    background: color-mix(in srgb, var(--primary-color) 8%, var(--accounts-surface));
+  }
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--primary-color) 36%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.ruleCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 180px;
+  padding: 18px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-md;
+  background: var(--glass-bg);
+
+  h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 17px;
+  }
+
+  p {
+    flex: 1 1 auto;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+/* Refreshed workspace layout, aligned with Usage Analytics. */
+.container {
+  @include accounts-theme-vars;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  color: var(--accounts-text);
+}
+
+.controlsPanel,
+.controlsFilterPanel,
+.tablePanel,
+.loadingPanel,
+.rulePanel {
+  border: 1px solid var(--accounts-border);
+  border-radius: 14px;
+  background: var(--accounts-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.controlsPanel {
+  display: grid;
+  min-width: 0;
+  overflow: visible;
+  border-radius: 18px;
+}
+
+.controlsTabsRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  overflow: hidden;
+  scrollbar-width: thin;
+}
+
+.tabs {
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.controlsTabsRow > .headerActions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.tabLabel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tabBadge {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--data-badge-info-bg);
+  color: var(--data-badge-info-text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.controlsFilterPanel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow: visible;
+  padding: 14px 16px 16px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 34%, var(--accounts-surface));
+}
+
+.toolbar {
+  grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(132px, 1fr)) minmax(118px, auto);
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+
+  :global(.input),
+  :global(button) {
+    min-height: 36px;
+  }
+}
+
+.toolbarSearchInput {
+  height: 36px;
+  min-height: 36px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.toolbarSelectTrigger {
+  height: 36px !important;
+  min-height: 36px !important;
+  border-radius: 12px !important;
+  font-size: 13px;
+}
+
+.mobileToolbarActions {
+  display: none;
+}
+
+.mobileFilterButton:global(.btn.btn-sm) {
+  gap: 7px;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 12px;
+}
+
+.mobileFilterCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accounts-primary);
+  color: var(--bg-primary);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mobileFilterSummary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountSortControls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 12px;
+  background: var(--accounts-muted-surface);
+  overflow: visible;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+
+  &:hover,
+  &:focus-within {
+    border-color: color-mix(in srgb, var(--accounts-primary) 42%, var(--accounts-border));
+    background: color-mix(in srgb, var(--accounts-primary) 6%, var(--accounts-muted-surface));
+  }
+}
+
+.accountSortTrigger {
+  border: 0;
+  font: inherit;
+  justify-content: flex-start;
+  flex: 1 1 auto;
+  min-width: 78px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 4px 0 12px;
+  border: 0;
+  border-radius: 11px 0 0 11px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accounts-text);
+  cursor: pointer;
+  transform: none;
+
+  &:hover,
+  &:focus-visible {
+    outline: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--accounts-text);
+    transform: none;
+  }
+}
+
+.accountSortLabel {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountSortDirectionButton {
+  border: 0;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 11px 11px 0;
+  background: transparent;
+  color: var(--accounts-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease;
+
+  &:hover:not(:disabled),
+  &:focus-visible:not(:disabled) {
+    outline: 0;
+    background: color-mix(in srgb, var(--accounts-primary) 10%, transparent);
+    color: var(--accounts-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+.accountSortDropdownList {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--accounts-strong-border);
+  border-radius: 12px;
+  background: var(--accounts-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.accountSortDropdownItem.accountSortDropdownItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accounts-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    outline: 0;
+    background: color-mix(in srgb, var(--accounts-primary) 7%, var(--accounts-muted-surface));
+    color: var(--accounts-text);
+  }
+}
+
+.accountSortDropdownItemSelected {
+  color: var(--accounts-primary);
+  font-weight: 700;
+}
+
+.accountSortDropdownItemHighlighted {
+  background: color-mix(in srgb, var(--accounts-primary) 7%, var(--accounts-muted-surface));
+  color: var(--accounts-text);
+}
+
+.accountSortDropdownItemSelected.accountSortDropdownItemHighlighted {
+  color: var(--accounts-primary);
+}
+
+.accountSortDirectionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.mobileFilterLayer {
+  @include accounts-theme-vars;
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+}
+
+.mobileFilterBackdrop {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: var(--accounts-overlay);
+  cursor: pointer;
+}
+
+.mobileFilterPanel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(82vh, 640px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 82%, transparent);
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: var(--accounts-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.mobileFilterHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accounts-border) 72%, transparent);
+
+  h2 {
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 16px;
+    line-height: 1.25;
+  }
+
+  span {
+    display: block;
+    max-width: 260px;
+    margin-top: 3px;
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.mobileFilterBody {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+
+.mobileFilterDisplayMode {
+  display: grid;
+  min-width: 0;
+}
+
+.mobileFilterDisplayMode :global(.btn) {
+  width: 100%;
+}
+
+.mobileSortField {
+  min-width: 0;
+
+  .accountSortControls {
+    width: 100%;
+  }
+
+  .accountSortDropdownList {
+    top: auto;
+    bottom: calc(100% + 4px);
+  }
+}
+
+.mobileFilterFooter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 72%, transparent);
+
+  :global(.btn) {
+    width: 100%;
+  }
+}
+
+.panelHeader {
+  min-width: 0;
+
+  h2 {
+    font-size: 16px;
+    line-height: 1.3;
+  }
+
+  p {
+    line-height: 1.5;
+  }
+}
+
+.tablePanel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.batchBar {
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 34%, var(--accounts-surface));
+}
+
+.tableScroller {
+  position: relative;
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 72%, transparent);
+  scrollbar-gutter: stable;
+}
+
+.tableScroller::after {
+  position: sticky;
+  right: 0;
+  float: right;
+  width: 18px;
+  height: 0;
+  pointer-events: none;
+  content: '';
+  box-shadow: -16px 0 18px -18px var(--accounts-border);
+}
+
+.compactTable {
+  th,
+  td {
+    border-bottom-color: color-mix(in srgb, var(--accounts-border) 72%, transparent);
+  }
+
+  th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: color-mix(in srgb, var(--accounts-muted-surface) 78%, var(--accounts-surface));
+    color: var(--accounts-muted);
+    letter-spacing: 0;
+  }
+
+  tbody tr {
+    transition: background-color 0.14s ease;
+  }
+
+  tbody tr:hover {
+    background: color-mix(in srgb, var(--accounts-primary) 5%, var(--accounts-surface));
+  }
+
+  th:last-child,
+  td:last-child {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    background: var(--accounts-surface);
+    box-shadow: -1px 0 0 var(--accounts-border);
+  }
+
+  th:last-child {
+    z-index: 3;
+    background: color-mix(in srgb, var(--accounts-muted-surface) 90%, var(--accounts-surface));
+  }
+
+  tbody tr:hover td:last-child {
+    background: color-mix(in srgb, var(--accounts-primary) 5%, var(--accounts-surface));
+  }
+}
+
+.accountCell {
+  gap: 3px;
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--accounts-muted);
+  }
+}
+
+.providerPill,
+.badge,
+.priority,
+.priorityBad {
+  min-height: 22px;
+  border-radius: 8px;
+}
+
+.statusBadge,
+.statusBadgeButton {
+  min-height: 21px;
+  border-radius: 7px;
+}
+
+.quotaTrack {
+  height: 8px;
+  background: color-mix(in srgb, var(--accounts-border) 62%, transparent);
+}
+
+.splitGrid,
+.oauthGrid {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: 16px;
+
+  > * {
+    min-width: 0;
+  }
+}
+
+.rulePanel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  align-content: start;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100dvh - 32px);
+  padding: 16px;
+  overflow: hidden;
+
+  h2 {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.3;
+  }
+}
+
+.ruleList {
+  gap: 8px;
+
+  div {
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accounts-muted-surface) 78%, var(--accounts-surface));
+  }
+}
+
+.drawerSection {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 36%, var(--accounts-surface));
+}
+
+@include tablet {
+  .toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .splitGrid,
+  .oauthGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .rulePanel {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .previewList {
+    padding-right: 0;
+    overflow: visible;
+  }
+}
+
+@include mobile {
+  .container {
+    gap: 14px;
+  }
+
+  .rulePanel {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .previewList {
+    padding-right: 0;
+    overflow: visible;
+  }
+
+  .controlsTabsRow,
+  .controlsFilterPanel {
+    padding-inline: 12px;
+  }
+
+  .controlsTabsRow {
+    align-items: stretch;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    overflow: visible;
+    padding-bottom: 4px;
+  }
+
+  .tabs :global([role='tab']) {
+    min-width: 0;
+    padding-inline: 8px;
+    white-space: normal;
+  }
+
+  .tabs :global([role='tab']:last-child:nth-child(odd)) {
+    grid-column: 1 / -1;
+  }
+
+  .tabLabel {
+    gap: 4px;
+    width: 100%;
+
+    > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .controlsTabsRow > .headerActions {
+    justify-content: flex-start;
+  }
+
+  .oauthGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .overviewCardGrid,
+  .overviewRecentStatusLayout,
+  .overviewEvidenceRow,
+  .overviewFieldGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .overviewCardHeader,
+  .overviewPrimaryRow,
+  .overviewCredentialState {
+    align-items: flex-start;
+  }
+
+  .overviewCardHeader {
+    flex-direction: column;
+  }
+
+  .detailQuotaUsageMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .configurationToolbar {
+    align-items: center;
+    flex-direction: row;
+    padding: 0;
+  }
+
+  .configurationDirtyBadge {
+    align-self: flex-start;
+  }
+
+  .configurationToolbarActions {
+    display: flex;
+    margin-left: auto;
+
+    :global(.btn) {
+      width: auto;
+    }
+  }
+
+  .accountModelsHeader {
+    align-items: stretch;
+    flex-direction: column;
+
+    > .headerActions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-left: 0;
+
+      :global(.btn) {
+        width: 100%;
+      }
+    }
+  }
+
+  .accountModelsControls {
+    grid-template-columns: 1fr;
+  }
+
+  .accountModelsChangeSummary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .accountModelRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .accountModelActions {
+    justify-content: stretch;
+
+    :global(.btn) {
+      width: 100%;
+    }
+  }
+
+  .configurationFieldGrid,
+  .configurationTechnicalMeta {
+    grid-template-columns: 1fr;
+  }
+
+  .configurationToggleRow,
+  .configurationRawDataHeader {
+    align-items: flex-start;
+  }
+
+  .configurationRawDataHeader {
+    flex-direction: column;
+
+    :global(.btn) {
+      width: 100%;
+    }
+  }
+
+  .overviewAttentionCard {
+    grid-template-columns: auto minmax(0, 1fr);
+
+    .overviewTabLink {
+      grid-column: 1 / -1;
+      margin-left: 46px;
+    }
+  }
+
+  .toolbar > .filterField,
+  .toolbar > .accountSortControls {
+    display: none;
+  }
+
+  .mobileToolbarActions {
+    display: grid;
+    grid-template-columns: minmax(118px, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .batchBar,
+  .panelHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .accountsPagination {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+}
+
+.batchBar {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) 1fr;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.batchBar > span {
+  min-width: 0;
+}
+
+.batchActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.statusStack {
+  gap: 3px;
+  max-width: 100%;
+
+  small {
+    display: block;
+    width: 100%;
+    max-width: 128px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.quotaCellHeader {
+  align-items: center;
+
+  strong {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.quotaCell {
+  gap: 6px;
+}
+
+.quotaTrack {
+  max-width: none;
+}
+
+.rowActions {
+  justify-content: center;
+}
+
+@include tablet {
+  .accountCard {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .accountCardIdentity,
+  .accountCardHealth,
+  .accountCardLatestRequest,
+  .accountCardEvidence,
+  .accountCardBusiness,
+  .accountCardRecommendation {
+    padding-inline: 0;
+    border-left: 0;
+  }
+
+  .accountCardHealth,
+  .accountCardLatestRequest,
+  .accountCardEvidence,
+  .accountCardBusiness,
+  .accountCardRecommendation {
+    grid-column: 1 / -1;
+  }
+
+  .batchBar {
+    grid-template-columns: 1fr;
+  }
+
+  .batchActions {
+    justify-content: flex-start;
+  }
+}
+
+@include mobile {
+  .overviewCardGrid,
+  .overviewRecentStatusLayout,
+  .overviewEvidenceRow,
+  .overviewFieldGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .overviewCardHeader,
+  .overviewPrimaryRow,
+  .overviewCredentialState {
+    align-items: flex-start;
+  }
+
+  .overviewCardHeader {
+    flex-direction: column;
+  }
+
+  .overviewAttentionCard {
+    grid-template-columns: auto minmax(0, 1fr);
+
+    .overviewTabLink {
+      grid-column: 1 / -1;
+      margin-left: 46px;
+    }
+  }
+
+  .searchField {
+    grid-column: 1;
+  }
+
+  .batchBarIdle {
+    display: none;
+  }
+
+  .batchBar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .accountCardList {
+    padding: 10px 8px 8px;
+    scroll-margin-top: 56px;
+  }
+
+  .accountCard {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px 10px;
+    min-height: 0;
+    padding: 10px;
+    border-color: color-mix(in srgb, var(--accounts-border) 90%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accounts-surface) 94%, var(--accounts-muted-surface));
+    box-shadow: var(--shadow-sm);
+  }
+
+  .accountCardIdentity {
+    grid-column: 1 / -1;
+    gap: 4px;
+    padding: 0 2px 8px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--accounts-border) 76%, transparent);
+  }
+
+  .accountIdentityBadgeRow {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+  }
+
+  .accountIdentityTitle {
+    font-size: 13px;
+    line-height: 1.25;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .accountCardFile {
+    font-size: 11px;
+  }
+
+  .providerPill,
+  .accountMetaPill,
+  .priority,
+  .priorityBad {
+    min-height: 20px;
+    padding-inline: 7px;
+    font-size: 11px;
+  }
+
+  .accountCardHealth,
+  .accountCardLatestRequest,
+  .accountCardEvidence,
+  .accountCardBusiness,
+  .accountCardRecommendation {
+    grid-column: 1 / -1;
+  }
+
+  .accountCardHealth,
+  .accountCardLatestRequest,
+  .accountCardEvidence,
+  .accountCardBusiness,
+  .accountCardRecommendation {
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--accounts-border) 64%, transparent);
+  }
+
+  .accountCardLine,
+  .quotaCellHeader {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .quotaTrack {
+    max-width: none;
+  }
+
+  .quotaWindowGrid {
+    --quota-window-label-width: 40px;
+    --quota-window-track-width: 118px;
+    --quota-window-percent-width: 38px;
+    --quota-window-reset-width: 92px;
+
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .quotaWindowCard {
+    padding: 0;
+
+    & + & {
+      padding-top: 8px;
+      border-top: 1px solid color-mix(in srgb, var(--accounts-border) 64%, transparent);
+      border-left: 0;
+    }
+  }
+
+  .quotaMatrixRow {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .quotaMatrixWindowLabel {
+    width: 32px;
+    min-width: 32px;
+    height: 18px;
+    font-size: 9.5px;
+  }
+
+  .quotaMatrixCells {
+    gap: 6px;
+  }
+
+  .quotaMatrixCell {
+    grid-template-columns: 50px minmax(18px, 1fr) 30px;
+    gap: 4px;
+  }
+
+  .quotaMatrixGroupLabel,
+  .quotaMatrixPercent {
+    font-size: 10px;
+  }
+
+  .accountCardQuotaMeta {
+    grid-template-columns: 1fr;
+    gap: 4px;
+
+    span {
+      white-space: normal;
+    }
+  }
+
+  .accountCardRecommendation {
+    justify-content: flex-start;
+  }
+
+  .rowActions {
+    justify-content: start;
+    width: 131px;
+    padding-top: 2px;
+    border-top: 0;
+  }
+
+  .accountCardRecommendation {
+    justify-items: stretch;
+
+    > :global(.btn),
+    > .badge {
+      justify-self: stretch;
+    }
+  }
+
+  .quotaWindowGridHasMore {
+    padding-right: 0;
+    padding-bottom: 28px;
+  }
+
+  .quotaMoreButton {
+    top: auto;
+    right: auto;
+    bottom: 0;
+    left: 0;
+  }
+
+  .batchActions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+
+    :global(.btn),
+    :global(.select-trigger) {
+      width: 100%;
+    }
+  }
+
+  .batchDisplayToggle {
+    display: none;
+  }
+}
+
+.floatingBatchActionContainer {
+  @include accounts-theme-vars;
+  position: fixed;
+  left: var(--content-center-x, 50%);
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 1600;
+  width: min(920px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+  transform: translateX(-50%);
+}
+
+.floatingBatchActionBar {
+  display: grid;
+  grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 14px;
+  background: var(--accounts-strong-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.floatingBatchActionLeft,
+.floatingBatchActionRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.floatingBatchActionLeft {
+  flex: 0 0 auto;
+}
+
+.floatingBatchActionRight {
+  justify-content: flex-end;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  > :global(.btn),
+  > :global(.select-trigger),
+  > :global(.dropdown-trigger) {
+    flex: 0 0 auto;
+    height: 36px;
+    min-height: 36px;
+  }
+}
+
+.batchSelectionText {
+  color: var(--accounts-text);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.floatingBatchMore {
+  flex: 0 0 auto;
+  height: 36px;
+  min-height: 36px;
+  border-radius: 12px;
+}
+
+.batchPriorityModal {
+  display: grid;
+  gap: 12px;
+}
+
+.batchDeletePreview {
+  display: grid;
+  gap: 10px;
+
+  p,
+  ul {
+    margin: 0;
+  }
+
+  ul {
+    max-height: 156px;
+    padding-left: 20px;
+    overflow: auto;
+    color: var(--text-secondary);
+  }
+}
+
+.batchDeletePreviewWarning {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger-color) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: var(--danger-color);
+}
+
+.batchPriorityFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@include mobile {
+  .floatingBatchActionContainer {
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: calc(100vw - 16px);
+    max-width: calc(100vw - 16px);
+  }
+
+  .floatingBatchActionBar {
+    grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+  }
+
+  .floatingBatchActionLeft,
+  .floatingBatchActionRight {
+    justify-content: flex-start;
+  }
+}
+
+.drawerUsageStack {
+  display: grid;
+  gap: 12px;
+}
+
+.drawerUsagePanel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 36%, var(--accounts-surface));
+}
+
+.drawerUsageHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+
+  h3 {
+    margin: 0 0 4px;
+    color: var(--accounts-text);
+    font-size: 14px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 12px;
+  }
+
+  > strong {
+    color: var(--accounts-text);
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.drawerUsageMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.drawerUsageMetric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 84%, transparent);
+  border-radius: 8px;
+  background: var(--accounts-surface);
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--accounts-text);
+    font-size: 15px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.drawerQuotaMeter {
+  display: grid;
+  gap: 8px;
+}
+
+.drawerQuotaMeterHeader,
+.drawerQuotaMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drawerQuotaMeterHeader {
+  color: var(--accounts-muted);
+  font-size: 12px;
+  font-weight: 700;
+
+  strong {
+    color: var(--accounts-text);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.drawerQuotaTrack {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accounts-border) 62%, transparent);
+}
+
+.drawerQuotaBar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.drawerQuotaMeta {
+  color: var(--accounts-muted);
+  font-size: 12px;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.drawerUsageError {
+  margin: 0;
+  color: var(--danger-color);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+// The diagnostics detail follows the activity/diagnostics prototype while
+// keeping the shared drawer header, tabs, footer, and other detail tabs unchanged.
+.diagnosticDetailStack {
+  display: grid;
+  gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+  color: var(--accounts-text);
+}
+
+.diagnosticCard {
+  min-width: 0;
+  border: 1px solid var(--accounts-border);
+  border-radius: 12px;
+  background: var(--accounts-surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accounts-text) 4%, transparent);
+}
+
+.diagnosticConclusionCard {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+}
+
+.diagnosticActivityCard {
+  display: grid;
+  gap: 0;
+  padding: 15px;
+}
+
+.diagnosticEvidenceCard {
+  padding: 15px;
+}
+
+.diagnosticCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.diagnosticSectionTitle {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  margin: 0;
+  color: var(--accounts-text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+
+  :global(svg) {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    color: var(--accounts-primary);
+  }
+}
+
+.diagnosticEvidenceBadge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.diagnosticEvidenceStatusCurrent {
+  background: color-mix(in srgb, var(--accounts-success) 12%, transparent);
+  color: var(--accounts-success);
+}
+
+.diagnosticEvidenceStatusOutdated {
+  background: color-mix(in srgb, var(--accounts-warning) 14%, transparent);
+  color: var(--accounts-warning);
+}
+
+.diagnosticEvidenceStatusConflict {
+  background: color-mix(in srgb, var(--accounts-danger) 12%, transparent);
+  color: var(--accounts-danger);
+}
+
+.diagnosticConclusionMain {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.diagnosticConclusionMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--accounts-success);
+  color: #fff;
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--accounts-success) 18%, transparent);
+
+  :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+
+  &[data-diagnostic-priority='medium'] {
+    background: var(--accounts-warning);
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--accounts-warning) 18%, transparent);
+  }
+
+  &[data-diagnostic-priority='high'],
+  &[data-diagnostic-priority='critical'] {
+    background: var(--accounts-danger);
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--accounts-danger) 18%, transparent);
+  }
+}
+
+.diagnosticConclusionCopy {
+  min-width: 0;
+
+  strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accounts-text);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  p {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+.diagnosticConclusionMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-top: 0;
+  color: var(--accounts-muted);
+  font-size: 11px;
+
+  > span {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    gap: 6px;
+    padding: 0 10px;
+    border-right: 1px solid color-mix(in srgb, var(--accounts-border) 90%, transparent);
+
+    &:first-child {
+      padding-left: 0;
+    }
+
+    &:last-child {
+      border-right: 0;
+    }
+  }
+
+  :global(svg) {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    color: var(--accounts-muted);
+  }
+
+  strong {
+    color: var(--accounts-muted);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  > span > span {
+    color: var(--accounts-muted);
+    white-space: nowrap;
+  }
+}
+
+.diagnosticActivityCard .diagnosticCardHeader {
+  margin-bottom: 10px;
+}
+
+.diagnosticRefreshButton:global(.btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: 32px;
+  height: 32px;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--accounts-strong-border);
+  border-radius: 9px;
+  background: var(--accounts-surface);
+  color: var(--accounts-text);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--accounts-text) 3%, transparent);
+
+  &:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accounts-primary) 30%, var(--accounts-border));
+    background: color-mix(in srgb, var(--accounts-primary) 4%, var(--accounts-surface));
+  }
+
+  :global(svg) {
+    display: block;
+    width: 14px;
+    height: 14px;
+  }
+}
+
+.diagnosticEmptyState {
+  margin: 0;
+  padding: 14px 0 6px;
+  color: var(--accounts-muted);
+  font-size: 13px;
+}
+
+.diagnosticActivityBody {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.diagnosticKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.diagnosticKpiCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  height: 64px;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 9px;
+  background: linear-gradient(
+    180deg,
+    var(--accounts-surface),
+    color-mix(in srgb, var(--accounts-muted-surface) 22%, var(--accounts-surface))
+  );
+
+  > div {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  > div > span,
+  > div > strong {
+    display: block;
+    min-width: 0;
+  }
+
+  > div > span {
+    margin-bottom: 4px;
+    overflow: visible;
+    color: var(--accounts-muted);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  > div > strong {
+    overflow: visible;
+    color: var(--accounts-text);
+    font-size: 17px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+}
+
+.diagnosticKpiIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+
+  :global(svg) {
+    display: block;
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.diagnosticKpiIconBlue {
+  background: color-mix(in srgb, var(--accounts-primary) 10%, transparent);
+  color: var(--accounts-primary);
+}
+
+.diagnosticKpiIconPurple {
+  background: color-mix(in srgb, var(--accounts-indigo) 10%, transparent);
+  color: var(--accounts-indigo);
+}
+
+.diagnosticKpiIconGreen {
+  background: color-mix(in srgb, var(--accounts-success) 10%, transparent);
+  color: var(--accounts-success);
+}
+
+.diagnosticRecentFailure {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accounts-danger) 22%, var(--accounts-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accounts-danger) 4%, var(--accounts-surface));
+
+  span {
+    color: var(--accounts-muted);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  strong {
+    color: var(--accounts-danger);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  small {
+    color: var(--accounts-muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+}
+
+.diagnosticRequestList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.diagnosticRequestRow {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--accounts-border);
+  border-radius: 9px;
+  background: var(--accounts-surface);
+  transition:
+    border-color 0.16s,
+    box-shadow 0.16s,
+    transform 0.16s;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--accounts-primary) 28%, var(--accounts-border));
+    box-shadow: 0 3px 10px color-mix(in srgb, var(--accounts-text) 5%, transparent);
+    transform: translateY(-1px);
+  }
+}
+
+.diagnosticRequestTop {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 10px;
+  min-width: 0;
+  min-height: 24px;
+}
+
+.diagnosticRequestId {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.diagnosticCopyButton {
+  max-width: 100%;
+  padding: 1px 0;
+  color: var(--accounts-text);
+  font-size: 12px !important;
+  font-weight: 700 !important;
+
+  &:hover {
+    background: transparent;
+    color: var(--accounts-primary);
+  }
+}
+
+.diagnosticRequestRow .eventStatus {
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.diagnosticRequestTime {
+  color: var(--accounts-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diagnosticRequestModel {
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--accounts-text);
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnosticRequestMetrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  color: var(--accounts-muted);
+  font-size: 12px;
+  font-weight: 600;
+
+  b {
+    color: var(--accounts-text);
+    font-weight: 720;
+  }
+}
+
+.diagnosticRequestFailure {
+  margin: 6px 0 0;
+  color: var(--accounts-danger) !important;
+  font-size: 11px !important;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.diagnosticActivityFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 2px 0;
+  color: var(--accounts-muted);
+  font-size: 12px;
+
+  a {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--accounts-primary);
+    font-weight: 650;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  :global(svg) {
+    flex: 0 0 auto;
+    width: 15px;
+    height: 15px;
+  }
+}
+
+.diagnosticEvidenceCard > summary {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--accounts-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.diagnosticEvidenceCard > summary::-webkit-details-marker {
+  display: none;
+}
+
+.diagnosticEvidenceCard > summary::after {
+  display: none;
+  content: none;
+}
+
+.diagnosticEvidenceSummaryTitle {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+
+  :global(svg) {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    color: var(--accounts-primary);
+  }
+}
+
+.diagnosticEvidenceCard > summary > small {
+  margin-left: auto;
+  color: var(--accounts-danger);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.diagnosticEvidenceChevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  color: var(--accounts-muted);
+  transition: transform 0.2s ease;
+}
+
+.diagnosticEvidenceCard:not([open]) .diagnosticEvidenceChevron {
+  transform: rotate(180deg);
+}
+
+.diagnosticEvidenceBody {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 0;
+}
+
+.diagnosticEvidenceGroup {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+
+  h4 {
+    margin: 0;
+    color: var(--accounts-muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+}
+
+.diagnosticInspectionEvidenceGroup dl {
+  display: grid;
+  grid-template-columns: minmax(112px, 160px) minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 0;
+  max-width: 650px;
+  margin: 0;
+}
+
+.diagnosticInspectionEvidenceGroup dl > div {
+  display: contents;
+}
+
+.diagnosticInspectionEvidenceGroup dt,
+.diagnosticInspectionEvidenceGroup dd {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  margin: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accounts-border) 82%, transparent);
+  font-size: 12px;
+}
+
+.diagnosticInspectionEvidenceGroup dt {
+  color: var(--accounts-muted);
+}
+
+.diagnosticInspectionEvidenceGroup dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accounts-text);
+  font-weight: 700;
+}
+
+.diagnosticInspectionEvidenceGroup dt:nth-last-of-type(1),
+.diagnosticInspectionEvidenceGroup dd:last-child {
+  border-bottom: 0;
+}
+
+@include mobile {
+  .diagnosticSectionTitle,
+  .diagnosticEvidenceCard > summary {
+    font-size: 14px;
+  }
+
+  .diagnosticCardHeader {
+    align-items: flex-start;
+  }
+
+  .diagnosticConclusionCard {
+    padding: 13px;
+  }
+
+  .diagnosticConclusionCopy {
+    strong {
+      font-size: 15px;
+    }
+
+    p {
+      font-size: 12px;
+    }
+  }
+
+  .diagnosticConclusionMeta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+
+    > span,
+    > span:first-child {
+      padding: 0;
+      border-right: 0;
+    }
+  }
+
+  .diagnosticActivityCard {
+    padding: 13px;
+  }
+
+  .diagnosticActivityCard .diagnosticCardHeader {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .diagnosticRefreshButton:global(.btn) {
+    align-self: flex-start;
+  }
+
+  .diagnosticKpiGrid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .diagnosticKpiCard {
+    height: 64px;
+  }
+
+  .diagnosticRequestTop {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 8px;
+  }
+
+  .diagnosticRequestModel {
+    grid-column: 2 / 3;
+    max-width: none;
+    margin-top: 4px;
+  }
+
+  .diagnosticRequestTime {
+    font-size: 11px;
+  }
+
+  .diagnosticRequestMetrics {
+    gap: 8px 12px;
+  }
+
+  .diagnosticEvidenceCard {
+    padding: 13px;
+  }
+
+  .diagnosticInspectionEvidenceGroup dl {
+    grid-template-columns: 104px minmax(0, 1fr);
+    column-gap: 12px;
+  }
+
+  .diagnosticInspectionEvidenceGroup dt,
+  .diagnosticInspectionEvidenceGroup dd {
+    font-size: 12px;
+  }
+
+  .diagnosticActivityFooter {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+}

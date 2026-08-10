@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -31,7 +31,6 @@ import {
 } from '@/features/monitoring/codexInspection';
 import { Button } from '@/components/ui/Button';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
-import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { CodexInspectionStatusPanel } from '@/features/monitoring/components/CodexInspectionStatusPanel';
 import { InspectionConfigDrawer } from '@/features/monitoring/components/InspectionConfigDrawer';
@@ -69,10 +68,29 @@ import {
   type StatusTone,
   type SummaryCard,
 } from '@/features/monitoring/model/codexInspectionPresentation';
+import {
+  createLocalCredentialInspectionSnapshot,
+  type CredentialInspectionSnapshot,
+  type CredentialInspectionTarget,
+} from '@/features/monitoring/model/credentialInspectionSnapshot';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import styles from './CodexInspectionPage.module.scss';
 
-export function CodexInspectionPage() {
+interface CodexInspectionPageProps {
+  embedded?: boolean;
+  modeControl?: ReactNode;
+  onSnapshotChange?: (snapshot: CredentialInspectionSnapshot) => void;
+  onCredentialsChanged?: () => void | Promise<void>;
+  onOpenCredential?: (target: CredentialInspectionTarget) => void;
+}
+
+export function CodexInspectionPage({
+  embedded = false,
+  modeControl,
+  onSnapshotChange,
+  onCredentialsChanged,
+  onOpenCredential,
+}: CodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const config = useConfigStore((state) => state.config);
@@ -209,6 +227,14 @@ export function CodexInspectionPage() {
     resultConnectionFingerprint,
     runStatus,
   ]);
+
+  useEffect(() => {
+    if (!onSnapshotChange || !result || result.finishedAt <= 0) return;
+    if (runStatus === 'running' || runStatus === 'paused') return;
+    onSnapshotChange(
+      createLocalCredentialInspectionSnapshot(result, result.finishedAt || Date.now())
+    );
+  }, [onSnapshotChange, result, runStatus]);
 
   const appendLog = useCallback(
     (level: CodexInspectionLogLevel, message: string, detail?: CodexInspectionLogDetail) => {
@@ -614,6 +640,7 @@ export function CodexInspectionPage() {
         const nextResult = applyCodexInspectionExecutionResult(currentResult, execution);
         setResult(nextResult);
         setResultConnectionFingerprint(currentResultFingerprint);
+        void onCredentialsChanged?.();
 
         if (source === 'auto') {
           const successCount = outcomeSummary.success;
@@ -716,6 +743,7 @@ export function CodexInspectionPage() {
       appendInspectionCompletionLog,
       appendLog,
       connectionFingerprint,
+      onCredentialsChanged,
       result,
       resultConnectionFingerprint,
       showNotification,
@@ -851,7 +879,8 @@ export function CodexInspectionPage() {
 
   const handleCodexReauthSuccess = useCallback(() => {
     showNotification(t('codex_reauth.rerun_hint'), 'success');
-  }, [showNotification, t]);
+    void onCredentialsChanged?.();
+  }, [onCredentialsChanged, showNotification, t]);
 
   const summaryCards = useMemo<SummaryCard[]>(() => {
     const summarySource =
@@ -987,10 +1016,8 @@ export function CodexInspectionPage() {
   const statusTone = statusToneMap[runStatus];
   const statusLabel = statusLabelMap[runStatus];
 
-  const lastFinishedLabel =
-    result && result.finishedAt > 0
-      ? `${t('monitoring.codex_inspection_last_finished_at')} · ${formatTime(result.finishedAt, i18n.language)}`
-      : null;
+  const lastFinishedValue =
+    result && result.finishedAt > 0 ? formatTime(result.finishedAt, i18n.language) : null;
 
   const openSettingsModal = useCallback(
     (field?: string) => {
@@ -1159,13 +1186,11 @@ export function CodexInspectionPage() {
   });
 
   return (
-    <div className={styles.page}>
-      <CodexInspectionModeTabs activeMode="local" />
-
+    <div className={styles.page} data-embedded={embedded || undefined}>
       <CodexInspectionStatusPanel
         statusTone={statusTone}
         statusLabel={statusLabel}
-        lastFinishedLabel={lastFinishedLabel}
+        lastFinishedValue={lastFinishedValue}
         pendingActionCount={pendingActionCount}
         summaryCards={summaryCards}
         progress={progress}
@@ -1179,6 +1204,8 @@ export function CodexInspectionPage() {
         configOverviewItems={configOverviewItems}
         configOverviewTitle={t('monitoring.codex_inspection_config_overview_title')}
         configOverviewEditLabel={t('monitoring.codex_inspection_config_overview_edit')}
+        modeControl={modeControl}
+        showBackLink={!embedded}
         t={t}
         onEditConfig={openSettingsModal}
         onRunInspection={handleRunInspection}
@@ -1212,6 +1239,19 @@ export function CodexInspectionPage() {
         onReauthAccount={handleOpenCodexReauth}
         onDeleteReauthPlanned={reauthResults.length > 0 ? handleDeleteReauthPlanned : undefined}
         onDeleteReauthSingle={reauthResults.length > 0 ? handleDeleteSingleReauth : undefined}
+        onOpenCredential={
+          onOpenCredential
+            ? (item) =>
+                onOpenCredential({
+                  fileName: item.fileName,
+                  runtimeId: item.runtimeId ?? null,
+                  provider: item.provider,
+                  authIndex: item.authIndex ?? null,
+                  accountId: item.accountId ?? null,
+                  accountSnapshot: item.accountSnapshot ?? null,
+                })
+            : undefined
+        }
         filterLabel={filterLabel}
         handlingFilterLabel={handlingFilterLabel}
       />

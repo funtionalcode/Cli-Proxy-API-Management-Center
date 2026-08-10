@@ -140,10 +140,13 @@ describe('Drawer overlay close guard', () => {
     vi.useRealTimers();
   });
 
-  const mountDrawer = async (onClose: () => void) => {
+  const mountDrawer = async (
+    onClose: () => void,
+    onBeforeClose?: () => boolean | Promise<boolean>
+  ) => {
     await act(async () => {
       renderer = create(
-        <Drawer open title="Test drawer" onClose={onClose}>
+        <Drawer open title="Test drawer" onClose={onClose} onBeforeClose={onBeforeClose}>
           <input aria-label="field" />
         </Drawer>
       );
@@ -234,5 +237,98 @@ describe('Drawer overlay close guard', () => {
     });
 
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('waits for the close guard before starting the animation', async () => {
+    const onClose = vi.fn();
+    let resolveGuard!: (allowed: boolean) => void;
+    const onBeforeClose = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveGuard = resolve;
+        })
+    );
+    const mounted = await mountDrawer(onClose, onBeforeClose);
+    const closeButton = mounted.root.findByProps({ 'aria-label': 'common.close' });
+
+    await act(async () => {
+      closeButton.props.onClick();
+      closeButton.props.onClick();
+      vi.advanceTimersByTime(CLOSE_ANIMATION_DURATION);
+    });
+
+    expect(onBeforeClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveGuard(true);
+      await Promise.resolve();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(CLOSE_ANIMATION_DURATION);
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the drawer open when the close guard rejects the request', async () => {
+    const onClose = vi.fn();
+    const mounted = await mountDrawer(onClose, () => false);
+    const closeButton = mounted.root.findByProps({ 'aria-label': 'common.close' });
+
+    await act(async () => {
+      closeButton.props.onClick();
+      await Promise.resolve();
+      vi.advanceTimersByTime(CLOSE_ANIMATION_DURATION);
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(findOverlay(mounted).props.className).toContain('overlayEntering');
+  });
+
+  it('does not let an old close guard close a drawer reopened for a new target', async () => {
+    const onClose = vi.fn();
+    let resolveGuard!: (allowed: boolean) => void;
+    const onBeforeClose = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveGuard = resolve;
+        })
+    );
+
+    await mountDrawer(onClose, onBeforeClose);
+    const closeButton = renderer!.root.findByProps({ 'aria-label': 'common.close' });
+    await act(async () => {
+      closeButton.props.onClick();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      renderer!.update(
+        <Drawer open={false} title="Test drawer" onClose={onClose} onBeforeClose={onBeforeClose}>
+          <input aria-label="field" />
+        </Drawer>
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      renderer!.update(
+        <Drawer open title="Reopened drawer" onClose={onClose} onBeforeClose={onBeforeClose}>
+          <input aria-label="field" />
+        </Drawer>
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveGuard(true);
+      await Promise.resolve();
+      vi.advanceTimersByTime(CLOSE_ANIMATION_DURATION);
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(findOverlay(renderer!).props.className).toContain('overlayEntering');
   });
 });

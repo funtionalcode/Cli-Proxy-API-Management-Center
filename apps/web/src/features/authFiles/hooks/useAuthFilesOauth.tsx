@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { authFilesApi } from '@/services/api';
+import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api';
 import { useNotificationStore } from '@/stores';
 import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
 import type { AuthFileModelItem, OAuthConfigLoadState } from '@/features/authFiles/constants';
@@ -13,10 +13,17 @@ import {
   isMissingOrMethodNotAllowedStatus,
   mergeOAuthAliasLink,
   normalizeOAuthAliasEntries,
+  OAuthAliasRollbackError,
   planOAuthAliasRename,
 } from '@/features/authFiles/oauthAliasValidation';
 
 type ViewMode = 'diagram' | 'list';
+
+const EMPTY_EXCLUDED_MODELS: Record<string, string[]> = {};
+const EMPTY_MODEL_ALIASES: Record<string, OAuthModelAliasEntry[]> = {};
+const EMPTY_PROVIDER_MODELS: Record<string, AuthFileModelItem[]> = {};
+
+class OAuthConnectionScopeChangedError extends Error {}
 
 export type UseAuthFilesOauthResult = {
   excluded: Record<string, string[]>;
@@ -44,10 +51,20 @@ export type UseAuthFilesOauthResult = {
 export type UseAuthFilesOauthOptions = {
   viewMode: ViewMode;
   files: AuthFileItem[];
+  connectionKey?: string | null;
+  requestScope: AuthFilesApiRequestScope;
 };
 
 export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFilesOauthResult {
   const { viewMode, files } = options;
+  const normalizedConnectionKey = String(options.connectionKey ?? '');
+  const requestScope = useMemo<AuthFilesApiRequestScope>(
+    () => ({
+      apiBase: options.requestScope.apiBase,
+      managementKey: options.requestScope.managementKey,
+    }),
+    [options.requestScope.apiBase, options.requestScope.managementKey]
+  );
   const { t } = useTranslation();
   const { showNotification, showConfirmation } = useNotificationStore();
 
@@ -58,7 +75,9 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
   const [allProviderModels, setAllProviderModels] = useState<Record<string, AuthFileModelItem[]>>(
     {}
   );
+  const [stateConnectionKey, setStateConnectionKey] = useState(normalizedConnectionKey);
 
+  const connectionKeyRef = useRef(normalizedConnectionKey);
   const excludedUnsupportedRef = useRef(false);
   const mappingsUnsupportedRef = useRef(false);
   /**
@@ -73,8 +92,44 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
   const modelAliasWriteQueueRef = useRef(createSerialAsyncQueue());
   const excludedWriteQueueRef = useRef(createSerialAsyncQueue());
 
+  const isConnectionCurrent = useCallback(
+    (connectionKey: string) => connectionKeyRef.current === connectionKey,
+    []
+  );
+  const assertConnectionCurrent = useCallback((connectionKey: string) => {
+    if (connectionKeyRef.current !== connectionKey) {
+      throw new OAuthConnectionScopeChangedError();
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    let cancelled = false;
+    connectionKeyRef.current = normalizedConnectionKey;
+    excludedUnsupportedRef.current = false;
+    mappingsUnsupportedRef.current = false;
+    excludedBaselineOkRef.current = false;
+    modelAliasBaselineOkRef.current = false;
+    excludedLoadRequestRef.current += 1;
+    modelAliasLoadRequestRef.current += 1;
+    modelAliasWriteQueueRef.current = createSerialAsyncQueue();
+    excludedWriteQueueRef.current = createSerialAsyncQueue();
+    queueMicrotask(() => {
+      if (cancelled || connectionKeyRef.current !== normalizedConnectionKey) return;
+      setExcluded({});
+      setExcludedError('loading');
+      setModelAlias({});
+      setModelAliasError('loading');
+      setAllProviderModels({});
+      setStateConnectionKey(normalizedConnectionKey);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedConnectionKey]);
+
   useEffect(
     () => () => {
+      connectionKeyRef.current = '\u0000unmounted';
       excludedBaselineOkRef.current = false;
       modelAliasBaselineOkRef.current = false;
       excludedLoadRequestRef.current += 1;
@@ -83,10 +138,17 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
     []
   );
 
+  const scopedExcluded =
+    stateConnectionKey === normalizedConnectionKey ? excluded : EMPTY_EXCLUDED_MODELS;
+  const scopedModelAlias =
+    stateConnectionKey === normalizedConnectionKey ? modelAlias : EMPTY_MODEL_ALIASES;
+  const scopedAllProviderModels =
+    stateConnectionKey === normalizedConnectionKey ? allProviderModels : EMPTY_PROVIDER_MODELS;
+
   const providerList = useMemo(() => {
     const providers = new Set<string>();
 
-    Object.keys(modelAlias).forEach((provider) => {
+    Object.keys(scopedModelAlias).forEach((provider) => {
       const key = provider.trim().toLowerCase();
       if (key) providers.add(key);
     });
@@ -102,12 +164,13 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
       }
     });
     return Array.from(providers);
-  }, [files, modelAlias]);
+  }, [files, scopedModelAlias]);
 
   useEffect(() => {
     if (viewMode !== 'diagram') return;
 
     let cancelled = false;
+    const requestConnectionKey = normalizedConnectionKey;
 
     const loadAllModels = async () => {
       if (providerList.length === 0) {
@@ -126,7 +189,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         })
       );
 
-      if (cancelled) return;
+      if (cancelled || !isConnectionCurrent(requestConnectionKey)) return;
 
       const nextModels: Record<string, AuthFileModelItem[]> = {};
       results.forEach(({ provider, models }) => {
@@ -143,25 +206,36 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
     return () => {
       cancelled = true;
     };
-  }, [providerList, viewMode]);
+  }, [isConnectionCurrent, normalizedConnectionKey, providerList, viewMode]);
 
   const loadExcluded = useCallback(
     async (options?: { soft?: boolean }) => {
       const soft = options?.soft === true;
       const requestId = ++excludedLoadRequestRef.current;
+      const requestConnectionKey = normalizedConnectionKey;
       if (!soft) {
         excludedBaselineOkRef.current = false;
         setExcludedError('loading');
       }
       try {
-        const res = await authFilesApi.getOauthExcludedModels();
-        if (requestId !== excludedLoadRequestRef.current) return;
+        const res = await authFilesApi.getOauthExcludedModels(requestScope);
+        if (
+          requestId !== excludedLoadRequestRef.current ||
+          !isConnectionCurrent(requestConnectionKey)
+        ) {
+          return;
+        }
         excludedUnsupportedRef.current = false;
         excludedBaselineOkRef.current = true;
         setExcluded(res || {});
         setExcludedError('ready');
       } catch (err: unknown) {
-        if (requestId !== excludedLoadRequestRef.current) return;
+        if (
+          requestId !== excludedLoadRequestRef.current ||
+          !isConnectionCurrent(requestConnectionKey)
+        ) {
+          return;
+        }
         const status = getHttpStatusCode(err);
 
         if (status === 404) {
@@ -180,26 +254,37 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         }
       }
     },
-    [showNotification, t]
+    [isConnectionCurrent, normalizedConnectionKey, requestScope, showNotification, t]
   );
 
   const loadModelAlias = useCallback(
     async (options?: { soft?: boolean }) => {
       const soft = options?.soft === true;
       const requestId = ++modelAliasLoadRequestRef.current;
+      const requestConnectionKey = normalizedConnectionKey;
       if (!soft) {
         modelAliasBaselineOkRef.current = false;
         setModelAliasError('loading');
       }
       try {
-        const res = await authFilesApi.getOauthModelAlias();
-        if (requestId !== modelAliasLoadRequestRef.current) return;
+        const res = await authFilesApi.getOauthModelAlias(requestScope);
+        if (
+          requestId !== modelAliasLoadRequestRef.current ||
+          !isConnectionCurrent(requestConnectionKey)
+        ) {
+          return;
+        }
         mappingsUnsupportedRef.current = false;
         modelAliasBaselineOkRef.current = true;
         setModelAlias(res || {});
         setModelAliasError('ready');
       } catch (err: unknown) {
-        if (requestId !== modelAliasLoadRequestRef.current) return;
+        if (
+          requestId !== modelAliasLoadRequestRef.current ||
+          !isConnectionCurrent(requestConnectionKey)
+        ) {
+          return;
+        }
         const status = getHttpStatusCode(err);
 
         if (status === 404) {
@@ -218,7 +303,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         }
       }
     },
-    [showNotification, t]
+    [isConnectionCurrent, normalizedConnectionKey, requestScope, showNotification, t]
   );
 
   const showLoadRequired = useCallback(() => {
@@ -226,33 +311,62 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
   }, [showNotification, t]);
 
   const persistChannelMappings = useCallback(
-    async (channel: string, mappings: OAuthModelAliasEntry[]) => {
+    async (
+      channel: string,
+      mappings: OAuthModelAliasEntry[],
+      mutationScope: AuthFilesApiRequestScope
+    ) => {
       const normalized = normalizeOAuthAliasEntries(mappings);
       if (normalized.accepted.length === 0) {
-        await authFilesApi.deleteOauthModelAlias(channel);
+        await authFilesApi.deleteOauthModelAlias(channel, mutationScope);
         return;
       }
-      await authFilesApi.saveOauthModelAlias(channel, normalized.accepted);
+      await authFilesApi.saveOauthModelAlias(channel, normalized.accepted, mutationScope);
     },
     []
   );
 
   const runModelAliasMutation = useCallback(
-    async (task: () => Promise<void>) => {
+    async (
+      task: (assertCurrent: () => void, mutationScope: AuthFilesApiRequestScope) => Promise<void>
+    ) => {
+      const requestConnectionKey = normalizedConnectionKey;
+      const mutationScope = requestScope;
+      if (!isConnectionCurrent(requestConnectionKey)) return;
       if (!modelAliasBaselineOkRef.current) {
         showLoadRequired();
         return;
       }
       try {
         await modelAliasWriteQueueRef.current(async () => {
+          assertConnectionCurrent(requestConnectionKey);
           // Re-check after waiting in queue: hard load failure may have cleared baseline.
           if (!modelAliasBaselineOkRef.current) {
             throw new Error(t('notification.refresh_failed'));
           }
-          await task();
+          await task(() => assertConnectionCurrent(requestConnectionKey), mutationScope);
+          assertConnectionCurrent(requestConnectionKey);
           await loadModelAlias({ soft: true });
         });
       } catch (err: unknown) {
+        if (err instanceof OAuthAliasRollbackError) {
+          showNotification(
+            t('oauth_model_alias.rollback_failed', {
+              providers: err.failedChannels.join(', '),
+            }),
+            'error'
+          );
+          if (isConnectionCurrent(requestConnectionKey)) {
+            await loadModelAlias({ soft: true });
+          }
+          return;
+        }
+        if (
+          err instanceof OAuthConnectionScopeChangedError ||
+          !isConnectionCurrent(requestConnectionKey)
+        ) {
+          return;
+        }
         const errorMessage = err instanceof Error ? err.message : '';
         showNotification(
           errorMessage
@@ -263,11 +377,22 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         await loadModelAlias({ soft: true });
       }
     },
-    [loadModelAlias, showLoadRequired, showNotification, t]
+    [
+      assertConnectionCurrent,
+      isConnectionCurrent,
+      loadModelAlias,
+      normalizedConnectionKey,
+      requestScope,
+      showLoadRequired,
+      showNotification,
+      t,
+    ]
   );
 
   const deleteExcluded = useCallback(
     (provider: string) => {
+      const requestConnectionKey = normalizedConnectionKey;
+      const mutationScope = requestScope;
       const providerLabel = provider.trim() || provider;
       showConfirmation({
         title: t('oauth_excluded.delete_title', { defaultValue: 'Delete Exclusion' }),
@@ -275,6 +400,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         variant: 'danger',
         confirmText: t('common.confirm'),
         onConfirm: async () => {
+          if (!isConnectionCurrent(requestConnectionKey)) return;
           if (!excludedBaselineOkRef.current) {
             showLoadRequired();
             return;
@@ -286,29 +412,42 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
           }
           try {
             await excludedWriteQueueRef.current(async () => {
+              assertConnectionCurrent(requestConnectionKey);
               if (!excludedBaselineOkRef.current) {
                 throw new Error(t('notification.refresh_failed'));
               }
               try {
-                await authFilesApi.deleteOauthExcludedEntry(providerKey);
+                await authFilesApi.deleteOauthExcludedEntry(providerKey, mutationScope);
+                assertConnectionCurrent(requestConnectionKey);
               } catch (err: unknown) {
+                if (err instanceof OAuthConnectionScopeChangedError) throw err;
+                assertConnectionCurrent(requestConnectionKey);
                 const status = getHttpStatusCode(err);
                 if (!isMissingOrMethodNotAllowedStatus(status)) {
                   throw err;
                 }
                 // Fallback for CPA builds without DELETE: rewrite the full map from latest GET.
-                const current = await authFilesApi.getOauthExcludedModels();
+                const current = await authFilesApi.getOauthExcludedModels(mutationScope);
+                assertConnectionCurrent(requestConnectionKey);
                 const next: Record<string, string[]> = {};
                 Object.entries(current).forEach(([key, models]) => {
                   if (normalizeProviderKey(key) === providerKey) return;
                   next[key] = models;
                 });
-                await authFilesApi.replaceOauthExcludedModels(next);
+                await authFilesApi.replaceOauthExcludedModels(next, mutationScope);
+                assertConnectionCurrent(requestConnectionKey);
               }
               await loadExcluded({ soft: true });
+              assertConnectionCurrent(requestConnectionKey);
             });
             showNotification(t('oauth_excluded.delete_success'), 'success');
           } catch (fallbackErr: unknown) {
+            if (
+              fallbackErr instanceof OAuthConnectionScopeChangedError ||
+              !isConnectionCurrent(requestConnectionKey)
+            ) {
+              return;
+            }
             const errorMessage = fallbackErr instanceof Error ? fallbackErr.message : '';
             showNotification(`${t('oauth_excluded.delete_failed')}: ${errorMessage}`, 'error');
             await loadExcluded({ soft: true });
@@ -316,7 +455,17 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         },
       });
     },
-    [loadExcluded, showConfirmation, showLoadRequired, showNotification, t]
+    [
+      assertConnectionCurrent,
+      isConnectionCurrent,
+      loadExcluded,
+      normalizedConnectionKey,
+      requestScope,
+      showConfirmation,
+      showLoadRequired,
+      showNotification,
+      t,
+    ]
   );
 
   const deleteModelAlias = useCallback(
@@ -327,11 +476,13 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         variant: 'danger',
         confirmText: t('common.confirm'),
         onConfirm: async () => {
-          await runModelAliasMutation(async () => {
-            const latest = await authFilesApi.getOauthModelAlias();
+          await runModelAliasMutation(async (assertCurrent, mutationScope) => {
+            const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+            assertCurrent();
             const { channelKey } = findChannelMappings(latest, provider);
             if (!channelKey) return;
-            await authFilesApi.deleteOauthModelAlias(channelKey);
+            await authFilesApi.deleteOauthModelAlias(channelKey, mutationScope);
+            assertCurrent();
             showNotification(t('oauth_model_alias.delete_success'), 'success');
           });
         },
@@ -355,8 +506,9 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         return;
       }
 
-      await runModelAliasMutation(async () => {
-        const latest = await authFilesApi.getOauthModelAlias();
+      await runModelAliasMutation(async (assertCurrent, mutationScope) => {
+        const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+        assertCurrent();
         const { mappings: currentMappings } = findChannelMappings(latest, normalizedProvider);
         const mergeResult = mergeOAuthAliasLink(currentMappings, nameTrim, aliasTrim);
 
@@ -373,7 +525,8 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
           return;
         }
 
-        await persistChannelMappings(normalizedProvider, mergeResult.mappings);
+        await persistChannelMappings(normalizedProvider, mergeResult.mappings, mutationScope);
+        assertCurrent();
         showNotification(t('oauth_model_alias.save_success'), 'success');
       });
     },
@@ -398,10 +551,11 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         variant: 'danger',
         confirmText: t('common.confirm'),
         onConfirm: async () => {
-          await runModelAliasMutation(async () => {
+          await runModelAliasMutation(async (assertCurrent, mutationScope) => {
             const normalizedProvider = normalizeProviderKey(provider);
             if (!normalizedProvider) return;
-            const latest = await authFilesApi.getOauthModelAlias();
+            const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+            assertCurrent();
             const { mappings: currentMappings } = findChannelMappings(latest, normalizedProvider);
             const nameKey = nameTrim.toLowerCase();
             const aliasKey = aliasTrim.toLowerCase();
@@ -411,7 +565,8 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
                 (mapping.alias ?? '').trim().toLowerCase() !== aliasKey
             );
             if (nextMappings.length === currentMappings.length) return;
-            await persistChannelMappings(normalizedProvider, nextMappings);
+            await persistChannelMappings(normalizedProvider, nextMappings, mutationScope);
+            assertCurrent();
             showNotification(t('oauth_model_alias.save_success'), 'success');
           });
         },
@@ -425,8 +580,9 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
       const normalizedProvider = normalizeProviderKey(provider);
       if (!normalizedProvider) return;
 
-      await runModelAliasMutation(async () => {
-        const latest = await authFilesApi.getOauthModelAlias();
+      await runModelAliasMutation(async (assertCurrent, mutationScope) => {
+        const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+        assertCurrent();
         const { mappings: currentMappings } = findChannelMappings(latest, normalizedProvider);
         const nameKey = sourceModel.trim().toLowerCase();
         const aliasKey = alias.trim().toLowerCase();
@@ -446,7 +602,8 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         });
 
         if (!changed) return;
-        await persistChannelMappings(normalizedProvider, nextMappings);
+        await persistChannelMappings(normalizedProvider, nextMappings, mutationScope);
+        assertCurrent();
         showNotification(t('oauth_model_alias.save_success'), 'success');
       });
     },
@@ -459,8 +616,9 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
       const newTrim = newAlias.trim();
       if (!oldTrim || !newTrim || oldTrim === newTrim) return;
 
-      await runModelAliasMutation(async () => {
-        const latest = await authFilesApi.getOauthModelAlias();
+      await runModelAliasMutation(async (assertCurrent, mutationScope) => {
+        const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+        assertCurrent();
         const planResult = planOAuthAliasRename(latest, oldTrim, newTrim);
 
         if (!planResult.ok) {
@@ -483,9 +641,14 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
             ...plan,
             previousMappings: findChannelMappings(latest, plan.channel).mappings,
           })),
-          persistChannelMappings
+          async (channel, mappings) => {
+            assertCurrent();
+            await persistChannelMappings(channel, mappings, mutationScope);
+          },
+          (channel, mappings) => persistChannelMappings(channel, mappings, mutationScope)
         );
 
+        assertCurrent();
         showNotification(t('oauth_model_alias.save_success'), 'success');
       });
     },
@@ -510,8 +673,9 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
         variant: 'danger',
         confirmText: t('common.confirm'),
         onConfirm: async () => {
-          await runModelAliasMutation(async () => {
-            const latest = await authFilesApi.getOauthModelAlias();
+          await runModelAliasMutation(async (assertCurrent, mutationScope) => {
+            const latest = await authFilesApi.getOauthModelAlias(mutationScope);
+            assertCurrent();
             const providersToUpdate = Object.entries(latest).filter(([, mappings]) =>
               mappings.some((mapping) => (mapping.alias ?? '').trim().toLowerCase() === aliasKey)
             );
@@ -525,9 +689,14 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
                   (mapping) => (mapping.alias ?? '').trim().toLowerCase() !== aliasKey
                 ),
               })),
-              persistChannelMappings
+              async (channel, mappings) => {
+                assertCurrent();
+                await persistChannelMappings(channel, mappings, mutationScope);
+              },
+              (channel, mappings) => persistChannelMappings(channel, mappings, mutationScope)
             );
 
+            assertCurrent();
             showNotification(t('oauth_model_alias.delete_success'), 'success');
           });
         },
@@ -537,11 +706,11 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
   );
 
   return {
-    excluded,
-    excludedError,
-    modelAlias,
-    modelAliasError,
-    allProviderModels,
+    excluded: scopedExcluded,
+    excludedError: stateConnectionKey === normalizedConnectionKey ? excludedError : 'loading',
+    modelAlias: scopedModelAlias,
+    modelAliasError: stateConnectionKey === normalizedConnectionKey ? modelAliasError : 'loading',
+    allProviderModels: scopedAllProviderModels,
     providerList,
     // Return the memoized callbacks directly. Wrapping them in new arrow functions
     // each render breaks AuthFilesPage init effects that depend on these refs and

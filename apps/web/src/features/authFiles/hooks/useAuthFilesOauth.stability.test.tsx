@@ -10,6 +10,8 @@ const { mocks } = vi.hoisted(() => {
       getOauthExcludedModels: vi.fn(),
       getOauthModelAlias: vi.fn(),
       getModelDefinitions: vi.fn(),
+      saveOauthModelAlias: vi.fn(),
+      deleteOauthModelAlias: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
       // Stable like production react-i18next `t` / store actions.
@@ -37,6 +39,8 @@ vi.mock('@/services/api', () => ({
     getOauthExcludedModels: mocks.getOauthExcludedModels,
     getOauthModelAlias: mocks.getOauthModelAlias,
     getModelDefinitions: mocks.getModelDefinitions,
+    saveOauthModelAlias: mocks.saveOauthModelAlias,
+    deleteOauthModelAlias: mocks.deleteOauthModelAlias,
   },
 }));
 
@@ -47,6 +51,7 @@ import { useAuthFilesOauth } from './useAuthFilesOauth';
 type HarnessApi = {
   getLatest: () => UseAuthFilesOauthResult;
   bumpRender: () => void;
+  switchConnection: (connectionKey: string) => void;
   unmount: () => void;
 };
 
@@ -55,14 +60,24 @@ type HarnessApi = {
  * Unstable loader identities re-trigger this effect after every successful load.
  */
 function AuthFilesInitEffectHarness({
+  connectionKey,
   onResult,
   onBumpReady,
 }: {
+  connectionKey: string;
   onResult: (result: UseAuthFilesOauthResult) => void;
   onBumpReady: (bump: () => void) => void;
 }) {
   const [renderTick, setRenderTick] = useState(0);
-  const result = useAuthFilesOauth({ viewMode: 'list', files: [] });
+  const result = useAuthFilesOauth({
+    viewMode: 'list',
+    files: [],
+    connectionKey,
+    requestScope: {
+      apiBase: `http://${connectionKey}.local:8317`,
+      managementKey: `${connectionKey}-key`,
+    },
+  });
   const { loadExcluded, loadModelAlias } = result;
 
   useEffect(() => {
@@ -80,22 +95,26 @@ function AuthFilesInitEffectHarness({
   return null;
 }
 
-const mountHarness = (): HarnessApi => {
+const mountHarness = (initialConnectionKey = 'connection-a'): HarnessApi => {
   let latest: UseAuthFilesOauthResult | null = null;
   let bumpRender: (() => void) | null = null;
   let renderer: ReactTestRenderer | null = null;
+  let connectionKey = initialConnectionKey;
+  const onResult = (result: UseAuthFilesOauthResult) => {
+    latest = result;
+  };
+  const onBumpReady = (bump: () => void) => {
+    bumpRender = bump;
+  };
+  const renderHarness = () =>
+    createElement(AuthFilesInitEffectHarness, {
+      connectionKey,
+      onResult,
+      onBumpReady,
+    });
 
   act(() => {
-    renderer = create(
-      createElement(AuthFilesInitEffectHarness, {
-        onResult: (result) => {
-          latest = result;
-        },
-        onBumpReady: (bump) => {
-          bumpRender = bump;
-        },
-      })
-    );
+    renderer = create(renderHarness());
   });
 
   return {
@@ -111,6 +130,12 @@ const mountHarness = (): HarnessApi => {
       }
       act(() => {
         bumpRender?.();
+      });
+    },
+    switchConnection: (nextConnectionKey: string) => {
+      connectionKey = nextConnectionKey;
+      act(() => {
+        renderer?.update(renderHarness());
       });
     },
     unmount: () => {
@@ -129,6 +154,14 @@ const flushAsync = async () => {
   });
 };
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+};
+
 describe('useAuthFilesOauth loader reference stability', () => {
   let harness: HarnessApi | null = null;
 
@@ -136,12 +169,16 @@ describe('useAuthFilesOauth loader reference stability', () => {
     mocks.getOauthExcludedModels.mockReset();
     mocks.getOauthModelAlias.mockReset();
     mocks.getModelDefinitions.mockReset();
+    mocks.saveOauthModelAlias.mockReset();
+    mocks.deleteOauthModelAlias.mockReset();
     mocks.showNotification.mockReset();
     mocks.showConfirmation.mockReset();
 
     mocks.getOauthExcludedModels.mockResolvedValue({});
     mocks.getOauthModelAlias.mockResolvedValue({});
     mocks.getModelDefinitions.mockResolvedValue([]);
+    mocks.saveOauthModelAlias.mockResolvedValue(undefined);
+    mocks.deleteOauthModelAlias.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -171,5 +208,178 @@ describe('useAuthFilesOauth loader reference stability', () => {
     expect(afterRerender.loadModelAlias).toBe(loadModelAliasBeforeRerender);
     expect(mocks.getOauthExcludedModels).toHaveBeenCalledTimes(1);
     expect(mocks.getOauthModelAlias).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears OAuth rules immediately and ignores late responses from the previous connection', async () => {
+    const oldExcluded = createDeferred<Record<string, string[]>>();
+    const oldAliases = createDeferred<Record<string, Array<{ name: string; alias: string }>>>();
+    mocks.getOauthExcludedModels
+      .mockReset()
+      .mockImplementationOnce(() => oldExcluded.promise)
+      .mockResolvedValue({ claude: ['new-*'] });
+    mocks.getOauthModelAlias
+      .mockReset()
+      .mockImplementationOnce(() => oldAliases.promise)
+      .mockResolvedValue({ claude: [{ name: 'new-model', alias: 'new-alias' }] });
+
+    harness = mountHarness('connection-a');
+    expect(mocks.getOauthExcludedModels).toHaveBeenCalledTimes(1);
+    expect(mocks.getOauthModelAlias).toHaveBeenCalledTimes(1);
+
+    harness.switchConnection('connection-b');
+
+    expect(harness.getLatest().excluded).toEqual({});
+    expect(harness.getLatest().modelAlias).toEqual({});
+    expect(harness.getLatest().excludedError).toBe('loading');
+    expect(harness.getLatest().modelAliasError).toBe('loading');
+
+    await flushAsync();
+
+    expect(harness.getLatest().excluded).toEqual({ claude: ['new-*'] });
+    expect(harness.getLatest().modelAlias).toEqual({
+      claude: [{ name: 'new-model', alias: 'new-alias' }],
+    });
+
+    oldExcluded.resolve({ codex: ['old-*'] });
+    oldAliases.resolve({ codex: [{ name: 'old-model', alias: 'old-alias' }] });
+    await flushAsync();
+
+    expect(harness.getLatest().excluded).toEqual({ claude: ['new-*'] });
+    expect(harness.getLatest().modelAlias).toEqual({
+      claude: [{ name: 'new-model', alias: 'new-alias' }],
+    });
+  });
+
+  it('invalidates the mutation baseline and queued handlers when the connection changes', async () => {
+    const newExcluded = createDeferred<Record<string, string[]>>();
+    const newAliases = createDeferred<Record<string, Array<{ name: string; alias: string }>>>();
+    mocks.getOauthExcludedModels
+      .mockReset()
+      .mockResolvedValueOnce({ codex: [] })
+      .mockImplementationOnce(() => newExcluded.promise);
+    mocks.getOauthModelAlias
+      .mockReset()
+      .mockResolvedValueOnce({ codex: [{ name: 'gpt-old', alias: 'old-alias' }] })
+      .mockImplementationOnce(() => newAliases.promise);
+
+    harness = mountHarness('connection-a');
+    await flushAsync();
+    const oldMutation = harness.getLatest().handleMappingUpdate;
+
+    harness.switchConnection('connection-b');
+    await oldMutation('codex', 'gpt-old', 'stale-write');
+    await harness.getLatest().handleMappingUpdate('codex', 'gpt-new', 'new-alias');
+
+    expect(mocks.saveOauthModelAlias).not.toHaveBeenCalled();
+    expect(mocks.deleteOauthModelAlias).not.toHaveBeenCalled();
+    expect(mocks.showNotification).toHaveBeenCalledWith('notification.refresh_failed', 'error');
+
+    newExcluded.resolve({});
+    newAliases.resolve({});
+    await flushAsync();
+  });
+
+  it('rolls back a multi-provider rename on the captured connection when the scope changes mid-write', async () => {
+    const originalAliases = {
+      claude: [{ name: 'claude-upstream', alias: 'shared' }],
+      codex: [{ name: 'codex-upstream', alias: 'shared' }],
+    };
+    const storedAliases = structuredClone(originalAliases);
+    const firstWrite = createDeferred<void>();
+    let writeCount = 0;
+    mocks.getOauthModelAlias
+      .mockReset()
+      .mockResolvedValueOnce(originalAliases)
+      .mockResolvedValueOnce(originalAliases)
+      .mockResolvedValue({});
+    mocks.saveOauthModelAlias
+      .mockReset()
+      .mockImplementation(
+        async (
+          channel: keyof typeof storedAliases,
+          aliases: Array<{ name: string; alias: string }>
+        ) => {
+          storedAliases[channel] = structuredClone(aliases);
+          writeCount += 1;
+          if (writeCount === 1) await firstWrite.promise;
+        }
+      );
+
+    harness = mountHarness('connection-a');
+    await flushAsync();
+
+    let mutationPromise: Promise<void> | null = null;
+    act(() => {
+      mutationPromise = harness?.getLatest().handleRenameAlias('shared', 'renamed') ?? null;
+    });
+    await flushAsync();
+    expect(mocks.saveOauthModelAlias).toHaveBeenCalledTimes(1);
+
+    harness.switchConnection('connection-b');
+    await act(async () => {
+      firstWrite.resolve();
+      await mutationPromise;
+    });
+    await flushAsync();
+
+    expect(mocks.saveOauthModelAlias).toHaveBeenCalledTimes(3);
+    expect(mocks.saveOauthModelAlias.mock.calls.map((call) => call[2]?.apiBase)).toEqual([
+      'http://connection-a.local:8317',
+      'http://connection-a.local:8317',
+      'http://connection-a.local:8317',
+    ]);
+    expect(storedAliases).toEqual(originalAliases);
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      'oauth_model_alias.save_success',
+      'success'
+    );
+  });
+
+  it('reports a partial update when captured-connection rollback fails after a scope change', async () => {
+    const originalAliases = {
+      claude: [{ name: 'claude-upstream', alias: 'shared' }],
+      codex: [{ name: 'codex-upstream', alias: 'shared' }],
+    };
+    const firstWrite = createDeferred<void>();
+    let writeCount = 0;
+    mocks.getOauthModelAlias
+      .mockReset()
+      .mockResolvedValueOnce(originalAliases)
+      .mockResolvedValueOnce(originalAliases)
+      .mockResolvedValue({});
+    mocks.saveOauthModelAlias.mockReset().mockImplementation(async () => {
+      writeCount += 1;
+      if (writeCount === 1) {
+        await firstWrite.promise;
+        return;
+      }
+      if (writeCount === 3) throw new Error('old CPA unavailable');
+    });
+
+    harness = mountHarness('connection-a');
+    await flushAsync();
+
+    let mutationPromise: Promise<void> | null = null;
+    act(() => {
+      mutationPromise = harness?.getLatest().handleRenameAlias('shared', 'renamed') ?? null;
+    });
+    await flushAsync();
+    harness.switchConnection('connection-b');
+
+    await act(async () => {
+      firstWrite.resolve();
+      await mutationPromise;
+    });
+    await flushAsync();
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'oauth_model_alias.rollback_failed',
+      'error'
+    );
+    expect(
+      mocks.saveOauthModelAlias.mock.calls.every(
+        (call) => call[2]?.apiBase === 'http://connection-a.local:8317'
+      )
+    ).toBe(true);
   });
 });

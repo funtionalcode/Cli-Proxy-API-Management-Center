@@ -29,6 +29,7 @@ import {
   getTypeColor,
   getTypeLabel,
   isRuntimeOnlyAuthFile,
+  isHealthyAuthFileStatusMessage,
   normalizeProviderKey,
   parsePriorityValue,
   type QuotaProviderType,
@@ -42,8 +43,6 @@ import { getQuotaCooldownPresentation } from '@/features/authFiles/model/quotaCo
 import type { AccountActionCandidate, QuotaCooldownInfo } from '@/services/api/usageService';
 import { AuthFileQuotaSection } from '@/features/authFiles/components/AuthFileQuotaSection';
 import styles from '@/features/authFiles/AuthFilesPage.module.scss';
-
-const HEALTHY_STATUS_MESSAGES = new Set(['ok', 'healthy', 'ready', 'success', 'available']);
 
 export type AuthFileCardProps = {
   file: AuthFileItem;
@@ -177,7 +176,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
     statusBarDataFromRecentRequests(recentBuckets);
   const rawStatusMessage = getAuthFileStatusMessage(file);
   const hasStatusWarning =
-    Boolean(rawStatusMessage) && !HEALTHY_STATUS_MESSAGES.has(rawStatusMessage.toLowerCase());
+    Boolean(rawStatusMessage) && !isHealthyAuthFileStatusMessage(rawStatusMessage);
 
   const priorityValue = parsePriorityValue(file.priority ?? file['priority']);
   const weightValue = parsePriorityValue(file.weight ?? file['weight']);

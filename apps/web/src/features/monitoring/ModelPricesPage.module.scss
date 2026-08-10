@@ -7,10 +7,10 @@
   --pricing-line-strong: var(--border-primary);
   --pricing-ink: var(--text-primary);
   --pricing-muted: var(--text-secondary);
-  --pricing-accent: var(--primary-color);
-  --pricing-accent-strong: var(--primary-active);
-  --pricing-accent-soft: var(--color-primary-light-9);
-  --pricing-red: var(--error-color);
+  --pricing-accent: var(--data-blue-base);
+  --pricing-accent-strong: var(--data-blue-dark-2);
+  --pricing-accent-soft: var(--data-badge-info-bg);
+  --pricing-red: var(--data-red-base);
   display: grid;
   gap: 10px;
   min-width: 0;
@@ -362,8 +362,8 @@
   width: fit-content;
   padding: 2px 7px;
   border-radius: 999px;
-  background: var(--pricing-surface-muted);
-  color: var(--pricing-ink);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
   font-family: inherit;
   font-size: 10px;
   font-weight: 800;

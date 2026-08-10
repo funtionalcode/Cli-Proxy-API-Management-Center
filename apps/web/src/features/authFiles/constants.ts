@@ -39,6 +39,17 @@ export const MIN_CARD_PAGE_SIZE = 3;
 export const MAX_CARD_PAGE_SIZE = 30;
 export const AUTH_FILE_REFRESH_WARNING_MS = 24 * 60 * 60 * 1000;
 
+export const AUTH_FILE_HEALTHY_STATUS_MESSAGES = new Set([
+  'ok',
+  'healthy',
+  'ready',
+  'success',
+  'available',
+]);
+
+export const isHealthyAuthFileStatusMessage = (value: string): boolean =>
+  AUTH_FILE_HEALTHY_STATUS_MESSAGES.has(value.trim().toLowerCase());
+
 export const INTEGER_STRING_PATTERN = /^[+-]?\d+$/;
 export const TRUTHY_TEXT_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 export const FALSY_TEXT_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
@@ -138,6 +149,23 @@ export const normalizeProviderKey = (value: string) => {
   const key = value.trim().toLowerCase().replace(/_/g, '-');
   if (key === 'x-ai' || key === 'grok') return 'xai';
   return key;
+};
+
+export const getEquivalentProviderKeys = (value: string): string[] => {
+  const providerKey = normalizeProviderKey(value);
+  if (!providerKey) return [];
+  if (providerKey === 'gemini') return ['gemini', 'gemini-cli'];
+  if (providerKey === 'gemini-cli') return ['gemini-cli', 'gemini'];
+  return [providerKey];
+};
+
+export const getProviderRecordValues = <T>(record: Record<string, T>, provider: string): T[] => {
+  const providerKeys = getEquivalentProviderKeys(provider);
+  if (providerKeys.length === 0) return [];
+  const entries = Object.entries(record);
+  return providerKeys.flatMap((providerKey) =>
+    entries.filter(([key]) => normalizeProviderKey(key) === providerKey).map(([, value]) => value)
+  );
 };
 
 export const getAuthFileStatusMessage = (file: AuthFileItem): string => {
@@ -264,8 +292,7 @@ export const isModelExcluded = (
   providerType: string,
   excluded: Record<string, string[]>
 ): boolean => {
-  const providerKey = normalizeProviderKey(providerType);
-  const excludedModels = excluded[providerKey] || excluded[providerType] || [];
+  const excludedModels = getProviderRecordValues(excluded, providerType).flat();
   return excludedModels.some((pattern) => {
     if (pattern.includes('*')) {
       // 支持通配符匹配：先转义正则特殊字符，再将 * 视为通配符

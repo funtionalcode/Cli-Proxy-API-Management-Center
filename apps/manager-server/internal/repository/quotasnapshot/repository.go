@@ -1,0 +1,485 @@
+package quotasnapshot
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+)
+
+const (
+	defaultCandidateLimit  = 1000
+	candidateRowsPerSource = 8
+)
+
+type Repository interface {
+	InsertObservationWrites(ctx context.Context, writes []model.AccountQuotaObservationWrite) error
+	ListCandidates(ctx context.Context, accountKey, provider string, limit int) ([]model.AccountQuotaSnapshot, error)
+	ListWindowStates(ctx context.Context, accountKey, provider string) ([]model.AccountQuotaWindowState, error)
+}
+
+type repository struct {
+	db *sql.DB
+}
+
+func New(db *sql.DB) Repository {
+	return &repository{db: db}
+}
+
+// ScopeFingerprint returns the canonical identity for one provider quota
+// window scope. It is shared by live writes and the legacy snapshot backfill so
+// upgraded rows continue in the same logical-window lifecycle.
+func ScopeFingerprint(kind, key string, modelIDs []string) string {
+	normalizedModels := make([]string, 0, len(modelIDs))
+	seenModels := make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		normalized := strings.ToLower(strings.TrimSpace(modelID))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seenModels[normalized]; exists {
+			continue
+		}
+		seenModels[normalized] = struct{}{}
+		normalizedModels = append(normalizedModels, normalized)
+	}
+	sort.Strings(normalizedModels)
+	payload := strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(kind)),
+		strings.ToLower(strings.TrimSpace(key)),
+		strings.Join(normalizedModels, "\x00"),
+	}, "\x00")
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+}
+
+// BackfillLegacySnapshots attaches pre-lifecycle snapshot rows to synthetic
+// partial observations and reconciles them through the normal lifecycle path.
+// Partial inventory is intentional: migration must not infer provider removals
+// that were never observed by the legacy writer.
+func BackfillLegacySnapshots(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `select
+		id, account_key, provider, provider_window_id, window_kind, window_mode,
+		model_scope_kind, coalesce(model_scope_key, ''), coalesce(model_ids_json, ''),
+		source, coalesce(source_observation_id, ''), observed_at_ms,
+		boundary_accuracy, cycle_start_ms, cycle_end_ms, duration_seconds,
+		used_percent, remaining_percent, used_value, limit_value,
+		coalesce(quota_unit, ''), reset_credits_available,
+		coalesce(reset_credits_json, ''), coalesce(plan_type, ''), created_at_ms
+		from account_quota_snapshots
+		where observation_id is null
+		order by account_key, provider, observed_at_ms, id`)
+	if err != nil {
+		return err
+	}
+
+	type observationGroup struct {
+		key       string
+		createdMS int64
+		write     model.AccountQuotaObservationWrite
+	}
+	groupsByKey := make(map[string]*observationGroup)
+	groups := make([]*observationGroup, 0)
+	for rows.Next() {
+		var snapshot model.AccountQuotaSnapshot
+		var cycleStart, cycleEnd, duration sql.NullInt64
+		var usedPercent, remainingPercent, usedValue, limitValue sql.NullFloat64
+		var resetCreditsAvailable sql.NullInt64
+		if err := rows.Scan(
+			&snapshot.ID,
+			&snapshot.AccountKey,
+			&snapshot.Provider,
+			&snapshot.ProviderWindowID,
+			&snapshot.WindowKind,
+			&snapshot.WindowMode,
+			&snapshot.ModelScopeKind,
+			&snapshot.ModelScopeKey,
+			&snapshot.ModelIDsJSON,
+			&snapshot.Source,
+			&snapshot.SourceObservationID,
+			&snapshot.ObservedAtMS,
+			&snapshot.BoundaryAccuracy,
+			&cycleStart,
+			&cycleEnd,
+			&duration,
+			&usedPercent,
+			&remainingPercent,
+			&usedValue,
+			&limitValue,
+			&snapshot.QuotaUnit,
+			&resetCreditsAvailable,
+			&snapshot.ResetCreditsJSON,
+			&snapshot.PlanType,
+			&snapshot.CreatedAtMS,
+		); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		snapshot.CycleStartMS = int64Pointer(cycleStart)
+		snapshot.CycleEndMS = int64Pointer(cycleEnd)
+		snapshot.DurationSeconds = int64Pointer(duration)
+		snapshot.UsedPercent = float64Pointer(usedPercent)
+		snapshot.RemainingPercent = float64Pointer(remainingPercent)
+		snapshot.UsedValue = float64Pointer(usedValue)
+		snapshot.LimitValue = float64Pointer(limitValue)
+		snapshot.ResetCreditsAvailable = int64Pointer(resetCreditsAvailable)
+		snapshot.ScopeFingerprint = ScopeFingerprint(
+			snapshot.ModelScopeKind,
+			snapshot.ModelScopeKey,
+			legacyModelIDs(snapshot.ModelIDsJSON),
+		)
+		snapshot.ContentHash = legacySnapshotContentHash(snapshot)
+		snapshot.InventoryScopeKey = legacyInventoryScopeKey(snapshot)
+
+		groupKey := strings.Join([]string{
+			snapshot.AccountKey,
+			snapshot.Provider,
+			snapshot.InventoryScopeKey,
+			snapshot.Source,
+			snapshot.SourceObservationID,
+			fmt.Sprintf("%d", snapshot.ObservedAtMS),
+		}, "\x00")
+		group := groupsByKey[groupKey]
+		if group == nil {
+			group = &observationGroup{key: groupKey, createdMS: snapshot.CreatedAtMS}
+			group.write.Observation = model.AccountQuotaObservation{
+				AccountKey:          snapshot.AccountKey,
+				Provider:            snapshot.Provider,
+				Source:              snapshot.Source,
+				SourceObservationID: snapshot.SourceObservationID,
+				InventoryScopeKey:   snapshot.InventoryScopeKey,
+				InventoryMode:       "partial",
+				ObservedAtMS:        snapshot.ObservedAtMS,
+				CreatedAtMS:         snapshot.CreatedAtMS,
+			}
+			groupsByKey[groupKey] = group
+			groups = append(groups, group)
+		}
+		if snapshot.CreatedAtMS > group.createdMS {
+			group.createdMS = snapshot.CreatedAtMS
+			group.write.Observation.CreatedAtMS = snapshot.CreatedAtMS
+		}
+		group.write.Snapshots = append(group.write.Snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+
+	writes := make([]model.AccountQuotaObservationWrite, 0, len(groups))
+	for _, group := range groups {
+		applyLegacyCodexRelationships(group.write.Snapshots)
+		group.write.Observation.WindowCount = len(group.write.Snapshots)
+		group.write.Observation.ObservationHash = legacyObservationHash(group.key, group.write.Snapshots)
+		writes = append(writes, group.write)
+	}
+	return (&repository{db: db}).InsertObservationWrites(ctx, writes)
+}
+
+// InventoryScopeKey returns the canonical provider inventory scope shared by
+// live evidence and legacy snapshot backfills.
+func InventoryScopeKey(provider string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return "codex:rate-limits"
+	}
+	return strings.ToLower(strings.TrimSpace(provider)) + ":quota-windows"
+}
+
+func legacyInventoryScopeKey(snapshot model.AccountQuotaSnapshot) string {
+	if strings.EqualFold(strings.TrimSpace(snapshot.Provider), "xai") &&
+		(strings.EqualFold(strings.TrimSpace(snapshot.Source), "response_body") ||
+			strings.EqualFold(strings.TrimSpace(snapshot.ProviderWindowID), "included-free-rolling-24h")) {
+		return "xai:included-free"
+	}
+	return InventoryScopeKey(snapshot.Provider)
+}
+
+func legacyModelIDs(raw string) []string {
+	var result []string
+	if json.Unmarshal([]byte(raw), &result) != nil {
+		return nil
+	}
+	return result
+}
+
+func legacySnapshotContentHash(snapshot model.AccountQuotaSnapshot) string {
+	payload, _ := json.Marshal(struct {
+		ProviderWindowID string
+		WindowKind       string
+		WindowMode       string
+		ScopeFingerprint string
+		CycleStartMS     *int64
+		CycleEndMS       *int64
+		DurationSeconds  *int64
+		UsedPercent      *float64
+		RemainingPercent *float64
+		UsedValue        *float64
+		LimitValue       *float64
+		QuotaUnit        string
+		PlanType         string
+	}{
+		ProviderWindowID: snapshot.ProviderWindowID,
+		WindowKind:       snapshot.WindowKind,
+		WindowMode:       snapshot.WindowMode,
+		ScopeFingerprint: snapshot.ScopeFingerprint,
+		CycleStartMS:     snapshot.CycleStartMS,
+		CycleEndMS:       snapshot.CycleEndMS,
+		DurationSeconds:  snapshot.DurationSeconds,
+		UsedPercent:      snapshot.UsedPercent,
+		RemainingPercent: snapshot.RemainingPercent,
+		UsedValue:        snapshot.UsedValue,
+		LimitValue:       snapshot.LimitValue,
+		QuotaUnit:        snapshot.QuotaUnit,
+		PlanType:         snapshot.PlanType,
+	})
+	return fmt.Sprintf("%x", sha256.Sum256(payload))
+}
+
+func legacyObservationHash(groupKey string, snapshots []model.AccountQuotaSnapshot) string {
+	identities := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		identities = append(identities, fmt.Sprintf("%d:%s", snapshot.ID, snapshot.ContentHash))
+	}
+	sort.Strings(identities)
+	payload := "legacy-quota-snapshot\x00" + groupKey + "\x00" + strings.Join(identities, "\x00")
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+}
+
+func applyLegacyCodexRelationships(snapshots []model.AccountQuotaSnapshot) {
+	type familyContainer struct {
+		weeklyID  string
+		monthlyID string
+	}
+	containersByFamily := make(map[string]familyContainer)
+	weeklyByScope := make(map[string][]string)
+	for _, snapshot := range snapshots {
+		if snapshot.Provider != "codex" {
+			continue
+		}
+		if snapshot.WindowKind == "weekly" {
+			weeklyByScope[snapshot.ScopeFingerprint] = append(
+				weeklyByScope[snapshot.ScopeFingerprint],
+				snapshot.ProviderWindowID,
+			)
+		}
+		family, role, ok := codexWindowFamilyRole(snapshot.ProviderWindowID)
+		if !ok || (role != "weekly" && role != "monthly") {
+			continue
+		}
+		key := snapshot.ScopeFingerprint + "\x00" + family
+		container := containersByFamily[key]
+		if role == "weekly" {
+			container.weeklyID = snapshot.ProviderWindowID
+		} else {
+			container.monthlyID = snapshot.ProviderWindowID
+		}
+		containersByFamily[key] = container
+	}
+	for index := range snapshots {
+		snapshot := &snapshots[index]
+		if snapshot.Provider != "codex" || snapshot.WindowKind != "five_hour" {
+			continue
+		}
+		if family, role, ok := codexWindowFamilyRole(snapshot.ProviderWindowID); ok && role == "five-hour" {
+			container := containersByFamily[snapshot.ScopeFingerprint+"\x00"+family]
+			containerID := container.weeklyID
+			if containerID == "" {
+				containerID = container.monthlyID
+			}
+			if containerID != "" {
+				snapshot.RelationshipKind = "concurrent_subwindow"
+				snapshot.ContainerWindowID = containerID
+				continue
+			}
+		}
+		containers := weeklyByScope[snapshot.ScopeFingerprint]
+		if len(containers) != 1 {
+			continue
+		}
+		snapshot.RelationshipKind = "concurrent_subwindow"
+		snapshot.ContainerWindowID = containers[0]
+	}
+}
+
+func codexWindowFamilyRole(providerWindowID string) (string, string, bool) {
+	id := strings.TrimSpace(providerWindowID)
+	switch id {
+	case "five-hour", "weekly", "monthly":
+		return "main", id, true
+	case "code-review-five-hour":
+		return "code-review", "five-hour", true
+	case "code-review-weekly":
+		return "code-review", "weekly", true
+	case "code-review-monthly":
+		return "code-review", "monthly", true
+	}
+	for _, role := range []string{"five-hour", "weekly", "monthly"} {
+		marker := "-" + role + "-"
+		position := strings.LastIndex(id, marker)
+		if position <= 0 {
+			continue
+		}
+		index := id[position+len(marker):]
+		if index == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(index); err != nil {
+			continue
+		}
+		return id[:position] + "\x00" + index, role, true
+	}
+	return "", "", false
+}
+
+func (r *repository) ListCandidates(ctx context.Context, accountKey, provider string, limit int) ([]model.AccountQuotaSnapshot, error) {
+	if limit <= 0 {
+		limit = defaultCandidateLimit
+	}
+	rows, err := r.db.QueryContext(ctx, `with ranked as (
+	select
+		id, coalesce(observation_id, 0) as observation_id,
+		coalesce(logical_window_id, 0) as logical_window_id,
+		coalesce(activation_id, 0) as activation_id,
+		coalesce(cycle_id, 0) as cycle_id,
+		account_key, provider, provider_window_id, window_kind, window_mode,
+		model_scope_kind, coalesce(model_scope_key, '') as model_scope_key,
+		coalesce(model_ids_json, '') as model_ids_json,
+		coalesce(scope_fingerprint, '') as scope_fingerprint,
+		coalesce(content_hash, '') as content_hash,
+		source, coalesce(source_observation_id, '') as source_observation_id, observed_at_ms,
+		boundary_accuracy, cycle_start_ms, cycle_end_ms, duration_seconds,
+		used_percent, remaining_percent, used_value, limit_value,
+		coalesce(quota_unit, '') as quota_unit, reset_credits_available,
+		coalesce(reset_credits_json, '') as reset_credits_json,
+		coalesce(plan_type, '') as plan_type, created_at_ms,
+		coalesce((select availability from account_quota_windows window
+			where window.id = account_quota_snapshots.logical_window_id), 'inactive') as window_availability,
+		row_number() over (
+			partition by logical_window_id, source
+			order by observed_at_ms desc, id desc
+		) as source_rank
+		from account_quota_snapshots
+		where account_key = ? and provider = ?
+			and logical_window_id is not null
+			and exists (
+			select 1 from account_quota_observations observation
+			where observation.id = account_quota_snapshots.observation_id
+				and observation.lifecycle_applied = 1
+		)
+	)
+	select
+		id, coalesce(observation_id, 0), coalesce(logical_window_id, 0),
+		coalesce(activation_id, 0), coalesce(cycle_id, 0),
+		account_key, provider, provider_window_id, window_kind, window_mode,
+		model_scope_kind, coalesce(model_scope_key, ''), coalesce(model_ids_json, ''),
+		coalesce(scope_fingerprint, ''), coalesce(content_hash, ''),
+		source, coalesce(source_observation_id, ''), observed_at_ms,
+		boundary_accuracy, cycle_start_ms, cycle_end_ms, duration_seconds,
+		used_percent, remaining_percent, used_value, limit_value,
+		coalesce(quota_unit, ''), reset_credits_available,
+		coalesce(reset_credits_json, ''), coalesce(plan_type, ''), created_at_ms
+	from ranked
+	where source_rank <= ?
+	order by case window_availability when 'active' then 0 when 'pending_absent' then 1 else 2 end,
+		source_rank, observed_at_ms desc, id desc
+	limit ?`, strings.TrimSpace(accountKey), strings.TrimSpace(provider), candidateRowsPerSource, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.AccountQuotaSnapshot, 0)
+	for rows.Next() {
+		var item model.AccountQuotaSnapshot
+		var cycleStart, cycleEnd, duration sql.NullInt64
+		var usedPercent, remainingPercent, usedValue, limitValue sql.NullFloat64
+		var resetCreditsAvailable sql.NullInt64
+		if err := rows.Scan(
+			&item.ID,
+			&item.ObservationID,
+			&item.LogicalWindowID,
+			&item.ActivationID,
+			&item.CycleID,
+			&item.AccountKey,
+			&item.Provider,
+			&item.ProviderWindowID,
+			&item.WindowKind,
+			&item.WindowMode,
+			&item.ModelScopeKind,
+			&item.ModelScopeKey,
+			&item.ModelIDsJSON,
+			&item.ScopeFingerprint,
+			&item.ContentHash,
+			&item.Source,
+			&item.SourceObservationID,
+			&item.ObservedAtMS,
+			&item.BoundaryAccuracy,
+			&cycleStart,
+			&cycleEnd,
+			&duration,
+			&usedPercent,
+			&remainingPercent,
+			&usedValue,
+			&limitValue,
+			&item.QuotaUnit,
+			&resetCreditsAvailable,
+			&item.ResetCreditsJSON,
+			&item.PlanType,
+			&item.CreatedAtMS,
+		); err != nil {
+			return nil, err
+		}
+		item.CycleStartMS = int64Pointer(cycleStart)
+		item.CycleEndMS = int64Pointer(cycleEnd)
+		item.DurationSeconds = int64Pointer(duration)
+		item.UsedPercent = float64Pointer(usedPercent)
+		item.RemainingPercent = float64Pointer(remainingPercent)
+		item.UsedValue = float64Pointer(usedValue)
+		item.LimitValue = float64Pointer(limitValue)
+		item.ResetCreditsAvailable = int64Pointer(resetCreditsAvailable)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func nullString(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
+func nullInt64(value int64) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
+}
+
+func int64Pointer(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	result := value.Int64
+	return &result
+}
+
+func float64Pointer(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	result := value.Float64
+	return &result
+}
