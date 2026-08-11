@@ -52,6 +52,8 @@ const createEditor = (
   usingApiTouched: false,
   note: '',
   noteTouched: false,
+  excludedModelsText: '',
+  excludedModelsTouched: false,
   headersText: '',
   headersTouched: false,
   headersError: null,
@@ -153,5 +155,21 @@ describe('AuthFilesPrefixProxyEditorModal credential refresh action', () => {
     expect(copyButton).toBeDefined();
     act(() => copyButton?.props.onClick());
     expect(onCopyText).toHaveBeenCalledWith(sourcePreview?.props.value);
+  });
+
+  it('allows excluded models to be edited from the auth-file modal', () => {
+    const onChange = vi.fn();
+    const editor = {
+      ...createEditor(),
+      excludedModelsText: 'claude-fable-4',
+    };
+    const { renderer } = renderModal({ editor, onChange });
+    const excludedModelsTextarea = renderer.root
+      .findAllByType('textarea')
+      .find((node) => node.props['aria-label'] === 'auth_files.excluded_models_label');
+
+    expect(excludedModelsTextarea?.props.value).toBe('claude-fable-4');
+    act(() => excludedModelsTextarea?.props.onChange({ target: { value: 'claude-fable-5' } }));
+    expect(onChange).toHaveBeenCalledWith('excludedModelsText', 'claude-fable-5');
   });
 });

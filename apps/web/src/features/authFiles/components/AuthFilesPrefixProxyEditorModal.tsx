@@ -272,6 +272,19 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
                     </div>
                   )}
                   <div className="form-group">
+                    <label>{t('auth_files.excluded_models_label')}</label>
+                    <textarea
+                      className="input"
+                      value={editor.excludedModelsText}
+                      placeholder={t('auth_files.excluded_models_placeholder')}
+                      rows={5}
+                      aria-label={t('auth_files.excluded_models_label')}
+                      disabled={disableControls || editor.saving || !editor.json}
+                      onChange={(e) => onChange('excludedModelsText', e.target.value)}
+                    />
+                    <div className="hint">{t('auth_files.excluded_models_hint')}</div>
+                  </div>
+                  <div className="form-group">
                     <label>{t('auth_files.headers_label')}</label>
                     <textarea
                       className={`input ${editor.headersError ? styles.prefixProxyTextareaInvalid : ''}`}

@@ -8,6 +8,7 @@ const { mocks } = vi.hoisted(() => ({
     downloadText: vi.fn(),
     list: vi.fn(),
     patchFieldsWithPluginSourceFallback: vi.fn(),
+    patchFieldsForAuthIndexes: vi.fn(),
     showNotification: vi.fn(),
   },
 }));
@@ -30,6 +31,7 @@ vi.mock('@/services/api', () => ({
     downloadText: mocks.downloadText,
     list: mocks.list,
     patchFieldsWithPluginSourceFallback: mocks.patchFieldsWithPluginSourceFallback,
+    patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
   },
 }));
 
@@ -122,9 +124,11 @@ describe('useAuthFilesPrefixProxyEditor', () => {
     mocks.downloadText.mockReset();
     mocks.list.mockReset();
     mocks.patchFieldsWithPluginSourceFallback.mockReset();
+    mocks.patchFieldsForAuthIndexes.mockReset();
     mocks.showNotification.mockReset();
     mocks.list.mockResolvedValue({ files: [] });
     mocks.patchFieldsWithPluginSourceFallback.mockResolvedValue(undefined);
+    mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -262,6 +266,61 @@ describe('useAuthFilesPrefixProxyEditor', () => {
       { headers: { 'X-Region': 'west' } },
       expect.any(Array)
     );
+  });
+
+  it('edits excluded models and migrates the legacy auth-file field', async () => {
+    const file = createAuthFile('auth-1');
+    mocks.downloadText.mockResolvedValue(
+      JSON.stringify({
+        auth_index: 'auth-1',
+        account_id: 'account-auth-1',
+        excluded_models: ['CLAUDE-FABLE-4', 'claude-opus-*'],
+      })
+    );
+    mocks.list.mockResolvedValue({ files: [file] });
+    harness = mountHarness();
+
+    await act(async () => {
+      await harness?.getLatest().openPrefixProxyEditor(file);
+    });
+    expect(harness.getLatest().prefixProxyEditor?.excludedModelsText).toBe(
+      'claude-fable-4\nclaude-opus-*'
+    );
+
+    act(() => {
+      harness
+        ?.getLatest()
+        .handlePrefixProxyChange(
+          'excludedModelsText',
+          'claude-fable-5\nCLAUDE-FABLE-5, claude-sonnet-*'
+        );
+    });
+    await act(async () => {
+      await harness?.getLatest().handlePrefixProxySave();
+    });
+
+    expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledWith(
+      'shared.json',
+      [
+        expect.objectContaining({
+          name: 'shared.json',
+          runtimeId: 'runtime-auth-1',
+          authIndex: 'auth-1',
+        }),
+      ],
+      [
+        expect.objectContaining({
+          name: 'shared.json',
+          runtimeId: 'runtime-auth-1',
+          authIndex: 'auth-1',
+        }),
+      ],
+      {
+        'excluded-models': ['claude-fable-5', 'claude-sonnet-*'],
+        excluded_models: null,
+      }
+    );
+    expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
   });
 
   it('loads the matching credential fields from a shared auth-file array', async () => {

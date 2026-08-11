@@ -6,7 +6,9 @@ import { normalizeOAuthAliasEntries } from '@/features/authFiles/oauthAliasValid
 import { useNotificationStore } from '@/stores';
 import {
   applyAuthFileWebsockets,
+  normalizeExcludedModels,
   normalizeProviderKey,
+  parseExcludedModelsText,
   parsePriorityValue,
   readAuthFileWebsockets,
   supportsAuthFileWebsockets,
@@ -47,6 +49,7 @@ export type PrefixProxyEditorField =
   | 'websockets'
   | 'usingApi'
   | 'note'
+  | 'excludedModelsText'
   | 'headersText'
   | 'modelAliasesText';
 
@@ -72,6 +75,8 @@ export type PrefixProxyEditorState = {
   usingApiTouched: boolean;
   note: string;
   noteTouched: boolean;
+  excludedModelsText: string;
+  excludedModelsTouched: boolean;
   headersText: string;
   headersTouched: boolean;
   headersError: string | null;
@@ -291,6 +296,9 @@ const pickEditableAuthFileFields = (
     'websockets',
     'using_api',
     'note',
+    'excluded_models',
+    'excluded-models',
+    'excludedModels',
   ].forEach(copyField);
   if (isRecordObject(content.headers)) {
     editable.headers = Object.fromEntries(
@@ -304,6 +312,13 @@ const pickEditableAuthFileFields = (
 
 const hasKeys = (value: Record<string, unknown> | AuthFileFieldsPatch | null): boolean =>
   Boolean(value && Object.keys(value).length > 0);
+
+const stringArraysEqual = (left: string[], right: string[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
+const hasLegacyExcludedModelsAlias = (record: Record<string, unknown>): boolean =>
+  Object.prototype.hasOwnProperty.call(record, 'excluded_models') ||
+  Object.prototype.hasOwnProperty.call(record, 'excludedModels');
 
 const normalizeHeaders = (value: unknown): AuthFileHeaders => {
   if (!isRecordObject(value)) return {};
@@ -431,6 +446,22 @@ const buildAuthFileFieldsPatch = (
     }
   }
 
+  if (editor.excludedModelsTouched) {
+    const originalExcludedModels = normalizeExcludedModels(
+      original.excluded_models ?? original['excluded-models'] ?? original.excludedModels
+    );
+    const nextExcludedModels = parseExcludedModelsText(editor.excludedModelsText);
+    if (!stringArraysEqual(originalExcludedModels, nextExcludedModels)) {
+      patch['excluded-models'] = nextExcludedModels;
+      if (Object.prototype.hasOwnProperty.call(original, 'excluded_models')) {
+        patch.excluded_models = null;
+      }
+      if (Object.prototype.hasOwnProperty.call(original, 'excludedModels')) {
+        patch.excludedModels = null;
+      }
+    }
+  }
+
   if (editor.headersTouched) {
     const { value: parsedHeaders, errorKey } = parseHeadersText(editor.headersText);
     if (errorKey) {
@@ -527,6 +558,17 @@ const buildPrefixProxyUpdatedText = (
     }
   }
 
+  if (patch['excluded-models'] !== undefined) {
+    const excludedModels = patch['excluded-models'];
+    if (excludedModels && excludedModels.length > 0) {
+      next['excluded-models'] = excludedModels;
+    } else {
+      delete next['excluded-models'];
+    }
+  }
+  if (patch.excluded_models === null) delete next.excluded_models;
+  if (patch.excludedModels === null) delete next.excludedModels;
+
   applyHeadersPatch(next, patch.headers);
 
   if (patch.websockets !== undefined) {
@@ -621,6 +663,8 @@ export function useAuthFilesPrefixProxyEditor(
       usingApiTouched: false,
       note: '',
       noteTouched: false,
+      excludedModelsText: '',
+      excludedModelsTouched: false,
       headersText: '',
       headersTouched: false,
       headersError: null,
@@ -669,6 +713,9 @@ export function useAuthFilesPrefixProxyEditor(
         : false;
       const usingApi = supportsAuthFileUsingApi(providerKey) && json.using_api === true;
       const note = typeof json.note === 'string' ? json.note : '';
+      const excludedModelsText = normalizeExcludedModels(
+        json.excluded_models ?? json['excluded-models'] ?? json.excludedModels
+      ).join('\n');
       const headers = json.headers;
       let headersText = '';
       let headersError: string | null = null;
@@ -712,6 +759,8 @@ export function useAuthFilesPrefixProxyEditor(
           usingApiTouched: false,
           note,
           noteTouched: false,
+          excludedModelsText,
+          excludedModelsTouched: false,
           headersText,
           headersTouched: false,
           headersError,
@@ -754,6 +803,13 @@ export function useAuthFilesPrefixProxyEditor(
         return { ...prev, usingApi: Boolean(value), usingApiTouched: true };
       }
       if (field === 'note') return { ...prev, note: String(value), noteTouched: true };
+      if (field === 'excludedModelsText') {
+        return {
+          ...prev,
+          excludedModelsText: String(value),
+          excludedModelsTouched: true,
+        };
+      }
       if (field === 'headersText') {
         const headersText = String(value);
         const { errorKey } = parseHeadersText(headersText);
@@ -820,13 +876,27 @@ export function useAuthFilesPrefixProxyEditor(
       if (!resolution.target || resolution.failure !== null || resolution.scope !== 'credential') {
         throw new Error(t('auth_files.status_mutation_scope_ambiguous', { name }));
       }
-      await authFilesApi.patchFieldsWithPluginSourceFallback(
-        getAuthFilePatchTarget(resolution.target),
-        payload,
-        currentFiles
-          .filter((file) => file.name.trim() === resolution.target?.name.trim())
-          .map(getAuthFilePatchTarget)
-      );
+      const patchTarget = getAuthFilePatchTarget(resolution.target);
+      const sourceIdentities = currentFiles
+        .filter((file) => file.name.trim() === resolution.target?.name.trim())
+        .map(getAuthFilePatchTarget);
+      if (
+        payload['excluded-models'] !== undefined &&
+        hasLegacyExcludedModelsAlias(prefixProxyEditor.json)
+      ) {
+        await authFilesApi.patchFieldsForAuthIndexes(
+          resolution.target.name,
+          [patchTarget],
+          sourceIdentities,
+          payload
+        );
+      } else {
+        await authFilesApi.patchFieldsWithPluginSourceFallback(
+          patchTarget,
+          payload,
+          sourceIdentities
+        );
+      }
       showNotification(t('auth_files.prefix_proxy_saved_success', { name }), 'success');
       await loadFiles();
       onSaved?.(name);
