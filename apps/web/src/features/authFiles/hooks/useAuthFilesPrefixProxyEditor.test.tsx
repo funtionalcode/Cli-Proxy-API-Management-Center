@@ -333,12 +333,14 @@ describe('useAuthFilesPrefixProxyEditor', () => {
           account_id: 'account-auth-1',
           prefix: 'first-prefix',
           proxy_url: 'http://first.proxy',
+          weight: 3,
         },
         {
           auth_index: 'auth-2',
           account_id: 'account-auth-2',
           prefix: 'second-prefix',
           proxy_url: 'http://second.proxy',
+          weight: 7,
         },
       ])
     );
@@ -351,6 +353,7 @@ describe('useAuthFilesPrefixProxyEditor', () => {
       credentialKey: 'shared.json::auth-2',
       prefix: 'second-prefix',
       proxyUrl: 'http://second.proxy',
+      weight: '7',
     });
 
     await act(async () => {
@@ -360,6 +363,7 @@ describe('useAuthFilesPrefixProxyEditor', () => {
       credentialKey: 'shared.json::auth-1',
       prefix: 'first-prefix',
       proxyUrl: 'http://first.proxy',
+      weight: '3',
     });
   });
 

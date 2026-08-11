@@ -292,6 +292,7 @@ const pickEditableAuthFileFields = (
     'prefix',
     'proxy_url',
     'priority',
+    'weight',
     'websocket',
     'websockets',
     'using_api',
