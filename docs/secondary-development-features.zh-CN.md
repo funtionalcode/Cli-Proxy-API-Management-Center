@@ -43,6 +43,8 @@
 - `apps/web/src/services/api/usageService.ts`
 - `apps/web/src/features/config/ConfigPage.tsx`
 - `apps/web/src/features/config/components/ManagerConfigPanel.tsx`
+- `apps/web/src/hooks/usePanelFeatureAvailability.test.ts`
+- `apps/web/src/components/config/ApiKeysCardEditor.test.tsx`
 
 ### 2. 请求监控、用量分析和模型定价
 
@@ -315,3 +317,4 @@ npm --workspace apps/web run test -- src/features/authFiles/model/authFileConfig
 | 2026-07-31 | 补充日志三 Tab 分页/筛选/大文件下载；认证文件权重编辑与批量权重；单账号 `model_aliases`；联调契约与回归项 |
 | 2026-07-31 | 错误/成功请求日志筛选栏补充请求 ID（对接 CPA `request_id`） |
 | 2026-08-21 | 同步上游 v1.12.1；将权重、单账号模型别名、渐进加载和旧 URL 兼容迁入统一 Accounts 架构。 |
+| 2026-08-21 | 恢复同步时被无冲突覆盖的 CPA Panel + 外部 Manager Server 能力探测、配置入口和 API Key 别名按钮门控。 |
