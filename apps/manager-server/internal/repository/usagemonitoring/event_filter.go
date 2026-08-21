@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type eventSourceOptions struct {
@@ -101,7 +102,11 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 			}
 		} else {
 			for _, searchColumn := range usageprojection.SearchColumns {
-				searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", column(searchColumn)))
+				expression := column(searchColumn)
+				if searchColumn == "analytics_model" {
+					expression = usageidentity.SQLRequestAnalyticsModelExpression(column("model"), column("requested_model"))
+				}
+				searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", expression))
 				args = append(args, like)
 			}
 		}
@@ -123,7 +128,11 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 		conditions = append(conditions, fmt.Sprintf("coalesce(%s, '') in (select value from json_each(?))", expression))
 		args = append(args, encodeJSONFilterValues(normalized))
 	}
-	addInCondition(column("model"), filter.Models)
+	modelExpression := column("analytics_model")
+	if !projected {
+		modelExpression = usageidentity.SQLRequestAnalyticsModelExpression(column("model"), column("requested_model"))
+	}
+	addInCondition(modelExpression, normalizeModelFilterValues(filter.Models))
 	addProviderEventCondition(filter.Providers, prefix, &conditions, &args)
 	addAccountEventCondition(filter.Accounts, prefix, &conditions, &args)
 	credentialExpr := fmt.Sprintf("coalesce(nullif(%sauth_file_snapshot, ''), nullif(%sauth_index, ''), nullif(%ssource_hash, ''), nullif(%ssource, ''), '-')", prefix, prefix, prefix, prefix)

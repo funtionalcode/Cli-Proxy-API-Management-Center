@@ -79,6 +79,18 @@ describe('PR check classifier', () => {
     });
   });
 
+  it('runs Node tests for every release automation script', () => {
+    for (const filePath of [
+      'bin/release/send-telegram-release.sh',
+      'bin/release/verify-published-release.mjs',
+    ]) {
+      expect(classifyChangedFiles([filePath])).toEqual({
+        ...noChecks,
+        frontend: true,
+      });
+    }
+  });
+
   it('runs workflow integrity tests for Dependabot configuration changes', () => {
     expect(classifyChangedFiles(['.github/dependabot.yml'])).toEqual({
       ...noChecks,

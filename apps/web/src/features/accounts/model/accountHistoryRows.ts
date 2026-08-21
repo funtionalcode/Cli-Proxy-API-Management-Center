@@ -10,6 +10,26 @@ export interface AccountHistoryTargetEntry {
   target: MonitoringAccountHistoryTarget;
 }
 
+export const ACCOUNT_HISTORY_TARGET_BATCH_SIZE = 200;
+
+export const retainAccountHistoryRowKeys = <T>(
+  current: Map<string, T>,
+  activeRowKeys: ReadonlySet<string>
+): Map<string, T> => {
+  if (Array.from(current.keys()).every((rowKey) => activeRowKeys.has(rowKey))) return current;
+  return new Map(Array.from(current.entries()).filter(([rowKey]) => activeRowKeys.has(rowKey)));
+};
+
+export const buildAccountHistoryTargetBatches = (
+  entries: AccountHistoryTargetEntry[]
+): AccountHistoryTargetEntry[][] => {
+  const batches: AccountHistoryTargetEntry[][] = [];
+  for (let index = 0; index < entries.length; index += ACCOUNT_HISTORY_TARGET_BATCH_SIZE) {
+    batches.push(entries.slice(index, index + ACCOUNT_HISTORY_TARGET_BATCH_SIZE));
+  }
+  return batches;
+};
+
 const readString = (value: unknown): string => {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);

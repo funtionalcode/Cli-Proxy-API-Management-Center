@@ -19,6 +19,7 @@ type dataMigrationStatus struct {
 	TargetEventID int64  `json:"targetEventId"`
 	ProcessedRows int64  `json:"processedRows"`
 	ChangedRows   int64  `json:"changedRows"`
+	AppliedRows   int64  `json:"appliedRows"`
 	StartedAtMS   int64  `json:"startedAtMs,omitempty"`
 	UpdatedAtMS   int64  `json:"updatedAtMs"`
 	FinishedAtMS  int64  `json:"finishedAtMs,omitempty"`
@@ -70,6 +71,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 			TargetEventID: migration.TargetEventID,
 			ProcessedRows: migration.ProcessedRows,
 			ChangedRows:   migration.ChangedRows,
+			AppliedRows:   migration.AppliedRows,
 			StartedAtMS:   migration.StartedAtMS,
 			UpdatedAtMS:   migration.UpdatedAtMS,
 			FinishedAtMS:  migration.FinishedAtMS,

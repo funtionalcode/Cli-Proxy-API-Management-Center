@@ -158,36 +158,29 @@
 
 .cardBranding {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  text-align: center;
-
-  h1 {
-    margin: 8px 0 0;
-    color: var(--text-primary);
-    font-size: 28px;
-    font-weight: 800;
-    line-height: 1.15;
-  }
-
-  p {
-    max-width: 410px;
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 14px;
-    font-weight: 500;
-    line-height: 1.55;
-  }
+  justify-content: center;
 }
 
-.logo {
-  width: 64px;
-  height: 64px;
-  border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  object-fit: cover;
-  box-shadow: 0 10px 25px rgba(10, 126, 220, 0.24);
+.brandLogo {
+  width: 240px;
+  max-width: 80%;
+  height: auto;
+  display: block;
+}
+
+.brandLogoDark {
+  display: none;
+}
+
+[data-theme='dark'] {
+  .brandLogoLight {
+    display: none;
+  }
+
+  .brandLogoDark {
+    display: block;
+  }
 }
 
 .loginForm,
@@ -536,21 +529,9 @@
 @keyframes splashEnter {
   from {
     opacity: 0;
-    transform: scale(0.94) translateY(16px);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@keyframes splashLogoPulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.05);
   }
 }
 
@@ -581,27 +562,24 @@
 }
 
 .splashLogo {
-  width: 80px;
-  height: 80px;
-  border-radius: $radius-lg;
-  object-fit: cover;
-  box-shadow: var(--glass-shadow);
-  animation: splashLogoPulse 1.5s ease-in-out infinite;
+  width: 100px;
+  height: 102px;
+  display: block;
+  object-fit: contain;
 }
 
-.splashTitle {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: 0;
+.splashLogoDark {
+  display: none;
 }
 
-.splashSubtitle {
-  margin: -8px 0 0;
-  color: var(--text-secondary);
-  font-size: 16px;
-  font-weight: 500;
+[data-theme='dark'] {
+  .splashLogoLight {
+    display: none;
+  }
+
+  .splashLogoDark {
+    display: block;
+  }
 }
 
 .splashLoader {

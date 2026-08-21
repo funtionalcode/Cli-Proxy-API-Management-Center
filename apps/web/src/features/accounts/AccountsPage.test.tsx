@@ -26,13 +26,35 @@ import {
 import {
   getAuthFilePatchTarget,
   getAuthFileSelectionKey,
-} from '@/features/authFiles/model/authFilesPageModel';
+} from '@/features/authFiles/model/credentialStatus';
+import type { AuthFilesCredentialMutation } from '@/features/authFiles/hooks/useAuthFilesData';
+import { clearAccountCredentialEvidenceBoundaryStateCache } from './model/accountCredentialEvidenceStorage';
+import {
+  clearAccountCredentialMutationMarkersForTests,
+  listAccountCredentialMutationMarkers,
+  recordAccountCredentialMutationMarker,
+} from './model/accountCredentialMutationMarker';
 import type { CodexQuotaData } from '@/utils/quota/providerRequests';
+import type {
+  CredentialInspectionSnapshot,
+  CredentialInspectionTarget,
+} from '@/features/monitoring/model/credentialInspectionSnapshot';
+import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
 import { AccountDiagnosticsTab } from './components/accountDetail/AccountDiagnosticsTab';
 import { AccountModelsTab } from './components/accountDetail/AccountModelsTab';
+import { AccountOverviewTab } from './components/accountDetail/AccountOverviewTab';
 import { AccountQuotaTab } from './components/accountDetail/AccountQuotaTab';
 import { QuotaWindowCard } from './components/QuotaWindowCard';
 import { formatQuotaResetTimestamp } from './model/accountsPagePresentation';
+import {
+  completeAccountOAuthReauthSession,
+  readAccountOAuthReauthSessionId,
+} from './model/accountReauthSession';
+import {
+  clearPendingAccountDirectReauthsForTests,
+  listPendingAccountDirectReauths,
+} from './model/accountDirectReauth';
+import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { AccountsPage } from './AccountsPage';
 
 type AnalyticsRequestForTest = {
@@ -283,6 +305,7 @@ const { mocks } = vi.hoisted(() => {
   return {
     mocks: {
       files: [codexFile] as AuthFileItem[],
+      authFilesLoading: false,
       selectedFiles: new Set<string>(),
       selectionCount: 0,
       batchFieldsUpdating: false,
@@ -306,7 +329,13 @@ const { mocks } = vi.hoisted(() => {
       navigate: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
-      loadFiles: vi.fn(async () => undefined),
+      loadFiles: vi.fn<
+        (options?: { throwOnError?: boolean }) => Promise<AuthFileItem[] | undefined>
+      >(async () => undefined),
+      lastAuthFilesDataOptions: null as null | {
+        connectionFingerprint?: string | null;
+        onCredentialMutation?: (mutation: AuthFilesCredentialMutation) => void;
+      },
       toggleSelect: vi.fn(),
       selectAllVisible: vi.fn(),
       invertVisibleSelection: vi.fn(),
@@ -395,18 +424,32 @@ const { mocks } = vi.hoisted(() => {
       lastExcludedEditorProps: null as null | {
         open: boolean;
         provider?: string;
+        requestScope: { apiBase: string; managementKey: string };
         onClose: () => void;
       },
       lastAliasEditorProps: null as null | {
         open: boolean;
         provider?: string;
+        requestScope: { apiBase: string; managementKey: string };
         onClose: () => void;
+      },
+      lastCodexReauthProps: null as null | {
+        open: boolean;
+        target: CodexReauthTarget | null;
+        requestScope?: { apiBase: string; managementKey: string };
+        onClose: () => void;
+        onSuccess?: () => void | Promise<void>;
       },
       localInspection: null as null | Record<string, unknown>,
       lastHealthWorkspaceProps: null as null | {
         mode: 'local' | 'server';
         onModeChange: (mode: 'local' | 'server') => void;
-        onOpenCredential: (target: { fileName: string; authIndex: string | null }) => void;
+        onSnapshotChange: (snapshot: CredentialInspectionSnapshot) => void;
+        onCredentialsChanged: (
+          target?: CodexReauthTarget | null,
+          snapshot?: CredentialInspectionSnapshot | null
+        ) => void | Promise<void>;
+        onOpenCredential: (target: CredentialInspectionTarget) => void;
       },
       quotaState: {
         antigravityQuota: {},
@@ -462,36 +505,43 @@ vi.mock('@/hooks/useUnsavedChangesGuard', () => ({
     };
   },
 }));
-
 vi.mock('@/features/authFiles/hooks/useAuthFilesData', () => ({
-  useAuthFilesData: () => ({
-    files: mocks.files,
-    selectedFiles: mocks.selectedFiles,
-    selectionCount: mocks.selectionCount,
-    loading: false,
-    error: '',
-    uploading: false,
-    authJsonPasteSaving: false,
-    deleting: null,
-    batchFieldsUpdating: mocks.batchFieldsUpdating,
-    fileInputRef: { current: null },
-    loadFiles: mocks.loadFiles,
-    handleUploadClick: vi.fn(),
-    handleFileChange: vi.fn(),
-    savePastedAuthJson: vi.fn(async () => 'saved.json'),
-    handleDelete: mocks.handleDelete,
-    handleDownload: mocks.handleDownload,
-    handleCredentialRefresh: mocks.handleCredentialRefresh,
-    credentialRefreshing: {},
-    toggleSelect: mocks.toggleSelect,
-    selectAllVisible: mocks.selectAllVisible,
-    invertVisibleSelection: mocks.invertVisibleSelection,
-    deselectAll: mocks.deselectAll,
-    batchDownload: mocks.batchDownload,
-    batchSetStatus: mocks.batchSetStatus,
-    batchPatchFields: mocks.batchPatchFields,
-    batchDelete: mocks.batchDelete,
-  }),
+  useAuthFilesData: (
+    options: {
+      connectionFingerprint?: string | null;
+      onCredentialMutation?: (mutation: AuthFilesCredentialMutation) => void;
+    } = {}
+  ) => {
+    mocks.lastAuthFilesDataOptions = options;
+    return {
+      files: mocks.files,
+      selectedFiles: mocks.selectedFiles,
+      selectionCount: mocks.selectionCount,
+      loading: mocks.authFilesLoading,
+      error: '',
+      uploading: false,
+      authJsonPasteSaving: false,
+      deleting: null,
+      batchFieldsUpdating: mocks.batchFieldsUpdating,
+      fileInputRef: { current: null },
+      loadFiles: mocks.loadFiles,
+      handleUploadClick: vi.fn(),
+      handleFileChange: vi.fn(),
+      savePastedAuthJson: vi.fn(async () => 'saved.json'),
+      handleDelete: mocks.handleDelete,
+      handleDownload: mocks.handleDownload,
+      handleCredentialRefresh: mocks.handleCredentialRefresh,
+      credentialRefreshing: {},
+      toggleSelect: mocks.toggleSelect,
+      selectAllVisible: mocks.selectAllVisible,
+      invertVisibleSelection: mocks.invertVisibleSelection,
+      deselectAll: mocks.deselectAll,
+      batchDownload: mocks.batchDownload,
+      batchSetStatus: mocks.batchSetStatus,
+      batchPatchFields: mocks.batchPatchFields,
+      batchDelete: mocks.batchDelete,
+    };
+  },
 }));
 
 vi.mock('@/features/authFiles/hooks/useAuthFilesOauth', () => ({
@@ -548,7 +598,8 @@ vi.mock('@/features/authFiles/hooks/useAuthFileConfigurationEditor', () => ({
       note: '',
       headersText: '',
       excludedModelsText: '',
-      disableCooling: false,
+      modelAliasesText: '',
+      disableCooling: 'inherit' as const,
       requestRetry: '',
       websockets: false,
       xaiRoutingMode: 'grok-build' as const,
@@ -597,7 +648,12 @@ vi.mock('@/features/monitoring/components/CredentialHealthInspectionWorkspace', 
   CredentialHealthInspectionWorkspace: (props: {
     mode: 'local' | 'server';
     onModeChange: (mode: 'local' | 'server') => void;
-    onOpenCredential: (target: { fileName: string; authIndex: string | null }) => void;
+    onSnapshotChange: (snapshot: CredentialInspectionSnapshot) => void;
+    onCredentialsChanged: (
+      target?: CodexReauthTarget | null,
+      snapshot?: CredentialInspectionSnapshot | null
+    ) => void | Promise<void>;
+    onOpenCredential: (target: CredentialInspectionTarget) => void;
   }) => {
     mocks.lastHealthWorkspaceProps = props;
     return <div data-testid="credential-health-workspace">credential-health:{props.mode}</div>;
@@ -612,11 +668,6 @@ vi.mock('@/features/monitoring/codexInspection', () => ({
 
 vi.mock('@/features/authFiles/components/AuthJsonPasteModal', () => ({
   AuthJsonPasteModal: () => null,
-}));
-
-vi.mock('@/features/authFiles/components/AuthFileModelsModal', () => ({
-  AuthFileModelsContent: () => <div>models-content</div>,
-  AuthFileModelsModal: () => null,
 }));
 
 vi.mock('@/features/authFiles/components/OAuthExcludedCard', () => ({
@@ -649,13 +700,19 @@ vi.mock('@/features/authFiles/components/OAuthModelAliasCard', () => ({
 }));
 
 vi.mock('@/features/authFiles/components/OAuthEditorModals', () => ({
-  OAuthExcludedEditorModal: (props: { open: boolean; provider?: string; onClose: () => void }) => {
+  OAuthExcludedEditorModal: (props: {
+    open: boolean;
+    provider?: string;
+    requestScope: { apiBase: string; managementKey: string };
+    onClose: () => void;
+  }) => {
     mocks.lastExcludedEditorProps = props;
     return props.open ? <div>oauth-excluded-editor-open</div> : null;
   },
   OAuthModelAliasEditorModal: (props: {
     open: boolean;
     provider?: string;
+    requestScope: { apiBase: string; managementKey: string };
     onClose: () => void;
   }) => {
     mocks.lastAliasEditorProps = props;
@@ -664,7 +721,16 @@ vi.mock('@/features/authFiles/components/OAuthEditorModals', () => ({
 }));
 
 vi.mock('@/features/oauth/CodexReauthDialog', () => ({
-  CodexReauthDialog: () => null,
+  CodexReauthDialog: (props: {
+    open: boolean;
+    target: CodexReauthTarget | null;
+    requestScope?: { apiBase: string; managementKey: string };
+    onClose: () => void;
+    onSuccess?: () => void | Promise<void>;
+  }) => {
+    mocks.lastCodexReauthProps = props;
+    return props.open ? <div data-codex-reauth-open="true" /> : null;
+  },
 }));
 
 vi.mock('@/services/api', () => ({
@@ -698,6 +764,17 @@ vi.mock('@/services/api', () => ({
     listAccountActionCandidates: mocks.listAccountActionCandidates,
   },
 }));
+
+vi.mock('@/services/api/usageService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api/usageService')>();
+  return {
+    ...actual,
+    monitoringAnalyticsApi: {
+      ...actual.monitoringAnalyticsApi,
+      getHeaderSnapshots: mocks.getHeaderSnapshots,
+    },
+  };
+});
 
 vi.mock('@/stores', () => ({
   captureQuotaCacheGeneration: () => 0,
@@ -818,12 +895,15 @@ const findInputByAriaLabel = (renderer: ReactTestRenderer, label: string) => {
   return input;
 };
 
+const mountedAccountsRenderers = new Set<ReactTestRenderer>();
+
 const renderAccountsPage = async () => {
   let renderer: ReactTestRenderer | null = null;
   await act(async () => {
     renderer = create(<AccountsPage />);
     await Promise.resolve();
   });
+  mountedAccountsRenderers.add(renderer!);
   return renderer!;
 };
 
@@ -878,6 +958,9 @@ const getAccountListItemTexts = (renderer: ReactTestRenderer) => {
   return getAccountTableRowTexts(renderer);
 };
 
+const getAccountCardText = (renderer: ReactTestRenderer, selectionKey: string) =>
+  readText(findAccountCardByKey(renderer, selectionKey));
+
 const treeText = (renderer: ReactTestRenderer) => readText(renderer.toJSON());
 
 const findAncestorByType = (node: ReactTestInstance, type: string): ReactTestInstance => {
@@ -899,6 +982,53 @@ const createDeferred = <T,>() => {
   return { promise, reject, resolve };
 };
 
+const makeInspectionSnapshot = (
+  files: AuthFileItem[],
+  results: Array<Partial<CodexInspectionResult>>,
+  completedAtMs = 2_000
+): CredentialInspectionSnapshot => ({
+  source: 'server',
+  completedAtMs,
+  runs: [],
+  results: results.map((overrides, index) => {
+    const file = files[index] ?? files[0];
+    return {
+      id: index + 1,
+      runId: 1,
+      accountKey: getAuthFileSelectionKey(file),
+      fileName: file.name,
+      displayAccount: String(file.account ?? file.name),
+      runtimeId: typeof file.id === 'string' ? file.id : undefined,
+      accountSnapshot: String(file.account ?? ''),
+      authIndex: String(file.authIndex ?? ''),
+      provider: 'codex',
+      disabled: Boolean(file.disabled),
+      action: 'keep',
+      actionReason: '',
+      actionStatus: 'none',
+      statusCode: 200,
+      usedPercent: 30,
+      isQuota: false,
+      createdAtMs: completedAtMs,
+      inspectionSource: 'server',
+      ...overrides,
+    };
+  }),
+});
+
+const installCodexQuotaStoreMutationMock = () => {
+  mocks.quotaState.setCodexQuota.mockImplementation(
+    (
+      update:
+        | Record<string, CodexQuotaState>
+        | ((current: Record<string, CodexQuotaState>) => Record<string, CodexQuotaState>)
+    ) => {
+      const current = mocks.quotaState.codexQuota as Record<string, CodexQuotaState>;
+      mocks.quotaState.codexQuota = typeof update === 'function' ? update(current) : update;
+    }
+  );
+};
+
 const flushPromises = async () => {
   await act(async () => {
     await Promise.resolve();
@@ -906,17 +1036,56 @@ const flushPromises = async () => {
   });
 };
 
+const runCodexReauthSuccessAndCaptureError = async (): Promise<unknown> => {
+  const onSuccess = mocks.lastCodexReauthProps?.onSuccess;
+  if (!onSuccess) throw new Error('Codex re-login success callback not found');
+  let caught: unknown;
+  await act(async () => {
+    try {
+      await onSuccess();
+    } catch (error) {
+      caught = error;
+    }
+  });
+  return caught;
+};
+
 describe('AccountsPage replacement flows', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    const restoreWindow = typeof window === 'undefined';
+    if (restoreWindow) {
+      vi.stubGlobal('window', {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      });
+    }
+    await act(async () => {
+      mountedAccountsRenderers.forEach((renderer) => renderer.unmount());
+    });
+    mountedAccountsRenderers.clear();
+    vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   beforeEach(() => {
+    clearAccountCredentialEvidenceBoundaryStateCache();
+    clearAccountCredentialMutationMarkersForTests();
+    clearPendingAccountDirectReauthsForTests();
     if (typeof window !== 'undefined') {
       window.localStorage.clear();
+      window.sessionStorage?.clear();
       window.location.hash = '';
     }
     mocks.files = [makeCodexFile('codex.json', 'auth-1', 'codex@example.com')];
+    mocks.authFilesLoading = false;
+    useUsageHeaderSnapshotStore.setState({
+      scopeKey: '',
+      items: [],
+      generatedAtMs: 0,
+      loadedAtMs: 0,
+      contentRevision: '',
+    });
     mocks.selectedFiles = new Set<string>();
     mocks.selectionCount = 0;
     mocks.batchFieldsUpdating = false;
@@ -1007,18 +1176,21 @@ describe('AccountsPage replacement flows', () => {
     mocks.quotaState.codexQuota = {};
     mocks.quotaState.kimiQuota = {};
     mocks.quotaState.xaiQuota = {};
-    mocks.quotaState.setAntigravityQuota.mockClear();
-    mocks.quotaState.setClaudeQuota.mockClear();
-    mocks.quotaState.setCodexQuota.mockClear();
-    mocks.quotaState.setKimiQuota.mockClear();
-    mocks.quotaState.setXaiQuota.mockClear();
-    mocks.loadFiles.mockClear();
+    mocks.quotaState.setAntigravityQuota.mockReset();
+    mocks.quotaState.setClaudeQuota.mockReset();
+    mocks.quotaState.setCodexQuota.mockReset();
+    mocks.quotaState.setKimiQuota.mockReset();
+    mocks.quotaState.setXaiQuota.mockReset();
+    mocks.loadFiles.mockReset();
+    mocks.loadFiles.mockImplementation(async () => mocks.files);
+    mocks.lastAuthFilesDataOptions = null;
     mocks.loadExcluded.mockClear();
     mocks.loadModelAlias.mockClear();
     mocks.oauthExcluded = {};
     mocks.oauthModelAlias = {};
     mocks.lastExcludedEditorProps = null;
     mocks.lastAliasEditorProps = null;
+    mocks.lastCodexReauthProps = null;
     mocks.lastHealthWorkspaceProps = null;
     mocks.localInspection = null;
   });
@@ -1039,6 +1211,10 @@ describe('AccountsPage replacement flows', () => {
     );
     expect(mocks.lastExcludedEditorProps?.open).toBe(true);
     expect(mocks.lastExcludedEditorProps?.provider).toBe('');
+    expect(mocks.lastExcludedEditorProps?.requestScope).toEqual({
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'manager-key',
+    });
 
     await act(async () => {
       findHostButtonByText(renderer, 'oauth-alias-edit').props.onClick();
@@ -1050,6 +1226,239 @@ describe('AccountsPage replacement flows', () => {
     );
     expect(mocks.lastAliasEditorProps?.open).toBe(true);
     expect(mocks.lastAliasEditorProps?.provider).toBe('codex');
+    expect(mocks.lastAliasEditorProps?.requestScope).toEqual({
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'manager-key',
+    });
+  });
+
+  it.each([
+    ['excluded', 'oauth-excluded-add'],
+    ['alias', 'oauth-alias-add'],
+  ] as const)('closes the %s editor when the CPA connection changes', async (editor, trigger) => {
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_oauth').props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, trigger).props.onClick();
+    });
+    const readEditorProps = () =>
+      editor === 'excluded' ? mocks.lastExcludedEditorProps : mocks.lastAliasEditorProps;
+    expect(readEditorProps()?.open).toBe(true);
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(readEditorProps()?.open).toBe(false);
+    expect(readEditorProps()?.requestScope).toEqual({
+      apiBase: 'http://cpa-b.local:8317',
+      managementKey: 'manager-key',
+    });
+  });
+
+  it('closes Codex re-login and publishes the new CPA scope when the connection changes', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+    });
+
+    expect(mocks.lastCodexReauthProps?.open).toBe(true);
+    expect(mocks.lastCodexReauthProps?.requestScope).toEqual({
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'manager-key',
+    });
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.lastCodexReauthProps?.open).toBe(false);
+    expect(mocks.lastCodexReauthProps?.requestScope).toEqual({
+      apiBase: 'http://cpa-b.local:8317',
+      managementKey: 'manager-key',
+    });
+  });
+
+  it('keeps a direct re-login pending after a credential reload failure and retries it manually', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+    });
+    mocks.loadFiles
+      .mockRejectedValueOnce(new Error('temporary auth-file list failure'))
+      .mockImplementationOnce(async () => {
+        mocks.files = [
+          { ...file, status: 'ready', statusMessage: '', last_refresh: 3_000, modified: 3_100 },
+        ] as AuthFileItem[];
+        return mocks.files;
+      });
+
+    expect(await runCodexReauthSuccessAndCaptureError()).toEqual(
+      new Error('temporary auth-file list failure')
+    );
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toHaveLength(1);
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(getAccountCardText(renderer, selectionKey)).not.toContain('accounts.health_reauth');
+  });
+
+  it('does not confirm a direct re-login when OAuth returns another account', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const wrongAccount = {
+      ...makeCodexFile(file.name, 'auth-2', 'other@example.com'),
+      status: 'ready',
+      statusMessage: '',
+      last_refresh: 3_000,
+      modified: 3_100,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+    });
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [wrongAccount];
+      return mocks.files;
+    });
+
+    expect(await runCodexReauthSuccessAndCaptureError()).toEqual(
+      new Error('notification.refresh_failed')
+    );
+
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toHaveLength(1);
+  });
+
+  it('retries a pending direct re-login after Accounts remounts', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const firstRenderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        firstRenderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+    });
+    mocks.loadFiles.mockRejectedValueOnce(new Error('temporary auth-file list failure'));
+    expect(await runCodexReauthSuccessAndCaptureError()).toEqual(
+      new Error('temporary auth-file list failure')
+    );
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toHaveLength(1);
+
+    await act(async () => firstRenderer.unmount());
+    mountedAccountsRenderers.delete(firstRenderer);
+    mocks.files = [
+      { ...file, status: 'ready', statusMessage: '', last_refresh: 3_000, modified: 3_100 },
+    ] as AuthFileItem[];
+
+    const secondRenderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(getAccountCardText(secondRenderer, selectionKey)).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('keeps pending direct re-login retries isolated by CPA connection', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+    });
+    mocks.loadFiles.mockRejectedValueOnce(new Error('temporary auth-file list failure'));
+    expect(await runCodexReauthSuccessAndCaptureError()).toEqual(
+      new Error('temporary auth-file list failure')
+    );
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    mocks.managementKey = 'key-b';
+    mocks.loadFiles.mockImplementation(async () => [
+      { ...file, status: 'ready', statusMessage: '', last_refresh: 3_000, modified: 3_100 },
+    ]);
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toHaveLength(1);
+    expect(listPendingAccountDirectReauths('http://cpa-b.local:8317:key-b')).toEqual([]);
   });
 
   it('reloads credentials when the CPA connection fingerprint changes', async () => {
@@ -1071,6 +1480,36 @@ describe('AccountsPage replacement flows', () => {
     });
 
     expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads account history when only the CPA connection fingerprint changes', async () => {
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
   });
 
   it('clears quota snapshot state and ignores a late query from the previous connection', async () => {
@@ -1164,14 +1603,16 @@ describe('AccountsPage replacement flows', () => {
   });
 
   it('restarts the initial credential load when StrictMode replays effects', async () => {
+    let renderer: ReactTestRenderer | null = null;
     await act(async () => {
-      create(
+      renderer = create(
         <StrictMode>
           <AccountsPage />
         </StrictMode>
       );
       await Promise.resolve();
     });
+    mountedAccountsRenderers.add(renderer!);
 
     expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
   });
@@ -1898,7 +2339,152 @@ describe('AccountsPage replacement flows', () => {
     }
   });
 
-  it('keeps the initial credential list load free of unrelated background requests', async () => {
+  it('loads passive Header quota evidence with the initial credential list', async () => {
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    const observedAtMs = Date.now();
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: observedAtMs,
+      from_ms: observedAtMs - 1_000,
+      to_ms: observedAtMs,
+      items: [
+        {
+          event_hash: 'initial-header-quota',
+          timestamp_ms: observedAtMs,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_quota_used_percent: 80,
+          header_quota_recover_at_ms: observedAtMs + 5 * 60 * 60 * 1000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.getActiveQuotaCooldowns).not.toHaveBeenCalled();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).not.toHaveBeenCalled();
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledWith(
+      'http://manager.local:18317',
+      'manager-key',
+      10
+    );
+    expect(mocks.getCodexInspectionRun).not.toHaveBeenCalled();
+    expect(mocks.loadExcluded).not.toHaveBeenCalled();
+    expect(mocks.loadModelAlias).not.toHaveBeenCalled();
+    expect(mocks.getAnalytics).not.toHaveBeenCalled();
+    expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
+    expect(getAccountListItemTexts(renderer)[0]).toContain('20%');
+    expect(mocks.quotaState.setCodexQuota).not.toHaveBeenCalled();
+  });
+
+  it('filters xAI quota limits using only unexpired provider usage evidence', async () => {
+    const generatedAtMs = 3_000;
+    const activeFile = {
+      name: 'xai-active.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-active',
+      account: 'active@example.com',
+      disabled: false,
+    } as AuthFileItem;
+    const expiredFile = {
+      name: 'xai-expired.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-expired',
+      account: 'expired@example.com',
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [activeFile, expiredFile];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: generatedAtMs,
+      from_ms: 1_000,
+      to_ms: generatedAtMs,
+      items: [
+        {
+          event_hash: 'xai-active-provider-usage',
+          timestamp_ms: 2_000,
+          auth_file_snapshot: activeFile.name,
+          auth_index: 'xai-active',
+          account_snapshot: 'active@example.com',
+          auth_provider_snapshot: 'xai',
+          response_metadata: {
+            provider_usage: {
+              provider: 'xai',
+              state: 'exhausted',
+              actual: 100,
+              limit: 100,
+              remaining: 0,
+              recover_at_ms: generatedAtMs + 1_000,
+            },
+          },
+        },
+        {
+          event_hash: 'xai-expired-provider-usage',
+          timestamp_ms: 1_500,
+          auth_file_snapshot: expiredFile.name,
+          auth_index: 'xai-expired',
+          account_snapshot: 'expired@example.com',
+          auth_provider_snapshot: 'xai',
+          response_metadata: {
+            provider_usage: {
+              provider: 'xai',
+              state: 'exhausted',
+              actual: 100,
+              limit: 100,
+              remaining: 0,
+              recover_at_ms: generatedAtMs - 1,
+            },
+          },
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const statusSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.status_filter');
+    if (!statusSelect) throw new Error('Accounts status filter not found');
+    await act(async () => {
+      statusSelect.props.onChange('quota_limited');
+      await Promise.resolve();
+    });
+
+    const visibleRows = getAccountListItemTexts(renderer);
+    expect(visibleRows).toHaveLength(1);
+    expect(visibleRows[0]).toContain(activeFile.name);
+    expect(visibleRows[0]).not.toContain(expiredFile.name);
+  });
+
+  it('polls passive Header evidence only while the accounts view is visible', async () => {
+    vi.useFakeTimers();
+    let visibilityState: DocumentVisibilityState = 'visible';
+    const documentEvents = new EventTarget();
+    vi.stubGlobal('document', {
+      get visibilityState() {
+        return visibilityState;
+      },
+      addEventListener: documentEvents.addEventListener.bind(documentEvents),
+      removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
+    });
     mocks.panelFeatureAvailability = {
       checking: false,
       managerServiceBase: 'http://manager.local:18317',
@@ -1908,21 +2494,727 @@ describe('AccountsPage replacement flows', () => {
 
     await renderAccountsPage();
     await flushPromises();
-
-    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
     expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
-    expect(mocks.getActiveQuotaCooldowns).not.toHaveBeenCalled();
-    expect(mocks.getHeaderSnapshots).not.toHaveBeenCalled();
-    expect(mocks.listAccountActionCandidates).not.toHaveBeenCalled();
-    expect(mocks.listCodexInspectionRuns).not.toHaveBeenCalled();
-    expect(mocks.getCodexInspectionRun).not.toHaveBeenCalled();
-    expect(mocks.loadExcluded).not.toHaveBeenCalled();
-    expect(mocks.loadModelAlias).not.toHaveBeenCalled();
-    expect(mocks.getAnalytics).not.toHaveBeenCalled();
-    expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+
+    visibilityState = 'hidden';
+    await act(async () => {
+      documentEvents.dispatchEvent(new Event('visibilitychange'));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+
+    visibilityState = 'visible';
+    await act(async () => {
+      documentEvents.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(3);
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
   });
 
-  it('loads precise Codex status evidence on demand and filters by quota window', async () => {
+  it('does not restart an in-flight full history load on passive refresh', async () => {
+    vi.useFakeTimers();
+    mocks.files = Array.from({ length: 401 }, (_, index) =>
+      makeCodexFile(
+        `credential-${String(index + 1).padStart(3, '0')}.json`,
+        `auth-${index + 1}`,
+        `account-${index + 1}@example.com`
+      )
+    );
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const firstBatches = [
+      createDeferred<AccountHistoryResponseForTest>(),
+      createDeferred<AccountHistoryResponseForTest>(),
+    ];
+    let requestIndex = 0;
+    mocks.getAccountHistory.mockImplementation(() => {
+      const currentIndex = requestIndex;
+      requestIndex += 1;
+      return currentIndex < firstBatches.length
+        ? firstBatches[currentIndex].promise
+        : Promise.resolve(makeAccountHistoryResponse([]));
+    });
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    const initialSignals = mocks.getAccountHistory.mock.calls.map((call) => call[3] as AbortSignal);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(initialSignals.every((signal) => signal.aborted === false)).toBe(true);
+
+    await act(async () => {
+      firstBatches.forEach((batch) => batch.resolve(makeAccountHistoryResponse([])));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await flushPromises();
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(6);
+  });
+
+  it('keeps successful history batches when another batch fails', async () => {
+    mocks.files = Array.from({ length: 201 }, (_, index) =>
+      makeCodexFile(
+        `credential-${String(index + 1).padStart(3, '0')}.json`,
+        `auth-${index + 1}`,
+        `account-${index + 1}@example.com`
+      )
+    );
+    const problemFile = mocks.files[200];
+    const problemRowKey = getAuthFileSelectionKey(problemFile);
+    mocks.location = { pathname: '/accounts', search: '?status=problem' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockImplementation(
+      async (_base, _managementKey, request: AccountHistoryRequestForTest) => {
+        const targets = request.accounts as Array<{ row_key?: string }>;
+        if (!targets.some((target) => target.row_key === problemRowKey)) {
+          throw new Error('first batch unavailable');
+        }
+        return makeAccountHistoryResponse([
+          {
+            row_key: problemRowKey,
+            account_key: 'problem-account',
+            matched: true,
+            total_requests: 1,
+            success_calls: 0,
+            failure_calls: 1,
+            total_tokens: 0,
+            total_cost: 0,
+            success_rate: 0,
+            first_seen_ms: 2_000,
+            last_seen_ms: 2_000,
+            latest_request: {
+              timestamp_ms: 2_000,
+              failed: true,
+              fail_status_code: 401,
+            },
+            recent_requests: [
+              {
+                timestamp_ms: 2_000,
+                failed: true,
+                fail_status_code: 401,
+              },
+            ],
+            sync_status: 'ready',
+          },
+        ]);
+      }
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(
+      renderer.root.findAllByProps({
+        'data-account-card': problemRowKey,
+      })
+    ).toHaveLength(1);
+    expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_reauth');
+  });
+
+  it('retains mixed quota Header evidence without leaving stale reauth filters', async () => {
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 2_000,
+      from_ms: 0,
+      to_ms: 2_000,
+      items: [
+        {
+          event_hash: 'mixed-auth-quota-header',
+          timestamp_ms: 1_000,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_error_kind: 'auth',
+          header_error_code: 'invalid_api_key',
+          header_trace_id: 'trace-mixed-auth-quota',
+          header_quota_used_percent: 100,
+          response_metadata: {
+            quota: {
+              rate_limit_reached_type: 'secondary',
+              recover_at_ms: 9_000,
+            },
+            errors: {
+              kind: 'auth',
+              code: 'invalid_token',
+            },
+          },
+        },
+      ],
+    });
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: 'codex.json\u0000auth-1',
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: 2_000,
+          last_seen_ms: 2_000,
+          latest_request: { timestamp_ms: 2_000, failed: false },
+          recent_requests: [{ timestamp_ms: 2_000, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_limited');
+
+    const searchInput = findInputByAriaLabel(renderer, 'accounts.search_label');
+    await act(async () => {
+      searchInput.props.onChange({ target: { value: 'invalid_api_key' } });
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+
+    await act(async () => {
+      searchInput.props.onChange({ target: { value: 'trace-mixed-auth-quota' } });
+    });
+    expect(
+      renderer.root.findAllByProps({ 'data-account-card': 'codex.json\u0000auth-1' })
+    ).toHaveLength(1);
+
+    await act(async () => {
+      searchInput.props.onChange({ target: { value: '' } });
+    });
+
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+    await act(async () => {
+      operationalSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('clears an older quota-refresh 401 after a newer successful request', async () => {
+    const file = mocks.files[0];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error',
+      windows: [],
+      fetchedAtMs: 1_000,
+      failedAtMs: 1_000,
+      error: 'HTTP 401 unauthorized',
+      errorStatus: 401,
+    });
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: 'codex.json\u0000auth-1',
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: 2_000,
+          last_seen_ms: 2_000,
+          latest_request: { timestamp_ms: 2_000, failed: false },
+          recent_requests: [{ timestamp_ms: 2_000, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+    expect(readText(accountCard)).not.toContain('HTTP 401 unauthorized');
+
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+    await act(async () => {
+      operationalSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('does not classify a disabled account with current authentication failure as recovered', async () => {
+    const authenticationFailure = {
+      ...makeCodexFile('auth-failure.json', 'auth-failure', 'auth-failure@example.com'),
+      disabled: true,
+      status_code: 401,
+      status_message: 'unauthorized',
+      updated_at_ms: 2_000,
+    } as AuthFileItem;
+    const recovered = {
+      ...makeCodexFile('recovered.json', 'recovered', 'recovered@example.com'),
+      disabled: true,
+    } as AuthFileItem;
+    mocks.files = [authenticationFailure, recovered];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: getAuthFileSelectionKey(recovered),
+          account_key: 'recovered@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: 3_000,
+          last_seen_ms: 3_000,
+          latest_request: { timestamp_ms: 3_000, failed: false },
+          recent_requests: [{ timestamp_ms: 3_000, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+
+    await act(async () => {
+      operationalSelect.props.onChange('recovered');
+      await Promise.resolve();
+    });
+
+    expect(
+      renderer.root.findAllByProps({
+        'data-account-card': getAuthFileSelectionKey(authenticationFailure),
+      })
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({
+        'data-account-card': getAuthFileSelectionKey(recovered),
+      })
+    ).toHaveLength(1);
+  });
+
+  it('keeps a superseded raw 401 out of both reauth filters', async () => {
+    const credentialUpdatedAtMs = 1_700_000_000_000;
+    const successfulRequestAtMs = credentialUpdatedAtMs + 1_000;
+    mocks.files = [
+      {
+        ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+        status_code: 401,
+        status_message: 'unauthorized',
+        updated_at_ms: credentialUpdatedAtMs,
+      } as AuthFileItem,
+    ];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: 'codex.json\u0000auth-1',
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: successfulRequestAtMs,
+          last_seen_ms: successfulRequestAtMs,
+          latest_request: { timestamp_ms: successfulRequestAtMs, failed: false },
+          recent_requests: [{ timestamp_ms: successfulRequestAtMs, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
+    await act(async () => {
+      findDetailButtonByName(renderer, 'codex.json').props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(
+      renderer.root.findAllByProps({ 'data-overview-recent-status-message': 'true' })
+    ).toHaveLength(0);
+
+    const statusSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.status_filter');
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!statusSelect || !operationalSelect) throw new Error('Accounts reauth filters not found');
+
+    await act(async () => {
+      statusSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+
+    await act(async () => {
+      statusSelect.props.onChange('all');
+      operationalSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('keeps quota Header evidence when a newer request clears a same-batch quota-refresh 401', async () => {
+    const file = mocks.files[0];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error',
+      windows: [],
+      fetchedAtMs: 1_000,
+      failedAtMs: 1_000,
+      error: 'HTTP 401 unauthorized',
+      errorStatus: 401,
+    });
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 2_000,
+      from_ms: 0,
+      to_ms: 2_000,
+      items: [
+        {
+          event_hash: 'quota-refresh-401-header',
+          timestamp_ms: 1_000,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_error_kind: 'auth',
+          header_error_code: 'invalid_api_key',
+          header_quota_used_percent: 100,
+          header_quota_recover_at_ms: 9_000,
+        },
+      ],
+    });
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: 'codex.json\u0000auth-1',
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: 2_000,
+          last_seen_ms: 2_000,
+          latest_request: { timestamp_ms: 2_000, failed: false },
+          recent_requests: [{ timestamp_ms: 2_000, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_limited');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
+    const searchInput = findInputByAriaLabel(renderer, 'accounts.search_label');
+    await act(async () => {
+      searchInput.props.onChange({ target: { value: 'invalid_api_key' } });
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('lets newer healthy Header quota replace an older quota-refresh 401', async () => {
+    const file = mocks.files[0];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error',
+      windows: [],
+      fetchedAtMs: 1_000,
+      failedAtMs: 1_000,
+      error: 'HTTP 401 unauthorized',
+      errorStatus: 401,
+    });
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 2_000,
+      from_ms: 0,
+      to_ms: 2_000,
+      items: [
+        {
+          event_hash: 'newer-healthy-quota-header',
+          timestamp_ms: 2_000,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_quota_used_percent: 20,
+          header_quota_plan_type: 'plus',
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+    await act(async () => {
+      operationalSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('does not let an older Header diagnostic override a newer complete quota refresh', async () => {
+    const file = mocks.files[0];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      quotaInventoryObserved: true,
+      fetchedAtMs: 2_000,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 20,
+          resetLabel: 'Mon',
+        },
+      ],
+    });
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 2_000,
+      from_ms: 0,
+      to_ms: 2_000,
+      items: [
+        {
+          event_hash: 'older-stale-diagnostic',
+          timestamp_ms: 1_000,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_error_kind: 'auth',
+          header_error_code: 'invalid_api_key',
+          header_trace_id: 'trace-older-diagnostic',
+          header_quota_used_percent: 100,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+    expect(readText(accountCard)).not.toContain('accounts.health_limited');
+
+    const searchInput = findInputByAriaLabel(renderer, 'accounts.search_label');
+    for (const value of ['invalid_api_key', 'trace-older-diagnostic']) {
+      await act(async () => {
+        searchInput.props.onChange({ target: { value } });
+      });
+      expect(
+        renderer.root.findAll(
+          (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+        )
+      ).toHaveLength(0);
+    }
+  });
+
+  it('keeps same-time Header quota but removes auth diagnostics after a partial Provider refresh', async () => {
+    const file = mocks.files[0];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      quotaInventoryObserved: false,
+      fetchedAtMs: 2_000,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 20,
+          resetLabel: 'Mon',
+        },
+      ],
+    });
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 2_000,
+      from_ms: 0,
+      to_ms: 2_000,
+      items: [
+        {
+          event_hash: 'same-time-partial-header',
+          timestamp_ms: 2_000,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_error_kind: 'auth',
+          header_error_code: 'invalid_api_key',
+          header_quota_used_percent: 100,
+          header_quota_recover_at_ms: 9_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_limited');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
+    const searchInput = findInputByAriaLabel(renderer, 'accounts.search_label');
+    await act(async () => {
+      searchInput.props.onChange({ target: { value: 'invalid_api_key' } });
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('reuses initial Codex Header evidence when filtering by quota window', async () => {
     mocks.files = [
       makeCodexFile('weekly.json', 'weekly-auth', 'weekly@example.com'),
       makeCodexFile('available.json', 'available-auth', 'available@example.com'),
@@ -1984,8 +3276,8 @@ describe('AccountsPage replacement flows', () => {
     const renderer = await renderAccountsPage();
     await flushPromises();
 
-    expect(mocks.getHeaderSnapshots).not.toHaveBeenCalled();
-    expect(mocks.listCodexInspectionRuns).not.toHaveBeenCalled();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(1);
 
     const statusSelect = renderer.root
       .findAllByType(Select)
@@ -2009,6 +3301,141 @@ describe('AccountsPage replacement flows', () => {
         'data-account-card': getAuthFileSelectionKey(mocks.files[1]),
       })
     ).toHaveLength(0);
+  });
+
+  it('loads request evidence for every account before applying the problem filter', async () => {
+    mocks.files = Array.from({ length: 201 }, (_, index) =>
+      makeCodexFile(
+        `credential-${String(index + 1).padStart(3, '0')}.json`,
+        `auth-${index + 1}`,
+        `account-${index + 1}@example.com`
+      )
+    );
+    const problemFile = mocks.files[200];
+    const problemRowKey = getAuthFileSelectionKey(problemFile);
+    mocks.location = { pathname: '/accounts', search: '?status=problem' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockImplementation(
+      async (_base, _managementKey, request: AccountHistoryRequestForTest) => {
+        const targets = request.accounts as Array<{ row_key?: string }>;
+        return makeAccountHistoryResponse(
+          targets.some((target) => target.row_key === problemRowKey)
+            ? [
+                {
+                  row_key: problemRowKey,
+                  account_key: 'problem-account',
+                  matched: true,
+                  total_requests: 1,
+                  success_calls: 0,
+                  failure_calls: 1,
+                  total_tokens: 0,
+                  total_cost: 0,
+                  success_rate: 0,
+                  first_seen_ms: 2_000,
+                  last_seen_ms: 2_000,
+                  latest_request: {
+                    timestamp_ms: 2_000,
+                    failed: true,
+                    fail_status_code: 401,
+                  },
+                  recent_requests: [
+                    {
+                      timestamp_ms: 2_000,
+                      failed: true,
+                      fail_status_code: 401,
+                    },
+                  ],
+                  sync_status: 'ready',
+                },
+              ]
+            : []
+        );
+      }
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const historyRequests = mocks.getAccountHistory.mock.calls.map(
+      (call) => call[2] as AccountHistoryRequestForTest
+    );
+    expect(historyRequests).toHaveLength(2);
+    expect(historyRequests.every((request) => request.accounts.length <= 200)).toBe(true);
+    expect(historyRequests.flatMap((request) => request.accounts)).toHaveLength(201);
+    expect(
+      renderer.root.findAllByProps({
+        'data-account-card': problemRowKey,
+      })
+    ).toHaveLength(1);
+    expect(getAccountListItemTexts(renderer).join('\n')).toContain('accounts.health_reauth');
+  });
+
+  it('limits full account-history loading to two concurrent batches', async () => {
+    mocks.files = Array.from({ length: 601 }, (_, index) =>
+      makeCodexFile(
+        `credential-${String(index + 1).padStart(3, '0')}.json`,
+        `auth-${index + 1}`,
+        `account-${index + 1}@example.com`
+      )
+    );
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const batchResponses = Array.from({ length: 4 }, () =>
+      createDeferred<AccountHistoryResponseForTest>()
+    );
+    let nextBatchIndex = 0;
+    let activeRequests = 0;
+    let peakActiveRequests = 0;
+    mocks.getAccountHistory.mockImplementation(() => {
+      const batchIndex = nextBatchIndex;
+      nextBatchIndex += 1;
+      activeRequests += 1;
+      peakActiveRequests = Math.max(peakActiveRequests, activeRequests);
+      return batchResponses[batchIndex].promise.finally(() => {
+        activeRequests -= 1;
+      });
+    });
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(2);
+    expect(peakActiveRequests).toBe(2);
+
+    await act(async () => {
+      batchResponses[0].resolve(makeAccountHistoryResponse([]));
+      batchResponses[1].resolve(makeAccountHistoryResponse([]));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(4);
+    expect(peakActiveRequests).toBe(2);
+
+    await act(async () => {
+      batchResponses[2].resolve(makeAccountHistoryResponse([]));
+      batchResponses[3].resolve(makeAccountHistoryResponse([]));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    const requests = mocks.getAccountHistory.mock.calls.map(
+      (call) => call[2] as AccountHistoryRequestForTest
+    );
+    expect(requests.map((request) => request.accounts.length)).toEqual([200, 200, 200, 1]);
+    expect(activeRequests).toBe(0);
+    expect(peakActiveRequests).toBe(2);
   });
 
   it('offers and applies the unknown plan filter', async () => {
@@ -2215,6 +3642,14 @@ describe('AccountsPage replacement flows', () => {
     });
   });
 
+  it('keeps batch weight editing visible in Accounts selection mode', async () => {
+    mocks.selectedFiles = new Set(['codex.json\u0000auth-1']);
+    mocks.selectionCount = 1;
+    const renderer = await renderAccountsPage();
+
+    expect(findButtonByText(renderer, 'auth_files.batch_weight_button').props.disabled).toBe(false);
+  });
+
   it('disables batch delete for partial shared auth-file selections', async () => {
     mocks.files = [
       makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
@@ -2303,6 +3738,31 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.showModels).toHaveBeenCalledWith(mocks.files[0]);
   });
 
+  it('opens the configuration tab from the row settings action', async () => {
+    const rowKey = getAuthFileSelectionKey(mocks.files[0]);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        renderer,
+        rowKey,
+        'accounts.detail_tab_config'
+      ).props.onClick();
+      await Promise.resolve();
+    });
+
+    expect(findHostButtonByText(renderer, 'accounts.detail_tab_config').props['aria-selected']).toBe(
+      true
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith(
+      {
+        pathname: '/accounts',
+        search: '?account=codex.json%00auth-1&tab=config',
+      },
+      { replace: true }
+    );
+  });
+
   it('falls the removed quota workspace back to the credential list', async () => {
     mocks.location = { pathname: '/accounts', search: '?view=quota' };
 
@@ -2322,7 +3782,7 @@ describe('AccountsPage replacement flows', () => {
     );
   });
 
-  it('marks the last local inspection as conflicting when a newer request succeeds', async () => {
+  it('uses a newer successful request instead of a stale local inspection conclusion', async () => {
     mocks.location = { pathname: '/accounts', search: '' };
     mocks.panelFeatureAvailability = {
       checking: false,
@@ -2345,6 +3805,26 @@ describe('AccountsPage replacement flows', () => {
           },
         };
       }
+    );
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: 'codex.json\u0000auth-1',
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 1,
+          success_calls: 1,
+          failure_calls: 0,
+          total_tokens: 10,
+          total_cost: 0.01,
+          success_rate: 1,
+          first_seen_ms: 9_000,
+          last_seen_ms: 9_000,
+          latest_request: { timestamp_ms: 9_000, failed: false },
+          recent_requests: [{ timestamp_ms: 9_000, failed: false }],
+          sync_status: 'ready',
+        },
+      ])
     );
     mocks.localInspection = {
       savedAt: 300,
@@ -2401,6 +3881,12 @@ describe('AccountsPage replacement flows', () => {
     const renderer = await renderAccountsPage();
     await flushPromises();
 
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
     await act(async () => {
       findDetailButtonByName(renderer, 'codex.json').props.onClick();
     });
@@ -2411,12 +3897,299 @@ describe('AccountsPage replacement flows', () => {
     });
 
     expect(
-      renderer.root.findByProps({ 'data-diagnostic-evidence-status': 'conflict' })
+      renderer.root.findByProps({ 'data-diagnostic-evidence-status': 'current' })
     ).toBeDefined();
-    expect(treeText(renderer)).toContain('accounts.detail_diagnostic_reinspect');
+    expect(treeText(renderer)).toContain('accounts.recommend_normal');
+    expect(treeText(renderer)).toContain('accounts.latest_request_time_title');
+    expect(treeText(renderer)).not.toContain('accounts.detail_diagnostic_reinspect');
     expect(treeText(renderer)).toContain('expired token');
     expect(treeText(renderer)).toContain('accounts.action_reauth');
     expect(treeText(renderer)).toContain('accounts.inspection_source_local');
+  });
+
+  it('does not resurrect an already executed reauth inspection in account status', async () => {
+    mocks.localInspection = {
+      savedAt: 300,
+      logs: [],
+      logsCollapsed: true,
+      actionFilter: 'all',
+      connectionFingerprint: 'http://manager.local:18317:manager-key',
+      result: {
+        settings: {},
+        files: mocks.files,
+        startedAt: 100,
+        finishedAt: 200,
+        summary: {
+          totalFiles: 1,
+          probeSetCount: 1,
+          sampledCount: 1,
+          disabledCount: 0,
+          enabledCount: 0,
+          deleteCount: 0,
+          disableCount: 0,
+          enableCount: 0,
+          reauthCount: 1,
+          keepCount: 0,
+          usedPercentThreshold: 100,
+          sampled: false,
+          plannedActionPreview: [],
+        },
+        results: [
+          {
+            key: 'codex.json\u0000auth-1',
+            fileName: 'codex.json',
+            displayAccount: 'codex@example.com',
+            authIndex: 'auth-1',
+            accountId: null,
+            provider: 'codex',
+            disabled: false,
+            autoRecoverOwned: false,
+            status: 'error',
+            state: 'error',
+            raw: mocks.files[0],
+            action: 'reauth',
+            actionReason: 'expired token',
+            statusCode: 401,
+            usedPercent: null,
+            isQuota: false,
+            autoRecoverEligible: false,
+            error: 'expired token',
+            actionHandled: true,
+          },
+        ],
+      },
+    };
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
+
+    const operationalSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.operational_filter');
+    if (!operationalSelect) throw new Error('Accounts operational filter not found');
+    await act(async () => {
+      operationalSelect.props.onChange('reauth');
+      await Promise.resolve();
+    });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('keeps an OAuth-completed inspection suppressed after Accounts remounts', async () => {
+    const windowEvents = new EventTarget();
+    const localStorageValues = new Map<string, string>();
+    const sessionStorageValues = new Map<string, string>();
+    const createStorage = (values: Map<string, string>) => ({
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+    vi.stubGlobal('window', {
+      location: { hash: '' },
+      history: { state: null },
+      localStorage: createStorage(localStorageValues),
+      sessionStorage: createStorage(sessionStorageValues),
+      addEventListener: windowEvents.addEventListener.bind(windowEvents),
+      removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+    });
+
+    const xaiFile = {
+      name: 'xai.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-auth-1',
+      account: 'xai@example.com',
+      priority: 0,
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [xaiFile];
+    mocks.localInspection = {
+      savedAt: 300,
+      logs: [],
+      logsCollapsed: true,
+      actionFilter: 'all',
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      result: {
+        settings: {},
+        files: [xaiFile],
+        startedAt: 100,
+        finishedAt: 200,
+        summary: {
+          totalFiles: 1,
+          probeSetCount: 1,
+          sampledCount: 1,
+          disabledCount: 0,
+          enabledCount: 0,
+          deleteCount: 0,
+          disableCount: 0,
+          enableCount: 0,
+          reauthCount: 1,
+          keepCount: 0,
+          usedPercentThreshold: 100,
+          sampled: false,
+          plannedActionPreview: [],
+        },
+        results: [
+          {
+            key: 'xai.json\u0000xai-auth-1',
+            fileName: 'xai.json',
+            displayAccount: 'xai@example.com',
+            authIndex: null,
+            accountId: null,
+            provider: 'xai',
+            disabled: false,
+            autoRecoverOwned: false,
+            status: 'error',
+            state: 'error',
+            raw: xaiFile,
+            action: 'reauth',
+            actionReason: 'expired token',
+            statusCode: 401,
+            usedPercent: null,
+            isQuota: false,
+            autoRecoverEligible: false,
+            error: 'expired token',
+            actionHandled: false,
+          },
+        ],
+      },
+    };
+
+    const firstRenderer = await renderAccountsPage();
+    await flushPromises();
+    const selectionKey = 'xai.json\u0000xai-auth-1';
+    expect(readText(findAccountCardByKey(firstRenderer, selectionKey))).toContain(
+      'accounts.health_reauth'
+    );
+
+    await act(async () => {
+      findAccountCardButtonByAriaLabel(
+        firstRenderer,
+        selectionKey,
+        'accounts.recommend_action_reauth'
+      ).props.onClick();
+      await Promise.resolve();
+    });
+
+    const navigateCalls = mocks.navigate.mock.calls;
+    const oauthPath = navigateCalls[navigateCalls.length - 1]?.[0];
+    expect(oauthPath).toEqual(
+      expect.stringMatching(/^\/oauth\?accountReauth=.+#oauth-provider-xai$/)
+    );
+    const sessionId =
+      typeof oauthPath === 'string'
+        ? readAccountOAuthReauthSessionId(new URL(oauthPath, 'http://localhost').search)
+        : null;
+    expect(sessionId).not.toBeNull();
+    expect(
+      completeAccountOAuthReauthSession({
+        connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+        oauthProvider: 'xai',
+        sessionId,
+        completedAtMs: 400,
+      })
+    ).toBe(true);
+
+    await act(async () => {
+      firstRenderer.unmount();
+    });
+    mountedAccountsRenderers.delete(firstRenderer);
+
+    const secondRenderer = await renderAccountsPage();
+    await flushPromises();
+    const remountedCardText = readText(findAccountCardByKey(secondRenderer, selectionKey));
+    expect(remountedCardText).not.toContain('accounts.health_reauth');
+    expect(remountedCardText).not.toContain('expired token');
+  });
+
+  it('uses a newer healthy inspection to retire an older authentication Header', async () => {
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: 300,
+      from_ms: 0,
+      to_ms: 300,
+      items: [
+        {
+          event_hash: 'older-auth-header',
+          timestamp_ms: 100,
+          auth_file_snapshot: 'codex.json',
+          auth_index: 'auth-1',
+          account_snapshot: 'codex@example.com',
+          auth_provider_snapshot: 'codex',
+          header_error_kind: 'auth',
+          header_error_code: 'invalid_api_key',
+        },
+      ],
+    });
+    mocks.localInspection = {
+      savedAt: 300,
+      logs: [],
+      logsCollapsed: true,
+      actionFilter: 'all',
+      connectionFingerprint: 'http://manager.local:18317:manager-key',
+      result: {
+        settings: {},
+        files: mocks.files,
+        startedAt: 150,
+        finishedAt: 200,
+        summary: {
+          totalFiles: 1,
+          probeSetCount: 1,
+          sampledCount: 1,
+          disabledCount: 0,
+          enabledCount: 0,
+          deleteCount: 0,
+          disableCount: 0,
+          enableCount: 0,
+          reauthCount: 0,
+          keepCount: 1,
+          usedPercentThreshold: 100,
+          sampled: false,
+          plannedActionPreview: [],
+        },
+        results: [
+          {
+            key: 'codex.json\u0000auth-1',
+            fileName: 'codex.json',
+            displayAccount: 'codex@example.com',
+            authIndex: 'auth-1',
+            accountId: null,
+            provider: 'codex',
+            disabled: false,
+            autoRecoverOwned: false,
+            status: 'ok',
+            state: 'ok',
+            raw: mocks.files[0],
+            action: 'keep',
+            actionReason: 'healthy',
+            statusCode: 200,
+            usedPercent: 20,
+            isQuota: false,
+            autoRecoverEligible: false,
+            error: '',
+            errorKind: 'inference_healthy',
+            actionHandled: false,
+          },
+        ],
+      },
+    };
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const accountCard = renderer.root.findByProps({
+      'data-account-card': 'codex.json\u0000auth-1',
+    });
+    expect(readText(accountCard)).toContain('accounts.health_available');
+    expect(readText(accountCard)).not.toContain('accounts.health_reauth');
   });
 
   it('translates inspection reason keys before rendering them', async () => {
@@ -2550,13 +4323,6 @@ describe('AccountsPage replacement flows', () => {
 
     const renderer = await renderAccountsPage();
     await flushPromises();
-    expect(mocks.getCodexInspectionRun).not.toHaveBeenCalled();
-
-    await act(async () => {
-      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
     expect(mocks.getCodexInspectionRun).toHaveBeenCalledTimes(1);
 
     mocks.apiBase = 'http://cpa-b.local:8317';
@@ -2583,6 +4349,2166 @@ describe('AccountsPage replacement flows', () => {
 
     expect(treeText(renderer)).toContain('new-connection@example.com reason');
     expect(treeText(renderer)).not.toContain('old-connection@example.com reason');
+  });
+
+  it('reconciles a healthy inspection over older quota, cooldown, and action evidence', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const inspectionAtMs = 1_700_000_010_000;
+    Object.assign(file, {
+      disabled: true,
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+      updatedAtMs: inspectionAtMs - 1_000,
+    });
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error',
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 100,
+          resetLabel: 'old reset',
+        },
+      ],
+      error: 'HTTP 401',
+      errorStatus: 401,
+      failedAtMs: 1_000,
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      {
+        authFileName: file.name,
+        authIndex: String(file.authIndex ?? ''),
+        disabledAtMs: 1_000,
+        recoverAtMs: 10_000,
+      },
+    ]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [
+        {
+          id: 1,
+          actionType: 'disable',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'old credential evidence',
+          firstSeenAtMs: 1_000,
+          lastSeenAtMs: 1_000,
+          hitCount: 1,
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    const snapshot = makeInspectionSnapshot(
+      [file],
+      [
+        {
+          action: 'enable',
+          actionStatus: 'success',
+          executedAction: 'enable',
+          disabled: false,
+          statusCode: 200,
+          usedPercent: 30,
+          quotaWindows: [
+            {
+              id: 'weekly',
+              labelKey: 'codex_quota.secondary_window',
+              usedPercent: 30,
+              resetLabel: 'next week',
+              resetAtMs: 20_000,
+              resetAccuracy: 'exact',
+              limitWindowSeconds: 604_800,
+            },
+          ],
+        },
+      ],
+      inspectionAtMs
+    );
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(snapshot);
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('accounts.health_available');
+    expect(cardText).not.toContain('accounts.health_reauth');
+    expect(cardText).not.toContain('accounts.health_disabled');
+    expect(cardText).not.toContain('accounts.health_weekly_exhausted');
+
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(0);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.windows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          usedPercent: 30,
+          resetAtMs: 20_000,
+          resetAccuracy: 'exact',
+        }),
+      ])
+    );
+  });
+
+  it('lets an explicitly empty server inspection inventory clear an older exhausted state', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const inspectionAtMs = 1_700_000_010_000;
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 100,
+          resetLabel: 'old reset',
+        },
+      ],
+      quotaInventoryObserved: true,
+      fetchedAtMs: inspectionAtMs - 1_000,
+    });
+
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              statusCode: 200,
+              usedPercent: undefined,
+              quotaWindows: [],
+              quotaInventoryObserved: true,
+            },
+          ],
+          inspectionAtMs
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('accounts.health_available');
+    expect(cardText).not.toContain('accounts.health_exhausted');
+    expect(cardText).not.toContain('accounts.health_weekly_exhausted');
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.windows).toEqual([]);
+  });
+
+  it('retains an older permission review candidate after newer healthy inspection evidence', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [
+        {
+          id: 2,
+          actionType: 'review',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'permission review required',
+          firstSeenAtMs: 1_000,
+          lastSeenAtMs: 1_000,
+          hitCount: 1,
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot([file], [{ action: 'keep', statusCode: 200 }], 2_000)
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_available');
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(1);
+    expect(treeText(renderer)).toContain('accounts.detail_overview_attention_candidates');
+  });
+
+  it('keeps quota actions when a newer inspection only supersedes authentication actions', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=diagnostics`,
+    };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [
+        {
+          id: 3,
+          actionType: 'reauth',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'old authentication evidence',
+          firstSeenAtMs: 1_000,
+          lastSeenAtMs: 1_000,
+          hitCount: 1,
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+        },
+        {
+          id: 4,
+          actionType: 'disable',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'independent quota evidence',
+          firstSeenAtMs: 1_000,
+          lastSeenAtMs: 1_000,
+          hitCount: 1,
+          createdAtMs: 1_000,
+          updatedAtMs: 1_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_diagnostics').props.onClick();
+    });
+
+    expect(
+      renderer.root.findByType(AccountDiagnosticsTab).props.detailView.strategy.actionCandidates
+    ).toEqual([expect.objectContaining({ id: 4, actionType: 'disable' })]);
+  });
+
+  it('reconciles healthy Header evidence over older inspection and operational evidence', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const observedAtMs = Date.now();
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: observedAtMs,
+      from_ms: observedAtMs - 1_000,
+      to_ms: observedAtMs,
+      items: [
+        {
+          event_hash: 'healthy-header-evidence',
+          timestamp_ms: observedAtMs,
+          auth_file_snapshot: file.name,
+          auth_index: String(file.authIndex ?? ''),
+          account_snapshot: String(file.account ?? ''),
+          auth_provider_snapshot: 'codex',
+          header_quota_used_percent: 30,
+          header_quota_recover_at_ms: observedAtMs + 5 * 60 * 60 * 1_000,
+        },
+      ],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      {
+        authFileName: file.name,
+        authIndex: String(file.authIndex ?? ''),
+        disabledAtMs: observedAtMs - 2_000,
+        recoverAtMs: observedAtMs + 10_000,
+      },
+    ]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [
+        {
+          id: 1,
+          actionType: 'disable',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'old credential evidence',
+          firstSeenAtMs: observedAtMs - 2_000,
+          lastSeenAtMs: observedAtMs - 2_000,
+          hitCount: 1,
+          createdAtMs: observedAtMs - 2_000,
+          updatedAtMs: observedAtMs - 2_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          observedAtMs - 1_000
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('accounts.health_available');
+    expect(cardText).not.toContain('accounts.health_reauth');
+    expect(cardText).not.toContain('accounts.health_weekly_exhausted');
+
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(0);
+    expect(treeText(renderer)).not.toContain('accounts.detail_overview_basis_cooldown');
+  });
+
+  it.each([
+    ['plan-only', { header_quota_plan_type: 'plus' }],
+    [
+      'generic upstream error',
+      { header_error_kind: 'upstream_error', header_error_code: 'bad_gateway' },
+    ],
+  ])(
+    'does not let newer %s Header metadata clear an older reauth result',
+    async (_label, metadata) => {
+      const file = mocks.files[0];
+      const selectionKey = getAuthFileSelectionKey(file);
+      const observedAtMs = Date.now();
+      mocks.panelFeatureAvailability = {
+        checking: false,
+        managerServiceBase: 'http://manager.local:18317',
+        requestMonitoringAvailable: true,
+        serverCodexInspectionAvailable: true,
+      };
+      mocks.getHeaderSnapshots.mockResolvedValue({
+        generated_at_ms: observedAtMs,
+        from_ms: observedAtMs - 1_000,
+        to_ms: observedAtMs,
+        items: [
+          {
+            event_hash: `weak-header-${_label}`,
+            timestamp_ms: observedAtMs,
+            auth_file_snapshot: file.name,
+            auth_index: String(file.authIndex ?? ''),
+            account_snapshot: String(file.account ?? ''),
+            auth_provider_snapshot: 'codex',
+            ...metadata,
+          },
+        ],
+      });
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      await act(async () => {
+        findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+      });
+      await act(async () => {
+        mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+          makeInspectionSnapshot(
+            [file],
+            [
+              {
+                action: 'reauth',
+                actionStatus: 'pending',
+                statusCode: 401,
+                usedPercent: undefined,
+              },
+            ],
+            observedAtMs - 1_000
+          )
+        );
+        await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+      });
+      await act(async () => {
+        findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+      });
+
+      const cardText = getAccountCardText(renderer, selectionKey);
+      expect(cardText).toContain('accounts.health_reauth');
+      expect(cardText).not.toContain('accounts.health_available');
+    }
+  );
+
+  it('invalidates only the reauthorized shared credential and ignores its late quota response', async () => {
+    const first = {
+      ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    mocks.files = [first, second];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      ...buildCredentialScopedQuotaRecord(first, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(second, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+    };
+    const quotaResult = createDeferred<CodexQuotaData>();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
+    const renderer = await renderAccountsPage();
+
+    let refreshPromise!: Promise<void>;
+    await act(async () => {
+      refreshPromise = findAccountCardButtonByAriaLabel(
+        renderer,
+        getAuthFileSelectionKey(first),
+        'accounts.refresh_quota'
+      ).props.onClick();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [
+        { ...first, last_refresh: 3_000, modified: 3_100, status: 'ready', statusMessage: '' },
+        second,
+      ] as AuthFileItem[];
+      return mocks.files;
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second],
+          [
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401, usedPercent: undefined },
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401, usedPercent: undefined },
+          ],
+          2_000
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+        account: 'first@example.com',
+        fileName: first.name,
+        provider: 'codex',
+        authIndex: first.authIndex,
+        accountSnapshot: 'first@example.com',
+      });
+    });
+    const setterCallsAfterInvalidation = mocks.quotaState.setCodexQuota.mock.calls.length;
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(first));
+    expect(mocks.quotaState.codexQuota).toHaveProperty(getQuotaCredentialStoreKey(second));
+
+    quotaResult.resolve({
+      ...makeCodexQuotaData(),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 25,
+          resetLabel: 'later',
+          resetAtMs: 30_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    });
+    await act(async () => {
+      await refreshPromise;
+    });
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(setterCallsAfterInvalidation);
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).not.toContain(
+      'accounts.health_reauth'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('invalidates only the refreshed credential inside a shared physical file', async () => {
+    const first = makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com');
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const dormant = makeCodexFile('shared-codex.json', 'auth-dormant', 'dormant@example.com');
+    mocks.files = [first, second];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      ...buildCredentialScopedQuotaRecord(first, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(second, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(dormant, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+    };
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second],
+          [
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'credential-refreshed',
+        selectionKeys: [getAuthFileSelectionKey(first)],
+      });
+    });
+
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(first));
+    expect(mocks.quotaState.codexQuota).toHaveProperty(getQuotaCredentialStoreKey(second));
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(dormant));
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).not.toContain(
+      'accounts.health_reauth'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('does not let a shared sibling timestamp suppress later operational evidence', async () => {
+    const first = makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com');
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const firstSelectionKey = getAuthFileSelectionKey(first);
+    mocks.files = [first, second];
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(firstSelectionKey)}&tab=overview`,
+    };
+    const makeCandidate = (
+      id: number,
+      file: AuthFileItem,
+      observedAtMs: number,
+      reason: string
+    ) => ({
+      id,
+      actionType: 'reauth',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      reason,
+      firstSeenAtMs: observedAtMs,
+      lastSeenAtMs: observedAtMs,
+      hitCount: 1,
+      createdAtMs: observedAtMs,
+      updatedAtMs: observedAtMs,
+    });
+    const makeCooldown = (file: AuthFileItem, observedAtMs: number) => ({
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      disabledAtMs: observedAtMs,
+      recoverAtMs: observedAtMs + 10_000,
+    });
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [
+        makeCandidate(1, first, 1_000, 'first old evidence'),
+        makeCandidate(2, second, 9_000, 'second newer evidence'),
+      ],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      makeCooldown(first, 1_000),
+      makeCooldown(second, 9_000),
+    ]);
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'credential-refreshed',
+        selectionKeys: [firstSelectionKey],
+      });
+    });
+    const newFirstCandidate = makeCandidate(3, first, 5_000, 'first new evidence');
+    const newFirstCooldown = makeCooldown(first, 5_000);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [newFirstCandidate, makeCandidate(2, second, 9_000, 'second newer evidence')],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      newFirstCooldown,
+      makeCooldown(second, 9_000),
+    ]);
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.cooldown).toEqual(
+      newFirstCooldown
+    );
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_diagnostics').props.onClick();
+    });
+    expect(
+      renderer.root.findByType(AccountDiagnosticsTab).props.detailView.strategy.actionCandidates
+    ).toEqual([
+      expect.objectContaining({ id: newFirstCandidate.id, reason: 'first new evidence' }),
+    ]);
+  });
+
+  it('ignores in-flight operational evidence after a credential is refreshed', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=overview`,
+    };
+    const candidatesRequest = createDeferred<AccountActionCandidatesResponse>();
+    const cooldownsRequest = createDeferred<QuotaCooldownInfo[]>();
+    mocks.listAccountActionCandidates.mockReturnValue(candidatesRequest.promise);
+    mocks.getActiveQuotaCooldowns.mockReturnValue(cooldownsRequest.promise);
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'credential-refreshed',
+        selectionKeys: [selectionKey],
+      });
+    });
+    await act(async () => {
+      candidatesRequest.resolve({
+        pendingCount: 1,
+        items: [
+          {
+            id: 1,
+            actionType: 'reauth',
+            status: 'pending',
+            provider: 'codex',
+            authFileName: file.name,
+            authIndex: String(file.authIndex ?? ''),
+            reason: 'stale in-flight evidence',
+            firstSeenAtMs: 1_000,
+            lastSeenAtMs: 1_000,
+            hitCount: 1,
+            createdAtMs: 1_000,
+            updatedAtMs: 1_000,
+          },
+        ],
+      });
+      cooldownsRequest.resolve([
+        {
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          disabledAtMs: 1_000,
+          recoverAtMs: 11_000,
+        },
+      ]);
+      await Promise.all([candidatesRequest.promise, cooldownsRequest.promise]);
+    });
+    await flushPromises();
+
+    const detailView = renderer.root.findByType(AccountOverviewTab).props.detailView;
+    expect(detailView.quota.cooldown).toBeNull();
+    expect(detailView.strategy.actionCandidates).toEqual([]);
+  });
+
+  it('treats the first post-mutation operational reload as a stale baseline', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=overview`,
+    };
+    const candidatesRequest = createDeferred<AccountActionCandidatesResponse>();
+    const cooldownsRequest = createDeferred<QuotaCooldownInfo[]>();
+    mocks.listAccountActionCandidates.mockReturnValueOnce(candidatesRequest.promise);
+    mocks.getActiveQuotaCooldowns.mockReturnValueOnce(cooldownsRequest.promise);
+    const makeCandidate = (id: number, observedAtMs: number) => ({
+      id,
+      actionType: 'reauth',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      reason: `candidate-${id}`,
+      firstSeenAtMs: observedAtMs,
+      lastSeenAtMs: observedAtMs,
+      hitCount: 1,
+      createdAtMs: observedAtMs,
+      updatedAtMs: observedAtMs,
+    });
+    const makeCooldown = (observedAtMs: number) => ({
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      disabledAtMs: observedAtMs,
+      recoverAtMs: observedAtMs + 10_000,
+    });
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'credential-refreshed',
+        selectionKeys: [selectionKey],
+      });
+    });
+    await act(async () => {
+      candidatesRequest.resolve({ pendingCount: 1, items: [makeCandidate(1, 2_000)] });
+      cooldownsRequest.resolve([makeCooldown(2_000)]);
+      await Promise.all([candidatesRequest.promise, cooldownsRequest.promise]);
+    });
+    await flushPromises();
+
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [makeCandidate(1, 2_000)],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([makeCooldown(2_000)]);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountOverviewTab).props.detailView.quota.cooldown).toBeNull();
+    expect(
+      renderer.root.findByType(AccountOverviewTab).props.detailView.strategy.actionCandidates
+    ).toEqual([]);
+
+    const nextCandidate = makeCandidate(2, 3_000);
+    const nextCooldown = makeCooldown(3_000);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [nextCandidate],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([nextCooldown]);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(renderer.root.findByType(AccountOverviewTab).props.detailView.quota.cooldown).toEqual(
+      nextCooldown
+    );
+    expect(
+      renderer.root.findByType(AccountOverviewTab).props.detailView.strategy.actionCandidates
+    ).toEqual([expect.objectContaining({ id: nextCandidate.id })]);
+  });
+
+  it('does not let another credential future-date a pending operational baseline', async () => {
+    const first = makeCodexFile('first.json', 'auth-1', 'first@example.com');
+    const second = makeCodexFile('second.json', 'auth-2', 'second@example.com');
+    const firstSelectionKey = getAuthFileSelectionKey(first);
+    mocks.files = [first, second];
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(firstSelectionKey)}&tab=overview`,
+    };
+    const candidatesRequest = createDeferred<AccountActionCandidatesResponse>();
+    const cooldownsRequest = createDeferred<QuotaCooldownInfo[]>();
+    mocks.listAccountActionCandidates.mockReturnValueOnce(candidatesRequest.promise);
+    mocks.getActiveQuotaCooldowns.mockReturnValueOnce(cooldownsRequest.promise);
+    const makeCandidate = (id: number, file: AuthFileItem, observedAtMs: number) => ({
+      id,
+      actionType: 'reauth',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      reason: `candidate-${id}`,
+      firstSeenAtMs: observedAtMs,
+      lastSeenAtMs: observedAtMs,
+      hitCount: 1,
+      createdAtMs: observedAtMs,
+      updatedAtMs: observedAtMs,
+    });
+    const makeCooldown = (file: AuthFileItem, observedAtMs: number) => ({
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      disabledAtMs: observedAtMs,
+      recoverAtMs: observedAtMs + 10_000,
+    });
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'credential-refreshed',
+        selectionKeys: [firstSelectionKey],
+      });
+    });
+    await act(async () => {
+      candidatesRequest.resolve({
+        pendingCount: 2,
+        items: [makeCandidate(1, first, 2_000), makeCandidate(2, second, 9_000)],
+      });
+      cooldownsRequest.resolve([makeCooldown(first, 2_000), makeCooldown(second, 9_000)]);
+      await Promise.all([candidatesRequest.promise, cooldownsRequest.promise]);
+    });
+    await flushPromises();
+
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [makeCandidate(1, first, 2_000), makeCandidate(2, second, 9_000)],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      makeCooldown(first, 2_000),
+      makeCooldown(second, 9_000),
+    ]);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountOverviewTab).props.detailView.quota.cooldown).toBeNull();
+
+    const nextCandidate = makeCandidate(3, first, 3_000);
+    const nextCooldown = makeCooldown(first, 3_000);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [nextCandidate, makeCandidate(2, second, 9_000)],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([nextCooldown, makeCooldown(second, 9_000)]);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    const detailView = renderer.root.findByType(AccountOverviewTab).props.detailView;
+    expect(detailView.quota.cooldown).toEqual(nextCooldown);
+    expect(detailView.strategy.actionCandidates).toEqual([
+      expect.objectContaining({ id: nextCandidate.id }),
+    ]);
+  });
+
+  it('keeps status-change inspection boundaries scoped to each selected credential', async () => {
+    const first = makeCodexFile('first.json', 'auth-1', 'first@example.com');
+    const second = makeCodexFile('second.json', 'auth-2', 'second@example.com');
+    const firstSelectionKey = getAuthFileSelectionKey(first);
+    const secondSelectionKey = getAuthFileSelectionKey(second);
+    mocks.files = [first, second];
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+              createdAtMs: 1_000,
+            },
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+              createdAtMs: 9_000,
+            },
+          ],
+          9_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'status-changed',
+        selectionKeys: [firstSelectionKey, secondSelectionKey],
+      });
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+              createdAtMs: 5_000,
+            },
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+              createdAtMs: 9_000,
+            },
+          ],
+          10_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(getAccountCardText(renderer, firstSelectionKey)).toContain('accounts.health_reauth');
+    expect(getAccountCardText(renderer, secondSelectionKey)).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('supersedes only old status evidence while preserving shared credential quota state', async () => {
+    const first = {
+      ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      statusMessage: 'token_expired',
+    } as AuthFileItem;
+    const second = {
+      ...makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com'),
+      statusMessage: 'token_expired',
+    } as AuthFileItem;
+    mocks.files = [first, second];
+    mocks.quotaState.codexQuota = {
+      ...buildCredentialScopedQuotaRecord(first, {
+        status: 'success',
+        windows: [
+          {
+            id: 'weekly',
+            label: 'Weekly',
+            usedPercent: 30,
+            resetLabel: 'later',
+            observedAtMs: 1_500,
+          },
+        ],
+        quotaInventoryObserved: true,
+        fetchedAtMs: 1_500,
+      }),
+      ...buildCredentialScopedQuotaRecord(second, {
+        status: 'success',
+        windows: [
+          {
+            id: 'weekly',
+            label: 'Weekly',
+            usedPercent: 30,
+            resetLabel: 'later',
+            observedAtMs: 1_500,
+          },
+        ],
+        quotaInventoryObserved: true,
+        fetchedAtMs: 1_500,
+      }),
+    };
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second],
+          [
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).toContain(
+      'accounts.health_reauth'
+    );
+
+    const quotaSetterCalls = mocks.quotaState.setCodexQuota.mock.calls.length;
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'status-changed',
+        selectionKeys: [getAuthFileSelectionKey(first)],
+      });
+    });
+
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(quotaSetterCalls);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(getQuotaCredentialStoreKey(first));
+    expect(mocks.quotaState.codexQuota).toHaveProperty(getQuotaCredentialStoreKey(second));
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).toContain(
+      'accounts.health_available'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).not.toContain(
+      'token_expired'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('allows the same raw authentication error to reappear after a clear state is observed', async () => {
+    const file = {
+      ...makeCodexFile('raw-status-cycle.json', 'auth-cycle', 'cycle@example.com'),
+      statusMessage: 'token_expired',
+    } as AuthFileItem;
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    const renderer = await renderAccountsPage();
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_reauth');
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'status-changed',
+        selectionKeys: [selectionKey],
+      });
+    });
+    expect(getAccountCardText(renderer, selectionKey)).not.toContain('accounts.health_reauth');
+
+    mocks.files = [{ ...file, statusMessage: '' }];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    mocks.files = [{ ...file, statusMessage: 'token_expired' }];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_reauth');
+  });
+
+  it('invalidates every identity in a replaced file and ignores its late quota response', async () => {
+    const first = makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com');
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const other = makeCodexFile('other-codex.json', 'auth-3', 'other@example.com');
+    const staleServerEvidenceAtMs = Date.now() + 5 * 60_000;
+    mocks.files = [first, second, other];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      ...buildCredentialScopedQuotaRecord(first, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(second, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(other, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+    };
+    const quotaResult = createDeferred<CodexQuotaData>();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockImplementation(() => quotaResult.promise);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first, second, other],
+          [
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+            { action: 'reauth', actionStatus: 'pending', statusCode: 401 },
+          ],
+          staleServerEvidenceAtMs
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    let refreshPromise!: Promise<void>;
+    await act(async () => {
+      refreshPromise = findAccountCardButtonByAriaLabel(
+        renderer,
+        getAuthFileSelectionKey(first),
+        'accounts.refresh_quota'
+      ).props.onClick();
+      await Promise.resolve();
+    });
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [' shared-codex.json ', 'shared-codex.json'],
+      });
+    });
+
+    const setterCallsAfterInvalidation = mocks.quotaState.setCodexQuota.mock.calls.length;
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(first));
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(second));
+    expect(mocks.quotaState.codexQuota).toHaveProperty(getQuotaCredentialStoreKey(other));
+
+    quotaResult.resolve({
+      ...makeCodexQuotaData(),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 25,
+          resetLabel: 'later',
+          resetAtMs: 30_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    });
+    await act(async () => refreshPromise);
+
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(setterCallsAfterInvalidation);
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(first))).not.toContain(
+      'accounts.health_reauth'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).not.toContain(
+      'accounts.health_reauth'
+    );
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(other))).toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it.each([
+    [
+      'physical replacement',
+      { kind: 'source-files-changed', fileNames: ['fallback.json'] } as AuthFilesCredentialMutation,
+    ],
+    [
+      'credential refresh',
+      {
+        kind: 'credential-refreshed',
+        selectionKeys: ['fallback.json\u0000auth-fallback'],
+      } as AuthFilesCredentialMutation,
+    ],
+  ])('invalidates filename-only inspection evidence after %s', async (_label, mutation) => {
+    const file = makeCodexFile('fallback.json', 'auth-fallback', 'fallback@example.com');
+    mocks.files = [file];
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              authIndex: undefined,
+              accountSnapshot: undefined,
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_reauth'
+    );
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.(mutation);
+    });
+
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('invalidates future-dated Header evidence when a physical file is replaced', async () => {
+    const file = makeCodexFile('header-replaced.json', 'auth-header', 'header@example.com');
+    const staleHeaderAtMs = Date.now() + 5 * 60_000;
+    mocks.files = [file];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getHeaderSnapshots.mockResolvedValue({
+      generated_at_ms: staleHeaderAtMs,
+      from_ms: staleHeaderAtMs - 1_000,
+      to_ms: staleHeaderAtMs,
+      items: [
+        {
+          event_hash: 'future-stale-header',
+          timestamp_ms: staleHeaderAtMs,
+          auth_file_snapshot: file.name,
+          auth_index: String(file.authIndex ?? ''),
+          account_snapshot: String(file.account ?? ''),
+          auth_provider_snapshot: 'codex',
+          header_quota_used_percent: 30,
+          header_quota_recover_at_ms: staleHeaderAtMs + 5 * 60 * 60_000,
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    expect(treeText(renderer)).toContain('accounts.quota_source_observed_header');
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [file.name],
+      });
+    });
+
+    expect(treeText(renderer)).not.toContain('accounts.quota_source_observed_header');
+    expect(treeText(renderer)).toContain('accounts.quota_source_none');
+  });
+
+  it('captures the first Header response as a stale baseline when mutation happens before initial load', async () => {
+    const file = makeCodexFile('pending-header.json', 'auth-header', 'header@example.com');
+    const futureSibling = makeCodexFile('future-header.json', 'auth-future', 'future@example.com');
+    mocks.files = [file, futureSibling];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const makeHeaderResponse = (
+      timestampMs: number,
+      eventHash: string,
+      includeFutureSibling = false
+    ) => ({
+      generated_at_ms: timestampMs,
+      from_ms: Math.max(0, timestampMs - 1_000),
+      to_ms: timestampMs,
+      items: [
+        {
+          event_hash: eventHash,
+          timestamp_ms: timestampMs,
+          auth_file_snapshot: file.name,
+          auth_index: String(file.authIndex ?? ''),
+          account_snapshot: String(file.account ?? ''),
+          auth_provider_snapshot: 'codex',
+          header_quota_used_percent: 30,
+          header_quota_recover_at_ms: timestampMs + 5 * 60 * 60_000,
+        },
+        ...(includeFutureSibling
+          ? [
+              {
+                event_hash: 'future-sibling-header',
+                timestamp_ms: 9_000,
+                auth_file_snapshot: futureSibling.name,
+                auth_index: String(futureSibling.authIndex ?? ''),
+                account_snapshot: String(futureSibling.account ?? ''),
+                auth_provider_snapshot: 'codex',
+                header_quota_used_percent: 40,
+                header_quota_recover_at_ms: 19_000,
+              },
+            ]
+          : []),
+      ],
+    });
+    const initialHeaders = createDeferred<ReturnType<typeof makeHeaderResponse>>();
+    mocks.getHeaderSnapshots
+      .mockReturnValueOnce(initialHeaders.promise)
+      .mockResolvedValueOnce(makeHeaderResponse(2_000, 'stale-header', true))
+      .mockResolvedValue(makeHeaderResponse(3_000, 'new-header'));
+
+    const renderer = await renderAccountsPage();
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [file.name],
+      });
+    });
+    await act(async () => {
+      initialHeaders.resolve(makeHeaderResponse(2_000, 'ignored-in-flight-header'));
+      await initialHeaders.promise;
+    });
+    await flushPromises();
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    expect(treeText(renderer)).not.toContain('accounts.quota_source_observed_header');
+    expect(treeText(renderer)).toContain('accounts.quota_source_none');
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+    expect(treeText(renderer)).toContain('accounts.quota_source_observed_header');
+  });
+
+  it('captures the first inspection snapshot as a stale baseline when mutation happens before initial load', async () => {
+    const file = makeCodexFile('pending-inspection.json', 'auth-pending', 'pending@example.com');
+    const futureSibling = makeCodexFile(
+      'future-inspection.json',
+      'auth-future',
+      'future@example.com'
+    );
+    mocks.files = [file, futureSibling];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const oldRun: CodexInspectionRun = {
+      id: 20,
+      triggerType: 'manual',
+      status: 'completed',
+      startedAtMs: 1_000,
+      finishedAtMs: 2_000,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 0,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 0,
+      enableCount: 0,
+      reauthCount: 1,
+      keepCount: 0,
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    };
+    const newRun: CodexInspectionRun = {
+      ...oldRun,
+      id: 21,
+      startedAtMs: 3_000,
+      finishedAtMs: 4_000,
+      reauthCount: 0,
+      keepCount: 1,
+      createdAtMs: 3_000,
+      updatedAtMs: 4_000,
+    };
+    const buildDetail = (
+      run: CodexInspectionRun,
+      overrides: Partial<CodexInspectionResult>,
+      includeFutureSibling = false
+    ) => ({
+      run,
+      results: [
+        {
+          id: run.id,
+          runId: run.id,
+          accountKey: getAuthFileSelectionKey(file),
+          fileName: file.name,
+          displayAccount: String(file.account ?? file.name),
+          accountSnapshot: String(file.account ?? ''),
+          authIndex: String(file.authIndex ?? ''),
+          provider: 'codex',
+          disabled: false,
+          action: 'keep',
+          actionReason: '',
+          actionStatus: 'none',
+          statusCode: 200,
+          usedPercent: 30,
+          isQuota: false,
+          createdAtMs: run.finishedAtMs ?? run.updatedAtMs,
+          ...overrides,
+        },
+        ...(includeFutureSibling
+          ? [
+              {
+                id: run.id + 100,
+                runId: run.id,
+                accountKey: getAuthFileSelectionKey(futureSibling),
+                fileName: futureSibling.name,
+                displayAccount: String(futureSibling.account ?? futureSibling.name),
+                accountSnapshot: String(futureSibling.account ?? ''),
+                authIndex: String(futureSibling.authIndex ?? ''),
+                provider: 'codex',
+                disabled: false,
+                action: 'reauth',
+                actionReason: 'future sibling',
+                actionStatus: 'pending',
+                statusCode: 401,
+                isQuota: false,
+                createdAtMs: 9_000,
+              },
+            ]
+          : []),
+      ],
+    });
+    const initialRuns = createDeferred<{ items: CodexInspectionRun[] }>();
+    mocks.listCodexInspectionRuns
+      .mockReturnValueOnce(initialRuns.promise)
+      .mockResolvedValueOnce({ items: [oldRun] })
+      .mockResolvedValue({ items: [newRun, oldRun] });
+    mocks.getCodexInspectionRun
+      .mockResolvedValueOnce(
+        buildDetail(
+          oldRun,
+          {
+            action: 'reauth',
+            actionStatus: 'pending',
+            statusCode: 401,
+            usedPercent: undefined,
+          },
+          true
+        )
+      )
+      .mockResolvedValue(buildDetail(newRun, {}));
+
+    const renderer = await renderAccountsPage();
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [file.name],
+      });
+    });
+    await act(async () => {
+      initialRuns.resolve({ items: [oldRun] });
+      await initialRuns.promise;
+    });
+    await flushPromises();
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).not.toContain(
+      'accounts.health_reauth'
+    );
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_available'
+    );
+  });
+
+  it('accepts newer inspection quota evidence when the browser clock is ahead of the server', async () => {
+    const browserNow = Date.now();
+    const oldInspectionAtMs = browserNow - 10_000;
+    const newInspectionAtMs = browserNow - 5_000;
+    const file = makeCodexFile('clock-skew.json', 'auth-clock', 'clock@example.com');
+    mocks.files = [file];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const oldRun: CodexInspectionRun = {
+      id: 1,
+      triggerType: 'manual',
+      status: 'completed',
+      startedAtMs: oldInspectionAtMs - 1_000,
+      finishedAtMs: oldInspectionAtMs,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 0,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 0,
+      enableCount: 0,
+      reauthCount: 1,
+      keepCount: 0,
+      createdAtMs: oldInspectionAtMs - 1_000,
+      updatedAtMs: oldInspectionAtMs,
+    };
+    const newRun: CodexInspectionRun = {
+      ...oldRun,
+      id: 2,
+      startedAtMs: newInspectionAtMs - 1_000,
+      finishedAtMs: newInspectionAtMs,
+      reauthCount: 0,
+      keepCount: 1,
+      createdAtMs: newInspectionAtMs - 1_000,
+      updatedAtMs: newInspectionAtMs,
+    };
+    const buildResult = (
+      run: CodexInspectionRun,
+      overrides: Partial<CodexInspectionResult>
+    ): CodexInspectionResult => ({
+      id: run.id,
+      runId: run.id,
+      accountKey: getAuthFileSelectionKey(file),
+      fileName: file.name,
+      displayAccount: String(file.account ?? file.name),
+      accountSnapshot: String(file.account ?? ''),
+      authIndex: String(file.authIndex ?? ''),
+      provider: 'codex',
+      disabled: false,
+      action: 'keep',
+      actionReason: '',
+      actionStatus: 'none',
+      statusCode: 200,
+      usedPercent: 30,
+      isQuota: false,
+      createdAtMs: run.finishedAtMs ?? run.updatedAtMs,
+      ...overrides,
+    });
+    mocks.listCodexInspectionRuns
+      .mockResolvedValueOnce({ items: [oldRun] })
+      .mockResolvedValue({ items: [newRun, oldRun] });
+    mocks.getCodexInspectionRun
+      .mockResolvedValueOnce({
+        run: oldRun,
+        results: [
+          buildResult(oldRun, {
+            action: 'reauth',
+            actionStatus: 'pending',
+            statusCode: 401,
+            usedPercent: undefined,
+          }),
+        ],
+      })
+      .mockResolvedValue({ run: newRun, results: [buildResult(newRun, {})] });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_reauth'
+    );
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [file.name],
+      });
+    });
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(2);
+    expect(mocks.getCodexInspectionRun).toHaveBeenCalledTimes(2);
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_available'
+    );
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.windows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ usedPercent: 30 })])
+    );
+  });
+
+  it('does not reattach filename-only inspection evidence after reauth or capability rechecks', async () => {
+    const original = {
+      ...makeCodexFile('rotated-codex.json', 'auth-before-reauth', 'before@example.com'),
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const replacement = makeCodexFile(original.name, 'auth-after-reauth', 'after@example.com');
+    mocks.files = [original];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      ...buildCredentialScopedQuotaRecord(original, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+      ...buildCredentialScopedQuotaRecord(replacement, {
+        status: 'error',
+        windows: [],
+        error: 'HTTP 401',
+        errorStatus: 401,
+        failedAtMs: 1_000,
+      }),
+    };
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [
+        {
+          ...original,
+          last_refresh: 3_000,
+          modified: 3_100,
+          status: 'ready',
+          statusMessage: '',
+        },
+      ] as AuthFileItem[];
+      return mocks.files;
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [original],
+          [
+            {
+              authIndex: undefined,
+              accountSnapshot: undefined,
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(original))).toContain(
+      'accounts.health_reauth'
+    );
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+        account: 'before@example.com',
+        fileName: original.name,
+        provider: 'codex',
+        authIndex: original.authIndex,
+        accountSnapshot: 'before@example.com',
+      });
+    });
+
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(original));
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(getQuotaCredentialStoreKey(replacement));
+    mocks.files = [replacement];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    const cardText = getAccountCardText(renderer, getAuthFileSelectionKey(replacement));
+    expect(cardText).not.toContain('accounts.health_reauth');
+
+    mocks.panelFeatureAvailability = {
+      ...mocks.panelFeatureAvailability,
+      checking: true,
+    };
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    mocks.panelFeatureAvailability = {
+      ...mocks.panelFeatureAvailability,
+      checking: false,
+      requestMonitoringAvailable: true,
+    };
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(replacement))).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('keeps credential replacement boundaries after the Accounts page remounts', async () => {
+    const file = makeCodexFile('remount-boundary.json', 'auth-remount', 'remount@example.com');
+    mocks.files = [file];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const staleRun: CodexInspectionRun = {
+      id: 22,
+      triggerType: 'manual',
+      status: 'completed',
+      startedAtMs: 1_000,
+      finishedAtMs: 2_000,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 0,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 0,
+      enableCount: 0,
+      reauthCount: 1,
+      keepCount: 0,
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    };
+    const staleDetail = {
+      run: staleRun,
+      results: [
+        {
+          id: 22,
+          runId: staleRun.id,
+          accountKey: getAuthFileSelectionKey(file),
+          fileName: file.name,
+          displayAccount: String(file.account ?? file.name),
+          accountSnapshot: String(file.account ?? ''),
+          authIndex: String(file.authIndex ?? ''),
+          provider: 'codex',
+          disabled: false,
+          action: 'reauth',
+          actionReason: 'expired',
+          actionStatus: 'pending',
+          statusCode: 401,
+          usedPercent: undefined,
+          isQuota: false,
+          createdAtMs: 2_000,
+        },
+      ],
+    };
+    const firstRenderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(firstRenderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          2_000
+        )
+      );
+    });
+    await act(async () => {
+      findHostButtonByText(firstRenderer, 'accounts.tab_accounts').props.onClick();
+    });
+    expect(getAccountCardText(firstRenderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_reauth'
+    );
+
+    act(() => {
+      mocks.lastAuthFilesDataOptions?.onCredentialMutation?.({
+        kind: 'source-files-changed',
+        fileNames: [file.name],
+      });
+    });
+    expect(getAccountCardText(firstRenderer, getAuthFileSelectionKey(file))).not.toContain(
+      'accounts.health_reauth'
+    );
+    mocks.listCodexInspectionRuns.mockResolvedValue({ items: [staleRun] });
+    mocks.getCodexInspectionRun.mockResolvedValue(staleDetail);
+    await act(async () => {
+      firstRenderer.unmount();
+    });
+    mountedAccountsRenderers.delete(firstRenderer);
+
+    const secondRenderer = await renderAccountsPage();
+    await flushPromises();
+    expect(getAccountCardText(secondRenderer, getAuthFileSelectionKey(file))).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('does not reattach filename-only inspection evidence when a shared file becomes singular after reauth', async () => {
+    const first = {
+      ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    mocks.files = [first, second];
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [
+        { ...first, last_refresh: 3_000, modified: 3_100, status: 'ready', statusMessage: '' },
+        second,
+      ] as AuthFileItem[];
+      return mocks.files;
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [first],
+          [
+            {
+              authIndex: undefined,
+              accountSnapshot: undefined,
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          2_000
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+        account: 'first@example.com',
+        fileName: first.name,
+        provider: 'codex',
+        authIndex: first.authIndex,
+        accountSnapshot: 'first@example.com',
+      });
+    });
+
+    const replacement = makeCodexFile(first.name, 'auth-after-reauth', 'replacement@example.com');
+    mocks.files = [replacement];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(replacement))).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+
+  it('preserves exact sibling evidence when a shared file becomes singular after reauth', async () => {
+    const first = {
+      ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const fallbackAtMs = 2_000;
+    const inspectionAtMs = 3_000;
+    const exactOperationalAtMs = 4_000;
+    const fallbackCandidate = {
+      id: 1,
+      actionType: 'review',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: first.name,
+      reason: 'stale filename fallback',
+      firstSeenAtMs: fallbackAtMs,
+      lastSeenAtMs: fallbackAtMs,
+      hitCount: 1,
+      createdAtMs: fallbackAtMs,
+      updatedAtMs: fallbackAtMs,
+    };
+    const exactCandidate = {
+      id: 2,
+      actionType: 'review',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: second.name,
+      authIndex: String(second.authIndex ?? ''),
+      reason: 'exact sibling evidence',
+      firstSeenAtMs: exactOperationalAtMs,
+      lastSeenAtMs: exactOperationalAtMs,
+      hitCount: 1,
+      createdAtMs: exactOperationalAtMs,
+      updatedAtMs: exactOperationalAtMs,
+    };
+    const fallbackCooldown = {
+      authFileName: first.name,
+      disabledAtMs: fallbackAtMs,
+      recoverAtMs: exactOperationalAtMs + 10_000,
+    };
+    const exactCooldown = {
+      authFileName: second.name,
+      authIndex: String(second.authIndex ?? ''),
+      disabledAtMs: exactOperationalAtMs,
+      recoverAtMs: exactOperationalAtMs + 20_000,
+    };
+    mocks.files = [first, second];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [fallbackCandidate, exactCandidate],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([fallbackCooldown, exactCooldown]);
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [
+        second,
+        { ...first, last_refresh: 5_000, modified: 5_100, status: 'ready', statusMessage: '' },
+      ] as AuthFileItem[];
+      return mocks.files;
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [second, first],
+          [
+            {
+              action: 'keep',
+              statusCode: 200,
+              usedPercent: 30,
+              createdAtMs: inspectionAtMs,
+            },
+            {
+              runtimeId: undefined,
+              authIndex: undefined,
+              accountSnapshot: undefined,
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+              createdAtMs: fallbackAtMs,
+            },
+          ],
+          inspectionAtMs
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+        account: 'first@example.com',
+        fileName: first.name,
+        provider: 'codex',
+        authIndex: first.authIndex,
+        accountSnapshot: 'first@example.com',
+      });
+    });
+
+    mocks.files = [second];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).not.toContain(
+      'accounts.health_reauth'
+    );
+    await act(async () => {
+      findDetailButtonByName(renderer, second.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.cooldown).toEqual(
+      exactCooldown
+    );
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_diagnostics').props.onClick();
+    });
+    const detailView = renderer.root.findByType(AccountDiagnosticsTab).props.detailView;
+    expect(detailView.strategy.inspectionFields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'action', value: 'accounts.action_keep' }),
+        expect.objectContaining({ key: 'createdAtMs', value: inspectionAtMs }),
+      ])
+    );
+    expect(detailView.strategy.actionCandidates).toEqual([
+      expect.objectContaining({ id: exactCandidate.id, reason: exactCandidate.reason }),
+    ]);
+
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [fallbackCandidate],
+    });
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([fallbackCooldown]);
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await flushPromises();
+
+    expect(
+      renderer.root.findByType(AccountDiagnosticsTab).props.detailView.strategy.actionCandidates
+    ).toEqual([]);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.cooldown).toBeNull();
   });
 
   it('removes Manager-only operational filters after switching to CPA control mode', async () => {
@@ -3684,6 +7610,30 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.getAccountHistory).not.toHaveBeenCalled();
   });
 
+  it('allows a disabled credential to request its latest quota', async () => {
+    const file = {
+      ...makeCodexFile('codex-disabled.json', 'auth-disabled', 'disabled@example.com'),
+      disabled: true,
+    } as AuthFileItem;
+    mocks.files = [file];
+    const quotaFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+
+    const renderer = await renderAccountsPage();
+    const refreshButton = findAccountCardButtonByAriaLabel(
+      renderer,
+      getAuthFileSelectionKey(file),
+      'accounts.refresh_quota'
+    );
+    expect(refreshButton.props.disabled).toBe(false);
+
+    await act(async () => {
+      await refreshButton.props.onClick();
+    });
+
+    expect(quotaFetch).toHaveBeenCalledTimes(1);
+    expect(quotaFetch).toHaveBeenCalledWith(file, expect.anything(), expect.anything());
+  });
+
   it('clears stale single-account history when the refresh response cannot be correlated', async () => {
     mocks.files = [
       {
@@ -3851,6 +7801,172 @@ describe('AccountsPage replacement flows', () => {
       '111'
     );
     expect(readText(findAccountCardByKey(renderer, 'generic-b.json\u0000auth-b'))).toContain('222');
+  });
+
+  it('ignores a targeted history result after the account is removed and recreated', async () => {
+    const file = {
+      ...makeCodexFile('generic-recreated.json', 'auth-recreated', 'recreated@example.com'),
+      type: 'generic',
+      provider: 'generic',
+    } as AuthFileItem;
+    const stableFile = {
+      ...makeCodexFile('generic-stable.json', 'auth-stable', 'stable@example.com'),
+      type: 'generic',
+      provider: 'generic',
+    } as AuthFileItem;
+    const rowKey = 'generic-recreated.json\u0000auth-recreated';
+    mocks.files = [file, stableFile];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(makeAccountHistoryResponse([]));
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    await flushPromises();
+
+    const staleHistory = createDeferred<AccountHistoryResponseForTest>();
+    const currentHistory = createDeferred<AccountHistoryResponseForTest>();
+    mocks.getAccountHistory.mockClear();
+    mocks.getAccountHistory
+      .mockImplementationOnce(() => staleHistory.promise)
+      .mockResolvedValueOnce(makeAccountHistoryResponse([]))
+      .mockImplementationOnce(() => currentHistory.promise);
+
+    await act(async () => {
+      void renderer.root.findByType(AccountQuotaTab).props.onRefreshHistory();
+      await Promise.resolve();
+    });
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(1);
+
+    mocks.files = [stableFile];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    mocks.files = [{ ...file }, stableFile];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+
+    staleHistory.resolve(
+      makeAccountHistoryResponse([
+        {
+          row_key: rowKey,
+          account_key: 'stale-recreated-account',
+          matched: true,
+          total_requests: 777,
+          success_calls: 0,
+          failure_calls: 777,
+          total_tokens: 7_777,
+          total_cost: 7.77,
+          success_rate: 0,
+          first_seen_ms: 1,
+          last_seen_ms: 2,
+          sync_status: 'ready',
+          latest_request: {
+            timestamp_ms: 2,
+            failed: true,
+            fail_status_code: 401,
+            fail_summary: 'stale unauthorized',
+          },
+        },
+      ])
+    );
+    await flushPromises();
+
+    const recreatedCardText = readText(findAccountCardByKey(renderer, rowKey));
+    expect(recreatedCardText).not.toContain('777');
+    expect(recreatedCardText).not.toContain('accounts.health_reauth');
+    expect(recreatedCardText).not.toContain('stale unauthorized');
+
+    currentHistory.resolve(makeAccountHistoryResponse([]));
+    await flushPromises();
+  });
+
+  it('ignores a targeted history failure after the account is removed and recreated', async () => {
+    const file = {
+      ...makeCodexFile('generic-recreated.json', 'auth-recreated', 'recreated@example.com'),
+      type: 'generic',
+      provider: 'generic',
+    } as AuthFileItem;
+    const stableFile = {
+      ...makeCodexFile('generic-stable.json', 'auth-stable', 'stable@example.com'),
+      type: 'generic',
+      provider: 'generic',
+    } as AuthFileItem;
+    const rowKey = 'generic-recreated.json\u0000auth-recreated';
+    mocks.files = [file, stableFile];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(makeAccountHistoryResponse([]));
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    await flushPromises();
+
+    const staleHistory = createDeferred<AccountHistoryResponseForTest>();
+    const currentHistory = createDeferred<AccountHistoryResponseForTest>();
+    mocks.getAccountHistory.mockClear();
+    mocks.getAccountHistory
+      .mockImplementationOnce(() => staleHistory.promise)
+      .mockResolvedValueOnce(makeAccountHistoryResponse([]))
+      .mockImplementationOnce(() => currentHistory.promise);
+
+    await act(async () => {
+      void renderer.root.findByType(AccountQuotaTab).props.onRefreshHistory();
+      await Promise.resolve();
+    });
+
+    mocks.files = [stableFile];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    mocks.files = [{ ...file }, stableFile];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(mocks.getAccountHistory).toHaveBeenCalledTimes(3);
+
+    staleHistory.reject(new Error('stale history offline'));
+    await flushPromises();
+
+    const recreatedCardText = readText(findAccountCardByKey(renderer, rowKey));
+    expect(recreatedCardText).not.toContain('accounts.history_unavailable');
+    expect(recreatedCardText).not.toContain('accounts.history_recent_fallback');
+    expect(recreatedCardText).not.toContain('stale history offline');
+
+    currentHistory.resolve(makeAccountHistoryResponse([]));
+    await flushPromises();
   });
 
   it('does not let an older page history failure mark a newer targeted result unavailable', async () => {
@@ -4044,6 +8160,419 @@ describe('AccountsPage replacement flows', () => {
 
     expect(quotaFetch).toHaveBeenCalledTimes(10);
     expect(quotaFetch.mock.calls.map(([file]) => file.name).sort()).toEqual(visibleNames);
+  });
+
+  it('isolates overlapping quota refresh batches when the CPA connection changes', async () => {
+    const firstFile = makeCodexFile('codex-a.json', 'auth-a', 'a@example.com');
+    mocks.files = [firstFile];
+    const firstQuota = createDeferred<CodexQuotaData>();
+    const secondQuota = createDeferred<CodexQuotaData>();
+    const quotaFetch = vi
+      .spyOn(CODEX_CONFIG, 'fetchQuota')
+      .mockReturnValueOnce(firstQuota.promise)
+      .mockReturnValueOnce(secondQuota.promise);
+    const renderer = await renderAccountsPage();
+    let firstRefresh!: Promise<void>;
+    let secondRefresh!: Promise<void>;
+
+    await act(async () => {
+      firstRefresh = findButtonByText(renderer, 'accounts.refresh_quota').props.onClick();
+      await Promise.resolve();
+    });
+    expect(quotaFetch).toHaveBeenNthCalledWith(
+      1,
+      firstFile,
+      expect.any(Function),
+      expect.objectContaining({ apiBase: 'http://cpa-a.local:8317' })
+    );
+
+    const secondFile = makeCodexFile('codex-b.json', 'auth-b', 'b@example.com');
+    mocks.files = [secondFile];
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    expect(findButtonByText(renderer, 'accounts.refresh_quota').props.loading).toBe(false);
+
+    await act(async () => {
+      secondRefresh = findButtonByText(renderer, 'accounts.refresh_quota').props.onClick();
+      await Promise.resolve();
+    });
+    expect(quotaFetch).toHaveBeenNthCalledWith(
+      2,
+      secondFile,
+      expect.any(Function),
+      expect.objectContaining({ apiBase: 'http://cpa-b.local:8317' })
+    );
+    expect(findButtonByText(renderer, 'accounts.refresh_quota').props.loading).toBe(true);
+
+    await act(async () => {
+      firstQuota.resolve(makeCodexQuotaData());
+      await firstRefresh;
+    });
+    expect(findButtonByText(renderer, 'accounts.refresh_quota').props.loading).toBe(true);
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      'accounts.quota_refresh_result',
+      expect.anything()
+    );
+
+    await act(async () => {
+      secondQuota.resolve(makeCodexQuotaData());
+      await secondRefresh;
+    });
+    expect(findButtonByText(renderer, 'accounts.refresh_quota').props.loading).toBe(false);
+    expect(mocks.showNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith('accounts.quota_refresh_result', 'success');
+  });
+
+  it('uses a healthy manual quota refresh to clear older inspection and operational evidence', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const staleServerEvidenceAtMs = Date.now() + 5 * 60_000;
+    Object.assign(file, {
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+      updatedAtMs: Date.now() - 60_000,
+    });
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([
+      {
+        authFileName: file.name,
+        authIndex: String(file.authIndex ?? ''),
+        disabledAtMs: staleServerEvidenceAtMs,
+        recoverAtMs: staleServerEvidenceAtMs + 10_000,
+      },
+    ]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [
+        {
+          id: 1,
+          actionType: 'disable',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'old credential evidence',
+          firstSeenAtMs: staleServerEvidenceAtMs,
+          lastSeenAtMs: staleServerEvidenceAtMs,
+          hitCount: 1,
+          createdAtMs: staleServerEvidenceAtMs,
+          updatedAtMs: staleServerEvidenceAtMs,
+        },
+      ],
+    });
+    installCodexQuotaStoreMutationMock();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
+      ...makeCodexQuotaData(),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 30,
+          resetLabel: 'next week',
+          resetAtMs: 20_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    });
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          staleServerEvidenceAtMs
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await flushPromises();
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(1);
+
+    await act(async () => {
+      await findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.refresh_quota'
+      ).props.onClick();
+    });
+    await flushPromises();
+
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('accounts.health_available');
+    expect(cardText).not.toContain('accounts.health_reauth');
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(0);
+    expect(treeText(renderer)).not.toContain('accounts.detail_overview_basis_cooldown');
+  });
+
+  it('uses an exhausted manual quota refresh to clear reauth evidence and preserve quota cooldown', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const staleServerEvidenceAtMs = Date.now() + 5 * 60_000;
+    Object.assign(file, {
+      statusMessage: 'token_expired',
+      errorStatus: 401,
+      statusCode: 401,
+      updatedAtMs: Date.now() - 60_000,
+    });
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    const cooldown = {
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      disabledAtMs: staleServerEvidenceAtMs,
+      recoverAtMs: staleServerEvidenceAtMs + 10_000,
+    };
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([cooldown]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [
+        {
+          id: 1,
+          actionType: 'reauth',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'old credential evidence',
+          firstSeenAtMs: staleServerEvidenceAtMs,
+          lastSeenAtMs: staleServerEvidenceAtMs,
+          hitCount: 1,
+          createdAtMs: staleServerEvidenceAtMs,
+          updatedAtMs: staleServerEvidenceAtMs,
+        },
+        {
+          id: 2,
+          actionType: 'disable',
+          status: 'pending',
+          provider: 'codex',
+          authFileName: file.name,
+          authIndex: String(file.authIndex ?? ''),
+          reason: 'quota remains exhausted',
+          firstSeenAtMs: staleServerEvidenceAtMs,
+          lastSeenAtMs: staleServerEvidenceAtMs,
+          hitCount: 1,
+          createdAtMs: staleServerEvidenceAtMs,
+          updatedAtMs: staleServerEvidenceAtMs,
+        },
+      ],
+    });
+    installCodexQuotaStoreMutationMock();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
+      ...makeCodexQuotaData(),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 100,
+          resetLabel: 'next week',
+          resetAtMs: 20_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    });
+    const renderer = await renderAccountsPage();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(
+        makeInspectionSnapshot(
+          [file],
+          [
+            {
+              action: 'reauth',
+              actionStatus: 'pending',
+              statusCode: 401,
+              usedPercent: undefined,
+            },
+          ],
+          staleServerEvidenceAtMs
+        )
+      );
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_reauth');
+
+    await act(async () => {
+      await findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.refresh_quota'
+      ).props.onClick();
+    });
+    await flushPromises();
+
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('accounts.health_weekly_cooldown');
+    expect(cardText).not.toContain('accounts.health_available');
+    expect(cardText).not.toContain('accounts.health_reauth');
+
+    await act(async () => {
+      findDetailButtonByName(renderer, file.name).props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    const quotaDetailView = renderer.root.findByType(AccountQuotaTab).props.detailView;
+    expect(quotaDetailView.quota.statusLabelKey).toBe('accounts.quota_status_exhausted');
+    expect(quotaDetailView.quota.windows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ usedPercent: 100 })])
+    );
+    expect(quotaDetailView.quota.cooldown).toEqual(cooldown);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_diagnostics').props.onClick();
+    });
+    expect(
+      renderer.root.findByType(AccountDiagnosticsTab).props.detailView.strategy.actionCandidates
+    ).toEqual([expect.objectContaining({ actionType: 'disable' })]);
+  });
+
+  it('uses action-domain timestamps when an exhausted refresh supersedes authentication evidence', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const now = Date.now();
+    const oldReauthAtMs = now + 5 * 60_000;
+    const newReauthAtMs = now + 7 * 60_000;
+    const disableAtMs = now + 10 * 60_000;
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=diagnostics`,
+    };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+    const makeCandidate = (id: number, actionType: 'reauth' | 'disable', observedAtMs: number) => ({
+      id,
+      actionType,
+      status: 'pending',
+      provider: 'codex',
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      reason: `${actionType}-${id}`,
+      firstSeenAtMs: observedAtMs,
+      lastSeenAtMs: observedAtMs,
+      hitCount: 1,
+      createdAtMs: observedAtMs,
+      updatedAtMs: observedAtMs,
+    });
+    const disableCandidate = makeCandidate(6, 'disable', disableAtMs);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [makeCandidate(5, 'reauth', oldReauthAtMs), disableCandidate],
+    });
+    installCodexQuotaStoreMutationMock();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue({
+      ...makeCodexQuotaData(),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 100,
+          resetLabel: 'next week',
+          resetAtMs: 20_000,
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    });
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    await act(async () => {
+      await findAccountCardButtonByAriaLabel(
+        renderer,
+        selectionKey,
+        'accounts.refresh_quota'
+      ).props.onClick();
+    });
+    await flushPromises();
+
+    const newReauthCandidate = makeCandidate(7, 'reauth', newReauthAtMs);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 2,
+      items: [newReauthCandidate, disableCandidate],
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_diagnostics').props.onClick();
+    });
+
+    expect(
+      renderer.root.findByType(AccountDiagnosticsTab).props.detailView.strategy.actionCandidates
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: newReauthCandidate.id, actionType: 'reauth' }),
+        expect.objectContaining({ id: disableCandidate.id, actionType: 'disable' }),
+      ])
+    );
+  });
+
+  it('turns a manual quota 401 into a reauth state', async () => {
+    const file = mocks.files[0];
+    installCodexQuotaStoreMutationMock();
+    vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockRejectedValue(
+      Object.assign(new Error('unauthorized'), { status: 401 })
+    );
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      await findAccountCardButtonByAriaLabel(
+        renderer,
+        getAuthFileSelectionKey(file),
+        'accounts.refresh_quota'
+      ).props.onClick();
+    });
+    await flushPromises();
+
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).toContain(
+      'accounts.health_reauth'
+    );
   });
 
   it('keeps the last successful quota visible while a manual refresh is pending or fails', async () => {
@@ -4480,7 +9009,8 @@ describe('AccountsPage replacement flows', () => {
     });
 
     const renderer = await renderAccountsPage();
-    expect(mocks.getHeaderSnapshots).not.toHaveBeenCalled();
+    await flushPromises();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       findDetailButtonByName(renderer, 'codex-diagnostic.json').props.onClick();
@@ -4568,7 +9098,7 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
 
     expect(mocks.getActiveQuotaCooldowns).not.toHaveBeenCalled();
-    expect(mocks.getHeaderSnapshots).not.toHaveBeenCalled();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
     expect(mocks.listAccountActionCandidates).not.toHaveBeenCalled();
     expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
 
@@ -4706,9 +9236,140 @@ describe('AccountsPage replacement flows', () => {
       checking: false,
       managerServiceBase: 'http://manager.local:18317',
       requestMonitoringAvailable: true,
-      serverCodexInspectionAvailable: false,
+      serverCodexInspectionAvailable: true,
     };
     const resetAtMs = Date.now() + 60 * 60 * 1000;
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      quotaInventoryObserved: true,
+      fetchedAtMs: Date.now(),
+      windows: [
+        {
+          id: 'five-hour',
+          label: 'Five hours',
+          usedPercent: 10,
+          resetAtMs,
+          resetLabel: new Date(resetAtMs).toISOString(),
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 5 * 60 * 60,
+        },
+      ],
+    });
+    const quotaFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota').mockResolvedValue(makeCodexQuotaData());
+    mocks.getHeaderSnapshots
+      .mockResolvedValueOnce({ generated_at_ms: 100, from_ms: 0, to_ms: 100, items: [] })
+      .mockResolvedValueOnce({ generated_at_ms: 200, from_ms: 0, to_ms: 200, items: [] });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+    expect(quotaFetch).not.toHaveBeenCalled();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await findButtonByText(renderer, 'common.refresh').props.onClick();
+    });
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(2);
+    expect(mocks.listCodexInspectionRuns.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.loadFiles.mock.invocationCallOrder[1]
+    );
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+    expect(quotaFetch).not.toHaveBeenCalled();
+  });
+
+  it('loads quota lifecycle after a deep-linked credential resolves asynchronously', async () => {
+    const target = {
+      name: 'xai-delayed.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-delayed-01',
+      account: 'delayed@example.com',
+      disabled: true,
+    } as AuthFileItem;
+    const rowKey = getAuthFileSelectionKey(target);
+    mocks.files = [
+      makeCodexFile('placeholder.json', 'placeholder-auth', 'placeholder@example.com'),
+    ];
+    mocks.authFilesLoading = true;
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(rowKey)}&tab=quota`,
+    };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    vi.mocked(accountQuotaSnapshotApi.query).mockResolvedValue({
+      generated_at_ms: 1,
+      items: [
+        {
+          row_key: rowKey,
+          account_key: rowKey,
+          provider: 'xai',
+          windows: [
+            {
+              provider_window_id: 'included-free-rolling-24h',
+              window_kind: 'rolling_24h',
+              window_mode: 'rolling',
+              model_scope_kind: 'models',
+              model_scope_key: 'grok-4.5-build-free',
+              model_ids: ['grok-4.5-build-free'],
+              source: 'response_body',
+              observed_at_ms: 1,
+              boundary_accuracy: 'estimated',
+              duration_seconds: 24 * 60 * 60,
+              used_percent: 100,
+              remaining_percent: 0,
+              stale: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(accountQuotaSnapshotApi.query).not.toHaveBeenCalled();
+    expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.files = [target];
+      mocks.authFilesLoading = false;
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+    expect(accountQuotaSnapshotApi.query).toHaveBeenCalledTimes(1);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it('reloads lifecycle and window usage after detail quota refresh without loading history', async () => {
+    const file = makeCodexFile('codex-refresh.json', 'auth-refresh', 'refresh@example.com');
+    mocks.files = [file];
+    mocks.location = {
+      pathname: '/accounts',
+      search: '?account=codex-refresh.json%00auth-refresh&tab=quota',
+    };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    const resetAtMs = Date.now() + 5 * 60 * 60 * 1000;
     mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
       status: 'success',
       quotaInventoryObserved: true,
@@ -4729,11 +9390,27 @@ describe('AccountsPage replacement flows', () => {
 
     const renderer = await renderAccountsPage();
     await flushPromises();
-
-    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
-    expect(quotaFetch).not.toHaveBeenCalled();
-    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
+    await flushPromises();
+    expect(accountQuotaSnapshotApi.query).toHaveBeenCalledTimes(1);
     expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(1);
+    mocks.getAccountHistory.mockClear();
+
+    await act(async () => {
+      const detailRefreshButton = renderer.root
+        .findByType(Drawer)
+        .findAllByType(Button)
+        .find((node) => readText(node.props.children).includes('accounts.refresh_quota'));
+      if (!detailRefreshButton) throw new Error('Detail quota refresh button not found');
+      detailRefreshButton.props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(quotaFetch).toHaveBeenCalledTimes(1);
+    expect(accountQuotaSnapshotApi.query).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(2);
+    expect(mocks.getAccountHistory).not.toHaveBeenCalled();
   });
 
   it('loads history for a deep-linked credential outside the visible page', async () => {
@@ -4772,7 +9449,7 @@ describe('AccountsPage replacement flows', () => {
     expect(request.accounts).toContainEqual(expect.objectContaining({ row_key: targetKey }));
   });
 
-  it('keeps rolling window usage visible across snapshot rerenders and history refreshes', async () => {
+  it('keeps rolling window usage visible across refreshes and detail drawer reopen', async () => {
     let currentTimeMs = 2_000_000_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       currentTimeMs += 1_000;
@@ -4828,8 +9505,9 @@ describe('AccountsPage replacement flows', () => {
     let usageRequestCount = 0;
     mocks.getAccountWindowUsage.mockImplementation(async (_base, _managementKey, request) => {
       usageRequestCount += 1;
-      const totalRequests = usageRequestCount === 1 ? 4 : 5;
-      const totalTokens = usageRequestCount === 1 ? 9_939 : 12_460;
+      const totalRequests = usageRequestCount === 1 ? 4 : usageRequestCount === 2 ? 5 : 6;
+      const totalTokens =
+        usageRequestCount === 1 ? 9_939 : usageRequestCount === 2 ? 12_460 : 14_981;
       const windows = request.windows as Array<{
         request_key: string;
         row_key: string;
@@ -4911,6 +9589,45 @@ describe('AccountsPage replacement flows', () => {
       toMs: refreshedCurrentTarget?.to_ms,
       totalRequests: 5,
       totalTokens: 12_460,
+    });
+
+    await act(async () => {
+      renderer.root.findByType(Drawer).props.onClose();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByType(AccountQuotaTab)).toHaveLength(0);
+
+    await act(async () => {
+      findDetailButtonByName(renderer, 'xai-ops.json').props.onClick();
+    });
+    await flushPromises();
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(mocks.getAccountWindowUsage).toHaveBeenCalledTimes(3);
+    const reopenedWindowUsageRequest = mocks.getAccountWindowUsage.mock.calls[2]?.[2] as
+      | AccountWindowUsageRequestForTest
+      | undefined;
+    const reopenedCurrentTarget = (
+      reopenedWindowUsageRequest?.windows as Array<{
+        period: string;
+        from_ms: number;
+        to_ms: number;
+      }>
+    ).find((window) => window.period === 'current');
+    expect(reopenedCurrentTarget?.from_ms).toBeGreaterThan(refreshedCurrentTarget?.from_ms ?? 0);
+    expect(reopenedCurrentTarget?.to_ms).toBeGreaterThan(refreshedCurrentTarget?.to_ms ?? 0);
+    expect(
+      renderer.root.findByType(AccountQuotaTab).props.detailView.quota.windows[0].currentUsage
+    ).toMatchObject({
+      fromMs: reopenedCurrentTarget?.from_ms,
+      toMs: reopenedCurrentTarget?.to_ms,
+      totalRequests: 6,
+      totalTokens: 14_981,
     });
   });
 
@@ -6412,5 +11129,847 @@ describe('AccountsPage replacement flows', () => {
 
     expect(treeText(renderer)).toContain('req-second');
     expect(treeText(renderer)).not.toContain('req-first');
+  });
+
+  it('consumes a scoped OAuth mutation marker and suppresses stale credential status', async () => {
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      modified: 1_000,
+    } as AuthFileItem;
+    mocks.files = [file];
+    recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      createdAtMs: Date.now(),
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(getAccountCardText(renderer, getAuthFileSelectionKey(file))).not.toContain(
+      'accounts.health_reauth'
+    );
+  });
+  it.each(['files', 'cooldowns', 'actions'] as const)(
+    'keeps an OAuth mutation marker after a failed %s reload and consumes it on the next Accounts refresh',
+    async (failedArtifact) => {
+      const marker = recordAccountCredentialMutationMarker({
+        connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+        provider: 'codex',
+        createdAtMs: Date.now(),
+      });
+      if (failedArtifact === 'files') {
+        mocks.loadFiles
+          .mockImplementationOnce(async () => mocks.files)
+          .mockRejectedValueOnce(new Error('temporary auth-file list failure'))
+          .mockImplementation(async () => mocks.files);
+      } else if (failedArtifact === 'cooldowns') {
+        mocks.getActiveQuotaCooldowns.mockRejectedValueOnce(
+          new Error('temporary cooldown list failure')
+        );
+      } else {
+        mocks.listAccountActionCandidates.mockRejectedValueOnce(
+          new Error('temporary action-candidate list failure')
+        );
+      }
+
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+
+      expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([
+        marker,
+      ]);
+
+      await act(async () => {
+        await findButtonByText(renderer, 'common.refresh').props.onClick();
+      });
+      await flushPromises();
+
+      expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual(
+        []
+      );
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(failedArtifact === 'files' ? 3 : 2);
+      expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(2);
+      expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(2);
+    }
+  );
+  it('does not acknowledge an old-connection OAuth marker when its reload finishes after a connection change', async () => {
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      createdAtMs: Date.now(),
+    });
+    const delayedCredentialReload = createDeferred<AuthFileItem[]>();
+    mocks.loadFiles
+      .mockImplementationOnce(async () => mocks.files)
+      .mockImplementationOnce(() => delayedCredentialReload.promise)
+      .mockImplementation(async () => mocks.files);
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    mocks.managementKey = 'key-b';
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    await act(async () => {
+      delayedCredentialReload.resolve(mocks.files);
+      await delayedCredentialReload.promise;
+    });
+    await flushPromises();
+
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([
+      marker,
+    ]);
+    expect(listAccountCredentialMutationMarkers('http://cpa-b.local:8317:key-b')).toEqual([]);
+  });
+  it('keeps inspection, operational, quota, and raw status evidence newer than OAuth', async () => {
+    const markerAtMs = 1_700_000_000_000;
+    const newerEvidenceAtMs = markerAtMs + 10_000;
+    const newerCandidateAtMs = newerEvidenceAtMs + 1_000;
+    const file = {
+      ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      status: 'error',
+      statusMessage: 'post_oauth_failure',
+      updatedAtMs: newerEvidenceAtMs,
+    } as AuthFileItem;
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.files = [file];
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=overview`,
+    };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.localInspection = {
+      savedAt: newerEvidenceAtMs,
+      logs: [],
+      logsCollapsed: true,
+      actionFilter: 'all',
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      result: {
+        settings: {},
+        files: [file],
+        startedAt: newerEvidenceAtMs - 1_000,
+        finishedAt: newerEvidenceAtMs,
+        summary: {
+          totalFiles: 1,
+          probeSetCount: 1,
+          sampledCount: 1,
+          disabledCount: 1,
+          enabledCount: 0,
+          deleteCount: 0,
+          disableCount: 0,
+          enableCount: 0,
+          reauthCount: 1,
+          keepCount: 0,
+          usedPercentThreshold: 100,
+          sampled: false,
+          plannedActionPreview: [],
+        },
+        results: [
+          {
+            key: selectionKey,
+            fileName: file.name,
+            displayAccount: String(file.account ?? file.name),
+            authIndex: String(file.authIndex ?? ''),
+            accountId: null,
+            accountSnapshot: String(file.account ?? ''),
+            provider: 'codex',
+            disabled: true,
+            autoRecoverOwned: false,
+            status: 'error',
+            state: 'error',
+            raw: file,
+            action: 'reauth',
+            actionReason: 'post OAuth inspection failure',
+            statusCode: 401,
+            usedPercent: null,
+            isQuota: false,
+            autoRecoverEligible: false,
+            error: 'post OAuth inspection failure',
+            actionHandled: false,
+          },
+        ],
+      },
+    };
+    const cooldown = {
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      disabledAtMs: newerEvidenceAtMs,
+      recoverAtMs: newerEvidenceAtMs + 10_000,
+    };
+    const candidate = {
+      id: 1,
+      actionType: 'reauth',
+      status: 'pending',
+      provider: 'codex',
+      authFileName: file.name,
+      authIndex: String(file.authIndex ?? ''),
+      reason: 'post OAuth candidate',
+      firstSeenAtMs: newerCandidateAtMs,
+      lastSeenAtMs: newerCandidateAtMs,
+      hitCount: 1,
+      createdAtMs: newerCandidateAtMs,
+      updatedAtMs: newerCandidateAtMs,
+    };
+    mocks.getActiveQuotaCooldowns.mockResolvedValue([cooldown]);
+    mocks.listAccountActionCandidates.mockResolvedValue({
+      pendingCount: 1,
+      items: [candidate],
+    });
+    installCodexQuotaStoreMutationMock();
+    const storeKey = getQuotaCredentialStoreKey(file);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'error',
+      windows: [],
+      error: 'post OAuth quota failure',
+      errorStatus: 429,
+      failedAtMs: newerEvidenceAtMs,
+    });
+    recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      createdAtMs: markerAtMs,
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.quotaState.codexQuota).toHaveProperty(storeKey);
+    expect(getAccountCardText(renderer, selectionKey)).toContain('accounts.health_reauth');
+    const overview = renderer.root.findByType(AccountOverviewTab).props.detailView;
+    expect(overview.overview.recentStatus.statusMessage).toBe('post_oauth_failure');
+    expect(overview.strategy.actionCandidates).toEqual([
+      expect.objectContaining({ id: candidate.id, reason: candidate.reason }),
+    ]);
+    expect(renderer.root.findAllByProps({ 'data-overview-section': 'attention' })).toHaveLength(1);
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.detail_tab_quota').props.onClick();
+    });
+    expect(renderer.root.findByType(AccountQuotaTab).props.detailView.quota.cooldown).toEqual(
+      cooldown
+    );
+  });
+  it('invalidates stale evidence for a same-provider credential first returned by OAuth reload', async () => {
+    const markerAtMs = Date.now();
+    const existingFile = makeCodexFile('existing.json', 'auth-existing', 'existing@example.com');
+    const oauthFile = {
+      ...makeCodexFile('oauth.json', 'auth-oauth', 'oauth@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      updatedAtMs: markerAtMs - 1_000,
+    } as AuthFileItem;
+    const oauthSelectionKey = getAuthFileSelectionKey(oauthFile);
+    mocks.files = [existingFile];
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(oauthSelectionKey)}&tab=overview`,
+    };
+    installCodexQuotaStoreMutationMock();
+    const storeKey = getQuotaCredentialStoreKey(oauthFile);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(oauthFile, {
+      status: 'error',
+      windows: [],
+      error: 'stale OAuth quota failure',
+      errorStatus: 429,
+      failedAtMs: markerAtMs - 1_000,
+    });
+    mocks.loadFiles.mockImplementation(async () => {
+      if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
+      mocks.files = [existingFile, oauthFile];
+      return mocks.files;
+    });
+    recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      createdAtMs: markerAtMs,
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(2);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(storeKey);
+    expect(getAccountCardText(renderer, oauthSelectionKey)).not.toContain('accounts.health_reauth');
+  });
+  it('keeps post-OAuth raw status and quota evidence for a credential first returned by reload', async () => {
+    const markerAtMs = Date.now();
+    const newerEvidenceAtMs = markerAtMs + 10_000;
+    const existingFile = makeCodexFile('existing.json', 'auth-existing', 'existing@example.com');
+    const oauthFile = {
+      ...makeCodexFile('oauth.json', 'auth-oauth', 'oauth@example.com'),
+      status: 'error',
+      statusMessage: 'post_oauth_failure',
+      updatedAtMs: newerEvidenceAtMs,
+    } as AuthFileItem;
+    const oauthSelectionKey = getAuthFileSelectionKey(oauthFile);
+    mocks.files = [existingFile];
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(oauthSelectionKey)}&tab=overview`,
+    };
+    installCodexQuotaStoreMutationMock();
+    const storeKey = getQuotaCredentialStoreKey(oauthFile);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(oauthFile, {
+      status: 'error',
+      windows: [],
+      error: 'post OAuth quota failure',
+      errorStatus: 429,
+      failedAtMs: newerEvidenceAtMs,
+    });
+    mocks.loadFiles.mockImplementation(async () => {
+      if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
+      mocks.files = [existingFile, oauthFile];
+      return mocks.files;
+    });
+    recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      createdAtMs: markerAtMs,
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(2);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(storeKey);
+    expect(getAccountCardText(renderer, oauthSelectionKey)).toContain('accounts.health_limited');
+    await act(async () => {
+      findDetailButtonByName(renderer, oauthFile.name).props.onClick();
+    });
+    expect(
+      renderer.root.findByType(AccountOverviewTab).props.detailView.overview.recentStatus
+        .statusMessage
+    ).toBe('post_oauth_failure');
+  });
+  it('does not consume OAuth mutation markers from another CPA connection', async () => {
+    recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-b.local:8317:key-b',
+      provider: 'codex',
+      createdAtMs: Date.now(),
+    });
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+    expect(listAccountCredentialMutationMarkers('http://cpa-b.local:8317:key-b')).toHaveLength(1);
+  });
+  it('polls passive Header and inspection evidence only while the accounts view is visible', async () => {
+    vi.useFakeTimers();
+    let visibilityState: DocumentVisibilityState = 'visible';
+    const documentEvents = new EventTarget();
+    vi.stubGlobal('document', {
+      get visibilityState() {
+        return visibilityState;
+      },
+      addEventListener: documentEvents.addEventListener.bind(documentEvents),
+      removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
+    });
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: true,
+    };
+
+    await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(1);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(2);
+
+    visibilityState = 'hidden';
+    await act(async () => {
+      documentEvents.dispatchEvent(new Event('visibilitychange'));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(2);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(2);
+
+    visibilityState = 'visible';
+    await act(async () => {
+      documentEvents.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(mocks.getHeaderSnapshots).toHaveBeenCalledTimes(3);
+    expect(mocks.listCodexInspectionRuns).toHaveBeenCalledTimes(3);
+  });
+  it('synchronizes automatic inspection credential mutations once after completion', async () => {
+    vi.useFakeTimers();
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const runningRun: CodexInspectionRun = {
+      id: 17,
+      triggerType: 'schedule',
+      status: 'running',
+      startedAtMs: 1_000,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 1,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 0,
+      enableCount: 0,
+      reauthCount: 0,
+      keepCount: 0,
+      createdAtMs: 1_000,
+      updatedAtMs: 1_000,
+    };
+    const completedRun: CodexInspectionRun = {
+      ...runningRun,
+      status: 'completed',
+      finishedAtMs: 2_000,
+      disabledCount: 0,
+      enabledCount: 1,
+      enableCount: 1,
+      updatedAtMs: 2_000,
+    };
+    mocks.listCodexInspectionRuns
+      .mockResolvedValueOnce({ items: [runningRun] })
+      .mockResolvedValue({ items: [completedRun] });
+    mocks.getCodexInspectionRun.mockResolvedValue({
+      run: completedRun,
+      results: [
+        {
+          id: 31,
+          runId: completedRun.id,
+          accountKey: 'codex.json\u0000auth-1',
+          fileName: 'codex.json',
+          displayAccount: 'codex@example.com',
+          authIndex: 'auth-1',
+          provider: 'codex',
+          disabled: false,
+          status: 'success',
+          state: 'healthy',
+          action: 'enable',
+          actionReason: 'quota recovered',
+          actionStatus: 'success',
+          executedAction: 'enable',
+          statusCode: 200,
+          isQuota: false,
+          createdAtMs: 2_000,
+        },
+      ],
+    });
+
+    await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.getActiveQuotaCooldowns).not.toHaveBeenCalled();
+    expect(mocks.listAccountActionCandidates).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+  });
+  it.each(['files', 'cooldowns', 'actions'] as const)(
+    'retries automatic inspection credential synchronization after a transient %s reload failure',
+    async (failedArtifact) => {
+      vi.useFakeTimers();
+      mocks.panelFeatureAvailability = {
+        checking: false,
+        managerServiceBase: 'http://manager.local:18317',
+        requestMonitoringAvailable: false,
+        serverCodexInspectionAvailable: true,
+      };
+      const runningRun: CodexInspectionRun = {
+        id: 18,
+        triggerType: 'schedule',
+        status: 'running',
+        startedAtMs: 1_000,
+        totalFiles: 1,
+        probeSetCount: 1,
+        sampledCount: 1,
+        disabledCount: 1,
+        enabledCount: 0,
+        deleteCount: 0,
+        disableCount: 0,
+        enableCount: 0,
+        reauthCount: 0,
+        keepCount: 0,
+        createdAtMs: 1_000,
+        updatedAtMs: 1_000,
+      };
+      const completedRun: CodexInspectionRun = {
+        ...runningRun,
+        status: 'completed',
+        finishedAtMs: 2_000,
+        disabledCount: 0,
+        enabledCount: 1,
+        enableCount: 1,
+        updatedAtMs: 2_000,
+      };
+      mocks.listCodexInspectionRuns
+        .mockResolvedValueOnce({ items: [runningRun] })
+        .mockResolvedValue({ items: [completedRun] });
+      mocks.getCodexInspectionRun.mockResolvedValue({
+        run: completedRun,
+        results: [
+          {
+            id: 32,
+            runId: completedRun.id,
+            accountKey: 'codex.json\u0000auth-1',
+            fileName: 'codex.json',
+            displayAccount: 'codex@example.com',
+            authIndex: 'auth-1',
+            provider: 'codex',
+            disabled: false,
+            status: 'success',
+            state: 'healthy',
+            action: 'enable',
+            actionReason: 'quota recovered',
+            actionStatus: 'success',
+            executedAction: 'enable',
+            statusCode: 200,
+            isQuota: false,
+            createdAtMs: 2_000,
+          },
+        ],
+      });
+
+      await renderAccountsPage();
+      await flushPromises();
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+      if (failedArtifact === 'files') {
+        mocks.loadFiles.mockRejectedValueOnce(new Error('temporary auth-file list failure'));
+      } else if (failedArtifact === 'cooldowns') {
+        mocks.getActiveQuotaCooldowns.mockRejectedValueOnce(
+          new Error('temporary cooldown list failure')
+        );
+      } else {
+        mocks.listAccountActionCandidates.mockRejectedValueOnce(
+          new Error('temporary action-candidate list failure')
+        );
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await flushPromises();
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+      expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+      expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await flushPromises();
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(3);
+      expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(2);
+      expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await flushPromises();
+      expect(mocks.loadFiles).toHaveBeenCalledTimes(3);
+      expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(2);
+      expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(2);
+    }
+  );
+  it('ignores passive historical mutations but synchronizes an explicit historical action once', async () => {
+    mocks.location = { pathname: '/accounts', search: '?view=health&healthMode=server' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const historicalRun: CodexInspectionRun = {
+      id: 1,
+      triggerType: 'manual',
+      status: 'completed',
+      startedAtMs: 1_000,
+      finishedAtMs: 2_000,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 1,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 1,
+      enableCount: 0,
+      reauthCount: 0,
+      keepCount: 0,
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    };
+    const latestRun: CodexInspectionRun = {
+      ...historicalRun,
+      id: 2,
+      startedAtMs: 3_000,
+      finishedAtMs: 4_000,
+      createdAtMs: 3_000,
+      updatedAtMs: 4_000,
+    };
+    const historicalSnapshot: CredentialInspectionSnapshot = {
+      ...makeInspectionSnapshot(
+        mocks.files,
+        [
+          {
+            runId: historicalRun.id,
+            action: 'disable',
+            actionStatus: 'success',
+            executedAction: 'disable',
+          },
+        ],
+        2_000
+      ),
+      runs: [latestRun, historicalRun],
+    };
+
+    await renderAccountsPage();
+    await flushPromises();
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(historicalSnapshot);
+      await Promise.resolve();
+    });
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, historicalSnapshot);
+    });
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mocks.lastHealthWorkspaceProps?.onSnapshotChange(historicalSnapshot);
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, historicalSnapshot);
+    });
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(1);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(1);
+  });
+  it('retries a failed explicit historical action synchronization after returning to accounts', async () => {
+    mocks.location = { pathname: '/accounts', search: '?view=health&healthMode=server' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const historicalRun: CodexInspectionRun = {
+      id: 21,
+      triggerType: 'manual',
+      status: 'completed',
+      startedAtMs: 1_000,
+      finishedAtMs: 2_000,
+      totalFiles: 1,
+      probeSetCount: 1,
+      sampledCount: 1,
+      disabledCount: 1,
+      enabledCount: 0,
+      deleteCount: 0,
+      disableCount: 1,
+      enableCount: 0,
+      reauthCount: 0,
+      keepCount: 0,
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    };
+    const latestRun: CodexInspectionRun = {
+      ...historicalRun,
+      id: 22,
+      startedAtMs: 3_000,
+      finishedAtMs: 4_000,
+      createdAtMs: 3_000,
+      updatedAtMs: 4_000,
+    };
+    const historicalSnapshot: CredentialInspectionSnapshot = {
+      ...makeInspectionSnapshot(
+        mocks.files,
+        [
+          {
+            runId: 21,
+            action: 'disable',
+            actionStatus: 'success',
+            executedAction: 'disable',
+          },
+        ],
+        2_000
+      ),
+      runs: [latestRun, historicalRun],
+    };
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    mocks.loadFiles.mockRejectedValueOnce(new Error('temporary auth-file list failure'));
+
+    await act(async () => {
+      try {
+        await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, historicalSnapshot);
+      } catch {
+        // The mutation succeeded, but Accounts reports the failed synchronization to its caller.
+      }
+    });
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await findHostButtonByText(renderer, 'accounts.tab_accounts').props.onClick();
+    });
+    await flushPromises();
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(3);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(2);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(2);
+  });
+  it('does not acknowledge a newer inspection mutation after its overlapping reload fails', async () => {
+    mocks.location = { pathname: '/accounts', search: '?view=health&healthMode=server' };
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: false,
+      serverCodexInspectionAvailable: true,
+    };
+    const firstReload = createDeferred<undefined>();
+    const secondReload = createDeferred<undefined>();
+    mocks.loadFiles
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(firstReload.promise)
+      .mockReturnValueOnce(secondReload.promise);
+
+    const makeMutationSnapshot = (
+      runId: number,
+      resultId: number,
+      finishedAtMs: number
+    ): CredentialInspectionSnapshot => {
+      const run: CodexInspectionRun = {
+        id: runId,
+        triggerType: 'manual',
+        status: 'completed',
+        startedAtMs: finishedAtMs - 1_000,
+        finishedAtMs,
+        totalFiles: 1,
+        probeSetCount: 1,
+        sampledCount: 1,
+        disabledCount: 1,
+        enabledCount: 0,
+        deleteCount: 0,
+        disableCount: 1,
+        enableCount: 0,
+        reauthCount: 0,
+        keepCount: 0,
+        createdAtMs: finishedAtMs - 1_000,
+        updatedAtMs: finishedAtMs,
+      };
+      return {
+        ...makeInspectionSnapshot(
+          mocks.files,
+          [
+            {
+              id: resultId,
+              runId,
+              action: 'disable',
+              actionStatus: 'success',
+              executedAction: 'disable',
+            },
+          ],
+          finishedAtMs
+        ),
+        runs: [run],
+      };
+    };
+    const firstSnapshot = makeMutationSnapshot(31, 311, 2_000);
+    const secondSnapshot = makeMutationSnapshot(32, 321, 3_000);
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    let firstSynchronization!: Promise<void>;
+    act(() => {
+      firstSynchronization = Promise.resolve(
+        mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, firstSnapshot)
+      );
+    });
+    await flushPromises();
+
+    let secondSynchronization!: Promise<void>;
+    act(() => {
+      secondSynchronization = Promise.resolve(
+        mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, secondSnapshot)
+      );
+    });
+    await flushPromises();
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      secondReload.reject(new Error('newer reload failed'));
+      try {
+        await secondSynchronization;
+      } catch {
+        // The newer snapshot remains pending and must be retried below.
+      }
+    });
+    await act(async () => {
+      firstReload.resolve(undefined);
+      await firstSynchronization;
+    });
+
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(undefined, secondSnapshot);
+    });
+
+    expect(mocks.loadFiles).toHaveBeenCalledTimes(4);
+    expect(mocks.getActiveQuotaCooldowns).toHaveBeenCalledTimes(3);
+    expect(mocks.listAccountActionCandidates).toHaveBeenCalledTimes(3);
   });
 });

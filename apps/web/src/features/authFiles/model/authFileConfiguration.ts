@@ -1,5 +1,13 @@
-import type { AuthFileItem } from '@/types';
+import {
+  coolingPolicyFromOverride,
+  coolingPolicyToOverride,
+  readCredentialCoolingOverride,
+  type AuthFileItem,
+  type CoolingPolicy,
+  type OAuthModelAliasEntry,
+} from '@/types';
 import type { AuthFileFieldsPatch } from '@/services/api/authFiles';
+import { normalizeOAuthAliasEntries } from '@/features/authFiles/oauthAliasValidation';
 import {
   normalizeExcludedModels,
   normalizeProviderKey,
@@ -28,7 +36,8 @@ export type AuthFileConfigurationDraft = {
   note: string;
   headersText: string;
   excludedModelsText: string;
-  disableCooling: boolean;
+  modelAliasesText: string;
+  disableCooling: CoolingPolicy;
   requestRetry: string;
   websockets: boolean;
   xaiRoutingMode: XaiRoutingMode;
@@ -44,6 +53,11 @@ export type AuthFileConfigurationErrorKey =
   | 'auth_files.headers_invalid_json'
   | 'auth_files.headers_invalid_object'
   | 'auth_files.headers_invalid_value'
+  | 'auth_files.model_aliases_invalid_json'
+  | 'auth_files.model_aliases_invalid_array'
+  | 'auth_files.model_aliases_invalid_entry'
+  | 'auth_files.model_aliases_same_as_name'
+  | 'auth_files.model_aliases_duplicate'
   | 'accounts.config_error_priority_integer'
   | 'accounts.config_error_weight_integer'
   | 'accounts.config_error_weight_range'
@@ -167,6 +181,85 @@ const buildHeadersPatch = (
     if (!nextNames.has(name)) patch[name] = '';
   });
   return Object.keys(patch).length > 0 ? patch : undefined;
+};
+
+const readModelAliases = (value: unknown): OAuthModelAliasEntry[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecordObject(item)) return [];
+    const name = typeof item.name === 'string' ? item.name : '';
+    const alias = typeof item.alias === 'string' ? item.alias : '';
+    if (!name.trim() && !alias.trim()) return [];
+    return [
+      {
+        name,
+        alias,
+        ...(item.fork === true ? { fork: true } : {}),
+        ...(item.forceMapping === true || item.force_mapping === true
+          ? { forceMapping: true }
+          : {}),
+      } satisfies OAuthModelAliasEntry,
+    ];
+  });
+};
+
+const serializeModelAliasesText = (entries: OAuthModelAliasEntry[]): string =>
+  entries.length === 0
+    ? ''
+    : JSON.stringify(
+        entries.map((entry) => ({
+          name: entry.name,
+          alias: entry.alias,
+          ...(entry.fork === true ? { fork: true } : {}),
+          ...(entry.forceMapping === true ? { forceMapping: true } : {}),
+        })),
+        null,
+        2
+      );
+
+const parseModelAliasesText = (
+  value: string
+): { value: OAuthModelAliasEntry[] | null; error?: AuthFileConfigurationErrorKey } => {
+  const trimmed = value.trim();
+  if (!trimmed) return { value: [] };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    return { value: null, error: 'auth_files.model_aliases_invalid_json' };
+  }
+  if (!Array.isArray(parsed)) {
+    return { value: null, error: 'auth_files.model_aliases_invalid_array' };
+  }
+
+  const draft: OAuthModelAliasEntry[] = [];
+  for (const item of parsed) {
+    if (!isRecordObject(item) || typeof item.name !== 'string' || typeof item.alias !== 'string') {
+      return { value: null, error: 'auth_files.model_aliases_invalid_entry' };
+    }
+    draft.push({
+      name: item.name,
+      alias: item.alias,
+      ...(item.fork === true ? { fork: true } : {}),
+      ...(item.forceMapping === true || item.force_mapping === true
+        ? { forceMapping: true }
+        : {}),
+    });
+  }
+
+  const normalization = normalizeOAuthAliasEntries(draft);
+  const issue = normalization.issues[0];
+  if (issue?.code === 'same_as_name') {
+    return { value: null, error: 'auth_files.model_aliases_same_as_name' };
+  }
+  if (issue?.code === 'duplicate_alias') {
+    return { value: null, error: 'auth_files.model_aliases_duplicate' };
+  }
+  if (issue || normalization.incompleteCount > 0) {
+    return { value: null, error: 'auth_files.model_aliases_invalid_entry' };
+  }
+  return { value: normalization.accepted };
 };
 
 const normalizeSensitiveWords = (value: unknown): string[] => {
@@ -329,6 +422,7 @@ export const buildAuthFileConfigurationDraft = (
   const excludedModels = normalizeExcludedModels(
     record.excluded_models ?? record['excluded-models'] ?? record.excludedModels
   );
+  const modelAliases = readModelAliases(record.model_aliases ?? record['model-aliases']);
   const sensitiveWords = normalizeSensitiveWords(
     record.cloak_sensitive_words ?? record.cloakSensitiveWords ?? record['cloak-sensitive-words']
   );
@@ -341,10 +435,8 @@ export const buildAuthFileConfigurationDraft = (
     note: readTrimmedString(record.note),
     headersText: Object.keys(headers).length > 0 ? JSON.stringify(headers, null, 2) : '',
     excludedModelsText: excludedModels.join('\n'),
-    disableCooling:
-      parseDisableCoolingValue(
-        record.disable_cooling ?? record['disable-cooling'] ?? record.disableCooling
-      ) === true,
+    modelAliasesText: serializeModelAliasesText(modelAliases),
+    disableCooling: coolingPolicyFromOverride(readCredentialCoolingOverride(record)),
     requestRetry: readIntegerText(
       record.request_retry ?? record['request-retry'] ?? record.requestRetry
     ),
@@ -482,8 +574,21 @@ export const buildAuthFileConfigurationPatch = (
     tombstoneLegacyAliases(patch, record, ['excludedModels', 'excluded_models']);
   }
 
+  if (draft.modelAliasesText !== originalDraft.modelAliasesText) {
+    const parsed = parseModelAliasesText(draft.modelAliasesText);
+    if (parsed.error) {
+      errors.modelAliasesText = parsed.error;
+    } else {
+      const originalAliases = readModelAliases(record.model_aliases ?? record['model-aliases']);
+      const nextAliases = parsed.value ?? [];
+      if (serializeModelAliasesText(originalAliases) !== serializeModelAliasesText(nextAliases)) {
+        patch.model_aliases = nextAliases;
+      }
+    }
+  }
+
   if (draft.disableCooling !== originalDraft.disableCooling) {
-    patch.disable_cooling = draft.disableCooling;
+    patch.disable_cooling = coolingPolicyToOverride(draft.disableCooling);
     tombstoneLegacyAliases(patch, record, ['disableCooling', 'disable-cooling']);
   }
 

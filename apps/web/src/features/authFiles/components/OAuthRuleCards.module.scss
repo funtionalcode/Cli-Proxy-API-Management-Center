@@ -1,0 +1,368 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+.excludedList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cardScopeHint {
+  margin: 0 0 $spacing-sm;
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ruleToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--surface-subtle) 72%, var(--bg-primary));
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.ruleSummary {
+  min-width: 0;
+  color: color-mix(in srgb, var(--text-secondary) 82%, var(--text-primary));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.ruleSearch {
+  flex: 0 1 280px;
+  width: min(100%, 280px);
+  min-width: 180px;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  :global(.input) {
+    min-height: 34px;
+    font-size: 13px;
+  }
+
+  :global(.input-right-element) {
+    color: var(--text-secondary);
+  }
+
+  @include mobile {
+    flex-basis: auto;
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+.excludedItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background-color: var(--surface-subtle);
+
+  @include mobile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.excludedInfo {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ruleItemHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.excludedProvider {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleCount {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ruleTokenList {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ruleToken {
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 7px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleExpandButton {
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--primary-active);
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid color-mix(in srgb, var(--primary-color) 36%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.aliasRuleList {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aliasRuleItem {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+
+  &:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  @include mobile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.aliasRuleRoute {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+
+  code {
+    min-width: 0;
+    color: var(--text-primary);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+.aliasRuleBadges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
+}
+
+.ruleSemanticBadge,
+.ruleSemanticBadgeMuted {
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 24%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--bg-primary));
+  color: color-mix(in srgb, var(--primary-color) 76%, var(--text-primary));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleSemanticBadgeMuted {
+  border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+  background: var(--bg-primary);
+  color: color-mix(in srgb, var(--text-secondary) 88%, var(--text-primary));
+}
+
+.excludedActions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: $spacing-xs;
+
+  @include mobile {
+    justify-content: flex-end;
+  }
+}
+
+.ruleMoreButton {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 5px;
+  border-radius: 8px;
+}
+
+.aliasChartSection {
+  min-width: 0;
+  margin-bottom: $spacing-lg;
+  padding-bottom: $spacing-lg;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.aliasChartHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+  margin-bottom: $spacing-sm;
+}
+
+.aliasChartTitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.aliasChart {
+  width: 100%;
+  max-width: 100%;
+  min-height: 120px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.cardExtraButtons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: $spacing-sm;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.viewModeSwitch {
+  display: inline-flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 82%, var(--surface-subtle));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+
+  :global(.btn.btn-sm) {
+    min-width: 0;
+    min-height: 34px;
+    height: auto;
+    padding: 0 14px;
+    border: 0;
+    border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+    border-radius: 0;
+    background: transparent;
+    color: color-mix(in srgb, var(--text-secondary) 84%, var(--text-primary));
+    box-shadow: none;
+  }
+
+  :global(.btn.btn-sm:first-child) {
+    border-left: 0;
+  }
+
+  :global(.btn.btn-sm:hover:not(:disabled)) {
+    background: color-mix(in srgb, var(--primary-color) 5%, var(--bg-primary));
+    color: var(--text-primary);
+  }
+
+  :global(.btn.btn-sm.btn-secondary),
+  :global(.btn.btn-sm.btn-secondary:hover:not(:disabled)) {
+    border-left-color: transparent;
+    background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-primary));
+    color: var(--primary-active);
+    font-weight: 800;
+  }
+
+  :global(.btn.btn-sm.btn-secondary + .btn.btn-sm) {
+    border-left-color: transparent;
+  }
+}
+
+@include mobile {
+  .cardExtraButtons {
+    width: 100%;
+
+    > :global(.btn) {
+      margin-left: auto;
+    }
+  }
+
+  .viewModeSwitch {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .viewModeSwitch :global(.btn.btn-sm) {
+    flex: 1 1 0;
+  }
+}

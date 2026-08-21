@@ -38,7 +38,7 @@ redis-usage-queue-retention-seconds: 60
 | 要做的事                      | 推荐入口                               |
 | ----------------------------- | -------------------------------------- |
 | 添加 Provider、模型或 API Key | [AI 提供商](../manual/ai-providers.md) |
-| 登录、导入或禁用账号          | [认证文件](../manual/auth-files.md)    |
+| 登录、导入或禁用账号          | [凭证管理](../manual/accounts.md)      |
 | OAuth 登录                    | [OAuth 登录](../manual/oauth.md)       |
 | 调整 CPA 或 CPAMP 运行设置    | [配置中心](../manual/configuration.md) |
 

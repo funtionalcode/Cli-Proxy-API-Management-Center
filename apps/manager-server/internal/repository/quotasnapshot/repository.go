@@ -5,18 +5,42 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 )
 
 const (
-	defaultCandidateLimit  = 1000
-	candidateRowsPerSource = 8
+	defaultCandidateLimit       = 1000
+	candidateRowsPerSource      = 8
+	LegacySnapshotMigrationName = "quota_snapshot_lifecycle_v1"
 )
+
+var ErrLegacySnapshotGroupTooLarge = errors.New("legacy quota observation group exceeds online batch limit")
+
+type LegacySnapshotGroupTooLargeError struct {
+	Limit int
+}
+
+func (e LegacySnapshotGroupTooLargeError) Error() string {
+	return fmt.Sprintf("legacy quota observation group exceeds safe batch limit %d; stop Manager Server and run cleanup-derived", e.Limit)
+}
+
+func (e LegacySnapshotGroupTooLargeError) Unwrap() error {
+	return ErrLegacySnapshotGroupTooLarge
+}
+
+type LegacyBackfillResult struct {
+	Processed      int
+	LastSnapshotID int64
+	Pending        bool
+	Completed      bool
+}
 
 type Repository interface {
 	InsertObservationWrites(ctx context.Context, writes []model.AccountQuotaObservationWrite) error
@@ -58,11 +82,130 @@ func ScopeFingerprint(kind, key string, modelIDs []string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 }
 
-// BackfillLegacySnapshots attaches pre-lifecycle snapshot rows to synthetic
-// partial observations and reconciles them through the normal lifecycle path.
-// Partial inventory is intentional: migration must not infer provider removals
-// that were never observed by the legacy writer.
-func BackfillLegacySnapshots(ctx context.Context, db *sql.DB) error {
+// BackfillLegacySnapshotsBatch attaches one complete pre-lifecycle observation
+// group per transaction. Partial inventory is intentional: migration must not
+// infer provider removals that were never observed by the legacy writer.
+func BackfillLegacySnapshotsBatch(ctx context.Context, db *sql.DB, maxGroupSize int) (LegacyBackfillResult, error) {
+	if maxGroupSize <= 0 {
+		maxGroupSize = 1000
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	firstRows, err := loadLegacySnapshots(ctx, tx, `where observation_id is null
+		order by account_key, provider, observed_at_ms,
+			case lower(trim(source))
+				when 'response_body' then 1
+				when 'api_query' then 2
+				when 'inspection' then 3
+				else 0
+			end,
+			coalesce(source_observation_id, ''), id
+		limit 1`)
+	if err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	if len(firstRows) == 0 {
+		result := LegacyBackfillResult{Completed: true}
+		if err := updateLegacyBackfillState(ctx, tx, result); err != nil {
+			return LegacyBackfillResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return LegacyBackfillResult{}, err
+		}
+		return result, nil
+	}
+	first := firstRows[0]
+	groupWhere := `where observation_id is null
+		and account_key = ? and provider = ? and source = ?
+		and coalesce(source_observation_id, '') = ? and observed_at_ms = ?`
+	args := []any{first.AccountKey, first.Provider, first.Source, first.SourceObservationID, first.ObservedAtMS}
+	if strings.EqualFold(strings.TrimSpace(first.Provider), "xai") {
+		operator := "not"
+		if first.InventoryScopeKey == "xai:included-free" {
+			operator = ""
+		}
+		groupWhere += ` and ` + operator + ` (
+			lower(trim(source)) = 'response_body'
+			or lower(trim(provider_window_id)) = 'included-free-rolling-24h'
+		)`
+	}
+	groupWhere += ` order by id limit ?`
+	args = append(args, maxGroupSize+1)
+	snapshots, err := loadLegacySnapshots(ctx, tx, groupWhere, args...)
+	if err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	if len(snapshots) > maxGroupSize {
+		return LegacyBackfillResult{}, LegacySnapshotGroupTooLargeError{Limit: maxGroupSize}
+	}
+	groupKey := strings.Join([]string{
+		first.AccountKey,
+		first.Provider,
+		first.InventoryScopeKey,
+		first.Source,
+		first.SourceObservationID,
+		fmt.Sprintf("%d", first.ObservedAtMS),
+	}, "\x00")
+	write := model.AccountQuotaObservationWrite{
+		Observation: model.AccountQuotaObservation{
+			AccountKey:          first.AccountKey,
+			Provider:            first.Provider,
+			Source:              first.Source,
+			SourceObservationID: first.SourceObservationID,
+			InventoryScopeKey:   first.InventoryScopeKey,
+			InventoryMode:       "partial",
+			ObservedAtMS:        first.ObservedAtMS,
+			CreatedAtMS:         first.CreatedAtMS,
+		},
+		Snapshots: snapshots,
+	}
+	lastSnapshotID := int64(0)
+	for _, snapshot := range snapshots {
+		if snapshot.CreatedAtMS > write.Observation.CreatedAtMS {
+			write.Observation.CreatedAtMS = snapshot.CreatedAtMS
+		}
+		if snapshot.ID > lastSnapshotID {
+			lastSnapshotID = snapshot.ID
+		}
+	}
+	applyLegacyCodexRelationships(write.Snapshots)
+	write.Observation.WindowCount = len(write.Snapshots)
+	write.Observation.ObservationHash = legacyObservationHash(groupKey, write.Snapshots)
+	writes := []model.AccountQuotaObservationWrite{write}
+	if err := insertObservationWrites(ctx, tx, writes); err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	processed := writes[0].InsertedSnapshotCount
+	var pending int
+	if err := tx.QueryRowContext(ctx, `select exists (
+		select 1 from account_quota_snapshots where observation_id is null limit 1
+	)`).Scan(&pending); err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	result := LegacyBackfillResult{
+		Processed:      processed,
+		LastSnapshotID: lastSnapshotID,
+		Pending:        pending != 0,
+		Completed:      pending == 0,
+	}
+	if err := updateLegacyBackfillState(ctx, tx, result); err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	return result, nil
+}
+
+type legacySnapshotRows interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func loadLegacySnapshots(ctx context.Context, db legacySnapshotRows, suffix string, args ...any) ([]model.AccountQuotaSnapshot, error) {
 	rows, err := db.QueryContext(ctx, `select
 		id, account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, coalesce(model_scope_key, ''), coalesce(model_ids_json, ''),
@@ -71,20 +214,12 @@ func BackfillLegacySnapshots(ctx context.Context, db *sql.DB) error {
 		used_percent, remaining_percent, used_value, limit_value,
 		coalesce(quota_unit, ''), reset_credits_available,
 		coalesce(reset_credits_json, ''), coalesce(plan_type, ''), created_at_ms
-		from account_quota_snapshots
-		where observation_id is null
-		order by account_key, provider, observed_at_ms, id`)
+		from account_quota_snapshots `+suffix, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	type observationGroup struct {
-		key       string
-		createdMS int64
-		write     model.AccountQuotaObservationWrite
-	}
-	groupsByKey := make(map[string]*observationGroup)
-	groups := make([]*observationGroup, 0)
+	defer rows.Close()
+	result := make([]model.AccountQuotaSnapshot, 0)
 	for rows.Next() {
 		var snapshot model.AccountQuotaSnapshot
 		var cycleStart, cycleEnd, duration sql.NullInt64
@@ -117,8 +252,7 @@ func BackfillLegacySnapshots(ctx context.Context, db *sql.DB) error {
 			&snapshot.PlanType,
 			&snapshot.CreatedAtMS,
 		); err != nil {
-			_ = rows.Close()
-			return err
+			return nil, err
 		}
 		snapshot.CycleStartMS = int64Pointer(cycleStart)
 		snapshot.CycleEndMS = int64Pointer(cycleEnd)
@@ -128,63 +262,59 @@ func BackfillLegacySnapshots(ctx context.Context, db *sql.DB) error {
 		snapshot.UsedValue = float64Pointer(usedValue)
 		snapshot.LimitValue = float64Pointer(limitValue)
 		snapshot.ResetCreditsAvailable = int64Pointer(resetCreditsAvailable)
-		snapshot.ScopeFingerprint = ScopeFingerprint(
-			snapshot.ModelScopeKind,
-			snapshot.ModelScopeKey,
-			legacyModelIDs(snapshot.ModelIDsJSON),
-		)
+		snapshot.ScopeFingerprint = ScopeFingerprint(snapshot.ModelScopeKind, snapshot.ModelScopeKey, legacyModelIDs(snapshot.ModelIDsJSON))
 		snapshot.ContentHash = legacySnapshotContentHash(snapshot)
 		snapshot.InventoryScopeKey = legacyInventoryScopeKey(snapshot)
+		result = append(result, snapshot)
+	}
+	return result, rows.Err()
+}
 
-		groupKey := strings.Join([]string{
-			snapshot.AccountKey,
-			snapshot.Provider,
-			snapshot.InventoryScopeKey,
-			snapshot.Source,
-			snapshot.SourceObservationID,
-			fmt.Sprintf("%d", snapshot.ObservedAtMS),
-		}, "\x00")
-		group := groupsByKey[groupKey]
-		if group == nil {
-			group = &observationGroup{key: groupKey, createdMS: snapshot.CreatedAtMS}
-			group.write.Observation = model.AccountQuotaObservation{
-				AccountKey:          snapshot.AccountKey,
-				Provider:            snapshot.Provider,
-				Source:              snapshot.Source,
-				SourceObservationID: snapshot.SourceObservationID,
-				InventoryScopeKey:   snapshot.InventoryScopeKey,
-				InventoryMode:       "partial",
-				ObservedAtMS:        snapshot.ObservedAtMS,
-				CreatedAtMS:         snapshot.CreatedAtMS,
-			}
-			groupsByKey[groupKey] = group
-			groups = append(groups, group)
-		}
-		if snapshot.CreatedAtMS > group.createdMS {
-			group.createdMS = snapshot.CreatedAtMS
-			group.write.Observation.CreatedAtMS = snapshot.CreatedAtMS
-		}
-		group.write.Snapshots = append(group.write.Snapshots, snapshot)
+type legacyBackfillStateWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func updateLegacyBackfillState(ctx context.Context, db legacyBackfillStateWriter, result LegacyBackfillResult) error {
+	nowMS := time.Now().UnixMilli()
+	status := "running"
+	finishedAt := any(nil)
+	if result.Completed {
+		status = "completed"
+		finishedAt = nowMS
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(groups) == 0 {
+	_, err := db.ExecContext(ctx, `update usage_data_migrations set
+		status = ?, last_event_id = max(last_event_id, ?),
+		target_event_id = max(target_event_id, coalesce((select max(id) from account_quota_snapshots), 0)),
+		processed_rows = processed_rows + ?, changed_rows = changed_rows + ?,
+		started_at_ms = coalesce(started_at_ms, ?), updated_at_ms = ?,
+		finished_at_ms = ?, last_error = null where name = ?`,
+		status,
+		result.LastSnapshotID,
+		result.Processed,
+		result.Processed,
+		nowMS,
+		nowMS,
+		finishedAt,
+		LegacySnapshotMigrationName,
+	)
+	return err
+}
+
+func RecordLegacyBackfillFailure(ctx context.Context, db *sql.DB, migrationErr error) error {
+	if migrationErr == nil {
 		return nil
 	}
-
-	writes := make([]model.AccountQuotaObservationWrite, 0, len(groups))
-	for _, group := range groups {
-		applyLegacyCodexRelationships(group.write.Snapshots)
-		group.write.Observation.WindowCount = len(group.write.Snapshots)
-		group.write.Observation.ObservationHash = legacyObservationHash(group.key, group.write.Snapshots)
-		writes = append(writes, group.write)
-	}
-	return (&repository{db: db}).InsertObservationWrites(ctx, writes)
+	nowMS := time.Now().UnixMilli()
+	_, err := db.ExecContext(ctx, `update usage_data_migrations set
+		status = 'failed', started_at_ms = coalesce(started_at_ms, ?),
+		updated_at_ms = ?, finished_at_ms = ?, last_error = ? where name = ?`,
+		nowMS,
+		nowMS,
+		nowMS,
+		migrationErr.Error(),
+		LegacySnapshotMigrationName,
+	)
+	return err
 }
 
 // InventoryScopeKey returns the canonical provider inventory scope shared by
@@ -363,20 +493,28 @@ func (r *repository) ListCandidates(ctx context.Context, accountKey, provider st
 		coalesce(quota_unit, '') as quota_unit, reset_credits_available,
 		coalesce(reset_credits_json, '') as reset_credits_json,
 		coalesce(plan_type, '') as plan_type, created_at_ms,
-		coalesce((select availability from account_quota_windows window
-			where window.id = account_quota_snapshots.logical_window_id), 'inactive') as window_availability,
+		case when observation_id is null then 'active' else coalesce((
+			select availability from account_quota_windows window
+			where window.id = account_quota_snapshots.logical_window_id
+		), 'inactive') end as window_availability,
 		row_number() over (
-			partition by logical_window_id, source
+			partition by coalesce(
+				cast(logical_window_id as text),
+				'legacy:' || provider_window_id || char(0) || model_scope_kind ||
+				char(0) || coalesce(model_scope_key, '') || char(0) ||
+				coalesce(model_ids_json, '')
+			), source
 			order by observed_at_ms desc, id desc
 		) as source_rank
 		from account_quota_snapshots
 		where account_key = ? and provider = ?
-			and logical_window_id is not null
-			and exists (
-			select 1 from account_quota_observations observation
-			where observation.id = account_quota_snapshots.observation_id
-				and observation.lifecycle_applied = 1
-		)
+			and (observation_id is null or (
+				logical_window_id is not null and exists (
+					select 1 from account_quota_observations observation
+					where observation.id = account_quota_snapshots.observation_id
+						and observation.lifecycle_applied = 1
+				)
+			))
 	)
 	select
 		id, coalesce(observation_id, 0), coalesce(logical_window_id, 0),

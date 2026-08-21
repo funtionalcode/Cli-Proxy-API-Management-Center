@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, createScopedApiRequestConfig, type ApiClientRequestScope } from './client';
 import type {
   PluginConfigField,
   PluginConfigObject,
@@ -284,8 +284,11 @@ export interface PluginStoreInstallOptions {
 }
 
 export const pluginsApi = {
-  async list(): Promise<PluginListResponse> {
-    const data = await apiClient.get('/plugins');
+  async list(requestScope?: ApiClientRequestScope): Promise<PluginListResponse> {
+    const data = await apiClient.get(
+      '/plugins',
+      requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+    );
     return normalizePluginList(data);
   },
 

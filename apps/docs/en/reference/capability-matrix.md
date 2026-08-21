@@ -9,19 +9,19 @@ Use this page to confirm which features each usage option provides and what evid
 
 ## By Usage Option
 
-| Capability                                                | CPAMP Lightweight Panel     | CPAMP Full Mode |
-| --------------------------------------------------------- | --------------------------- | --------------- |
-| CPA config, providers, auth files, OAuth, quota, and logs | ✅                          | ✅              |
-| Plugin management and plugin pages                        | Depends on CPA/plugin paths | ✅              |
-| Browser-local account checks                              | ✅                          | ✅              |
-| SQLite request history                                    | ❌                          | ✅              |
-| Request monitoring and failure diagnosis                  | ❌                          | ✅              |
-| Usage and cost analytics                                  | ❌                          | ✅              |
-| Model prices and API key aliases                          | ❌                          | ✅              |
-| Scheduled account inspection and history                  | ❌                          | ✅              |
-| Quota cooldowns and account action queue                  | ❌                          | ✅              |
-| Login credential                                          | CPA Management Key          | CPAMP Admin Key |
-| Backups, migration state, and pprof                       | ❌                          | ✅              |
+| Capability                                       | CPAMP Lightweight Panel     | CPAMP Full Mode |
+| ------------------------------------------------ | --------------------------- | --------------- |
+| CPA config, providers, Accounts, OAuth, and logs | ✅                          | ✅              |
+| Plugin management and plugin pages               | Depends on CPA/plugin paths | ✅              |
+| Browser-local account checks                     | ✅                          | ✅              |
+| SQLite request history                           | ❌                          | ✅              |
+| Request monitoring and failure diagnosis         | ❌                          | ✅              |
+| Usage and cost analytics                         | ❌                          | ✅              |
+| Model prices and API key aliases                 | ❌                          | ✅              |
+| Scheduled account inspection and history         | ❌                          | ✅              |
+| Quota cooldowns and account action queue         | ❌                          | ✅              |
+| Login credential                                 | CPA Management Key          | CPAMP Admin Key |
+| Backups, migration state, and pprof              | ❌                          | ✅              |
 
 The CPAMP Lightweight Panel is an enhanced WebUI hosted directly by CPA and requires no additional service, just like the official panel. It does not connect to or read Manager Server. Use the Manager Server `:18317/management.html` entry for the server-backed capabilities in this table.
 
@@ -62,7 +62,6 @@ Docker and native packages provide the same Full Mode capabilities; only the ins
 ## Related Guides
 
 - [Account Inspection](../manual/codex-inspection.md)
-- [Quota](../manual/quota.md)
-- [Auth Files](../manual/auth-files.md)
+- [Accounts And Credential Health](../manual/accounts.md)
 - [Account Action Queue](../manual/account-actions.md)
 - [Manager Server Guide](../operations/manager-server.md)

@@ -102,6 +102,9 @@ describe('useAuthStore logout', () => {
       isAuthenticated: true,
       apiBase: 'http://cpa.local:8317',
       managementKey: 'management-key',
+      serverVersion: 'v7.2.93',
+      serverCommit: '5bffd151',
+      serverBuildDate: '2026-08-17',
       connectionStatus: 'connected',
     });
     storage.setItem('isLoggedIn', 'true');
@@ -119,6 +122,9 @@ describe('useAuthStore logout', () => {
       isAuthenticated: false,
       apiBase: '',
       managementKey: '',
+      serverVersion: null,
+      serverCommit: null,
+      serverBuildDate: null,
       connectionStatus: 'disconnected',
     });
     expect(storage.getItem('isLoggedIn')).toBeNull();
@@ -172,6 +178,12 @@ describe('useAuthStore manager embedded login recovery', () => {
     const { useAuthStore } = await import('./useAuthStore');
     const { useUsageServiceStore } = await import('./useUsageServiceStore');
 
+    useAuthStore.setState({
+      serverVersion: 'v9.9.9',
+      serverCommit: 'stale-commit',
+      serverBuildDate: '2025-01-01',
+    });
+
     const result = await useAuthStore.getState().login({
       apiBase: 'http://manager.local:18317',
       managementKey: 'manager-admin-key',
@@ -190,6 +202,9 @@ describe('useAuthStore manager embedded login recovery', () => {
       apiBase: 'http://manager.local:18317',
       managementKey: 'manager-admin-key',
       sessionMode: 'manager_embedded',
+      serverVersion: null,
+      serverCommit: null,
+      serverBuildDate: null,
       connectionStatus: 'connected',
     });
     expect(useUsageServiceStore.getState()).toMatchObject({

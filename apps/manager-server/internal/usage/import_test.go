@@ -964,3 +964,117 @@ func TestBuildPayloadExposesResolvedModelOnDetails(t *testing.T) {
 		t.Fatalf("detail resolved_model = %#v", modelEntry.Details)
 	}
 }
+
+func TestBuildPayloadGroupsReasoningSuffixesByAnalyticsModel(t *testing.T) {
+	payload := BuildPayload([]Event{
+		{Model: "deepseek-v4-flash(low)", AnalyticsModel: "stale-model", ReasoningEffort: "low", TotalTokens: 1},
+		{Model: "deepseek-v4-flash(max)", ReasoningEffort: "max", TotalTokens: 1},
+		{Model: "custom-model(region-us)", TotalTokens: 1},
+	})
+	api := payload.APIs["-"]
+	if api == nil || len(api.Models) != 2 {
+		t.Fatalf("models = %#v", api)
+	}
+	canonical := api.Models["deepseek-v4-flash"]
+	if canonical == nil || len(canonical.Details) != 2 {
+		t.Fatalf("canonical details = %#v", canonical)
+	}
+	if canonical.Details[0].RequestedModel != "deepseek-v4-flash(low)" || canonical.Details[1].RequestedModel != "deepseek-v4-flash(max)" {
+		t.Fatalf("requested models = %#v", canonical.Details)
+	}
+	if api.Models["custom-model(region-us)"] == nil {
+		t.Fatalf("unknown suffix alias was removed: %#v", api.Models)
+	}
+}
+
+func TestCompatiblePayloadUsesRequestedModelWhenAggregateKeyDiffers(t *testing.T) {
+	result, err := ParseImportPayload([]byte(`{
+		"apis": {
+			"POST /v1/chat/completions": {
+				"models": {
+					"deepseek-v4-flash": {
+						"details": [{
+							"timestamp": "2026-08-12T10:00:00Z",
+							"requested_model": "deepseek-v4-flash(max)",
+							"tokens": {"total_tokens": 1},
+							"failed": false
+						}]
+					}
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse compatible payload: %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("imported events = %d, want 1", len(result.Events))
+	}
+	event := result.Events[0]
+	if event.Model != "deepseek-v4-flash(max)" || event.RequestedModel != "deepseek-v4-flash(max)" {
+		t.Fatalf("requested identity = model:%q requested:%q", event.Model, event.RequestedModel)
+	}
+	if event.AnalyticsModel != "deepseek-v4-flash" {
+		t.Fatalf("analytics model = %q, want deepseek-v4-flash", event.AnalyticsModel)
+	}
+	legacyHashEvent := event
+	legacyHashEvent.Model = "deepseek-v4-flash"
+	if want := buildEventHash(legacyHashEvent); event.EventHash != want {
+		t.Fatalf("event hash = %q, want legacy-compatible %q", event.EventHash, want)
+	}
+}
+
+func TestCompatiblePayloadRoundTripPreservesReasoningSuffixModel(t *testing.T) {
+	original := Event{
+		Timestamp:       "2026-08-12T10:00:00Z",
+		TimestampMS:     1_755_000_000_000,
+		Endpoint:        "POST /v1/chat/completions",
+		Model:           "deepseek-v4-flash(max)",
+		ReasoningEffort: "max",
+		TotalTokens:     1,
+	}
+	payload, err := json.Marshal(BuildPayload([]Event{original}))
+	if err != nil {
+		t.Fatalf("marshal compatible payload: %v", err)
+	}
+
+	result, err := ParseImportPayload(payload)
+	if err != nil {
+		t.Fatalf("parse compatible payload: %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("imported events = %d, want 1", len(result.Events))
+	}
+	imported := result.Events[0]
+	if imported.Model != original.Model {
+		t.Fatalf("model = %q, want %q", imported.Model, original.Model)
+	}
+	if imported.AnalyticsModel != "deepseek-v4-flash" {
+		t.Fatalf("analytics model = %q, want deepseek-v4-flash", imported.AnalyticsModel)
+	}
+	if imported.RequestedModel != original.Model {
+		t.Fatalf("requested model = %q, want %q", imported.RequestedModel, original.Model)
+	}
+}
+
+func TestCompatiblePayloadPrefersExplicitRequestedModelForAudit(t *testing.T) {
+	original := Event{
+		Timestamp:       "2026-08-12T10:00:00Z",
+		TimestampMS:     1_755_000_000_000,
+		Endpoint:        "POST /v1/chat/completions",
+		Model:           "stored-display-model",
+		RequestedModel:  "deepseek-v4-flash(max)",
+		ResolvedModel:   "deepseek-v4-flash",
+		ReasoningEffort: "max",
+		TotalTokens:     1,
+	}
+	payload := BuildPayload([]Event{original})
+	model := payload.APIs[original.Endpoint].Models["deepseek-v4-flash"]
+	if model == nil || len(model.Details) != 1 {
+		t.Fatalf("canonical model aggregate = %#v", payload.APIs[original.Endpoint].Models)
+	}
+	detail := model.Details[0]
+	if detail.RequestedModel != original.RequestedModel {
+		t.Fatalf("requested model = %q, want %q", detail.RequestedModel, original.RequestedModel)
+	}
+}

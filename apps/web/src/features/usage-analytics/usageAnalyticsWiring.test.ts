@@ -361,7 +361,6 @@ describe('usage analytics app wiring', () => {
   it('keeps long English sidebar labels concise', () => {
     expect(en.nav.monitoring_center).toBe('Request Monitor');
     expect(en.nav.plugins).toBe('Plugins');
-    expect(en.nav.quota_management).toBe('Quota');
     expect(en.nav.accounts).toBe('Credential Management');
     expect(en.nav).not.toHaveProperty('codex_inspection');
   });

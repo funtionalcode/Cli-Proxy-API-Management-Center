@@ -697,9 +697,17 @@ func selectWindows(
 	result := make([]Window, 0, len(groups))
 	for key, group := range groups {
 		lastSeenAtMS, hasLifecycleState := lifecycleLastSeen[key]
+		selectionWatermarkMS := lastSeenAtMS
+		if hasLifecycleState {
+			for _, candidate := range group {
+				if candidate.ObservationID == 0 && candidate.ObservedAtMS > selectionWatermarkMS {
+					selectionWatermarkMS = candidate.ObservedAtMS
+				}
+			}
+		}
 		sort.SliceStable(group, func(i, j int) bool {
-			leftCurrent := hasLifecycleState && group[i].ObservedAtMS == lastSeenAtMS
-			rightCurrent := hasLifecycleState && group[j].ObservedAtMS == lastSeenAtMS
+			leftCurrent := hasLifecycleState && group[i].ObservedAtMS == selectionWatermarkMS
+			rightCurrent := hasLifecycleState && group[j].ObservedAtMS == selectionWatermarkMS
 			if leftCurrent != rightCurrent {
 				return leftCurrent
 			}

@@ -1189,13 +1189,16 @@ describe('usage analytics adapters', () => {
     expect(rows[0].cacheRate).toBeCloseTo(140 / 300, 6);
   });
 
-  it('estimates drilldown preview cost from model cost per token', () => {
+  it('uses canonical analytics models to estimate drilldown preview cost', () => {
     const rows = buildDrilldownPreview(
       [
         {
           event_hash: 'event-a',
           timestamp_ms: NOW_MS,
-          model: 'gpt-4o',
+          model: 'deepseek-v4-flash(max)',
+          analytics_model: 'deepseek-v4-flash',
+          requested_model: 'deepseek-v4-flash(max)',
+          resolved_model: 'deepseek-v4-flash-202608',
           endpoint: '/v1/chat/completions',
           method: 'POST',
           path: '/v1/chat/completions',
@@ -1222,12 +1225,37 @@ describe('usage analytics adapters', () => {
           header_quota_used_percent: 87,
           header_quota_recover_at_ms: 1780000060000,
         },
+        {
+          event_hash: 'event-b',
+          timestamp_ms: NOW_MS,
+          model: 'deepseek-v4-flash(high)',
+          requested_model: 'deepseek-v4-flash(high)',
+          endpoint: '/v1/chat/completions',
+          method: 'POST',
+          path: '/v1/chat/completions',
+          auth_index: '0',
+          source: 'codex',
+          source_hash: 'source-a',
+          api_key_hash: 'abcdef1234567890',
+          account_snapshot: 'team-alpha',
+          auth_label_snapshot: 'prod',
+          auth_provider_snapshot: 'openai',
+          input_tokens: 60,
+          output_tokens: 40,
+          cached_tokens: 0,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 100,
+          latency_ms: 250,
+          failed: false,
+        },
       ],
       [
         {
-          id: 'gpt-4o',
-          label: 'gpt-4o',
-          model: 'gpt-4o',
+          id: 'deepseek-v4-flash',
+          label: 'deepseek-v4-flash',
+          model: 'deepseek-v4-flash',
           requestCount: 10,
           successCount: 10,
           failureCount: 0,
@@ -1247,7 +1275,7 @@ describe('usage analytics adapters', () => {
 
     expect(rows[0]).toMatchObject({
       eventHash: 'event-a',
-      model: 'gpt-4o',
+      model: 'deepseek-v4-flash',
       estimatedCost: 0.2,
       headerErrorKind: 'rate_limit',
       headerErrorCode: 'retry_after',
@@ -1255,6 +1283,11 @@ describe('usage analytics adapters', () => {
       headerQuotaPlanType: 'plus',
       headerQuotaUsedPercent: 87,
       headerQuotaRecoverAtMs: 1780000060000,
+    });
+    expect(rows[1]).toMatchObject({
+      eventHash: 'event-b',
+      model: 'deepseek-v4-flash',
+      estimatedCost: 0.2,
     });
   });
 });

@@ -181,7 +181,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
       const results = await Promise.all(
         providerList.map(async (provider) => {
           try {
-            const models = await authFilesApi.getModelDefinitions(provider);
+            const models = await authFilesApi.getModelDefinitions(provider, requestScope);
             return { provider, models };
           } catch {
             return { provider, models: [] as AuthFileModelItem[] };
@@ -206,7 +206,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
     return () => {
       cancelled = true;
     };
-  }, [isConnectionCurrent, normalizedConnectionKey, providerList, viewMode]);
+  }, [isConnectionCurrent, normalizedConnectionKey, providerList, requestScope, viewMode]);
 
   const loadExcluded = useCallback(
     async (options?: { soft?: boolean }) => {
@@ -713,7 +713,7 @@ export function useAuthFilesOauth(options: UseAuthFilesOauthOptions): UseAuthFil
     allProviderModels: scopedAllProviderModels,
     providerList,
     // Return the memoized callbacks directly. Wrapping them in new arrow functions
-    // each render breaks AuthFilesPage init effects that depend on these refs and
+    // each render breaks credential-workspace init effects that depend on these refs and
     // causes an infinite GET loop (loader setState → re-render → new refs → effect).
     loadExcluded,
     loadModelAlias,

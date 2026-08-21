@@ -35,8 +35,6 @@ export const QUOTA_PROVIDER_TYPES = new Set<QuotaProviderType>([
   'xai',
 ]);
 
-export const MIN_CARD_PAGE_SIZE = 3;
-export const MAX_CARD_PAGE_SIZE = 30;
 export const AUTH_FILE_REFRESH_WARNING_MS = 24 * 60 * 60 * 1000;
 
 export const AUTH_FILE_HEALTHY_STATUS_MESSAGES = new Set([
@@ -131,9 +129,6 @@ export const AUTH_FILE_ICONS: Record<string, AuthFileIconAsset> = {
   qwen: iconQwen,
   vertex: iconVertex,
 };
-
-export const clampCardPageSize = (value: number) =>
-  Math.min(MAX_CARD_PAGE_SIZE, Math.max(MIN_CARD_PAGE_SIZE, Math.round(value)));
 
 export const resolveQuotaErrorMessage = (
   t: TFunction,

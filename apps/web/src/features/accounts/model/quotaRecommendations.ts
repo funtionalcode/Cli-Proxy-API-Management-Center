@@ -1,4 +1,15 @@
 import type { AccountRow } from './accountRows';
+import {
+  getAccountRequestCredentialEvidence,
+  hasAccountQuotaLimitEvidence,
+  isAccountInspectionHealthyEvidence,
+  isAccountRequestCredentialEvidenceCurrent,
+  resolveAccountAuthenticationProblemEvidence,
+  resolveAccountExceptionProblemEvidence,
+  resolveAccountRequestHealthEvidence,
+  type AccountRequestEvidenceBySelectionKey,
+  type AccountRequestEvidenceInput,
+} from './accountHealthEvidence';
 
 export type AccountRecommendationAction =
   | 'refresh'
@@ -27,7 +38,32 @@ const priorityRank: Record<AccountRecommendationPriority, number> = {
 export const getRecommendationRank = (priority: AccountRecommendationPriority) =>
   priorityRank[priority] ?? 0;
 
-export const buildAccountRecommendation = (row: AccountRow): AccountRecommendation | null => {
+const evidenceSensitiveRecommendationReasonKeys = new Set([
+  'accounts.recommend_reason_inspection',
+  'accounts.recommend_reason_request_auth',
+  'accounts.recommend_reason_credential_auth',
+  'accounts.recommend_reason_request_failure',
+  'accounts.recommend_reason_quota_limited',
+  'accounts.recommend_reason_quota_auth',
+  'accounts.recommend_reason_error',
+]);
+
+export const isAccountRecommendationEvidenceSensitive = (
+  recommendation: AccountRecommendation | null | undefined
+) =>
+  recommendation !== null &&
+  recommendation !== undefined &&
+  evidenceSensitiveRecommendationReasonKeys.has(recommendation.reasonKey);
+
+export const buildAccountRecommendation = (
+  row: AccountRow,
+  requestEvidenceInput: AccountRequestEvidenceInput = {}
+): AccountRecommendation | null => {
+  const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const requestCredentialEvidence = getAccountRequestCredentialEvidence(requestEvidence);
+  const authenticationProblem = resolveAccountAuthenticationProblemEvidence(row, requestEvidence);
+  const exceptionProblem = resolveAccountExceptionProblemEvidence(row, requestEvidence);
+
   if (row.runtimeOnly) {
     return {
       row,
@@ -37,7 +73,25 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
     };
   }
 
-  if (row.inspection && row.inspection.action !== 'keep') {
+  if (authenticationProblem?.source === 'request') {
+    return {
+      row,
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_request_auth',
+    };
+  }
+
+  if (authenticationProblem?.source === 'quota_refresh') {
+    return {
+      row,
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_quota_auth',
+    };
+  }
+
+  if (authenticationProblem?.source === 'inspection' && row.inspection) {
     const action =
       row.inspection.action === 'disable' ||
       row.inspection.action === 'enable' ||
@@ -52,6 +106,38 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
     };
   }
 
+  if (authenticationProblem) {
+    return {
+      row,
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_credential_auth',
+    };
+  }
+
+  if (exceptionProblem?.source === 'inspection') {
+    const action =
+      row.inspection?.action === 'disable' ||
+      row.inspection?.action === 'enable' ||
+      row.inspection?.action === 'reauth'
+        ? row.inspection.action
+        : 'review';
+    return {
+      row,
+      action,
+      priority:
+        row.disabled && action === 'enable' && isAccountInspectionHealthyEvidence(row)
+          ? 'medium'
+          : row.inspection?.action === 'reauth'
+            ? 'critical'
+            : 'high',
+      reasonKey:
+        row.disabled && action === 'enable' && isAccountInspectionHealthyEvidence(row)
+          ? 'accounts.recommend_reason_recovered'
+          : 'accounts.recommend_reason_inspection',
+    };
+  }
+
   if (row.quota.status === 'exhausted') {
     return {
       row,
@@ -60,6 +146,15 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
       reasonKey: row.disabled
         ? 'accounts.recommend_reason_disabled_exhausted'
         : 'accounts.recommend_reason_exhausted',
+    };
+  }
+
+  if (hasAccountQuotaLimitEvidence(row, requestEvidenceInput)) {
+    return {
+      row,
+      action: 'refresh',
+      priority: 'high',
+      reasonKey: 'accounts.recommend_reason_quota_limited',
     };
   }
 
@@ -72,7 +167,16 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
     };
   }
 
-  if (row.quota.status === 'error' || row.quota.error) {
+  if (exceptionProblem?.source === 'request') {
+    return {
+      row,
+      action: 'review',
+      priority: 'medium',
+      reasonKey: 'accounts.recommend_reason_request_failure',
+    };
+  }
+
+  if (exceptionProblem?.source === 'quota_refresh') {
     return {
       row,
       action: 'refresh',
@@ -81,7 +185,12 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
     };
   }
 
-  if (row.disabled && row.quota.status === 'ok') {
+  if (
+    row.disabled &&
+    (row.quota.status === 'ok' ||
+      (requestCredentialEvidence?.direction === 'positive' &&
+        isAccountRequestCredentialEvidenceCurrent(row, requestEvidence)))
+  ) {
     return {
       row,
       action: 'enable',
@@ -102,9 +211,14 @@ export const buildAccountRecommendation = (row: AccountRow): AccountRecommendati
   return null;
 };
 
-export const buildAccountRecommendations = (rows: AccountRow[]): AccountRecommendation[] =>
+export const buildAccountRecommendations = (
+  rows: AccountRow[],
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+): AccountRecommendation[] =>
   rows
-    .map(buildAccountRecommendation)
+    .map((row) =>
+      buildAccountRecommendation(row, requestEvidenceBySelectionKey?.get(row.selectionKey))
+    )
     .filter((item): item is AccountRecommendation => item !== null)
     .sort((left, right) => {
       const rankDiff = getRecommendationRank(right.priority) - getRecommendationRank(left.priority);

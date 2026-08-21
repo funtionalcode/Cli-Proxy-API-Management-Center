@@ -22,10 +22,15 @@ var SearchColumns = []string{
 	"request_id",
 	"event_hash",
 	"model",
+	"requested_model",
+	"analytics_model",
 	"resolved_model",
 	"endpoint",
 	"method",
 	"path",
+	"client_ip",
+	"x_forwarded_for",
+	"user_agent",
 	"source",
 	"source_hash",
 	"api_key_hash",
@@ -51,7 +56,11 @@ var SearchColumns = []string{
 func SearchTextExpression(prefix string) string {
 	parts := make([]string, 0, len(SearchColumns))
 	for _, column := range SearchColumns {
-		parts = append(parts, fmt.Sprintf("coalesce(%s%s, '')", prefix, column))
+		expression := prefix + column
+		if column == "analytics_model" {
+			expression = usageidentity.SQLRequestAnalyticsModelExpression(prefix+"model", prefix+"requested_model")
+		}
+		parts = append(parts, fmt.Sprintf("coalesce(%s, '')", expression))
 	}
 	return "lower(" + strings.Join(parts, " || char(31) || ") + ")"
 }
@@ -112,7 +121,7 @@ func UpsertEventIDs(ctx context.Context, tx *sql.Tx, eventIDs []int64, nowMS int
 func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs []any, nowMS int64) error {
 	query := fmt.Sprintf(`insert into %s (
 		event_id, timestamp_ms, search_text, account_key, provider, executor_type, model,
-		resolved_model, auth_index, source, source_hash, api_key_hash,
+		requested_model, analytics_model, resolved_model, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot,
 		auth_provider_snapshot, auth_project_id_snapshot, reasoning_effort,
 		service_tier, failed, latency_ms, input_tokens, output_tokens,
@@ -129,6 +138,8 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		coalesce(provider, ''),
 		coalesce(executor_type, ''),
 		coalesce(model, ''),
+		coalesce(nullif(requested_model, ''), model, ''),
+		%s,
 		coalesce(resolved_model, ''),
 		coalesce(auth_index, ''),
 		coalesce(source, ''),
@@ -166,6 +177,8 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		provider = excluded.provider,
 		executor_type = excluded.executor_type,
 		model = excluded.model,
+		requested_model = excluded.requested_model,
+		analytics_model = excluded.analytics_model,
 		resolved_model = excluded.resolved_model,
 		auth_index = excluded.auth_index,
 		source = excluded.source,
@@ -193,7 +206,7 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		header_error_kind = excluded.header_error_kind,
 		header_error_code = excluded.header_error_code,
 		header_trace_id = excluded.header_trace_id,
-		updated_at_ms = excluded.updated_at_ms`, EventTable, SearchTextExpression(""), usageidentity.SQLAccountKeyExpression(""), whereClause)
+		updated_at_ms = excluded.updated_at_ms`, EventTable, SearchTextExpression(""), usageidentity.SQLAccountKeyExpression(""), usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model"), whereClause)
 	args := make([]any, 0, len(whereArgs)+1)
 	args = append(args, nowMS)
 	args = append(args, whereArgs...)

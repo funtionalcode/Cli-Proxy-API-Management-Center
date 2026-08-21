@@ -47,9 +47,7 @@ const triggersFrontend = (filePath) =>
   filePath === '.github/dependabot.yml' ||
   filePath === 'eslint.config.js' ||
   filePath === 'bin/install-cpamp.sh' ||
-  filePath === 'bin/release/package-native.sh' ||
-  filePath === 'bin/release/check-web-demo-isolation.mjs' ||
-  filePath === 'bin/release/validate-release.mjs';
+  startsWithPath(filePath, 'bin/release');
 
 const triggersManagerServer = (filePath) =>
   startsWithPath(filePath, 'apps/manager-server') || filePath === 'bin/release/package-native.sh';

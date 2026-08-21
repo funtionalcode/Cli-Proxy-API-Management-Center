@@ -48,3 +48,25 @@ describe('normalizeConfigResponse xAI API keys', () => {
     });
   });
 });
+
+describe('normalizeConfigResponse cooling overrides', () => {
+  it.each([
+    [true, true],
+    [false, false],
+    [null, null],
+  ] as const)('preserves %j instead of applying a boolean default', (value, expected) => {
+    const config = normalizeConfigResponse({
+      'gemini-api-key': [{ 'api-key': 'gemini-key', 'disable-cooling': value }],
+    });
+
+    expect(config.geminiApiKeys?.[0]?.disableCooling).toBe(expected);
+  });
+
+  it('leaves a missing cooling override unset', () => {
+    const config = normalizeConfigResponse({
+      'gemini-api-key': [{ 'api-key': 'gemini-key' }],
+    });
+
+    expect(config.geminiApiKeys?.[0]).not.toHaveProperty('disableCooling');
+  });
+});

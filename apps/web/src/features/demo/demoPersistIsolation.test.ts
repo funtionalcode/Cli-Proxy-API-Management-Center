@@ -48,6 +48,7 @@ describe('demo persist isolation', () => {
         managementKey: 'real-management-key',
         rememberPassword: true,
         serverVersion: 'v7.1.18',
+        serverCommit: 'legacy-commit',
         serverBuildDate: '2026-06-30',
         sessionMode: 'manager_embedded',
         sessionPanelBase: 'http://real.local:18317',
@@ -72,6 +73,7 @@ describe('demo persist isolation', () => {
       managementKey: 'demo-management-key',
       rememberPassword: false,
       serverVersion: 'v7.1.18-demo',
+      serverCommit: 'demo-commit',
       serverBuildDate: '2026-06-30',
       sessionMode: 'manager_embedded',
       sessionPanelBase: 'http://demo.local',
@@ -85,11 +87,12 @@ describe('demo persist isolation', () => {
       panelHostMode: 'manager_embedded',
     });
 
-    expect(obfuscatedStorage.getItem<{ state?: { apiBase?: string } }>(STORAGE_KEY_AUTH)?.state)
-      .toMatchObject({
-        apiBase: 'http://real.local:18317',
-        managementKey: 'real-management-key',
-      });
+    expect(
+      obfuscatedStorage.getItem<{ state?: { apiBase?: string } }>(STORAGE_KEY_AUTH)?.state
+    ).toMatchObject({
+      apiBase: 'http://real.local:18317',
+      managementKey: 'real-management-key',
+    });
     expect(
       obfuscatedStorage.getItem<{ state?: { serviceBase?: string } }>(USAGE_SERVICE_STORAGE_KEY)
         ?.state
@@ -108,10 +111,11 @@ describe('demo persist isolation', () => {
       sessionPanelBase: 'http://next.local:18317',
     });
 
-    expect(obfuscatedStorage.getItem<{ state?: { apiBase?: string } }>(STORAGE_KEY_AUTH)?.state)
-      .toMatchObject({
-        apiBase: 'http://next.local:18317',
-        managementKey: 'next-management-key',
-      });
+    expect(
+      obfuscatedStorage.getItem<{ state?: { apiBase?: string } }>(STORAGE_KEY_AUTH)?.state
+    ).toMatchObject({
+      apiBase: 'http://next.local:18317',
+      managementKey: 'next-management-key',
+    });
   });
 });

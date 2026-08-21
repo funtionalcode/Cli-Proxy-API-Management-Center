@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -34,9 +35,11 @@ type Checkpoint struct {
 }
 
 type CatchUpResult struct {
-	Processed   int
-	LastEventID int64
-	Pending     bool
+	Processed            int
+	LastEventID          int64
+	Pending              bool
+	Rebuilt              bool
+	RebuildTargetEventID int64
 }
 
 type AccountHistoryRow struct {
@@ -127,7 +130,7 @@ func (r *repository) CatchUpAccountHistory(ctx context.Context, limit int, nowMS
 	if err != nil {
 		return CatchUpResult{}, err
 	}
-	events, err := eventsAfterCheckpoint(ctx, tx, checkpoint.LastEventID, limit)
+	rebuildTargetEventID, err := usageRollupRebuildTargetInTx(ctx, tx, AccountHistoryCheckpointName)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -135,14 +138,37 @@ func (r *repository) CatchUpAccountHistory(ctx context.Context, limit int, nowMS
 	if err != nil {
 		return CatchUpResult{}, err
 	}
+	targetEventID := latestID
+	rebuilt := rebuildTargetEventID > checkpoint.LastEventID
+	if rebuilt && rebuildTargetEventID < targetEventID {
+		targetEventID = rebuildTargetEventID
+	}
+	events, err := eventsAfterCheckpoint(ctx, tx, checkpoint.LastEventID, targetEventID, limit)
+	if err != nil {
+		return CatchUpResult{}, err
+	}
 	if len(events) == 0 {
-		if err := upsertCheckpoint(ctx, tx, AccountHistoryCheckpointName, checkpoint.LastEventID, nowMS, nowMS, nowMS, ""); err != nil {
+		lastEventID := checkpoint.LastEventID
+		if rebuilt && targetEventID > lastEventID {
+			lastEventID = targetEventID
+		}
+		if err := upsertCheckpoint(ctx, tx, AccountHistoryCheckpointName, lastEventID, nowMS, nowMS, nowMS, ""); err != nil {
 			return CatchUpResult{}, err
+		}
+		if rebuilt && lastEventID >= rebuildTargetEventID {
+			if err := setUsageRollupRebuildTargetInTx(ctx, tx, AccountHistoryCheckpointName, 0, nowMS); err != nil {
+				return CatchUpResult{}, err
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return CatchUpResult{}, err
 		}
-		return CatchUpResult{LastEventID: checkpoint.LastEventID, Pending: latestID > checkpoint.LastEventID}, nil
+		return CatchUpResult{
+			LastEventID:          lastEventID,
+			Pending:              latestID > lastEventID,
+			Rebuilt:              rebuilt,
+			RebuildTargetEventID: rebuildTargetEventID,
+		}, nil
 	}
 
 	rollups := aggregateAccountHistory(events, nowMS)
@@ -153,13 +179,20 @@ func (r *repository) CatchUpAccountHistory(ctx context.Context, limit int, nowMS
 	if err := upsertCheckpoint(ctx, tx, AccountHistoryCheckpointName, lastEventID, nowMS, nowMS, nowMS, ""); err != nil {
 		return CatchUpResult{}, err
 	}
+	if rebuilt && lastEventID >= rebuildTargetEventID {
+		if err := setUsageRollupRebuildTargetInTx(ctx, tx, AccountHistoryCheckpointName, 0, nowMS); err != nil {
+			return CatchUpResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return CatchUpResult{}, err
 	}
 	return CatchUpResult{
-		Processed:   len(events),
-		LastEventID: lastEventID,
-		Pending:     latestID > lastEventID,
+		Processed:            len(events),
+		LastEventID:          lastEventID,
+		Pending:              latestID > lastEventID,
+		Rebuilt:              rebuilt,
+		RebuildTargetEventID: rebuildTargetEventID,
 	}, nil
 }
 
@@ -199,12 +232,66 @@ func (r *repository) AccountHistoryRows(ctx context.Context, accountKeys []strin
 	if len(keys) == 0 {
 		return []AccountHistoryRow{}, nil
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(keys)), ",")
-	args := make([]any, 0, len(keys))
-	for _, key := range keys {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	checkpoint, err := checkpointInTx(ctx, tx, AccountHistoryCheckpointName)
+	if err != nil {
+		return nil, err
+	}
+	rawOnly, err := cacheAccountingRawFallbackInTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[accountRollupKey]*AccountHistoryRow)
+	afterEventID := checkpoint.LastEventID
+	if rawOnly {
+		afterEventID = 0
+	} else {
+		if err := mergeStoredAccountHistoryRows(ctx, tx, keys, grouped); err != nil {
+			return nil, err
+		}
+	}
+	if err := mergeRawAccountHistoryRows(ctx, tx, afterEventID, keys, grouped); err != nil {
+		return nil, err
+	}
+	result := sortedAccountHistoryRows(grouped)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func cacheAccountingRawFallbackInTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var status string
+	var appliedRows int64
+	err := tx.QueryRowContext(ctx, `select status, applied_rows
+		from usage_data_migrations where name = 'usage_cache_accounting_v2'`).Scan(&status, &appliedRows)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status == "applying" || status == "clearing" ||
+		(status != "completed" && appliedRows > 0), nil
+}
+
+func mergeStoredAccountHistoryRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	accountKeys []string,
+	grouped map[accountRollupKey]*AccountHistoryRow,
+) error {
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
+	args := make([]any, 0, len(accountKeys))
+	for _, key := range accountKeys {
 		args = append(args, key)
 	}
-	rows, err := r.db.QueryContext(ctx, `select
+	rows, err := tx.QueryContext(ctx, `select
 	account_key,
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
@@ -237,11 +324,30 @@ from usage_account_model_rollups
 where account_key in (`+placeholders+`)
 order by account_key, last_seen_ms desc`, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
+	return scanAndMergeAccountHistoryRows(rows, grouped)
+}
 
-	result := make([]AccountHistoryRow, 0)
+func mergeRawAccountHistoryRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	afterEventID int64,
+	accountKeys []string,
+	grouped map[accountRollupKey]*AccountHistoryRow,
+) error {
+	events, err := accountHistoryEventsAfterCheckpoint(ctx, tx, afterEventID, accountKeys)
+	if err != nil {
+		return err
+	}
+	for _, row := range aggregateAccountHistory(events, 0) {
+		mergeAccountHistoryRow(grouped, row)
+	}
+	return nil
+}
+
+func scanAndMergeAccountHistoryRows(rows *sql.Rows, grouped map[accountRollupKey]*AccountHistoryRow) error {
 	for rows.Next() {
 		var row AccountHistoryRow
 		if err := rows.Scan(
@@ -274,11 +380,96 @@ order by account_key, last_seen_ms desc`, args...)
 			&row.LastSeenMS,
 			&row.UpdatedAtMS,
 		); err != nil {
-			return nil, err
+			return err
 		}
-		result = append(result, row)
+		mergeAccountHistoryRow(grouped, row)
 	}
-	return result, rows.Err()
+	return rows.Err()
+}
+
+func mergeAccountHistoryRow(grouped map[accountRollupKey]*AccountHistoryRow, row AccountHistoryRow) {
+	key := accountRollupKey{
+		AccountKey:   row.AccountKey,
+		Model:        row.Model,
+		BillingModel: row.BillingModel,
+		ServiceTier:  row.ServiceTier,
+	}
+	entry := grouped[key]
+	if entry == nil {
+		copy := row
+		grouped[key] = &copy
+		return
+	}
+	fillAccountHistorySnapshots(entry, row)
+	entry.Calls += row.Calls
+	entry.SuccessCalls += row.SuccessCalls
+	entry.FailureCalls += row.FailureCalls
+	entry.InputTokens += row.InputTokens
+	entry.OutputTokens += row.OutputTokens
+	entry.ReasoningTokens += row.ReasoningTokens
+	entry.CachedTokens += row.CachedTokens
+	entry.CacheReadTokens += row.CacheReadTokens
+	entry.CacheCreationTokens += row.CacheCreationTokens
+	entry.LongInputTokens += row.LongInputTokens
+	entry.LongOutputTokens += row.LongOutputTokens
+	entry.LongCachedTokens += row.LongCachedTokens
+	entry.LongCacheReadTokens += row.LongCacheReadTokens
+	entry.LongCacheCreationTokens += row.LongCacheCreationTokens
+	entry.TotalTokens += row.TotalTokens
+	if row.FirstSeenMS < entry.FirstSeenMS {
+		entry.FirstSeenMS = row.FirstSeenMS
+	}
+	if row.LastSeenMS > entry.LastSeenMS {
+		entry.LastSeenMS = row.LastSeenMS
+	}
+	if row.UpdatedAtMS > entry.UpdatedAtMS {
+		entry.UpdatedAtMS = row.UpdatedAtMS
+	}
+}
+
+func fillAccountHistorySnapshots(target *AccountHistoryRow, source AccountHistoryRow) {
+	if target.AccountSnapshot == "" {
+		target.AccountSnapshot = source.AccountSnapshot
+	}
+	if target.AuthLabelSnapshot == "" {
+		target.AuthLabelSnapshot = source.AuthLabelSnapshot
+	}
+	if target.AuthProviderSnapshot == "" {
+		target.AuthProviderSnapshot = source.AuthProviderSnapshot
+	}
+	if target.AuthIndex == "" {
+		target.AuthIndex = source.AuthIndex
+	}
+	if target.Source == "" {
+		target.Source = source.Source
+	}
+	if target.SourceHash == "" {
+		target.SourceHash = source.SourceHash
+	}
+}
+
+func sortedAccountHistoryRows(grouped map[accountRollupKey]*AccountHistoryRow) []AccountHistoryRow {
+	result := make([]AccountHistoryRow, 0, len(grouped))
+	for _, row := range grouped {
+		result = append(result, *row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if left.AccountKey != right.AccountKey {
+			return left.AccountKey < right.AccountKey
+		}
+		if left.LastSeenMS != right.LastSeenMS {
+			return left.LastSeenMS > right.LastSeenMS
+		}
+		if left.Model != right.Model {
+			return left.Model < right.Model
+		}
+		if left.BillingModel != right.BillingModel {
+			return left.BillingModel < right.BillingModel
+		}
+		return left.ServiceTier < right.ServiceTier
+	})
+	return result
 }
 
 func checkpointQuery(ctx context.Context, db *sql.DB, name string) (Checkpoint, error) {
@@ -335,6 +526,29 @@ where name = ?`, name).Scan(
 	return cp, nil
 }
 
+func usageRollupRebuildTargetInTx(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
+	var targetEventID int64
+	err := tx.QueryRowContext(ctx, `select target_event_id
+		from usage_rollup_rebuild_state where name = ?`, name).Scan(&targetEventID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return targetEventID, err
+}
+
+func setUsageRollupRebuildTargetInTx(ctx context.Context, tx *sql.Tx, name string, targetEventID, nowMS int64) error {
+	if targetEventID <= 0 {
+		_, err := tx.ExecContext(ctx, `delete from usage_rollup_rebuild_state where name = ?`, name)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
+		values (?, ?, ?)
+		on conflict(name) do update set
+			target_event_id = excluded.target_event_id,
+			updated_at_ms = excluded.updated_at_ms`, name, targetEventID, nowMS)
+	return err
+}
+
 func latestEventIDInTx(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var id int64
 	if err := tx.QueryRowContext(ctx, `select coalesce(max(id), 0) from usage_events`).Scan(&id); err != nil {
@@ -343,7 +557,7 @@ func latestEventIDInTx(ctx context.Context, tx *sql.Tx) (int64, error) {
 	return id, nil
 }
 
-func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID int64, limit int) ([]eventRow, error) {
+func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID, targetEventID int64, limit int) ([]eventRow, error) {
 	rows, err := tx.QueryContext(ctx, `select
 	id,
 	timestamp_ms,
@@ -355,8 +569,8 @@ func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID int64, l
 		coalesce(auth_index, ''),
 	coalesce(source, ''),
 	coalesce(source_hash, ''),
-	model,
-	coalesce(nullif(resolved_model, ''), model) as billing_model,
+	`+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as model,
+	coalesce(nullif(resolved_model, ''), `+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+`) as billing_model,
 	coalesce(service_tier, '') as service_tier,
 	failed,
 	coalesce(normalized_total_input_tokens, input_tokens, 0),
@@ -368,15 +582,64 @@ func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID int64, l
 	coalesce(cache_creation_tokens, 0),
 	coalesce(total_tokens, 0)
 from usage_events
-where id > ?
+where id > ? and id <= ?
 order by id
-limit ?`, lastEventID, limit)
+limit ?`, lastEventID, targetEventID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanAccountHistoryEvents(rows, limit)
+}
 
-	events := make([]eventRow, 0, limit)
+func accountHistoryEventsAfterCheckpoint(
+	ctx context.Context,
+	tx *sql.Tx,
+	afterEventID int64,
+	accountKeys []string,
+) ([]eventRow, error) {
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
+	query := `select
+		e.id,
+		e.timestamp_ms,
+		coalesce(e.account_snapshot, ''),
+		coalesce(e.auth_label_snapshot, ''),
+		coalesce(e.auth_file_snapshot, ''),
+		coalesce(nullif(e.auth_provider_snapshot, ''), e.provider, ''),
+		coalesce(e.auth_project_id_snapshot, ''),
+		coalesce(e.auth_index, ''),
+		coalesce(e.source, ''),
+		coalesce(e.source_hash, ''),
+		` + usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model") + ` as model,
+		coalesce(nullif(e.resolved_model, ''), ` + usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model") + `) as billing_model,
+		coalesce(e.service_tier, '') as service_tier,
+		e.failed,
+		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
+		coalesce(e.output_tokens, 0),
+		coalesce(e.reasoning_tokens, 0),
+		coalesce(e.cached_tokens, 0),
+		coalesce(e.cache_tokens, 0),
+		coalesce(e.cache_read_tokens, 0),
+		coalesce(e.cache_creation_tokens, 0),
+		coalesce(e.total_tokens, 0)
+	from usage_events e
+	where e.id > ? and ` + usageidentity.SQLAccountKeyExpression("e") + ` in (` + placeholders + `)
+	order by e.id`
+	args := make([]any, 0, len(accountKeys)+1)
+	args = append(args, afterEventID)
+	for _, key := range accountKeys {
+		args = append(args, key)
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAccountHistoryEvents(rows, 0)
+}
+
+func scanAccountHistoryEvents(rows *sql.Rows, capacity int) ([]eventRow, error) {
+	events := make([]eventRow, 0, capacity)
 	for rows.Next() {
 		var row eventRow
 		var failed int
@@ -420,6 +683,7 @@ limit ?`, lastEventID, limit)
 
 type accountRollupKey struct {
 	AccountKey   string
+	Model        string
 	BillingModel string
 	ServiceTier  string
 }
@@ -439,25 +703,26 @@ func aggregateAccountHistory(events []eventRow, nowMS int64) []AccountHistoryRow
 		if !valid {
 			continue
 		}
-		billingModel := strings.TrimSpace(event.BillingModel)
+		billingModel := event.BillingModel
 		if billingModel == "" {
-			billingModel = strings.TrimSpace(event.Model)
+			billingModel = event.Model
 		}
 		if billingModel == "" {
 			billingModel = "-"
 		}
+		modelName := event.Model
+		if modelName == "" {
+			modelName = billingModel
+		}
 		serviceTier := strings.TrimSpace(event.ServiceTier)
 		key := accountRollupKey{
 			AccountKey:   accountKey,
+			Model:        modelName,
 			BillingModel: billingModel,
 			ServiceTier:  serviceTier,
 		}
 		row := grouped[key]
 		if row == nil {
-			modelName := strings.TrimSpace(event.Model)
-			if modelName == "" {
-				modelName = billingModel
-			}
 			row = &AccountHistoryRow{
 				AccountKey:           accountKey,
 				AccountSnapshot:      event.AccountSnapshot,
@@ -559,7 +824,7 @@ func upsertAccountRollups(ctx context.Context, tx *sql.Tx, rows []AccountHistory
 	last_seen_ms,
 	updated_at_ms
 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-on conflict(account_key, billing_model, service_tier) do update set
+on conflict(account_key, model, billing_model, service_tier) do update set
 	account_snapshot = coalesce(nullif(excluded.account_snapshot, ''), usage_account_model_rollups.account_snapshot),
 	auth_label_snapshot = coalesce(nullif(excluded.auth_label_snapshot, ''), usage_account_model_rollups.auth_label_snapshot),
 	auth_provider_snapshot = coalesce(nullif(excluded.auth_provider_snapshot, ''), usage_account_model_rollups.auth_provider_snapshot),

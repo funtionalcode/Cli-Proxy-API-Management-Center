@@ -77,12 +77,11 @@ describe('credential health inspection demo fixtures', () => {
       action: 'keep',
       errorKind: 'inference_healthy',
       disabled: true,
-      usedPercent: 22,
+      usedPercent: 3,
       planType: null,
     });
     expect(healthy?.quotaWindows?.map((window) => window.id)).toEqual([
       'xai-weekly',
-      'xai-monthly',
       'xai-product-0',
     ]);
     expect(limited).toMatchObject({
@@ -99,7 +98,6 @@ describe('credential health inspection demo fixtures', () => {
     });
     expect(expired?.quotaWindows?.map((window) => window.id)).toEqual([
       'xai-weekly',
-      'xai-monthly',
       'xai-product-0',
     ]);
   });
@@ -296,6 +294,11 @@ describe('credential health inspection demo fixtures', () => {
         },
       },
     });
+    const deprecatedMonthly = getDemoApiCallResult({
+      authIndex: 'xai-ops-01',
+      url: 'https://cli-chat-proxy.grok.com/v1/billing',
+    });
+    expect(deprecatedMonthly).toMatchObject({ status_code: 200, body: { config: {} } });
     expect(inference).toMatchObject({
       status_code: 200,
       body: {

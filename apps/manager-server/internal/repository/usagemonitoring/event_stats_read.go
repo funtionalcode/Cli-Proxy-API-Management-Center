@@ -7,6 +7,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func (r *repository) LoadAggregate(ctx context.Context, filter AnalyticsFilter) (Aggregate, State, bool, error) {
@@ -136,11 +137,11 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 	source, args := filteredEventSourceSQL(
 		filter,
 		state.CoverageEventID,
-		`p.model, p.resolved_model, p.service_tier, p.failed,
+		`p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.reasoning_tokens,
 		p.cached_tokens, p.cache_tokens, p.cache_read_tokens,
 		p.cache_creation_tokens, p.total_tokens`,
-		`coalesce(e.model, ''), coalesce(e.resolved_model, ''),
+		usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
 		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
 		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
 		coalesce(e.output_tokens, 0), coalesce(e.reasoning_tokens, 0),
@@ -152,14 +153,16 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 	query := fmt.Sprintf(`with base_events as (%s), priced_events as (
 		select
 			base_events.*,
-			coalesce(nullif(base_events.resolved_model, ''), base_events.model) as billing_model_value,
+			coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model) as billing_model_value,
 			case
-				when billing_price.model is not null then coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+				when billing_price.model is not null then coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
+				when analytics_price.model is not null then base_events.analytics_model
 				when display_price.model is not null then base_events.model
-				else coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+				else coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
 			end as pricing_model_value
 		from base_events
-		left join model_prices billing_price on billing_price.model = coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+		left join model_prices billing_price on billing_price.model = coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
+		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model
 		left join model_prices display_price on display_price.model = base_events.model
 	), banded_events as (
 		select
@@ -173,7 +176,7 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 		from priced_events
 	)
 	select
-		model,
+			analytics_model,
 		billing_model_value,
 		pricing_model_value,
 		context_threshold_tokens_value,
@@ -193,7 +196,7 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 		coalesce(sum(case when normalized_total_input_tokens > %[3]d then cache_creation_tokens else 0 end), 0),
 		coalesce(sum(total_tokens), 0)
 	from banded_events
-	group by model, billing_model_value, pricing_model_value,
+		group by analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, service_tier
 	order by count(*) desc`, source, model.ModelPriceBaseContextThreshold, usage.LongContextInputTokenThreshold)
 	rows, err := tx.QueryContext(ctx, query, args...)

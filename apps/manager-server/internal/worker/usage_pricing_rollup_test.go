@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,44 @@ func TestUsagePricingRollupWorkerCatchUp(t *testing.T) {
 	}
 }
 
+func TestUsagePricingRollupWorkerLogsOnlyRebuildResults(t *testing.T) {
+	logs := captureWorkerLogs(t)
+	worker := NewUsagePricingRollupWorker(nil)
+	worker.logTaskProgress(usageDerivedPricingTask, usageDerivedCatchUpResult{
+		Processed:       1,
+		CoverageEventID: 1,
+		TargetEventID:   1,
+	})
+	if output := logs.String(); strings.Contains(output, "rebuild") {
+		t.Fatalf("incremental result emitted rebuild logs:\n%s", output)
+	}
+
+	logs.Reset()
+	worker.logTaskProgress(usageDerivedPricingTask, usageDerivedCatchUpResult{
+		Processed:       1,
+		CoverageEventID: 1,
+		TargetEventID:   2,
+		Pending:         true,
+		Rebuilt:         true,
+	})
+	worker.logTaskProgress(usageDerivedPricingTask, usageDerivedCatchUpResult{
+		Processed:       1,
+		CoverageEventID: 2,
+		TargetEventID:   2,
+		Rebuilt:         true,
+	})
+	output := logs.String()
+	for _, fragment := range []string{
+		"pricing rebuild started",
+		"pricing rebuild progress",
+		"pricing rebuild completed",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("rebuild logs missing %q:\n%s", fragment, output)
+		}
+	}
+}
+
 func TestUsagePricingRollupWorkerContinuesPendingBacklog(t *testing.T) {
 	db := newUsagePricingRollupWorkerStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -101,6 +140,71 @@ func TestUsagePricingRollupWorkerContinuesPendingBacklog(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("backlog did not continue: state=%#v", state)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestUsagePricingRollupWorkerContinuesRevisionClearing(t *testing.T) {
+	db := newUsagePricingRollupWorkerStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	threshold := func(value int64) store.ModelPrice {
+		return store.ModelPrice{
+			Prompt: 1,
+			ContextTiers: []store.ModelPriceContextTier{
+				{ThresholdTokens: value, Prompt: 2, PromptConfigured: true},
+			},
+		}
+	}
+	pricesA := map[string]store.ModelPrice{"gpt-a": threshold(100)}
+	pricesB := map[string]store.ModelPrice{"gpt-a": threshold(200)}
+	if err := db.SaveModelPrices(ctx, pricesA); err != nil {
+		t.Fatalf("save prices A: %v", err)
+	}
+	event := usagePricingRollupWorkerEvent("usage-pricing-worker-clearing", 1_800_000_001_000, 150)
+	event.AccountSnapshot = "team-a"
+	event.AuthFileSnapshot = "team-a.json"
+	event.AuthProviderSnapshot = "openai"
+	event.AuthIndex = "auth-team-a"
+	if _, err := db.InsertEvents(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := db.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("build pricing revision A: %v", err)
+	}
+	revisionA, err := db.UsagePricingState(ctx)
+	if err != nil {
+		t.Fatalf("read pricing revision A: %v", err)
+	}
+	if err := db.SaveModelPrices(ctx, pricesB); err != nil {
+		t.Fatalf("save prices B: %v", err)
+	}
+	if _, err := db.CatchUpUsagePricing(ctx, 10, 20_000); err != nil {
+		t.Fatalf("build pricing revision B: %v", err)
+	}
+	if err := db.SaveModelPrices(ctx, pricesA); err != nil {
+		t.Fatalf("restore prices A: %v", err)
+	}
+
+	worker := NewUsagePricingRollupWorker(db)
+	worker.batchLimit = 1
+	worker.maxBatches = usageDerivedTaskCount
+	worker.checkInterval = time.Hour
+	worker.continuationDelay = time.Millisecond
+	worker.Start(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state, err := db.UsagePricingState(ctx)
+		if err != nil {
+			t.Fatalf("pricing state: %v", err)
+		}
+		if state.Status == "ready" && state.StructureRevision == revisionA.StructureRevision {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("revision clearing did not continue: state=%#v want_revision=%q", state, revisionA.StructureRevision)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

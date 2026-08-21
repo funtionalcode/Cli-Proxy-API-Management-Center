@@ -17,12 +17,34 @@ import {
 import { ServerCodexInspectionPage } from './ServerCodexInspectionPage';
 
 const mocks = vi.hoisted(() => ({
+  authState: {
+    apiBase: 'http://cpa.local:8317',
+    managementKey: 'management-key',
+  },
+  featureAvailability: {
+    checking: false,
+    panelHostMode: 'manager_embedded',
+    panelBase: 'http://manager.local',
+    managerServiceBase: 'http://manager.local',
+    managerServiceAvailable: true,
+    requestMonitoringAvailable: true,
+    modelPricesAvailable: true,
+    serverCodexInspectionAvailable: true,
+    dockerSetupAvailable: true,
+    externalManagerConfigAvailable: false,
+    reason: '',
+  },
   getManagerConfig: vi.fn(),
   listRuns: vi.fn(),
   getRun: vi.fn(),
   runInspection: vi.fn(),
   cancelRun: vi.fn(),
+  executeActions: vi.fn(),
   getHeaderSnapshots: vi.fn(),
+  lastCodexReauthProps: null as null | {
+    open: boolean;
+    requestScope?: { apiBase: string; managementKey: string };
+  },
   showNotification: vi.fn(),
   showConfirmation: vi.fn(),
   t: (key: string, options?: Record<string, unknown>) =>
@@ -47,27 +69,15 @@ vi.mock('react-router-dom', async (importOriginal) => {
 });
 
 vi.mock('@/hooks/usePanelFeatureAvailability', () => ({
-  usePanelFeatureAvailability: () => ({
-    checking: false,
-    panelHostMode: 'manager_embedded',
-    panelBase: 'http://manager.local',
-    managerServiceBase: 'http://manager.local',
-    managerServiceAvailable: true,
-    requestMonitoringAvailable: true,
-    modelPricesAvailable: true,
-    serverCodexInspectionAvailable: true,
-    dockerSetupAvailable: true,
-    externalManagerConfigAvailable: false,
-    reason: '',
-  }),
+  usePanelFeatureAvailability: () => mocks.featureAvailability,
 }));
 
 vi.mock('@/stores', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/stores')>();
   return {
     ...actual,
-    useAuthStore: (selector: (state: { managementKey: string }) => unknown) =>
-      selector({ managementKey: 'management-key' }),
+    useAuthStore: (selector: (state: { apiBase: string; managementKey: string }) => unknown) =>
+      selector(mocks.authState),
     useNotificationStore: (
       selector: (state: {
         showNotification: typeof mocks.showNotification;
@@ -92,6 +102,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
       getCodexInspectionRun: mocks.getRun,
       runCodexInspection: mocks.runInspection,
       cancelCodexInspectionRun: mocks.cancelRun,
+      executeCodexInspectionActions: mocks.executeActions,
     },
     monitoringAnalyticsApi: {
       ...actual.monitoringAnalyticsApi,
@@ -99,6 +110,16 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
     },
   };
 });
+
+vi.mock('@/features/oauth/CodexReauthDialog', () => ({
+  CodexReauthDialog: (props: {
+    open: boolean;
+    requestScope?: { apiBase: string; managementKey: string };
+  }) => {
+    mocks.lastCodexReauthProps = props;
+    return props.open ? <div data-codex-reauth-open="true" /> : null;
+  },
+}));
 
 const t = mocks.t as TFunction;
 
@@ -187,12 +208,25 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.authState.apiBase = 'http://cpa.local:8317';
+    mocks.authState.managementKey = 'management-key';
+    mocks.lastCodexReauthProps = null;
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      checking: false,
+      panelBase: 'http://manager.local',
+      managerServiceBase: 'http://manager.local',
+      serverCodexInspectionAvailable: true,
+    };
     vi.stubGlobal('window', {
       setInterval: vi.fn(() => 1),
       clearInterval: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     });
     mocks.getManagerConfig.mockResolvedValue({ config: managerConfig, source: 'db' });
     mocks.getHeaderSnapshots.mockResolvedValue({ items: [] });
+    mocks.executeActions.mockReset();
     mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
       options.onConfirm();
     });
@@ -354,6 +388,215 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     expect(findTab(first.id)!.props['aria-selected']).toBe(true);
     expect(findTab(second.id)!.props['aria-selected']).toBe(false);
 
+    act(() => renderer!.unmount());
+  });
+
+  it('ignores an out-of-order page load after switching Manager Server scope', async () => {
+    const oldRun = run({
+      id: 31,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+    });
+    const newRun = run({
+      id: 42,
+      status: 'failed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 3_000,
+    });
+    const oldConfigRequest = deferred<{ config: ManagerConfig; source: string }>();
+    mocks.getManagerConfig.mockImplementation(async (base: string) => {
+      if (base === 'http://manager-a.local') return oldConfigRequest.promise;
+      return { config: managerConfig, source: 'db' };
+    });
+    mocks.listRuns.mockImplementation(async (base: string) => ({
+      items: [base === 'http://manager-a.local' ? oldRun : newRun],
+    }));
+    mocks.getRun.mockImplementation(async (base: string) =>
+      detail(base === 'http://manager-a.local' ? oldRun : newRun)
+    );
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-a.local',
+      managerServiceBase: 'http://manager-a.local',
+    };
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await Promise.resolve();
+    });
+
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-b.local',
+      managerServiceBase: 'http://manager-b.local',
+    };
+    await act(async () => {
+      renderer!.update(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const findTab = (id: number) =>
+      renderer!.root
+        .findAll((node) => node.props.role === 'tab')
+        .find((node) => String(node.props['aria-label']).includes(`#${id}`));
+    expect(findTab(newRun.id)?.props['aria-selected']).toBe(true);
+
+    await act(async () => {
+      oldConfigRequest.resolve({ config: managerConfig, source: 'db' });
+      await flush();
+    });
+
+    expect(findTab(newRun.id)?.props['aria-selected']).toBe(true);
+    expect(findTab(oldRun.id)).toBeUndefined();
+    expect(mocks.listRuns).not.toHaveBeenCalledWith(
+      'http://manager-a.local',
+      'management-key',
+      expect.anything()
+    );
+
+    act(() => renderer!.unmount());
+  });
+
+  it('does not publish a failed run as the latest Accounts credential snapshot', async () => {
+    const failed = run({
+      id: 43,
+      status: 'failed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 3_000,
+    });
+    mocks.listRuns.mockResolvedValue({ items: [failed] });
+    mocks.getRun.mockResolvedValue(detail(failed));
+    const onSnapshotChange = vi.fn();
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage onSnapshotChange={onSnapshotChange} />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    expect(onSnapshotChange).not.toHaveBeenCalled();
+    act(() => renderer!.unmount());
+  });
+
+  it('ignores a stale config-discard confirmation after switching Manager Server scope', async () => {
+    const oldRun = run({
+      id: 51,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+    });
+    const newRun = run({
+      id: 52,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 3_000,
+    });
+    const oldManagerConfig = {
+      ...managerConfig,
+      codexInspection: {
+        ...managerConfig.codexInspection!,
+        schedule: {
+          ...managerConfig.codexInspection!.schedule,
+          intervalMinutes: 60,
+        },
+      },
+    };
+    const newManagerConfig = {
+      ...managerConfig,
+      codexInspection: {
+        ...managerConfig.codexInspection!,
+        schedule: {
+          ...managerConfig.codexInspection!.schedule,
+          intervalMinutes: 120,
+        },
+      },
+    };
+    mocks.getManagerConfig.mockImplementation(async (base: string) => ({
+      config: base === 'http://manager-a.local' ? oldManagerConfig : newManagerConfig,
+      source: 'db',
+    }));
+    mocks.listRuns.mockImplementation(async (base: string) => ({
+      items: [base === 'http://manager-a.local' ? oldRun : newRun],
+    }));
+    mocks.getRun.mockImplementation(async (base: string) =>
+      detail(base === 'http://manager-a.local' ? oldRun : newRun)
+    );
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-a.local',
+      managerServiceBase: 'http://manager-a.local',
+    };
+    let staleConfirm: (() => void) | null = null;
+    mocks.showConfirmation.mockImplementation((options: { onConfirm: () => void }) => {
+      staleConfirm = options.onConfirm;
+    });
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const editButton = renderer!.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'monitoring.codex_inspection_config_overview_edit');
+    expect(editButton).toBeDefined();
+    act(() => editButton!.props.onClick());
+    const intervalInput = renderer!.root.findByProps({ id: 'intervalMinutes' });
+    act(() => intervalInput.props.onChange({ target: { value: '61' } }));
+    const closeButton = renderer!.root.findByProps({
+      'aria-label': 'common.close',
+    });
+    act(() => closeButton.props.onClick());
+    expect(staleConfirm).not.toBeNull();
+
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-b.local',
+      managerServiceBase: 'http://manager-b.local',
+    };
+    await act(async () => {
+      renderer!.update(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const newEditButton = renderer!.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'monitoring.codex_inspection_config_overview_edit');
+    act(() => newEditButton!.props.onClick());
+    expect(renderer!.root.findByProps({ id: 'intervalMinutes' }).props.value).toBe('120');
+
+    act(() => staleConfirm?.());
+
+    expect(renderer!.root.findByProps({ id: 'intervalMinutes' }).props.value).toBe('120');
+    expect(renderer!.root.findByProps({ 'aria-label': 'common.close' })).toBeDefined();
     act(() => renderer!.unmount());
   });
 
@@ -614,5 +857,401 @@ describe('ServerCodexInspectionPage lifecycle controls', () => {
     ).toBe(true);
 
     act(() => renderer!.unmount());
+  });
+
+  it('reports a successful manual credential mutation with its completed snapshot', async () => {
+    const completed = run({
+      id: 9,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+      enableCount: 1,
+    });
+    const pendingResult = {
+      id: 41,
+      runId: completed.id,
+      accountKey: 'codex.json\u0000auth-1',
+      fileName: 'codex.json',
+      displayAccount: 'codex@example.com',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      disabled: true,
+      action: 'enable',
+      actionReason: 'quota recovered',
+      actionStatus: 'pending',
+      statusCode: 200,
+      isQuota: false,
+      createdAtMs: 2_000,
+    };
+    const completedResult = {
+      ...pendingResult,
+      disabled: false,
+      actionStatus: 'success',
+      executedAction: 'enable',
+    };
+    const initialDetail: CodexInspectionRunDetail = {
+      run: completed,
+      results: [pendingResult],
+      logs: [],
+    };
+    const mutatedDetail: CodexInspectionRunDetail = {
+      run: { ...completed, updatedAtMs: 2_500 },
+      results: [completedResult],
+      logs: [],
+    };
+    mocks.listRuns
+      .mockResolvedValueOnce({ items: [completed] })
+      .mockRejectedValueOnce(new Error('run list refresh failed'));
+    mocks.getRun.mockResolvedValue(initialDetail);
+    mocks.executeActions.mockResolvedValue({
+      outcomes: [
+        {
+          resultId: pendingResult.id,
+          accountKey: pendingResult.accountKey,
+          fileName: pendingResult.fileName,
+          displayAccount: pendingResult.displayAccount,
+          action: 'enable',
+          status: 'success',
+          success: true,
+        },
+      ],
+      detail: mutatedDetail,
+    });
+    const onCredentialsChanged = vi.fn();
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const enableButton = renderer!.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'monitoring.codex_inspection_action_enable');
+    expect(enableButton).toBeDefined();
+
+    await act(async () => {
+      enableButton!.props.onClick();
+      await flush();
+      await flush();
+    });
+
+    expect(onCredentialsChanged).toHaveBeenCalledTimes(1);
+    expect(onCredentialsChanged).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({
+        source: 'server',
+        completedAtMs: 2_000,
+        results: [
+          expect.objectContaining({
+            runId: completed.id,
+            actionStatus: 'success',
+            executedAction: 'enable',
+          }),
+        ],
+      })
+    );
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'monitoring.server_codex_inspection_execute_success',
+      'success'
+    );
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      expect.stringContaining('monitoring.server_codex_inspection_execute_failed'),
+      'error'
+    );
+
+    act(() => renderer!.unmount());
+  });
+
+  it('keeps a successful server mutation distinct from an Accounts synchronization failure', async () => {
+    const completed = run({
+      id: 10,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+      enableCount: 1,
+    });
+    const pendingResult = {
+      id: 42,
+      runId: completed.id,
+      accountKey: 'codex.json\u0000auth-1',
+      fileName: 'codex.json',
+      displayAccount: 'codex@example.com',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      disabled: true,
+      action: 'enable',
+      actionReason: 'quota recovered',
+      actionStatus: 'pending',
+      statusCode: 200,
+      isQuota: false,
+      createdAtMs: 2_000,
+    };
+    mocks.listRuns.mockResolvedValue({ items: [completed] });
+    mocks.getRun.mockResolvedValue({
+      run: completed,
+      results: [pendingResult],
+      logs: [],
+    });
+    mocks.executeActions.mockResolvedValue({
+      outcomes: [
+        {
+          resultId: pendingResult.id,
+          accountKey: pendingResult.accountKey,
+          fileName: pendingResult.fileName,
+          displayAccount: pendingResult.displayAccount,
+          action: 'enable',
+          status: 'success',
+          success: true,
+        },
+      ],
+      detail: {
+        run: { ...completed, updatedAtMs: 2_500 },
+        results: [
+          {
+            ...pendingResult,
+            disabled: false,
+            actionStatus: 'success',
+            executedAction: 'enable',
+          },
+        ],
+        logs: [],
+      },
+    });
+    const onCredentialsChanged = vi
+      .fn()
+      .mockRejectedValue(new Error('temporary Accounts reload failure'));
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage onCredentialsChanged={onCredentialsChanged} />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const enableButton = renderer.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'monitoring.codex_inspection_action_enable');
+    await act(async () => {
+      enableButton?.props.onClick();
+      await flush();
+      await flush();
+    });
+
+    expect(onCredentialsChanged).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('temporary Accounts reload failure'),
+      'warning'
+    );
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      expect.stringContaining('monitoring.server_codex_inspection_execute_failed'),
+      'error'
+    );
+
+    act(() => renderer.unmount());
+  });
+
+  it('ignores an in-flight action response after switching Manager Server scope', async () => {
+    const completed = run({
+      id: 19,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+      enableCount: 1,
+    });
+    const pendingResult = {
+      id: 51,
+      runId: completed.id,
+      accountKey: 'codex.json\u0000auth-1',
+      fileName: 'codex.json',
+      displayAccount: 'codex@example.com',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      disabled: true,
+      action: 'enable',
+      actionReason: 'quota recovered',
+      actionStatus: 'pending',
+      statusCode: 200,
+      isQuota: false,
+      createdAtMs: 2_000,
+    };
+    const initialDetail: CodexInspectionRunDetail = {
+      run: completed,
+      results: [pendingResult],
+      logs: [],
+    };
+    const actionRequest = deferred<Awaited<ReturnType<typeof mocks.executeActions>>>();
+    mocks.listRuns.mockResolvedValue({ items: [completed] });
+    mocks.getRun.mockResolvedValue(initialDetail);
+    mocks.executeActions.mockReturnValue(actionRequest.promise);
+    const onCredentialsChanged = vi.fn();
+    const onSnapshotChange = vi.fn();
+
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage
+            onCredentialsChanged={onCredentialsChanged}
+            onSnapshotChange={onSnapshotChange}
+          />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const enableButton = renderer!.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'monitoring.codex_inspection_action_enable');
+    expect(enableButton).toBeDefined();
+
+    await act(async () => {
+      enableButton!.props.onClick();
+      await Promise.resolve();
+    });
+    expect(mocks.executeActions).toHaveBeenCalledTimes(1);
+
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-b.local',
+      managerServiceBase: 'http://manager-b.local',
+    };
+    await act(async () => {
+      renderer!.update(
+        <MemoryRouter>
+          <ServerCodexInspectionPage
+            onCredentialsChanged={onCredentialsChanged}
+            onSnapshotChange={onSnapshotChange}
+          />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+    onCredentialsChanged.mockClear();
+    onSnapshotChange.mockClear();
+    mocks.showNotification.mockClear();
+
+    await act(async () => {
+      actionRequest.resolve({
+        outcomes: [
+          {
+            resultId: pendingResult.id,
+            accountKey: pendingResult.accountKey,
+            fileName: pendingResult.fileName,
+            displayAccount: pendingResult.displayAccount,
+            action: 'enable',
+            status: 'success',
+            success: true,
+          },
+        ],
+        detail: {
+          run: { ...completed, updatedAtMs: 2_500 },
+          results: [
+            {
+              ...pendingResult,
+              disabled: false,
+              actionStatus: 'success',
+              executedAction: 'enable',
+            },
+          ],
+          logs: [],
+        },
+      });
+      await flush();
+    });
+
+    expect(onCredentialsChanged).not.toHaveBeenCalled();
+    expect(onSnapshotChange).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      'monitoring.server_codex_inspection_execute_success',
+      'success'
+    );
+
+    act(() => renderer!.unmount());
+  });
+
+  it('closes Codex re-login and publishes the new CPA request scope after switching connection', async () => {
+    const completed = run({
+      id: 61,
+      status: 'completed',
+      active: false,
+      cancellable: false,
+      finishedAtMs: 2_000,
+      reauthCount: 1,
+    });
+    const reauthResult = {
+      id: 71,
+      runId: completed.id,
+      accountKey: 'codex.json\u0000auth-1',
+      fileName: 'codex.json',
+      displayAccount: 'codex@example.com',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      disabled: false,
+      action: 'reauth',
+      actionReason: 'expired token',
+      actionStatus: 'pending',
+      statusCode: 401,
+      isQuota: false,
+      createdAtMs: 2_000,
+    };
+    mocks.listRuns.mockResolvedValue({ items: [completed] });
+    mocks.getRun.mockResolvedValue({ run: completed, results: [reauthResult], logs: [] });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    const reauthButton = renderer.root
+      .findAllByType('button')
+      .find((button) => textContent(button) === 'codex_reauth.button');
+    expect(reauthButton).toBeDefined();
+    act(() => reauthButton!.props.onClick());
+
+    expect(mocks.lastCodexReauthProps?.open).toBe(true);
+    expect(mocks.lastCodexReauthProps?.requestScope).toEqual({
+      apiBase: 'http://cpa.local:8317',
+      managementKey: 'management-key',
+    });
+
+    mocks.authState.apiBase = 'http://cpa-b.local:8317';
+    mocks.authState.managementKey = 'management-key-b';
+    mocks.featureAvailability = {
+      ...mocks.featureAvailability,
+      panelBase: 'http://manager-b.local',
+      managerServiceBase: 'http://manager-b.local',
+    };
+    await act(async () => {
+      renderer.update(
+        <MemoryRouter>
+          <ServerCodexInspectionPage />
+        </MemoryRouter>
+      );
+      await flush();
+    });
+
+    expect(mocks.lastCodexReauthProps?.open).toBe(false);
+    expect(mocks.lastCodexReauthProps?.requestScope).toEqual({
+      apiBase: 'http://cpa-b.local:8317',
+      managementKey: 'management-key-b',
+    });
+
+    act(() => renderer.unmount());
   });
 });

@@ -766,10 +766,15 @@ type EventRow struct {
 	EventHash              string                        `json:"event_hash"`
 	TimestampMS            int64                         `json:"timestamp_ms"`
 	Model                  string                        `json:"model"`
+	AnalyticsModel         string                        `json:"analytics_model,omitempty"`
+	RequestedModel         string                        `json:"requested_model,omitempty"`
 	ResolvedModel          string                        `json:"resolved_model,omitempty"`
 	Endpoint               string                        `json:"endpoint"`
 	Method                 string                        `json:"method"`
 	Path                   string                        `json:"path"`
+	ClientIP               string                        `json:"client_ip,omitempty"`
+	XForwardedFor          string                        `json:"x_forwarded_for,omitempty"`
+	UserAgent              string                        `json:"user_agent,omitempty"`
 	AuthIndex              string                        `json:"auth_index"`
 	Source                 string                        `json:"source"`
 	SourceHash             string                        `json:"source_hash"`
@@ -3361,10 +3366,15 @@ func buildEvents(page store.EventsPage, totalCount int64) *EventsResponse {
 			EventHash:              item.EventHash,
 			TimestampMS:            item.TimestampMS,
 			Model:                  item.Model,
+			AnalyticsModel:         item.AnalyticsModel,
+			RequestedModel:         item.RequestedModel,
 			ResolvedModel:          item.ResolvedModel,
 			Endpoint:               item.Endpoint,
 			Method:                 item.Method,
 			Path:                   item.Path,
+			ClientIP:               item.ClientIP,
+			XForwardedFor:          item.XForwardedFor,
+			UserAgent:              item.UserAgent,
 			AuthIndex:              item.AuthIndex,
 			Source:                 item.Source,
 			SourceHash:             item.SourceHash,
@@ -3690,7 +3700,7 @@ func normalizeAccountWindowModelScope(scope AccountWindowModelScope) AccountWind
 }
 
 func normalizeQuotaModelName(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return strings.ToLower(usageidentity.AnalyticsModel(strings.TrimSpace(value)))
 }
 
 func classifyQuotaModelFamily(modelName string) string {

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { authFilesApi } from '@/services/api';
+import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api';
 import { useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import { normalizeProviderKey, type AuthFileModelItem } from '@/features/authFiles/constants';
 import {
   getAuthFilePatchTarget,
   getAuthFileSelectionKey,
-} from '@/features/authFiles/model/authFilesPageModel';
+} from '@/features/authFiles/model/credentialStatus';
 import { getHttpStatusCode } from '@/features/authFiles/oauthAliasValidation';
 
 type ModelsError = 'unsupported' | 'failed' | null;
@@ -42,6 +42,7 @@ export type UseAuthFilesModelsResult = {
 
 export type UseAuthFilesModelsOptions = {
   connectionKey?: string | null;
+  requestScope?: AuthFilesApiRequestScope;
 };
 
 type CurrentModelsTarget = {
@@ -61,6 +62,7 @@ export function useAuthFilesModels(
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
   const normalizedConnectionKey = String(options.connectionKey ?? '');
+  const requestScope = options.requestScope;
   const connectionKeyRef = useRef(normalizedConnectionKey);
 
   const [modelsModalOpen, setModelsModalOpen] = useState(false);
@@ -152,10 +154,14 @@ export function useAuthFilesModels(
       setModelDefinitionsError(null);
 
       const modelsPromise = shouldLoadModels
-        ? authFilesApi.getModelsForAuthFile(selector)
+        ? requestScope
+          ? authFilesApi.getModelsForAuthFile(selector, requestScope)
+          : authFilesApi.getModelsForAuthFile(selector)
         : Promise.resolve(cachedModels ?? []);
       const definitionsPromise = shouldLoadDefinitions
-        ? authFilesApi.getModelDefinitions(definitionsChannel)
+        ? requestScope
+          ? authFilesApi.getModelDefinitions(definitionsChannel, requestScope)
+          : authFilesApi.getModelDefinitions(definitionsChannel)
         : Promise.resolve(cachedDefinitions ?? []);
 
       const [modelsResult, definitionsResult] = await Promise.allSettled([
@@ -198,7 +204,7 @@ export function useAuthFilesModels(
       setModelsRefreshing(false);
       setModelDefinitionsLoading(false);
     },
-    [normalizedConnectionKey, showNotification, t]
+    [normalizedConnectionKey, requestScope, showNotification, t]
   );
 
   const showModels = useCallback(

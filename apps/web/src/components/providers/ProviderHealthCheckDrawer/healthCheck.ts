@@ -349,7 +349,8 @@ const testVertexByStandardModelsEndpoints = async (config: ProviderKeyConfig): P
       config.baseUrl ?? '',
       config.apiKey?.trim() || undefined,
       config.headers ?? {},
-      normalizeAuthIndex(config.authIndex) ?? undefined
+      normalizeAuthIndex(config.authIndex) ?? undefined,
+      config.proxyUrl
     );
     return ensureNonEmptyModels(models);
   } catch (err) {
@@ -361,7 +362,8 @@ const testVertexByStandardModelsEndpoints = async (config: ProviderKeyConfig): P
       config.baseUrl ?? '',
       config.apiKey?.trim() || undefined,
       config.headers ?? {},
-      normalizeAuthIndex(config.authIndex) ?? undefined
+      normalizeAuthIndex(config.authIndex) ?? undefined,
+      config.proxyUrl
     );
     return ensureNonEmptyModels(models);
   } catch (err) {
@@ -400,7 +402,8 @@ export const runProviderHealthCheckItem = async (
         target.config.baseUrl ?? '',
         target.config.apiKey?.trim() || undefined,
         target.config.headers ?? {},
-        normalizeAuthIndex(target.config.authIndex) ?? undefined
+        normalizeAuthIndex(target.config.authIndex) ?? undefined,
+        target.config.proxyUrl
       );
       modelCount = ensureNonEmptyModels(models);
     } else if (target.kind === 'codex' || target.kind === 'xai') {
@@ -410,7 +413,8 @@ export const runProviderHealthCheckItem = async (
         target.config.baseUrl ?? '',
         hasCustomAuthorization ? undefined : target.config.apiKey?.trim() || undefined,
         target.config.headers ?? {},
-        normalizeAuthIndex(target.config.authIndex) ?? undefined
+        normalizeAuthIndex(target.config.authIndex) ?? undefined,
+        target.config.proxyUrl
       );
       modelCount = ensureNonEmptyModels(models);
     } else if (target.kind === 'claude') {
@@ -419,7 +423,8 @@ export const runProviderHealthCheckItem = async (
         target.config.baseUrl ?? '',
         target.config.apiKey?.trim() || undefined,
         target.config.headers ?? {},
-        normalizeAuthIndex(target.config.authIndex) ?? undefined
+        normalizeAuthIndex(target.config.authIndex) ?? undefined,
+        target.config.proxyUrl
       );
       modelCount = ensureNonEmptyModels(models);
     } else if (target.kind === 'vertex') {
@@ -439,7 +444,8 @@ export const runProviderHealthCheckItem = async (
         target.config.baseUrl ?? '',
         hasAuthHeader ? undefined : entry?.apiKey?.trim() || undefined,
         headers,
-        authIndex
+        authIndex,
+        entry?.proxyUrl
       );
       modelCount = ensureNonEmptyModels(models);
     }

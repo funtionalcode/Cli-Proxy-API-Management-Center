@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
@@ -108,6 +110,28 @@ func TestRunRejectsConflictingAdminKeyInputs(t *testing.T) {
 	}
 }
 
+func TestRunRejectsActiveManagerWithoutChangingAdminKey(t *testing.T) {
+	dbPath := newCommandTestDB(t)
+	databaseLock, err := processlock.Acquire(dbPath)
+	if err != nil {
+		t.Fatalf("acquire active manager lock: %v", err)
+	}
+	t.Cleanup(func() { _ = databaseLock.Close() })
+
+	const replacementKey = "cpamp_replacement"
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run(context.Background(), []string{"--db-path", dbPath, "--admin-key", replacementKey}, &stdout, &stderr)
+	if !errors.Is(err, processlock.ErrLocked) || !strings.Contains(err.Error(), "stop Manager Server") {
+		t.Fatalf("err = %v, want process lock guidance", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no success output", stdout.String())
+	}
+	requireAdminKeyVerifies(t, dbPath, "cpamp_old")
+	requireAdminKeyDoesNotVerify(t, dbPath, replacementKey)
+}
+
 func newCommandTestDB(t testing.TB) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
@@ -159,5 +183,22 @@ func requireAdminKeyVerifies(t testing.TB, dbPath string, adminKey string) {
 	}
 	if !security.VerifyAdminKey(credential, adminKey) {
 		t.Fatalf("admin key %q does not verify", adminKey)
+	}
+}
+
+func requireAdminKeyDoesNotVerify(t testing.TB, dbPath string, adminKey string) {
+	t.Helper()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	credential, ok, err := st.LoadAdminCredential(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load credential ok=%v err=%v", ok, err)
+	}
+	if security.VerifyAdminKey(credential, adminKey) {
+		t.Fatalf("admin key %q unexpectedly verifies", adminKey)
 	}
 }

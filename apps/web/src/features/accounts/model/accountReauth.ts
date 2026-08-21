@@ -1,9 +1,10 @@
 import type { AuthFileItem } from '@/types';
 import { normalizeAccountProvider } from './accountRows';
+import { buildAccountOAuthReauthPath } from './accountReauthSession';
 
 export type AccountReauthAction =
   | { kind: 'codex-dialog' }
-  | { kind: 'navigate'; path: string }
+  | { kind: 'navigate'; oauthProvider: string; path: string }
   | { kind: 'unsupported'; provider: string };
 
 const OAUTH_PROVIDER_BY_ACCOUNT_PROVIDER: Record<string, string> = {
@@ -22,7 +23,8 @@ export const resolveAccountReauthAction = (file: AuthFileItem): AccountReauthAct
   if (oauthProvider) {
     return {
       kind: 'navigate',
-      path: `/oauth#oauth-provider-${oauthProvider}`,
+      oauthProvider,
+      path: buildAccountOAuthReauthPath(oauthProvider),
     };
   }
 

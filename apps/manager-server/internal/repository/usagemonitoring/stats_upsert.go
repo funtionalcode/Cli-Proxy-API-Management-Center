@@ -7,13 +7,18 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func monitoringBandedEventsCTE(whereClause string) string {
+	requestedModelExpression := usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")
+	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
 	return fmt.Sprintf(`with base_events as (
 		select
 			e.*,
-			coalesce(nullif(e.resolved_model, ''), e.model) as billing_model_value,
+			%s as requested_model_value,
+			%s as analytics_model_value,
+			coalesce(nullif(e.resolved_model, ''), %s) as billing_model_value,
 			coalesce(e.normalized_total_input_tokens, e.input_tokens, 0) as normalized_input_tokens_value,
 			max(
 				max(coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0)) -
@@ -28,12 +33,14 @@ func monitoringBandedEventsCTE(whereClause string) string {
 			base_events.*,
 			case
 				when billing_price.model is not null then billing_model_value
-				when display_price.model is not null then base_events.model
+				when analytics_price.model is not null then base_events.analytics_model_value
+				when display_price.model is not null then base_events.requested_model_value
 				else billing_model_value
 			end as pricing_model_value
 		from base_events
 		left join model_prices billing_price on billing_price.model = base_events.billing_model_value
-		left join model_prices display_price on display_price.model = base_events.model
+		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model_value
+		left join model_prices display_price on display_price.model = base_events.requested_model_value
 	), banded_events as (
 		select
 			priced_events.*,
@@ -44,7 +51,7 @@ func monitoringBandedEventsCTE(whereClause string) string {
 					and priced_events.normalized_input_tokens_value > tier.threshold_tokens
 			), %d) as context_threshold_tokens_value
 		from priced_events
-	)`, whereClause, model.ModelPriceBaseContextThreshold)
+	)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, whereClause, model.ModelPriceBaseContextThreshold)
 }
 
 func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, nowMS int64) error {
@@ -73,7 +80,7 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 		coalesce(auth_file_snapshot, ''),
 		coalesce(api_key_hash, ''),
 		coalesce(executor_type, ''),
-		model,
+			analytics_model_value,
 		billing_model_value,
 		pricing_model_value,
 		coalesce(service_tier, ''),
@@ -160,7 +167,7 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 		coalesce(source_hash, ''),
 		coalesce(auth_file_snapshot, ''),
 		coalesce(executor_type, ''),
-		model,
+			analytics_model_value,
 		billing_model_value,
 		pricing_model_value,
 		coalesce(service_tier, ''),

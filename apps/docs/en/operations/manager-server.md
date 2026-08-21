@@ -243,16 +243,26 @@ Restart Manager Server after changing it. Dashboard and Usage Analytics will alw
 
 When upgrading to the lossless model encoding, Manager Server clears the old `usage_dashboard_hourly_rollups` rows and resets only the `dashboard_hourly` checkpoint. When hourly rollup is enabled, the worker then rebuilds it in bounded background batches; while disabled, it remains empty until the worker is enabled again. This format migration itself does not modify or delete `usage_events` and does not reset the account-history rollup. Long-window queries temporarily fall back to raw events until catch-up completes. The new encoding distinguishes an empty model, the literal `-` model, and models with surrounding whitespace, so a legitimate `-` model no longer disables the entire rollup path.
 
-When upgrading an existing database, Manager Server performs schema and metadata changes plus any required derived-rollup reset during startup, but does not scan historical `usage_events`. Cache-accounting corrections that require a historical event scan begin in the background after the HTTP listener is bound, processing 1,000 rows per batch. Each data update and its checkpoint commit in the same transaction, so a restart resumes at the last successfully committed event ID instead of repeating completed batches.
+When upgrading an existing database, Manager Server performs schema and metadata changes plus any required derived-rollup reset during startup, but does not scan historical `usage_events`. Cache-accounting corrections that require a historical event scan begin in the background after the HTTP listener is bound, processing 1,000 rows per batch. Candidate scanning, event correction, and derived-row clearing each use bounded transactions with committed progress, so a restart resumes the active phase without repeating completed batches. Readers use raw events while corrected history is being applied or stale rollups are being cleared.
 
 While the migration is running:
 
 - Newly collected events are written in the new format and are outside the legacy migration target range.
 - Account-history and dashboard-hourly rollup catch-up is paused to avoid building summaries from partially migrated data.
 - Logs report migration start, progress, retryable failures, and completion.
-- `GET /status` exposes `status`, `lastEventId`, `targetEventId`, and `processedRows` under `dataMigration`; low-level migration error text is not returned.
+- `GET /status` exposes `status`, `lastEventId`, `targetEventId`, `processedRows`, `changedRows`, and `appliedRows` under `dataMigration`; low-level migration error text is not returned.
 
 After completion, the response-metadata backfill and both rollup workers continue automatically. Do not start a second Manager Server against the same SQLite database or CPA queue to accelerate the migration.
+
+Historical rollup rebuilding and stale-row cleanup run only after the HTTP listener is available. Startup index preparation is deliberately bounded: Manager Server creates a missing index only when its target table is empty and the index name is not retained by a parked table. Indexes for non-empty tables and retained names are logged as deferred so collector startup is not delayed by a large index build. During a rebuild, queries use the current complete revision or fall back to raw `usage_events`; an interrupted batch resumes from its committed checkpoint after restart. These tasks must not modify or delete `usage_events`.
+
+An upgraded database can retain an old request-monitoring FTS generation after its paired projection rows have been removed in bounded online batches. It can also have deferred indexes for populated tables or an obsolete quota-cooldown identity index that must be replaced offline. In the exceptional case where one legacy quota observation group exceeds the safe online batch limit, the migration enters a failed state and logs `offline cleanup required`; the original snapshot fallback remains available. When the log reports deferred index preparation, `cleanup requires offline finalization`, or `offline cleanup required`, stop every Manager Server process using the database, run the same-version binary once, and then restart the service:
+
+```bash
+cpa-manager-plus cleanup-derived --db-path /data/usage.sqlite
+```
+
+For a native installation using the default database path, `cpa-manager-plus cleanup-derived` is sufficient. Manager Server holds an operating-system lock at `<absolute-database-path>.manager.lock` for its entire lifetime, and the command refuses to run while that lock is held. The lock file itself is persistent and does not need to be deleted; stop the Manager Server process and retry instead. Symbolic-link aliases resolve to the same lock, while databases with multiple hard links are rejected because SQLite WAL/SHM sidecars cannot safely share those aliases. Back up the SQLite database plus `data.key` before offline maintenance. The command prepares deferred indexes, replaces obsolete derived indexes, completes oversized legacy quota observation groups, removes obsolete derived FTS/projection generations, and leaves `usage_events` intact.
 
 See the [July 10, 2026 Performance Optimization Report](./performance-optimization-2026-07-10.md) for the causes, delivery stages, and complete 100k benchmark evidence.
 
@@ -271,7 +281,7 @@ When `USAGE_QUOTA_COOLDOWN_ENABLED`, `USAGE_ACCOUNT_ACTIONS_ENABLED`, or `USAGE_
 | `PUT /usage-service/config`                                      | Save CPAMP config and restart collector if needed.                                                           |
 | `GET /usage-service/account-processing-policy`                   | Read quota cooldown, account action queue, and auto-disable policy.                                          |
 | `PATCH /usage-service/account-processing-policy`                 | Update account processing policy. Fields locked by environment variables cannot be modified through the API. |
-| `GET /usage-service/quota-cooldowns`                             | Read active quota cooldowns so the auth files page can show recovery hints.                                  |
+| `GET /usage-service/quota-cooldowns`                             | Read active quota cooldowns so Credential Management can show recovery hints.                                |
 | `POST /setup`                                                    | First setup.                                                                                                 |
 | `GET /v0/management/usage`                                       | Compatible usage data.                                                                                       |
 | `GET /v0/management/usage/export`                                | Export JSONL usage events.                                                                                   |

@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -428,6 +429,118 @@ func TestManagerKeepsFirstUsageInCurrentWindowWhenHeaderBoundaryDrifts(t *testin
 	}
 	if firstCycleEndMS-firstCycleStartMS != durationMS || firstObservedAtMS < firstCycleStartMS {
 		t.Fatal("invalid first-use test fixture")
+	}
+}
+
+func TestManagerAssignsFirstEarlyResetRequestToNewWindow(t *testing.T) {
+	const (
+		oldRequestAtMS   = int64(1_785_900_000_000)
+		firstRequestAtMS = int64(1_785_928_574_638)
+		providerStartMS  = int64(1_785_928_600_000)
+		durationMS       = int64(7 * 24 * 60 * 60 * 1000)
+	)
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "http"), db)
+	oldResetAtMS := oldRequestAtMS + durationMS
+	providerResetAtMS := providerStartMS + durationMS
+	payloads := []string{
+		fmt.Sprintf(`{
+			"request_id":"quota-before-early-reset",
+			"timestamp":"%s",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-early-reset.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-early-reset",
+			"account_snapshot":"early-reset@example.com",
+			"input_tokens":100,
+			"output_tokens":10,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["4"],
+				"X-Codex-Primary-Reset-At":["%d"],
+				"X-Codex-Primary-Window-Minutes":["10080"]
+			}
+		}`, time.UnixMilli(oldRequestAtMS).UTC().Format(time.RFC3339Nano), oldResetAtMS),
+		fmt.Sprintf(`{
+			"request_id":"quota-first-early-reset-use",
+			"timestamp":"%s",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-early-reset.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-early-reset",
+			"account_snapshot":"early-reset@example.com",
+			"input_tokens":2500,
+			"output_tokens":21,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["0"],
+				"X-Codex-Primary-Reset-At":["%d"],
+				"X-Codex-Primary-Window-Minutes":["10080"]
+			}
+		}`, time.UnixMilli(firstRequestAtMS).UTC().Format(time.RFC3339Nano), providerResetAtMS),
+	}
+	if err := manager.processItems(context.Background(), RuntimeConfig{}, payloads); err != nil {
+		t.Fatalf("process early-reset quota events: %v", err)
+	}
+
+	account := quotasnapshotsvc.AccountTarget{
+		AuthFileSnapshot: "codex-early-reset.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-early-reset",
+	}
+	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		NowMS: firstRequestAtMS + 1_000,
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-early-reset", Provider: "codex", Account: account,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query early-reset quota snapshots: %v", err)
+	}
+	if len(query.Items) != 1 || len(query.Items[0].Windows) != 1 {
+		t.Fatalf("early-reset quota snapshots = %#v", query)
+	}
+	window := query.Items[0].Windows[0]
+	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != firstRequestAtMS ||
+		window.PreviousCycle == nil || window.PreviousCycle.ActualEndMS == nil ||
+		*window.PreviousCycle.ActualEndMS != firstRequestAtMS {
+		t.Fatalf("early-reset lifecycle = %#v", window)
+	}
+
+	usageResult, err := monitoringsvc.New(db).AccountWindowUsage(context.Background(), monitoringsvc.AccountWindowUsageRequest{
+		Windows: []monitoringsvc.AccountWindowUsageTarget{
+			{
+				RequestKey: "current", RowKey: "row-early-reset", ProviderWindowID: "weekly", Period: "current",
+				FromMS: firstRequestAtMS, ToMS: firstRequestAtMS + 1_000,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "early-reset@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+			{
+				RequestKey: "previous", RowKey: "row-early-reset", ProviderWindowID: "weekly", Period: "previous",
+				FromMS: oldRequestAtMS - 1_000, ToMS: firstRequestAtMS,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "early-reset@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("query early-reset window usage: %v", err)
+	}
+	if len(usageResult.Items) != 2 {
+		t.Fatalf("early-reset window usage = %#v", usageResult)
+	}
+	current, previous := usageResult.Items[0], usageResult.Items[1]
+	if !current.Matched || current.TotalRequests != 1 || current.TotalTokens != 2_521 {
+		t.Fatalf("current early-reset usage = %#v", current)
+	}
+	if !previous.Matched || previous.TotalRequests != 1 || previous.TotalTokens != 110 {
+		t.Fatalf("previous early-reset usage = %#v", previous)
 	}
 }
 

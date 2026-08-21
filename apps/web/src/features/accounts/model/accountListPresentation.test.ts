@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthFileItem } from '@/types';
 import type { QuotaCooldownInfo } from '@/services/api';
-import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/authFilesPageModel';
+import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
 import { buildAccountListItem, buildRecommendationBySelectionKey } from './accountListPresentation';
 import { summarizeGroupedQuotaAvailability } from './accountQuotaSummary';
@@ -86,6 +86,7 @@ const makeCodexStatus = (
   fiveHourUsedPercent: null,
   weeklyUsedPercent: null,
   monthlyUsedPercent: null,
+  hasRawStatusWarning: false,
   badges: [],
   ...overrides,
 });
@@ -129,6 +130,605 @@ describe('accountListPresentation', () => {
     expect(item.recommendation.actionLabelKey).toBe('accounts.recommend_action_reauth');
   });
 
+  it('lets a newer successful request clear stale inspection health and advice', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 1_000,
+      },
+    });
+    const staleRecommendation = makeRecommendation(row, {
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_inspection',
+    });
+
+    const item = buildAccountListItem(row, {
+      recommendation: staleRecommendation,
+      codexStatus: makeCodexStatus({ needsReauth: true, isHttp401: true }),
+      requestEvidence: {
+        latestRequest: { timestamp_ms: 2_000, failed: false },
+      },
+    });
+
+    expect(item.health).toMatchObject({
+      status: 'available',
+      reasonKey: 'accounts.health_reason_available_request',
+      basisLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2_000,
+    });
+    expect(item.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('lets a newer successful request clear stale quota refresh failure advice', () => {
+    const row = makeRow({
+      quota: {
+        status: 'error',
+        error: 'upstream unavailable',
+        errorStatus: 503,
+        failedAtMs: 1_000,
+      },
+    });
+    const staleRecommendation = makeRecommendation(row, {
+      action: 'refresh',
+      priority: 'medium',
+      reasonKey: 'accounts.recommend_reason_error',
+    });
+
+    const item = buildAccountListItem(row, {
+      recommendation: staleRecommendation,
+      requestEvidence: {
+        latestRequest: { timestamp_ms: 2_000, failed: false },
+      },
+    });
+
+    expect(item.health).toMatchObject({
+      status: 'available',
+      reasonKey: 'accounts.health_reason_available_request',
+      observedAtMs: 2_000,
+    });
+    expect(item.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('lets a newer success clear auth header diagnostics but not quota diagnostics', () => {
+    const requestEvidence = {
+      latestRequest: { timestamp_ms: 2_000, failed: false },
+    };
+    const authItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          observedAtMs: 1_000,
+          observedErrorKind: 'auth',
+          observedErrorCode: 'invalid_api_key',
+        },
+      }),
+      { requestEvidence }
+    );
+    const quotaItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          observedAtMs: 1_000,
+          observedErrorKind: 'rate_limit',
+          observedErrorCode: 'quota_exceeded',
+        },
+      }),
+      { requestEvidence }
+    );
+
+    expect(authItem.health.status).toBe('available');
+    expect(quotaItem.health.status).toBe('limited');
+  });
+
+  it('treats current credential and Header authentication failures as reauth', () => {
+    const credentialItem = buildAccountListItem(
+      makeRow({
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 401 },
+        updatedAtMs: 2_000,
+      })
+    );
+    const headerItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          observedAtMs: 3_000,
+          observedErrorKind: 'auth',
+          observedErrorCode: 'invalid_api_key',
+        },
+      })
+    );
+
+    expect(credentialItem.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_auth',
+    });
+    expect(credentialItem.recommendation).toMatchObject({
+      item: { action: 'reauth' },
+      reasonKey: 'accounts.recommend_reason_credential_auth',
+    });
+    expect(headerItem.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_auth',
+      basisLabelKey: 'accounts.quota_source_observed_header',
+      observedAtMs: 3_000,
+    });
+    expect(headerItem.recommendation.reasonKey).toBe('accounts.recommend_reason_credential_auth');
+  });
+
+  it('treats inspection authentication error kinds as reauthentication evidence', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        inspection: {
+          source: 'server',
+          action: 'keep',
+          actionReason: 'token rejected',
+          actionStatus: 'success',
+          statusCode: 503,
+          usedPercent: null,
+          isQuota: false,
+          errorKind: 'authentication_error',
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 3_000,
+        },
+      })
+    );
+
+    expect(item.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_inspection',
+      tooltipParams: { detail: 'token rejected' },
+    });
+    expect(item.recommendation.reasonKey).toBe('accounts.recommend_reason_inspection');
+  });
+
+  it('attributes authentication health to newer inspection evidence over an older refresh error', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        quota: {
+          status: 'error',
+          error: 'HTTP 401 unauthorized',
+          errorStatus: 401,
+          failedAtMs: 1_000,
+        },
+        inspection: {
+          source: 'server',
+          action: 'reauth',
+          actionReason: 'expired',
+          actionStatus: 'pending',
+          statusCode: 401,
+          usedPercent: null,
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 2_000,
+        },
+      })
+    );
+
+    expect(item.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_inspection',
+      tooltipParams: { detail: 'HTTP 401' },
+    });
+    expect(item.recommendation.reasonKey).toBe('accounts.recommend_reason_inspection');
+  });
+
+  it('uses the latest exception source instead of a fixed refresh-inspection priority', () => {
+    const baseRow = makeRow({
+      quota: {
+        status: 'error',
+        error: 'upstream unavailable',
+        errorStatus: 503,
+        failedAtMs: 1_000,
+      },
+      inspection: {
+        source: 'server',
+        action: 'delete',
+        actionReason: 'credential malformed',
+        actionStatus: 'pending',
+        statusCode: 400,
+        usedPercent: null,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 2_000,
+      },
+    });
+
+    const inspectionItem = buildAccountListItem(baseRow);
+    expect(inspectionItem.health).toMatchObject({
+      status: 'exception',
+      reasonKey: 'accounts.health_reason_exception_inspection',
+      tooltipParams: { detail: 'credential malformed' },
+    });
+    expect(inspectionItem.recommendation.reasonKey).toBe('accounts.recommend_reason_inspection');
+
+    const refreshItem = buildAccountListItem({
+      ...baseRow,
+      quota: { ...baseRow.quota, failedAtMs: 3_000 },
+    });
+    expect(refreshItem.health).toMatchObject({
+      status: 'exception',
+      reasonKey: 'accounts.health_reason_exception_quota',
+      tooltipParams: { detail: 'upstream unavailable' },
+    });
+    expect(refreshItem.recommendation.reasonKey).toBe('accounts.recommend_reason_error');
+  });
+
+  it('presents runtime and explicit provider quota signals as limited', () => {
+    const runtimeQuotaItem = buildAccountListItem(
+      makeRow({
+        statusMessage: 'quota exceeded',
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 429 },
+      })
+    );
+    expect(runtimeQuotaItem.health).toMatchObject({
+      status: 'limited',
+      tooltipParams: { detail: 'quota exceeded' },
+    });
+
+    for (const quota of [
+      { rateLimitReachedType: 'primary' },
+      { spendControlReached: true },
+      { creditsOverageLimitReached: true },
+    ]) {
+      expect(
+        buildAccountListItem(
+          makeRow({
+            quota: { ...makeRow().quota, ...quota },
+          })
+        ).health.status
+      ).toBe('limited');
+    }
+  });
+
+  it('lets a newer successful request retire an older runtime 429 conclusion', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        statusMessage: 'quota exceeded',
+        updatedAtMs: 1_000,
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 429 },
+      }),
+      {
+        requestEvidence: {
+          latestRequest: { timestamp_ms: 2_000, failed: false },
+        },
+      }
+    );
+
+    expect(item.health.status).toBe('available');
+    expect(item.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('presents request 429 evidence as limited with request provenance', () => {
+    const item = buildAccountListItem(makeRow(), {
+      requestEvidence: {
+        recentRequests: [
+          {
+            timestamp_ms: 3_000,
+            failed: true,
+            fail_status_code: 429,
+            fail_summary: 'rate limit exceeded',
+          },
+          { timestamp_ms: 2_000, failed: false },
+        ],
+      },
+    });
+
+    expect(item.health).toMatchObject({
+      status: 'limited',
+      reasonKey: 'accounts.health_reason_limited_request',
+      tooltipParams: { detail: 'rate limit exceeded' },
+      basisLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 3_000,
+    });
+    expect(item.recommendation).toMatchObject({
+      hasRecommendation: true,
+      actionLabelKey: 'accounts.recommend_action_refresh',
+      reasonKey: 'accounts.recommend_reason_quota_limited',
+      priority: 'high',
+    });
+  });
+
+  it('uses the latest authenticated request to replace stale auth and quota conclusions', () => {
+    const staleAuthRow = makeRow({
+      statusMessage: 'unauthorized',
+      updatedAtMs: 1_000,
+      raw: { name: 'codex.json', type: 'codex', status_code: 401 },
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        runId: 1,
+        resultId: 1,
+        createdAtMs: 1_000,
+      },
+    });
+    const quotaItem = buildAccountListItem(staleAuthRow, {
+      requestEvidence: {
+        recentRequests: [
+          {
+            timestamp_ms: 2_000,
+            failed: true,
+            fail_status_code: 429,
+            fail_summary: 'rate limit exceeded',
+          },
+          { timestamp_ms: 1_500, failed: true, fail_status_code: 401 },
+        ],
+      },
+    });
+    const recoveredItem = buildAccountListItem(makeRow(), {
+      requestEvidence: {
+        recentRequests: [
+          { timestamp_ms: 3_000, failed: false },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 429 },
+        ],
+      },
+    });
+
+    expect(quotaItem.health.status).toBe('limited');
+    expect(quotaItem.recommendation.reasonKey).toBe('accounts.recommend_reason_quota_limited');
+    expect(recoveredItem.health.status).toBe('available');
+    expect(recoveredItem.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('attributes Provider rate-limit fields to quota and newer Header fields to Header', () => {
+    const providerItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          rateLimitReachedType: 'primary',
+          fetchedAtMs: 2_000,
+          observedAtMs: 1_000,
+        },
+      })
+    );
+    const headerItem = buildAccountListItem(
+      makeRow({
+        quota: {
+          rateLimitReachedType: 'primary',
+          fetchedAtMs: 1_000,
+          observedAtMs: 2_000,
+        },
+      })
+    );
+
+    expect(providerItem.health.reasonKey).toBe('accounts.health_reason_limited_quota');
+    expect(headerItem.health.reasonKey).toBe('accounts.health_reason_limited_header');
+  });
+
+  it('uses localized tooltip keys for boolean-only quota limits', () => {
+    expect(
+      buildAccountListItem(
+        makeRow({
+          statusMessage: 'generic quota state',
+          quota: { creditsOverageLimitReached: true },
+        })
+      ).health
+    ).toMatchObject({
+      tooltipKey: 'accounts.health_tip_limited_credits_overage',
+      tooltipParams: {},
+    });
+    expect(
+      buildAccountListItem(
+        makeRow({
+          statusMessage: 'generic quota state',
+          quota: { spendControlReached: true },
+        })
+      ).health
+    ).toMatchObject({
+      tooltipKey: 'accounts.health_tip_limited_spend_control',
+      tooltipParams: {},
+    });
+
+    expect(
+      buildAccountListItem(
+        makeRow({
+          statusMessage: 'generic quota state',
+          quota: { creditsOverageLimitReached: true },
+        }),
+        {
+          requestEvidence: {
+            latestRequest: {
+              timestamp_ms: 2_000,
+              failed: true,
+              fail_status_code: 429,
+              fail_summary: 'latest request quota evidence',
+            },
+          },
+        }
+      ).health
+    ).toMatchObject({
+      tooltipKey: 'accounts.health_tip_limited',
+      tooltipParams: { detail: 'latest request quota evidence' },
+    });
+  });
+
+  it('uses xAI provider usage limit status in account health', () => {
+    const item = buildAccountListItem(makeRow({ provider: 'xai' }), {
+      codexStatus: makeCodexStatus({
+        isCodex: false,
+        isQuotaLimited: true,
+        isUnknownQuotaLimited: true,
+      }),
+    });
+
+    expect(item.health.status).toBe('limited');
+  });
+
+  it('keeps HTTP 499 neutral and applies qualified request failures', () => {
+    expect(
+      buildAccountListItem(makeRow(), {
+        requestEvidence: {
+          latestRequest: { timestamp_ms: 2_000, failed: true, fail_status_code: 499 },
+        },
+      }).health.status
+    ).toBe('available');
+    expect(
+      buildAccountListItem(
+        makeRow({
+          statusMessage: 'context canceled',
+          updatedAtMs: 2_000,
+          raw: {
+            name: 'codex-1.json',
+            type: 'codex',
+            status_code: 499,
+            status_message: 'context canceled',
+          },
+        }),
+        {
+          requestEvidence: {
+            latestRequest: {
+              timestamp_ms: 2_000,
+              failed: true,
+              fail_status_code: 499,
+              fail_summary: 'context canceled',
+            },
+          },
+        }
+      ).health.status
+    ).toBe('available');
+
+    const quotaFailureWithNeutralRuntimeMessage = buildAccountListItem(
+      makeRow({
+        statusMessage: 'context canceled',
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 499 },
+        quota: {
+          status: 'error',
+          error: 'context canceled',
+          errorStatus: 499,
+          failedAtMs: 2_000,
+        },
+      })
+    );
+    expect(quotaFailureWithNeutralRuntimeMessage.health).toMatchObject({
+      status: 'raw',
+      tooltipParams: { detail: 'context canceled' },
+    });
+
+    const transientQuotaRefreshFailure = buildAccountListItem(
+      makeRow({
+        quota: {
+          status: 'error',
+          error: 'quota refresh failed',
+          errorStatus: 503,
+          failedAtMs: 2_000,
+        },
+      })
+    );
+    expect(transientQuotaRefreshFailure.health).toMatchObject({
+      status: 'exception',
+      tooltipParams: { detail: 'quota refresh failed' },
+    });
+
+    expect(
+      buildAccountListItem(
+        makeRow({
+          statusMessage: 'upstream unavailable',
+          updatedAtMs: 2_000,
+          raw: { name: 'codex-1.json', type: 'codex', status_code: 503 },
+        })
+      ).health.status
+    ).toBe('available');
+
+    const authFailure = buildAccountListItem(makeRow(), {
+      requestEvidence: {
+        latestRequest: { timestamp_ms: 2_000, failed: true, fail_status_code: 401 },
+      },
+    });
+    expect(authFailure.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_auth',
+      basisLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2_000,
+    });
+
+    const transientFailure = buildAccountListItem(makeRow(), {
+      requestEvidence: {
+        recentRequests: [
+          { timestamp_ms: 3_000, failed: true, fail_status_code: 503 },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 502 },
+        ],
+      },
+    });
+    expect(transientFailure.health).toMatchObject({
+      status: 'exception',
+      reasonKey: 'accounts.health_reason_exception_request',
+      observedAtMs: 3_000,
+    });
+  });
+
+  it('does not revive stale reauth after authenticated evidence followed by transient failures', () => {
+    for (const authenticatedRequest of [
+      { timestamp_ms: 3_000, failed: false },
+      { timestamp_ms: 3_000, failed: true, fail_status_code: 429 },
+    ]) {
+      const item = buildAccountListItem(makeRow(), {
+        codexStatus: makeCodexStatus({ needsReauth: true, isHttp401: true }),
+        requestEvidence: {
+          recentRequests: [
+            { timestamp_ms: 5_000, failed: true, fail_status_code: 503 },
+            { timestamp_ms: 4_000, failed: true, fail_status_code: 502 },
+            authenticatedRequest,
+            { timestamp_ms: 2_000, failed: true, fail_status_code: 401 },
+          ],
+        },
+      });
+
+      expect(item.health).toMatchObject({
+        status: 'exception',
+        reasonKey: 'accounts.health_reason_exception_request',
+        observedAtMs: 5_000,
+      });
+      expect(item.recommendation).toMatchObject({
+        hasRecommendation: true,
+        item: { action: 'review' },
+        reasonKey: 'accounts.recommend_reason_request_failure',
+      });
+    }
+  });
+
+  it('keeps unresolved inspection health when newer request evidence remains negative', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 1_000,
+      },
+    });
+
+    const item = buildAccountListItem(row, {
+      requestEvidence: {
+        recentRequests: [
+          { timestamp_ms: 3_000, failed: true, fail_status_code: 503 },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 502 },
+        ],
+      },
+    });
+
+    expect(item.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_inspection',
+    });
+    expect(item.recommendation).toMatchObject({
+      hasRecommendation: true,
+      item: { action: 'reauth' },
+      reasonKey: 'accounts.recommend_reason_inspection',
+    });
+  });
+
   it('summarizes quota refresh 401 as a quota refresh reauth reason', () => {
     const item = buildAccountListItem(
       makeRow({
@@ -151,6 +751,73 @@ describe('accountListPresentation', () => {
     expect(item.health.tooltipParams.detail).toBe(
       '额度获取失败：401 Your authentication token has been invalidated. Please try signing in again.'
     );
+    expect(item.recommendation).toMatchObject({
+      actionLabelKey: 'accounts.recommend_action_reauth',
+      reasonKey: 'accounts.recommend_reason_quota_auth',
+      priority: 'critical',
+    });
+  });
+
+  it('lets newer healthy quota evidence replace stale reauth inspection advice', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        quota: { status: 'ok', fetchedAtMs: 2_000 },
+        inspection: {
+          source: 'server',
+          action: 'reauth',
+          actionReason: 'expired',
+          actionStatus: 'pending',
+          statusCode: 401,
+          usedPercent: null,
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 1_000,
+        },
+      })
+    );
+
+    expect(item.health.status).toBe('available');
+    expect(item.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('does not let stale derived Codex status revive a raw 401 after Provider recovery', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        statusMessage: 'unauthorized',
+        updatedAtMs: 1_000,
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 401 },
+        quota: { status: 'ok', fetchedAtMs: 2_000 },
+      }),
+      { codexStatus: makeCodexStatus({ needsReauth: true, isHttp401: true }) }
+    );
+
+    expect(item.health.status).toBe('available');
+    expect(item.recommendation.hasRecommendation).toBe(false);
+  });
+
+  it('keeps xAI Header authentication status as a compatibility fallback', () => {
+    const item = buildAccountListItem(makeRow({ provider: 'xai' }), {
+      codexStatus: makeCodexStatus({ isCodex: false, needsReauth: true, isHttp401: true }),
+    });
+
+    expect(item.health.status).toBe('reauth');
+  });
+
+  it('does not let stale derived xAI status revive superseded row authentication evidence', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        provider: 'xai',
+        statusMessage: 'unauthorized',
+        updatedAtMs: 1_000,
+        raw: { name: 'xai.json', type: 'xai', status_code: 401 },
+        quota: { status: 'ok', fetchedAtMs: 2_000 },
+      }),
+      {
+        codexStatus: makeCodexStatus({ isCodex: false, needsReauth: true, isHttp401: true }),
+      }
+    );
+
+    expect(item.health.status).toBe('available');
   });
 
   it('shows window cooldown ahead of exhausted and disabled states', () => {
@@ -316,11 +983,12 @@ describe('accountListPresentation', () => {
     expect(lowQuotaItem.health.reasonKey).toBe('accounts.health_reason_available');
     expect(lowQuotaItem.health.reasonTone).toBe('muted');
 
-    const exceptionItem = buildAccountListItem(makeRow({ statusMessage: 'custom problem' }));
-    expect(exceptionItem.health.status).toBe('exception');
-    expect(exceptionItem.health.reasonKey).toBe('accounts.health_reason_exception_request');
-    expect(exceptionItem.health.reasonParams).toEqual({ detail: 'custom problem' });
-    expect(exceptionItem.health.reasonTone).toBe('danger');
+    const unqualifiedRuntimeItem = buildAccountListItem(
+      makeRow({ statusMessage: 'custom problem' })
+    );
+    expect(unqualifiedRuntimeItem.health.status).toBe('available');
+    expect(unqualifiedRuntimeItem.health.reasonKey).toBe('accounts.health_reason_available');
+    expect(unqualifiedRuntimeItem.health.reasonTone).toBe('muted');
 
     const disabledItem = buildAccountListItem(
       makeRow({
@@ -735,5 +1403,28 @@ describe('accountListPresentation', () => {
 
     expect(map.get(first.selectionKey)?.row.authIndex).toBe('auth-1');
     expect(map.get(second.selectionKey)).toBe(secondRecommendation);
+  });
+
+  it('does not show a handled inspection 401 as requiring re-authentication', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        inspection: {
+          source: 'server',
+          action: 'reauth',
+          actionReason: 're-authentication completed',
+          actionStatus: 'success',
+          executedAction: 'reauth',
+          statusCode: 401,
+          usedPercent: null,
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 3,
+        },
+      })
+    );
+
+    expect(item.health.status).toBe('available');
+    expect(item.health.labelKey).toBe('accounts.health_available');
+    expect(item.health.reasonKey).toBe('accounts.health_reason_available');
   });
 });

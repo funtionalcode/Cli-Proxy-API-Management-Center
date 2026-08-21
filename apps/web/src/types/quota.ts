@@ -476,8 +476,9 @@ export interface KimiQuotaState extends CredentialScopedQuotaState {
 }
 
 // xAI/Grok API payload types
-export interface XaiBillingCent {
+export interface XaiBillingCent extends Record<string, unknown> {
   val?: number | string;
+  value?: number | string;
 }
 
 export type XaiBillingPeriodType = 'weekly' | 'monthly' | 'unknown';

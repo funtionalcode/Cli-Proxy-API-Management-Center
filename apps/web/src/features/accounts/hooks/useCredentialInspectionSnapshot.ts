@@ -1,5 +1,8 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { loadCodexInspectionLastRun } from '@/features/monitoring/codexInspection';
+import {
+  createCodexInspectionConnectionFingerprint,
+  loadCodexInspectionLastRun,
+} from '@/features/monitoring/codexInspection';
 import {
   createServerCredentialInspectionSnapshot,
   createStoredLocalCredentialInspectionSnapshot,
@@ -11,6 +14,8 @@ import {
 import { usageServiceApi } from '@/services/api';
 
 const EMPTY_CREDENTIAL_INSPECTION_RESULTS: CredentialInspectionResult[] = [];
+const INITIAL_INSPECTION_RUN_LIMIT = 10;
+const FALLBACK_INSPECTION_RUN_LIMIT = 200;
 
 interface UseCredentialInspectionSnapshotOptions {
   connectionFingerprint: string | null;
@@ -20,6 +25,18 @@ interface UseCredentialInspectionSnapshotOptions {
   managementKey: string;
 }
 
+export const createCredentialInspectionSnapshotScopeKey = (
+  connectionFingerprint: string | null,
+  managerServiceBase: string,
+  managementKey: string
+): string => {
+  const managerFingerprint = createCodexInspectionConnectionFingerprint(
+    managerServiceBase,
+    managementKey
+  );
+  return [connectionFingerprint ?? '', managerFingerprint ?? ''].join('\u001f');
+};
+
 export function useCredentialInspectionSnapshot({
   connectionFingerprint,
   checking,
@@ -28,7 +45,12 @@ export function useCredentialInspectionSnapshot({
   managementKey,
 }: UseCredentialInspectionSnapshotOptions) {
   const scopeKey = useMemo(
-    () => [connectionFingerprint ?? '', managerServiceBase, managementKey].join('\u001f'),
+    () =>
+      createCredentialInspectionSnapshotScopeKey(
+        connectionFingerprint,
+        managerServiceBase,
+        managementKey
+      ),
     [connectionFingerprint, managementKey, managerServiceBase]
   );
   const [snapshotState, setSnapshotState] = useState<{
@@ -37,6 +59,21 @@ export function useCredentialInspectionSnapshot({
   }>(() => ({ scopeKey, snapshot: null }));
   const [loadingState, setLoadingState] = useState({ scopeKey, loading: false });
   const requestIdRef = useRef(0);
+  const activeScopeKeyRef = useRef(scopeKey);
+  activeScopeKeyRef.current = scopeKey;
+
+  const mergeSnapshots = useCallback(
+    (candidates: Array<CredentialInspectionSnapshot | null | undefined>) => {
+      setSnapshotState((current) => {
+        if (current.scopeKey !== scopeKey) return current;
+        return {
+          scopeKey,
+          snapshot: selectLatestCredentialInspectionSnapshot([current.snapshot, ...candidates]),
+        };
+      });
+    },
+    [scopeKey]
+  );
 
   const readLocalSnapshot = useCallback(() => {
     const localState = connectionFingerprint
@@ -47,66 +84,89 @@ export function useCredentialInspectionSnapshot({
 
   const applySnapshot = useCallback(
     (next: CredentialInspectionSnapshot) => {
-      setSnapshotState((current) => {
-        if (current.scopeKey !== scopeKey) return current;
-        return {
-          scopeKey,
-          snapshot: selectLatestCredentialInspectionSnapshot([current.snapshot, next]),
-        };
-      });
+      if (activeScopeKeyRef.current !== scopeKey) return;
+      requestIdRef.current += 1;
+      setLoadingState({ scopeKey, loading: false });
+      mergeSnapshots([next]);
     },
-    [scopeKey]
+    [mergeSnapshots, scopeKey]
   );
 
+  const invalidatePendingRefresh = useCallback(() => {
+    requestIdRef.current += 1;
+    setLoadingState({ scopeKey, loading: false });
+  }, [scopeKey]);
+
   const refresh = useCallback(async () => {
+    if (activeScopeKeyRef.current !== scopeKey) return null;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
+    const isCurrentRequest = () =>
+      requestIdRef.current === requestId && activeScopeKeyRef.current === scopeKey;
     const localSnapshot = readLocalSnapshot();
 
     if (checking || !serverAvailable || !managerServiceBase || !managementKey) {
-      if (requestIdRef.current === requestId) {
-        setSnapshotState({ scopeKey, snapshot: localSnapshot });
+      if (isCurrentRequest()) {
+        mergeSnapshots([localSnapshot]);
         setLoadingState({ scopeKey, loading: false });
       }
-      return;
+      return null;
     }
 
     setLoadingState({ scopeKey, loading: true });
     try {
-      const runsResponse = await usageServiceApi.listCodexInspectionRuns(
+      let runsResponse = await usageServiceApi.listCodexInspectionRuns(
         managerServiceBase,
         managementKey,
-        10
+        INITIAL_INSPECTION_RUN_LIMIT
       );
-      if (requestIdRef.current !== requestId) return;
-      const latestCompletedRun = runsResponse.items.find(isCompletedCredentialInspectionRun);
+      if (!isCurrentRequest()) return null;
+      let latestCompletedRun = runsResponse.items.find(isCompletedCredentialInspectionRun);
+      if (!latestCompletedRun && runsResponse.items.length >= INITIAL_INSPECTION_RUN_LIMIT) {
+        runsResponse = await usageServiceApi.listCodexInspectionRuns(
+          managerServiceBase,
+          managementKey,
+          FALLBACK_INSPECTION_RUN_LIMIT
+        );
+        if (!isCurrentRequest()) return null;
+        latestCompletedRun = runsResponse.items.find(isCompletedCredentialInspectionRun);
+      }
       if (!latestCompletedRun) {
-        setSnapshotState({ scopeKey, snapshot: localSnapshot });
-        return;
+        mergeSnapshots([localSnapshot]);
+        return null;
       }
       const detail = await usageServiceApi.getCodexInspectionRun(
         managerServiceBase,
         managementKey,
         latestCompletedRun.id
       );
-      if (requestIdRef.current !== requestId) return;
-      setSnapshotState({
-        scopeKey,
-        snapshot: selectLatestCredentialInspectionSnapshot([
-          localSnapshot,
-          createServerCredentialInspectionSnapshot(detail, runsResponse.items),
-        ]),
-      });
-    } catch {
-      if (requestIdRef.current === requestId) {
-        setSnapshotState({ scopeKey, snapshot: localSnapshot });
+      if (!isCurrentRequest()) return null;
+      const serverSnapshot = createServerCredentialInspectionSnapshot(detail, runsResponse.items);
+      if (!serverSnapshot) {
+        mergeSnapshots([localSnapshot]);
+        return null;
       }
+      mergeSnapshots([localSnapshot, serverSnapshot]);
+      return serverSnapshot;
+    } catch {
+      if (isCurrentRequest()) {
+        mergeSnapshots([localSnapshot]);
+      }
+      return null;
     } finally {
-      if (requestIdRef.current === requestId) {
+      if (isCurrentRequest()) {
         setLoadingState({ scopeKey, loading: false });
       }
     }
-  }, [checking, managementKey, managerServiceBase, readLocalSnapshot, scopeKey, serverAvailable]);
+  }, [
+    checking,
+    managementKey,
+    managerServiceBase,
+    mergeSnapshots,
+    readLocalSnapshot,
+    scopeKey,
+    serverAvailable,
+  ]);
 
   useLayoutEffect(() => {
     requestIdRef.current += 1;
@@ -123,5 +183,6 @@ export function useCredentialInspectionSnapshot({
     loading,
     refresh,
     applySnapshot,
+    invalidatePendingRefresh,
   };
 }

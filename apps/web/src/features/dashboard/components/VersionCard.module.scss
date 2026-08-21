@@ -58,17 +58,6 @@
   }
 }
 
-.tapItem {
-  cursor: pointer;
-
-  &:focus-visible {
-    outline: none;
-    background: var(--focus-bg);
-    border-color: var(--focus-border);
-    box-shadow: inset 0 0 0 1px var(--focus-inset);
-  }
-}
-
 .healthLink {
   cursor: pointer;
 
@@ -180,6 +169,37 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .versionLink {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--text-primary);
+    text-decoration: none;
+    border-radius: 4px;
+
+    .value {
+      min-width: 0;
+      color: inherit;
+    }
+
+    svg {
+      flex: 0 0 auto;
+    }
+
+    &:hover {
+      color: var(--focus-text);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--focus-border);
+      outline-offset: 2px;
+    }
   }
 
   .valueWrap {

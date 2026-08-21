@@ -4,7 +4,7 @@ import {
   type AccountRowSort,
   type AccountStatusFilter,
 } from './accountRows';
-import type { QuotaAccountDisplayMode } from '@/features/quota/quotaPageUiState';
+import type { QuotaAccountDisplayMode } from '@/components/quota/quotaDisplay';
 
 export type AccountOperationalFilter = 'all' | 'reauth' | 'cooldown' | 'automation' | 'recovered';
 

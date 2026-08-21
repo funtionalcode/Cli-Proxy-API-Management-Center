@@ -22,7 +22,7 @@ features:
   - title: 快速完成安装
     details: 先选择轻量面板或完整模式，再按推荐步骤完成登录和验证。
   - title: 管理模型与账号
-    details: 添加 Provider、OAuth 和认证文件，检查配额与账号状态。
+    details: 添加 Provider 和 OAuth，在统一凭证管理中检查配额与账号状态。
   - title: 查看请求与成本
     details: 定位失败请求，分析 Token、成本、延迟和调用方。
 ---
@@ -51,10 +51,10 @@ import homePreview from './images/home-zh.png';
   </section>
   <section class="cpamp-doc-card">
     <h3>管理模型与账号</h3>
-    <p>完成 Provider、OAuth、认证文件和客户端接入等日常配置。</p>
+    <p>完成 Provider、OAuth、凭证管理和客户端接入等日常配置。</p>
     <ul>
       <li><a href="./manual/ai-providers.html">AI 提供商</a></li>
-      <li><a href="./manual/auth-files.html">认证文件</a></li>
+      <li><a href="./manual/accounts.html">凭证管理</a></li>
       <li><a href="./manual/oauth.html">OAuth 登录</a></li>
       <li><a href="./gateway/clients.html">客户端接入</a></li>
     </ul>
@@ -66,7 +66,7 @@ import homePreview from './images/home-zh.png';
       <li><a href="./manual/dashboard.html">仪表盘</a></li>
       <li><a href="./manual/monitoring.html">请求监控</a></li>
       <li><a href="./manual/usage-analytics.html">用量分析</a></li>
-      <li><a href="./manual/quota.html">配额管理</a></li>
+      <li><a href="./manual/accounts.html">账号健康与配额</a></li>
     </ul>
   </section>
   <section class="cpamp-doc-card">

@@ -200,6 +200,11 @@
   color: var(--text-primary);
 }
 
+.keyEntryWeight {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .keyEntryProxy {
   color: var(--text-tertiary);
   overflow-wrap: anywhere;

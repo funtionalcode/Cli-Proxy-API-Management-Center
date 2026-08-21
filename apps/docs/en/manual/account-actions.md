@@ -55,7 +55,7 @@ Before deleting, confirm that the same auth file is not used by another model or
 
 - Need failure details: [Monitoring](./monitoring.md).
 - Need reauth: [OAuth Login](./oauth.md).
-- Need account enable/disable: [Auth Files](./auth-files.md).
+- Need account enable/disable: [Accounts](./accounts.md).
 - Need Codex/xAI quota or state: [Account Inspection](./codex-inspection.md).
 
 ## Usage Advice

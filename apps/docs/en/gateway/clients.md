@@ -4,12 +4,12 @@ Clients need the CPA address and a normal CPA API Key. Do not point Codex, Claud
 
 ## General Rules
 
-| Item | Recommendation |
-|---|---|
-| Base URL | The public CPA address, such as `https://gateway.example.com` or `http://localhost:8317`. |
-| API Key | Use a normal CPA API Key. Do not use the CPAMP Admin Key or CPA Management Key. |
-| Model | Use the model name or alias exposed by CPA providers. |
-| Monitoring | CPAMP can collect and display events only when requests pass through CPA. |
+| Item       | Recommendation                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| Base URL   | The public CPA address, such as `https://gateway.example.com` or `http://localhost:8317`. |
+| API Key    | Use a normal CPA API Key. Do not use the CPAMP Admin Key or CPA Management Key.           |
+| Model      | Use the model name or alias exposed by CPA providers.                                     |
+| Monitoring | CPAMP can collect and display events only when requests pass through CPA.                 |
 
 With a same-domain reverse proxy, client requests to `/v1/*`, `/v1beta/*`, and `/backend-api/codex/*` should go to CPA. Sending normal model requests to CPAMP only creates extra 401, 404, or 412 troubleshooting.
 
@@ -32,7 +32,7 @@ Before connecting Claude Code:
 - OAuth or auth file setup is complete.
 - The client uses the CPA public address and a normal API Key.
 
-OAuth success only means authentication completed. If requests still fail, check account state in Auth Files first, then read the Monitoring failure summary.
+OAuth success only means authentication completed. If requests still fail, check account state in Accounts first, then read the Monitoring failure summary.
 
 ## OpenCode And General OpenAI Clients
 

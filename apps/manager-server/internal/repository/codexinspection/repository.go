@@ -200,9 +200,25 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 	if result.CreatedAtMS <= 0 {
 		result.CreatedAtMS = time.Now().UnixMilli()
 	}
-	if result.QuotaWindowsJSON == "" && len(result.QuotaWindows) > 0 {
-		result.QuotaWindowsJSON = model.MarshalCodexInspectionQuotaWindows(result.QuotaWindows)
+	quotaWindowsJSON := strings.TrimSpace(result.QuotaWindowsJSON)
+	if quotaWindowsJSON == "" {
+		switch {
+		case len(result.QuotaWindows) > 0:
+			quotaWindowsJSON = model.MarshalCodexInspectionQuotaWindows(result.QuotaWindows)
+		case result.QuotaInventoryObserved:
+			quotaWindowsJSON = "[]"
+		}
 	}
+	quotaWindows, quotaInventoryObserved := model.ParseCodexInspectionQuotaWindows(quotaWindowsJSON)
+	if quotaInventoryObserved {
+		quotaWindowsJSON = model.MarshalCodexInspectionQuotaWindows(quotaWindows)
+		if len(quotaWindows) == 0 {
+			quotaWindowsJSON = "[]"
+		}
+	}
+	result.QuotaWindowsJSON = quotaWindowsJSON
+	result.QuotaWindows = quotaWindows
+	result.QuotaInventoryObserved = quotaInventoryObserved
 	result.ActionStatus = model.NormalizeCodexInspectionActionStatus(result.ActionStatus, result.Action)
 	disabled := 0
 	if result.Disabled {
@@ -247,7 +263,10 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			executed_action = excluded.executed_action,
 			action_error = excluded.action_error,
 			plan_type = excluded.plan_type,
-			quota_windows_json = excluded.quota_windows_json,
+			quota_windows_json = case
+				when excluded.quota_windows_json is not null then excluded.quota_windows_json
+				else codex_inspection_results.quota_windows_json
+			end,
 				error_kind = excluded.error_kind,
 				error_detail = excluded.error_detail,
 				created_at_ms = excluded.created_at_ms
@@ -274,7 +293,7 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 			nullString(result.ExecutedAction),
 			nullString(result.ActionError),
 			nullString(result.PlanType),
-			nullString(result.QuotaWindowsJSON),
+			nullStringIf(result.QuotaInventoryObserved, result.QuotaWindowsJSON),
 			nullString(result.ErrorKind),
 			nullString(result.ErrorDetail),
 			result.CreatedAtMS,
@@ -854,7 +873,10 @@ func scanResult(row scanner) (model.CodexInspectionResult, error) {
 	result.ActionError = actionError.String
 	result.PlanType = planType.String
 	result.QuotaWindowsJSON = quotaWindowsJSON.String
-	result.QuotaWindows = model.UnmarshalCodexInspectionQuotaWindows(result.QuotaWindowsJSON)
+	result.QuotaWindows, result.QuotaInventoryObserved = model.ParseCodexInspectionQuotaWindows(result.QuotaWindowsJSON)
+	if !result.QuotaInventoryObserved {
+		result.QuotaWindowsJSON = ""
+	}
 	result.ErrorKind = errorKind.String
 	result.ErrorDetail = errorDetail.String
 	if statusCode.Valid {
@@ -893,6 +915,13 @@ func scanLog(row scanner) (model.CodexInspectionLog, error) {
 
 func nullString(value string) any {
 	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullStringIf(ok bool, value string) any {
+	if !ok {
 		return nil
 	}
 	return value

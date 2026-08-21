@@ -22,7 +22,7 @@ features:
   - title: Install With Confidence
     details: Choose Lightweight Panel or Full Mode, then follow the recommended login and verification steps.
   - title: Manage Models And Accounts
-    details: Add providers, OAuth, and auth files, then check quota and account state.
+    details: Add providers and OAuth, then check quota and account state in the unified Accounts workspace.
   - title: Understand Requests And Cost
     details: Find failed requests and analyze tokens, cost, latency, and callers.
 ---
@@ -51,10 +51,10 @@ import homePreview from '../images/home.png';
   </section>
   <section class="cpamp-doc-card">
     <h3>Manage Models And Accounts</h3>
-    <p>Handle providers, OAuth, auth files, and client setup for daily use.</p>
+    <p>Handle providers, OAuth, Accounts, and client setup for daily use.</p>
     <ul>
       <li><a href="./manual/ai-providers.html">AI Providers</a></li>
-      <li><a href="./manual/auth-files.html">Auth Files</a></li>
+      <li><a href="./manual/accounts.html">Accounts</a></li>
       <li><a href="./manual/oauth.html">OAuth Login</a></li>
       <li><a href="./gateway/clients.html">Client Configuration</a></li>
     </ul>
@@ -66,7 +66,7 @@ import homePreview from '../images/home.png';
       <li><a href="./manual/dashboard.html">Dashboard</a></li>
       <li><a href="./manual/monitoring.html">Monitoring</a></li>
       <li><a href="./manual/usage-analytics.html">Usage Analytics</a></li>
-      <li><a href="./manual/quota.html">Quota</a></li>
+      <li><a href="./manual/accounts.html">Account Health And Quota</a></li>
     </ul>
   </section>
   <section class="cpamp-doc-card">

@@ -7,11 +7,16 @@ import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { providersApi } from '@/services/api';
 import { useConfigStore, useNotificationStore } from '@/stores';
-import type { ProviderKeyConfig } from '@/types';
+import { coolingPolicyFromOverride, coolingPolicyToOverride, type ProviderKeyConfig } from '@/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual, areStringArraysEqual } from '@/utils/compare';
 import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
-import type { VertexFormState } from '@/components/providers';
+import { CoolingPolicySelect, CredentialWeightInput, type VertexFormState } from '@/components/providers';
+import {
+  getCredentialWeightComparisonValue,
+  getCredentialWeightError,
+  normalizeCredentialWeight,
+} from '@/utils/credentialWeight';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
 
 interface VertexEditDrawerProps {
@@ -26,6 +31,7 @@ type VertexFormBaseline = ReturnType<typeof buildVertexBaseline>;
 
 const buildEmptyForm = (): VertexFormState => ({
   apiKey: '',
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -34,6 +40,7 @@ const buildEmptyForm = (): VertexFormState => ({
   excludedModels: [],
   modelEntries: [{ name: '', alias: '' }],
   excludedText: '',
+  disableCooling: 'inherit',
 });
 
 const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) =>
@@ -48,9 +55,11 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
 const buildVertexBaseline = (form: VertexFormState) => ({
   apiKey: String(form.apiKey ?? '').trim(),
   priority: form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : null,
+  weight: normalizeCredentialWeight(form.weight) ?? null,
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   proxyUrl: String(form.proxyUrl ?? '').trim(),
+  disableCooling: form.disableCooling,
   headers: normalizeHeaderEntries(form.headers),
   models: normalizeModelEntries(form.modelEntries),
   excludedModels: parseExcludedModels(form.excludedText ?? ''),
@@ -116,6 +125,7 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
     if (initialData) {
       const nextForm: VertexFormState = {
         ...initialData,
+        disableCooling: coolingPolicyFromOverride(initialData.disableCooling),
         headers: headersToEntries(initialData.headers),
         modelEntries: initialData.models?.map((m) => ({ name: m.name, alias: m.alias ?? '' })) ?? [{ name: '', alias: '' }],
         excludedText: excludedModelsToText(initialData.excludedModels),
@@ -129,16 +139,20 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
     }
   }, [open, loaded, initialData]);
 
-  const canSave = !disabled && !saving && !loading && !invalidIndex;
+  const canSave =
+    !disabled && !saving && !loading && !invalidIndex && !getCredentialWeightError(form.weight);
 
   const isDirty = useMemo(() => {
     const normalizedPriority = form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : null;
+    const comparableWeight = getCredentialWeightComparisonValue(form.weight);
     return (
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.priority !== normalizedPriority ||
+      baseline.weight !== comparableWeight ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
       baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
       baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
+      baseline.disableCooling !== form.disableCooling ||
       !areKeyValueEntriesEqual(baseline.headers, normalizeHeaderEntries(form.headers)) ||
       !areModelEntriesEqual(baseline.models, normalizeModelEntries(form.modelEntries)) ||
       !areStringArraysEqual(baseline.excludedModels, parseExcludedModels(form.excludedText ?? ''))
@@ -163,6 +177,7 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
       const payload: ProviderKeyConfig = {
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined && Number.isFinite(form.priority) ? Math.trunc(form.priority) : undefined,
+        weight: normalizeCredentialWeight(form.weight),
         prefix: form.prefix?.trim() || undefined,
         baseUrl: (form.baseUrl ?? '').trim() || undefined,
         proxyUrl: form.proxyUrl?.trim() || undefined,
@@ -174,6 +189,7 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
           return { name, alias };
         }).filter(Boolean) as ProviderKeyConfig['models'],
         excludedModels: parseExcludedModels(form.excludedText),
+        disableCooling: coolingPolicyToOverride(form.disableCooling),
       };
       if (editIndex !== null) {
         await providersApi.updateVertexConfig(configs[editIndex], payload);
@@ -233,8 +249,14 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
             <Input label={t('ai_providers.prefix_label')} placeholder={t('ai_providers.prefix_placeholder')}
               value={form.prefix ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, prefix: e.target.value }))}
               hint={t('ai_providers.prefix_hint')} disabled={disabled || saving} />
+            <CredentialWeightInput
+              value={form.weight}
+              onChange={(weight) => setForm((prev) => ({ ...prev, weight }))}
+              disabled={disabled || saving}
+            />
             <Input label={t('ai_providers.vertex_add_modal_proxy_label')} placeholder={t('ai_providers.vertex_add_modal_proxy_placeholder')}
               value={form.proxyUrl ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxyUrl: e.target.value }))}
+              hint={t('ai_providers.model_discovery_proxy_version_hint')}
               disabled={disabled || saving} />
             <HeaderInputList entries={form.headers}
               onChange={(entries) => setForm((prev) => ({ ...prev, headers: entries }))}
@@ -242,6 +264,13 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
               valuePlaceholder={t('common.custom_headers_value_placeholder')}
               removeButtonTitle={t('common.delete')} removeButtonAriaLabel={t('common.delete')}
               disabled={disabled || saving} />
+            <CoolingPolicySelect
+              value={form.disableCooling}
+              onChange={(value) => setForm((prev) => ({ ...prev, disableCooling: value }))}
+              disabled={disabled || saving}
+              id="vertex-drawer-cooling-policy"
+              legacyProviderSupported={false}
+            />
             <div className="form-group">
               <label>{t('ai_providers.vertex_models_label')}</label>
               <ModelInputList entries={form.modelEntries}

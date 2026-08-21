@@ -1,5 +1,5 @@
 import type { QuotaCooldownInfo } from '@/services/api';
-import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/authFilesPageModel';
+import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
 import {
   summarizeGroupedQuotaAvailability,
@@ -7,9 +7,41 @@ import {
 } from './accountQuotaSummary';
 import type { AccountQuotaWindowKind } from './accountQuotaDisplayWindows';
 import type { QuotaResetAccuracy } from '@/types';
-import type { AccountRecommendation } from './quotaRecommendations';
+import {
+  buildAccountRecommendation,
+  isAccountRecommendationEvidenceSensitive,
+  type AccountRecommendation,
+} from './quotaRecommendations';
 import type { UsageValueSource } from './usageValueRows';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
+import {
+  classifyAccountCredentialStatusEvidence,
+  classifyAccountObservedDiagnosticEvidence,
+  classifyAccountQuotaRefreshEvidence,
+  getAccountRequestCredentialEvidence,
+  getAccountRequestEvidenceDetail,
+  getAccountRequestQuotaEvidenceDetail,
+  hasAccountQuotaLimitEvidence,
+  isAccountCredentialQuotaLimitCurrent,
+  isAccountCredentialStatusProblemCurrent,
+  isAccountInspectionAuthenticationFailure,
+  isAccountInspectionHealthyEvidence,
+  isAccountInspectionActionable,
+  isAccountInspectionStatusEvidenceCurrent,
+  isAccountObservedDiagnosticProblemCurrent,
+  isAccountRequestCredentialEvidenceCurrent,
+  isAccountRequestHealthEvidenceCurrent,
+  isAccountRequestQuotaEvidenceCurrent,
+  resolveAccountAuthenticationProblemEvidence,
+  resolveAccountExceptionProblemEvidence,
+  resolveAccountRequestHealthEvidence,
+  resolveAccountRequestQuotaEvidence,
+  type AccountAuthenticationProblemSource,
+  type AccountRequestEvidenceInput,
+  type AccountRequestCredentialEvidence,
+  type AccountRequestHealthEvidence,
+  type AccountRequestQuotaEvidence,
+} from './accountHealthEvidence';
 
 export type AccountListHealthStatusKey =
   | 'reauth'
@@ -64,6 +96,7 @@ export interface AccountListPresentationItem {
     planType: string | null;
     priority: number;
     priorityIsNegative: boolean;
+    weight: number | null;
   };
   health: {
     status: AccountListHealthStatusKey;
@@ -75,6 +108,8 @@ export interface AccountListPresentationItem {
     reasonTone: AccountListHealthReasonTone;
     cooldown: QuotaCooldownInfo | null;
     resetAtMs: number | null;
+    basisLabelKey?: string;
+    observedAtMs: number | null;
   };
   quota: {
     remainingPercent: number | null;
@@ -120,6 +155,7 @@ export interface AccountListPresentationOptions {
   } | null;
   codexStatus?: AuthFileCodexStatusSummary | null;
   quotaWindows?: AccountListQuotaWindowInput[];
+  requestEvidence?: AccountRequestEvidenceInput;
 }
 
 const DEFAULT_ESTIMATED_VALUE_PER_REQUEST = 0.018;
@@ -179,14 +215,6 @@ const extractHttpStatusCode = (value: string | null | undefined): string => {
   return match?.[1] ?? '';
 };
 
-const isAuthProblem = (row: AccountRow, recommendation?: AccountRecommendation | null) => {
-  if (recommendation?.action === 'reauth') return true;
-  if (row.inspection?.action === 'reauth' || row.inspection?.statusCode === 401) return true;
-  if (extractHttpStatusCode(row.quota.error) === '401') return true;
-  const statusMessage = row.statusMessage.trim().toLowerCase();
-  return ['unauthorized', 'unauthenticated', 'expired', 'token_expired'].includes(statusMessage);
-};
-
 const getCooldownRecoverAtLabel = (quotaCooldown: QuotaCooldownInfo): string => {
   const date = new Date(quotaCooldown.recoverAtMs);
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
@@ -203,55 +231,184 @@ const getFirstDetail = (...values: Array<string | number | null | undefined>): s
 const getHttpStatusDetail = (statusCode: number | null | undefined): string =>
   statusCode ? `HTTP ${statusCode}` : '';
 
-const getReauthReasonDetail = (row: AccountRow): string =>
-  getFirstDetail(
-    getHttpStatusDetail(row.inspection?.statusCode),
-    extractHttpStatusCode(row.quota.error),
-    row.inspection?.actionReason,
-    row.statusMessage,
+const getAuthenticationProblemDetail = (
+  row: AccountRow,
+  source: AccountAuthenticationProblemSource | null,
+  statusCode: number | null,
+  inspection: AccountRow['inspection'],
+  requestCredentialEvidence: AccountRequestCredentialEvidence | null,
+  credentialStatusDetail: string
+): string => {
+  if (source === 'request' && requestCredentialEvidence) {
+    return getAccountRequestEvidenceDetail(requestCredentialEvidence);
+  }
+  if (source === 'quota_refresh') {
+    return getFirstDetail(
+      row.quota.error,
+      getHttpStatusDetail(row.quota.errorStatus),
+      row.quota.observedErrorCode
+    );
+  }
+  if (source === 'inspection') {
+    const inspectionStatusDetail = getHttpStatusDetail(inspection?.statusCode);
+    if (inspection?.statusCode === 401) {
+      return getFirstDetail(
+        inspectionStatusDetail,
+        inspection.actionReason,
+        inspection.errorKind,
+        credentialStatusDetail
+      );
+    }
+    return getFirstDetail(
+      inspection?.actionReason,
+      inspection?.errorKind,
+      inspectionStatusDetail,
+      credentialStatusDetail
+    );
+  }
+  if (source === 'observed_header') {
+    return getFirstDetail(
+      row.quota.observedErrorCode,
+      row.quota.observedErrorKind,
+      getHttpStatusDetail(statusCode)
+    );
+  }
+  if (source === 'credential_status') {
+    return getFirstDetail(
+      credentialStatusDetail,
+      row.statusMessage,
+      getHttpStatusDetail(statusCode)
+    );
+  }
+  return getFirstDetail(
+    requestCredentialEvidence ? getAccountRequestEvidenceDetail(requestCredentialEvidence) : '',
+    inspection?.actionReason,
+    credentialStatusDetail,
+    row.quota.error,
     row.quota.observedErrorCode,
     row.quota.observedErrorKind
   );
+};
 
-const getExceptionDetail = (row: AccountRow): string =>
+const getExceptionDetail = (
+  row: AccountRow,
+  inspection: AccountRow['inspection'],
+  requestEvidence: AccountRequestHealthEvidence | null,
+  credentialStatusDetail: string,
+  quotaRefreshDetail: string,
+  observedDiagnosticDetail: string
+): string =>
   getFirstDetail(
-    row.statusMessage,
-    row.quota.error,
-    row.inspection?.actionReason,
-    [row.quota.observedErrorKind, row.quota.observedErrorCode].filter(Boolean).join(' / '),
-    row.quota.observedTraceId
+    requestEvidence ? getAccountRequestEvidenceDetail(requestEvidence) : '',
+    credentialStatusDetail,
+    quotaRefreshDetail,
+    inspection?.actionReason,
+    observedDiagnosticDetail,
+    observedDiagnosticDetail ? row.quota.observedTraceId : ''
   );
 
-const getExceptionReasonDetail = (row: AccountRow): string =>
+const getExceptionReasonDetail = (
+  inspection: AccountRow['inspection'],
+  requestEvidence: AccountRequestHealthEvidence | null,
+  credentialStatusDetail: string,
+  quotaRefreshDetail: string,
+  observedDiagnosticDetail: string
+): string =>
   getFirstDetail(
-    getHttpStatusDetail(row.inspection?.statusCode),
-    row.quota.observedErrorCode,
-    row.quota.observedErrorKind,
-    row.quota.error,
-    row.inspection?.actionReason,
-    row.statusMessage
+    requestEvidence ? getAccountRequestEvidenceDetail(requestEvidence) : '',
+    getHttpStatusDetail(inspection?.statusCode),
+    observedDiagnosticDetail,
+    quotaRefreshDetail,
+    inspection?.actionReason,
+    credentialStatusDetail
   );
 
-const getExceptionReasonKey = (row: AccountRow): string => {
-  if (row.quota.status === 'error' || row.quota.error) {
+const getExceptionReasonKey = (
+  inspection: AccountRow['inspection'],
+  requestEvidence: AccountRequestHealthEvidence | null,
+  quotaRefreshProblem: boolean,
+  hasObservedDiagnosticProblem: boolean
+): string => {
+  if (requestEvidence?.kind === 'transient_failure') {
+    return 'accounts.health_reason_exception_request';
+  }
+  if (quotaRefreshProblem) {
     return 'accounts.health_reason_exception_quota';
   }
-  if (row.quota.observedErrorKind || row.quota.observedErrorCode) {
+  if (hasObservedDiagnosticProblem) {
     return 'accounts.health_reason_exception_header';
   }
-  if (row.inspection && row.inspection.action !== 'keep') {
+  if (inspection) {
     return 'accounts.health_reason_exception_inspection';
   }
   return 'accounts.health_reason_exception_request';
 };
 
-const getLimitedReasonKey = (row: AccountRow): string =>
-  row.quota.source === 'observed-header' ||
-  row.quota.observedErrorKind ||
-  row.quota.observedErrorCode ||
-  row.quota.rateLimitReachedType
+const isHeaderQuotaLimitEvidence = (row: AccountRow): boolean => {
+  if (row.quota.source === 'observed-header') {
+    return true;
+  }
+  if (classifyAccountObservedDiagnosticEvidence(row) === 'quota') return true;
+  if (!row.quota.rateLimitReachedType || !row.quota.observedAtMs) return false;
+  return !row.quota.fetchedAtMs || row.quota.observedAtMs > row.quota.fetchedAtMs;
+};
+
+const getLimitedReasonKey = (
+  row: AccountRow,
+  requestQuotaEvidence: AccountRequestQuotaEvidence | null = null
+): string => {
+  if (requestQuotaEvidence) return 'accounts.health_reason_limited_request';
+  return isHeaderQuotaLimitEvidence(row)
     ? 'accounts.health_reason_limited_header'
     : 'accounts.health_reason_limited_quota';
+};
+
+const getQuotaLimitDetail = (
+  row: AccountRow,
+  requestQuotaEvidence: AccountRequestQuotaEvidence | null = null,
+  hasCurrentCredentialQuotaLimit = true
+): string => {
+  const runtimeQuotaDetail =
+    hasCurrentCredentialQuotaLimit && classifyAccountCredentialStatusEvidence(row) === 'quota'
+      ? row.statusMessage
+      : '';
+  const observedQuotaDetail =
+    classifyAccountObservedDiagnosticEvidence(row) === 'quota'
+      ? getFirstDetail(row.quota.observedErrorCode, row.quota.observedErrorKind)
+      : '';
+  const detail = getFirstDetail(
+    requestQuotaEvidence ? getAccountRequestQuotaEvidenceDetail(requestQuotaEvidence) : '',
+    row.quota.rateLimitReachedType,
+    runtimeQuotaDetail,
+    observedQuotaDetail,
+    row.quota.error
+  );
+  return detail === '-' ? '' : detail;
+};
+
+const getQuotaLimitTooltip = (
+  row: AccountRow,
+  requestQuotaEvidence: AccountRequestQuotaEvidence | null,
+  hasCurrentCredentialQuotaLimit: boolean
+): Pick<HealthStatusResolution, 'tooltipKey' | 'tooltipParams'> => {
+  if (requestQuotaEvidence) {
+    return {
+      tooltipKey: 'accounts.health_tip_limited',
+      tooltipParams: { detail: getAccountRequestQuotaEvidenceDetail(requestQuotaEvidence) },
+    };
+  }
+  if (row.quota.creditsOverageLimitReached === true) {
+    return { tooltipKey: 'accounts.health_tip_limited_credits_overage', tooltipParams: {} };
+  }
+  if (row.quota.spendControlReached === true) {
+    return { tooltipKey: 'accounts.health_tip_limited_spend_control', tooltipParams: {} };
+  }
+  const detail = getQuotaLimitDetail(row, null, hasCurrentCredentialQuotaLimit);
+  if (detail) {
+    return { tooltipKey: 'accounts.health_tip_limited', tooltipParams: { detail } };
+  }
+  return { tooltipKey: 'accounts.health_tip_limited', tooltipParams: { detail: '-' } };
+};
 
 const inferQuotaWindowKind = (
   window: AccountListQuotaWindowPresentation
@@ -340,7 +497,7 @@ const resolveAntigravityAvailability = (
 const resolveCodexLimitKind = (
   codexStatus?: AuthFileCodexStatusSummary | null
 ): AccountListQuotaLimitKind | null => {
-  if (!codexStatus?.isCodex) return null;
+  if (!codexStatus) return null;
   if (codexStatus.isMonthlyLimited) return 'monthly';
   if (codexStatus.isWeeklyLimited) return 'weekly';
   if (codexStatus.isFiveHourLimited) return 'five_hour';
@@ -446,6 +603,68 @@ const hasKnownAvailableQuota = (
   return row.quota.status === 'ok' || row.quota.status === 'low';
 };
 
+type AccountAvailableEvidenceSource = 'quota' | 'inspection' | 'request';
+
+type AccountAvailableEvidence = {
+  source: AccountAvailableEvidenceSource;
+  observedAtMs: number | null;
+  priority: number;
+};
+
+const normalizeAvailableEvidenceTimestamp = (value: number | null | undefined): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+
+const getAvailableQuotaObservedAtMs = (row: AccountRow): number | null =>
+  normalizeAvailableEvidenceTimestamp(
+    row.quota.source === 'observed-header'
+      ? (row.quota.observedQuotaAtMs ?? row.quota.observedAtMs ?? row.quota.fetchedAtMs)
+      : (row.quota.fetchedAtMs ?? row.quota.observedQuotaAtMs ?? row.quota.observedAtMs)
+  );
+
+const getAvailableQuotaBasisLabelKey = (row: AccountRow): string => {
+  if (row.quota.source === 'observed-header') return 'accounts.quota_source_observed_header';
+  if (row.quota.source === 'cache') return 'accounts.quota_source_cache';
+  return 'accounts.quota_source_none';
+};
+
+const resolveLatestAvailableEvidence = (
+  row: AccountRow,
+  hasAvailableQuota: boolean,
+  requestEvidence: AccountRequestHealthEvidence | null
+): AccountAvailableEvidence | null => {
+  const candidates: AccountAvailableEvidence[] = [];
+  if (hasAvailableQuota) {
+    candidates.push({
+      source: 'quota',
+      observedAtMs: getAvailableQuotaObservedAtMs(row),
+      priority: 1,
+    });
+  }
+  if (isAccountInspectionHealthyEvidence(row)) {
+    candidates.push({
+      source: 'inspection',
+      observedAtMs: normalizeAvailableEvidenceTimestamp(row.inspection?.createdAtMs),
+      priority: 2,
+    });
+  }
+  if (requestEvidence?.kind === 'success') {
+    candidates.push({
+      source: 'request',
+      observedAtMs: normalizeAvailableEvidenceTimestamp(requestEvidence.request.timestamp_ms),
+      priority: 3,
+    });
+  }
+  if (candidates.length === 0) return null;
+
+  return candidates.sort((left, right) => {
+    const leftUnknown = left.observedAtMs === null;
+    const rightUnknown = right.observedAtMs === null;
+    if (leftUnknown !== rightUnknown) return leftUnknown ? 1 : -1;
+    const observedAtDiff = (right.observedAtMs ?? 0) - (left.observedAtMs ?? 0);
+    return observedAtDiff || right.priority - left.priority;
+  })[0];
+};
+
 type HealthStatusResolution = {
   status: AccountListHealthStatusKey;
   tooltipKey: string;
@@ -454,15 +673,82 @@ type HealthStatusResolution = {
   reasonParams?: HealthTooltipParams;
   reasonTone: AccountListHealthReasonTone;
   resetAtMs?: number | null;
+  basisLabelKey?: string;
+  observedAtMs?: number | null;
 };
 
 const resolveHealthStatus = (
   row: AccountRow,
-  recommendation?: AccountRecommendation | null,
   quotaCooldown?: QuotaCooldownInfo | null,
   codexStatus?: AuthFileCodexStatusSummary | null,
-  quotaWindows: AccountListQuotaWindowPresentation[] = []
+  quotaWindows: AccountListQuotaWindowPresentation[] = [],
+  requestEvidenceInput: AccountRequestEvidenceInput = {}
 ): HealthStatusResolution => {
+  const resolvedRequestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const requestEvidence = isAccountRequestHealthEvidenceCurrent(row, resolvedRequestEvidence)
+    ? resolvedRequestEvidence
+    : null;
+  const requestCredentialEvidence = isAccountRequestCredentialEvidenceCurrent(
+    row,
+    resolvedRequestEvidence
+  )
+    ? getAccountRequestCredentialEvidence(resolvedRequestEvidence)
+    : null;
+  const actionableInspection = isAccountInspectionActionable(row, resolvedRequestEvidence)
+    ? row.inspection
+    : null;
+  const statusInspection = isAccountInspectionStatusEvidenceCurrent(
+    row,
+    resolvedRequestEvidence
+  )
+    ? row.inspection
+    : null;
+  const hasCredentialStatusProblem = isAccountCredentialStatusProblemCurrent(
+    row,
+    resolvedRequestEvidence
+  );
+  const credentialStatusDetail = hasCredentialStatusProblem ? row.statusMessage : '';
+  const hasObservedDiagnosticProblem = isAccountObservedDiagnosticProblemCurrent(
+    row,
+    resolvedRequestEvidence
+  );
+  const exceptionProblem = resolveAccountExceptionProblemEvidence(row, resolvedRequestEvidence);
+  const exceptionRequestEvidence = exceptionProblem?.source === 'request' ? requestEvidence : null;
+  const exceptionInspection =
+    exceptionProblem?.source === 'inspection' ? actionableInspection : null;
+  const quotaRefreshProblem = exceptionProblem?.source === 'quota_refresh';
+  const quotaRefreshDetail = quotaRefreshProblem
+    ? getFirstDetail(row.quota.error, getHttpStatusDetail(row.quota.errorStatus))
+    : '';
+  const observedDiagnosticDetail = !exceptionProblem && hasObservedDiagnosticProblem
+    ? [row.quota.observedErrorKind, row.quota.observedErrorCode].filter(Boolean).join(' / ')
+    : '';
+  const resolvedRequestQuotaEvidence = resolveAccountRequestQuotaEvidence(requestEvidenceInput);
+  const requestQuotaEvidence = isAccountRequestQuotaEvidenceCurrent(
+    row,
+    resolvedRequestQuotaEvidence
+  )
+    ? resolvedRequestQuotaEvidence
+    : null;
+  const hasQuotaLimitEvidence = hasAccountQuotaLimitEvidence(row, requestEvidenceInput);
+  const hasCredentialQuotaLimitEvidence = isAccountCredentialQuotaLimitCurrent(
+    row,
+    resolvedRequestEvidence
+  );
+  const authenticationProblem = resolveAccountAuthenticationProblemEvidence(
+    row,
+    resolvedRequestEvidence
+  );
+  const hasRowAuthenticationEvidence =
+    classifyAccountCredentialStatusEvidence(row) === 'credential_failure' ||
+    classifyAccountQuotaRefreshEvidence(row) === 'credential_failure' ||
+    classifyAccountObservedDiagnosticEvidence(row) === 'credential_failure' ||
+    isAccountInspectionAuthenticationFailure(row);
+  const providerStatusNeedsReauth =
+    row.provider === 'xai' &&
+    codexStatus?.needsReauth === true &&
+    !hasRowAuthenticationEvidence &&
+    requestCredentialEvidence?.direction !== 'positive';
   const antigravityAvailability = resolveAntigravityAvailability(row, quotaWindows);
   const resolveEffectiveQuotaWindowLimitKind = () =>
     antigravityAvailability
@@ -475,28 +761,50 @@ const resolveHealthStatus = (
           : 'unknown'
       : resolveQuotaWindowLimitKind(quotaWindows);
 
-  if (codexStatus?.needsReauth || isAuthProblem(row, recommendation)) {
-    const quotaRefreshStatusCode = extractHttpStatusCode(row.quota.error);
+  if (authenticationProblem || providerStatusNeedsReauth) {
+    const authenticationSource =
+      authenticationProblem?.source ?? (statusInspection ? 'inspection' : 'credential_status');
+    const authenticationDetail = getAuthenticationProblemDetail(
+      row,
+      authenticationSource,
+      authenticationProblem?.statusCode ?? null,
+      statusInspection,
+      requestCredentialEvidence,
+      credentialStatusDetail
+    );
+    const quotaRefreshRequiresReauth = authenticationSource === 'quota_refresh';
+    const quotaRefreshStatusCode = quotaRefreshRequiresReauth
+      ? String(
+          authenticationProblem?.statusCode ??
+            row.quota.errorStatus ??
+            extractHttpStatusCode(row.quota.error)
+        )
+      : '';
+    const requestRequiresReauth = authenticationSource === 'request';
     return {
       status: 'reauth',
       tooltipKey: 'accounts.health_tip_reauth',
-      tooltipParams: {
-        detail: getFirstDetail(
-          row.inspection?.actionReason,
-          row.statusMessage,
-          row.quota.error,
-          row.quota.observedErrorCode
-        ),
-      },
+      tooltipParams: { detail: authenticationDetail },
       reasonKey: quotaRefreshStatusCode
         ? 'accounts.health_reason_reauth_quota_refresh'
-        : row.inspection?.action === 'reauth' || row.inspection?.statusCode === 401
+        : authenticationSource === 'inspection'
           ? 'accounts.health_reason_reauth_inspection'
           : 'accounts.health_reason_reauth_auth',
       reasonParams: quotaRefreshStatusCode
         ? { code: quotaRefreshStatusCode }
-        : { detail: getReauthReasonDetail(row) },
+        : { detail: authenticationDetail },
       reasonTone: 'danger',
+      ...(requestRequiresReauth
+        ? {
+            basisLabelKey: 'accounts.latest_request_time_title',
+            observedAtMs: authenticationProblem?.observedAtMs ?? null,
+          }
+        : authenticationSource === 'observed_header'
+          ? {
+              basisLabelKey: 'accounts.quota_source_observed_header',
+              observedAtMs: authenticationProblem?.observedAtMs ?? null,
+            }
+          : {}),
     };
   }
 
@@ -590,6 +898,31 @@ const resolveHealthStatus = (
     };
   }
 
+  if (hasQuotaLimitEvidence) {
+    const tooltip = getQuotaLimitTooltip(
+      row,
+      requestQuotaEvidence,
+      hasCredentialQuotaLimitEvidence
+    );
+    return {
+      status: 'limited',
+      ...tooltip,
+      reasonKey: getLimitedReasonKey(row, requestQuotaEvidence),
+      reasonTone: 'warning',
+      ...(requestQuotaEvidence
+        ? {
+            basisLabelKey: 'accounts.latest_request_time_title',
+            observedAtMs: requestQuotaEvidence.request.timestamp_ms,
+          }
+        : hasCredentialQuotaLimitEvidence
+          ? {
+              basisLabelKey: 'accounts.detail_overview_basis_credential_state',
+              observedAtMs: row.updatedAtMs,
+            }
+          : {}),
+    };
+  }
+
   if (row.quota.status === 'exhausted' || row.quota.remainingPercent === 0) {
     return {
       status: 'limited',
@@ -606,27 +939,56 @@ const resolveHealthStatus = (
     return {
       status: 'disabled',
       tooltipKey: 'accounts.health_tip_disabled',
-      tooltipParams: { detail: getFirstDetail(row.statusMessage, row.inspection?.actionReason) },
+      tooltipParams: {
+        detail: getFirstDetail(credentialStatusDetail, actionableInspection?.actionReason),
+      },
       reasonKey: 'accounts.health_reason_disabled',
       reasonTone: 'muted',
     };
   }
 
   if (
-    row.quota.status === 'error' ||
-    (row.statusMessage && antigravityAvailability?.state !== 'partial') ||
-    row.quota.error ||
-    row.quota.observedErrorKind ||
-    row.quota.observedErrorCode ||
-    (row.inspection && row.inspection.action !== 'keep')
+    (hasCredentialStatusProblem && antigravityAvailability?.state !== 'partial') ||
+    exceptionProblem ||
+    hasObservedDiagnosticProblem ||
+    actionableInspection
   ) {
+    const requestFailedTransiently = exceptionProblem?.source === 'request';
     return {
       status: 'exception',
       tooltipKey: 'accounts.health_tip_exception',
-      tooltipParams: { detail: getExceptionDetail(row) },
-      reasonKey: getExceptionReasonKey(row),
-      reasonParams: { detail: getExceptionReasonDetail(row) },
+      tooltipParams: {
+        detail: getExceptionDetail(
+          row,
+          exceptionInspection,
+          exceptionRequestEvidence,
+          credentialStatusDetail,
+          quotaRefreshDetail,
+          observedDiagnosticDetail
+        ),
+      },
+      reasonKey: getExceptionReasonKey(
+        exceptionInspection,
+        exceptionRequestEvidence,
+        quotaRefreshProblem,
+        hasObservedDiagnosticProblem
+      ),
+      reasonParams: {
+        detail: getExceptionReasonDetail(
+          exceptionInspection,
+          exceptionRequestEvidence,
+          credentialStatusDetail,
+          quotaRefreshDetail,
+          observedDiagnosticDetail
+        ),
+      },
       reasonTone: 'danger',
+      ...(requestFailedTransiently
+        ? {
+            basisLabelKey: 'accounts.latest_request_time_title',
+            observedAtMs: exceptionRequestEvidence?.request.timestamp_ms ?? null,
+          }
+        : {}),
     };
   }
 
@@ -652,20 +1014,53 @@ const resolveHealthStatus = (
     };
   }
 
-  if (hasKnownAvailableQuota(row, quotaWindows, antigravityAvailability)) {
+  const availableEvidence = resolveLatestAvailableEvidence(
+    row,
+    hasKnownAvailableQuota(row, quotaWindows, antigravityAvailability),
+    requestEvidence
+  );
+  if (availableEvidence?.source === 'quota') {
     return {
       status: 'available',
       tooltipKey: 'accounts.health_tip_available',
       tooltipParams: { detail: getFirstDetail(row.quota.source, row.quota.resetLabel) },
       reasonKey: 'accounts.health_reason_available',
       reasonTone: 'muted',
+      basisLabelKey: getAvailableQuotaBasisLabelKey(row),
+      observedAtMs: availableEvidence.observedAtMs,
+    };
+  }
+
+  if (availableEvidence?.source === 'inspection') {
+    return {
+      status: 'available',
+      tooltipKey: 'accounts.health_tip_available',
+      tooltipParams: { detail: row.inspection?.actionReason || '-' },
+      reasonKey: 'accounts.health_reason_available',
+      reasonTone: 'muted',
+      basisLabelKey: 'accounts.detail_overview_basis_inspection',
+      observedAtMs: availableEvidence.observedAtMs,
+    };
+  }
+
+  if (availableEvidence?.source === 'request') {
+    return {
+      status: 'available',
+      tooltipKey: 'accounts.health_tip_available_request',
+      tooltipParams: {},
+      reasonKey: 'accounts.health_reason_available_request',
+      reasonTone: 'muted',
+      basisLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: availableEvidence.observedAtMs,
     };
   }
 
   return {
     status: 'raw',
     tooltipKey: 'accounts.health_tip_raw',
-    tooltipParams: { detail: getFirstDetail(row.quota.status, row.statusMessage) },
+    tooltipParams: {
+      detail: getFirstDetail(row.statusMessage, row.quota.error, row.quota.status),
+    },
     reasonKey: 'accounts.health_reason_raw',
     reasonTone: 'muted',
   };
@@ -726,7 +1121,13 @@ export const buildAccountListItem = (
   row: AccountRow,
   options: AccountListPresentationOptions = {}
 ): AccountListPresentationItem => {
-  const recommendation = options.recommendation ?? null;
+  const computedRecommendation = buildAccountRecommendation(row, options.requestEvidence);
+  const providedRecommendation = options.recommendation ?? null;
+  const providedRecommendationIsEvidenceSensitive =
+    isAccountRecommendationEvidenceSensitive(providedRecommendation);
+  const recommendation =
+    computedRecommendation ??
+    (providedRecommendationIsEvidenceSensitive ? null : providedRecommendation);
   const quotaCooldown = options.quotaCooldown ?? null;
   const fallbackRecentTotal = row.usage.success + row.usage.failure;
   const activity = options.activity ?? null;
@@ -750,10 +1151,10 @@ export const buildAccountListItem = (
   );
   const health = resolveHealthStatus(
     row,
-    recommendation,
     quotaCooldown,
     options.codexStatus ?? null,
-    quotaWindows
+    quotaWindows,
+    options.requestEvidence
   );
 
   return {
@@ -765,6 +1166,7 @@ export const buildAccountListItem = (
       planType: row.planType,
       priority: row.priority ?? 0,
       priorityIsNegative: row.priority !== null && row.priority < 0,
+      weight: row.weight ?? null,
     },
     health: {
       status: health.status,
@@ -776,6 +1178,8 @@ export const buildAccountListItem = (
       reasonTone: health.reasonTone,
       cooldown: quotaCooldown,
       resetAtMs: health.resetAtMs ?? null,
+      basisLabelKey: health.basisLabelKey,
+      observedAtMs: health.observedAtMs ?? null,
     },
     quota: {
       remainingPercent: row.quota.remainingPercent,

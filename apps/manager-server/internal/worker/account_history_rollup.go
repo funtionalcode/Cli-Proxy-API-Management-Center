@@ -25,6 +25,8 @@ type AccountHistoryRollupWorker struct {
 	maxBatches        int
 	checkInterval     time.Duration
 	continuationDelay time.Duration
+	reportedStarted   bool
+	lastReported      int64
 }
 
 func NewAccountHistoryRollupWorker(store *store.Store) *AccountHistoryRollupWorker {
@@ -82,6 +84,22 @@ func (w *AccountHistoryRollupWorker) catchUp(ctx context.Context) bool {
 		if err != nil {
 			log.Printf("[usage-rollup] account history catch-up failed: %v", err)
 			return false
+		}
+		if result.Rebuilt && result.Processed > 0 && !w.reportedStarted {
+			log.Printf("[usage-rollup] account history rebuild started batchSize=%d", w.batchLimit)
+			w.reportedStarted = true
+			w.lastReported = 0
+		}
+		rebuildCompleted := result.Rebuilt && result.RebuildTargetEventID > 0 && result.LastEventID >= result.RebuildTargetEventID
+		if w.reportedStarted && result.Rebuilt && result.Processed > 0 &&
+			(result.LastEventID-w.lastReported >= 10000 || rebuildCompleted) {
+			log.Printf("[usage-rollup] account history rebuild progress lastEventID=%d pending=%t", result.LastEventID, result.Pending)
+			w.lastReported = result.LastEventID
+		}
+		if w.reportedStarted && rebuildCompleted {
+			log.Printf("[usage-rollup] account history rebuild completed lastEventID=%d", result.LastEventID)
+			w.reportedStarted = false
+			w.lastReported = 0
 		}
 		pending = result.Pending
 		if result.Processed == 0 || !result.Pending {

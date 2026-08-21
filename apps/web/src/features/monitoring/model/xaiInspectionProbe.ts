@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import type { TFunction } from 'i18next';
 import type { XaiBillingSummary } from '@/types';
 import { probeXaiInference, probeXaiQuota } from '@/utils/quota/providerRequests';
@@ -256,7 +257,8 @@ export const inspectSingleXaiAccount = async (
   account: CodexInspectionAccount,
   settings: CodexInspectionSettings,
   onLog?: CodexInspectionLogHandler,
-  t: TFunction = identityT
+  t: TFunction = identityT,
+  scopedRequestConfig?: AxiosRequestConfig
 ): Promise<CodexInspectionResultItem> => {
   if (!account.authIndex) {
     onLog?.(
@@ -290,7 +292,10 @@ export const inspectSingleXaiAccount = async (
     };
   }
 
-  const requestConfig = settings.timeout > 0 ? { timeout: settings.timeout } : undefined;
+  const requestConfig: AxiosRequestConfig = {
+    ...(scopedRequestConfig ?? {}),
+    ...(settings.timeout > 0 ? { timeout: settings.timeout } : {}),
+  };
   let billingSummary: XaiBillingSummary | null = null;
   let billingStatusCode: number | null = null;
   let billingError: unknown = null;

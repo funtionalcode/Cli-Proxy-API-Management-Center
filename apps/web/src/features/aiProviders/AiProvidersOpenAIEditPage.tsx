@@ -7,13 +7,12 @@ import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { Input } from '@/components/ui/Input';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Select } from '@/components/ui/Select';
-import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { CoolingPolicySelect } from '@/components/providers/CoolingPolicySelect';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
-import { OpenAIKeyTestStatusIndicator } from '@/components/providers';
+import { OpenAIKeyTestStatusIndicator, type OpenAIFormApiKeyEntry } from '@/components/providers';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useNotificationStore } from '@/stores';
 import { apiCallApi, getApiCallErrorDetails } from '@/services/api';
-import type { ApiKeyEntry } from '@/types';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject, hasHeader } from '@/utils/headers';
 import { buildApiKeyEntry, buildOpenAIChatCompletionsEndpoint } from '@/components/providers/utils';
@@ -23,6 +22,11 @@ import {
 } from '@/features/aiProviders/model/keyTestStatuses';
 import type { OpenAIEditOutletContext } from './AiProvidersOpenAIEditLayout';
 import type { KeyTestStatus } from '@/stores/useOpenAIEditDraftStore';
+import {
+  MAX_CREDENTIAL_WEIGHT,
+  getCredentialWeightError,
+  toCredentialWeightInputValue,
+} from '@/utils/credentialWeight';
 import styles from './AiProvidersPage.module.scss';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 
@@ -79,7 +83,17 @@ export function AiProvidersOpenAIEditPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleBack]);
 
-  const canSave = !disableControls && !loading && !saving && !invalidIndexParam && !invalidIndex && !isTestingKeys;
+  const hasInvalidWeight = form.apiKeyEntries.some((entry) =>
+    getCredentialWeightError(entry.weight)
+  );
+  const canSave =
+    !disableControls &&
+    !loading &&
+    !saving &&
+    !invalidIndexParam &&
+    !invalidIndex &&
+    !isTestingKeys &&
+    !hasInvalidWeight;
   const hasConfiguredModels = form.modelEntries.some((entry) => entry.name.trim());
   const hasTestableKeys = form.apiKeyEntries.some(
     (entry) => entry.apiKey?.trim() || normalizeAuthIndex(entry.authIndex)
@@ -313,15 +327,21 @@ export function AiProvidersOpenAIEditPage() {
     navigate('models');
   };
 
-  const renderKeyEntries = (entries: ApiKeyEntry[]) => {
+  const renderKeyEntries = (entries: OpenAIFormApiKeyEntry[]) => {
     const list = entries.length ? entries : [buildApiKeyEntry()];
 
-    const updateEntry = (idx: number, field: keyof ApiKeyEntry, value: string) => {
+    const updateEntry = (idx: number, field: keyof OpenAIFormApiKeyEntry, value: string) => {
       const next = list.map((entry, i) => (i === idx ? { ...entry, [field]: value } : entry));
       setForm((prev) => ({ ...prev, apiKeyEntries: next }));
       setDraftKeyTestStatus(idx, { status: 'idle', message: '' });
       setTestStatus('idle');
       setTestMessage('');
+    };
+
+    const updateEntryWeight = (idx: number, raw: string) => {
+      const weight = toCredentialWeightInputValue(raw);
+      const next = list.map((entry, i) => (i === idx ? { ...entry, weight } : entry));
+      setForm((prev) => ({ ...prev, apiKeyEntries: next }));
     };
 
     const removeEntry = (idx: number) => {
@@ -364,13 +384,16 @@ export function AiProvidersOpenAIEditPage() {
             <div className={styles.keyTableColIndex}>#</div>
             <div className={styles.keyTableColStatus}>{t('common.status')}</div>
             <div className={styles.keyTableColKey}>{t('common.api_key')}</div>
+            <div className={styles.keyTableColWeight}>{t('ai_providers.weight_label')}</div>
             <div className={styles.keyTableColProxy}>{t('common.proxy_url')}</div>
             <div className={styles.keyTableColAction}>{t('common.action')}</div>
           </div>
+          <div className="hint">{t('ai_providers.model_discovery_proxy_version_hint')}</div>
 
           {/* 数据行 */}
           {list.map((entry, index) => {
             const keyStatus = keyTestStatuses[index]?.status ?? 'idle';
+            const weightError = getCredentialWeightError(entry.weight);
             const canTestKey =
               Boolean(entry.apiKey?.trim() || normalizeAuthIndex(entry.authIndex)) &&
               hasConfiguredModels;
@@ -398,6 +421,32 @@ export function AiProvidersOpenAIEditPage() {
                     className={`input ${styles.keyTableInput}`}
                     placeholder={t('ai_providers.openai_key_placeholder')}
                   />
+                </div>
+
+                <div className={styles.keyTableColWeight}>
+                  <div className={styles.keyTableWeightField}>
+                    <input
+                      type="text"
+                      inputMode="text"
+                      value={entry.weight ?? ''}
+                      onChange={(e) => updateEntryWeight(index, e.target.value)}
+                      disabled={saving || disableControls || isTestingKeys}
+                      className={`input ${styles.keyTableInput}`}
+                      placeholder="1"
+                      aria-invalid={Boolean(weightError)}
+                      aria-label={`${t('ai_providers.weight_label')} ${index + 1}`}
+                    />
+                    {weightError && (
+                      <span className={styles.keyTableWeightError}>
+                        {t(
+                          weightError === 'maximum'
+                            ? 'ai_providers.weight_error_maximum'
+                            : 'ai_providers.weight_error_integer',
+                          { max: MAX_CREDENTIAL_WEIGHT.toLocaleString() }
+                        )}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Proxy 输入框 */}
@@ -526,16 +575,12 @@ export function AiProvidersOpenAIEditPage() {
               removeButtonAriaLabel={t('common.delete')}
               disabled={saving || disableControls || isTestingKeys}
             />
-            <div className="form-group">
-              <label>{t('ai_providers.disable_cooling_label')}</label>
-              <ToggleSwitch
-                checked={Boolean(form.disableCooling)}
-                onChange={(value) => setForm((prev) => ({ ...prev, disableCooling: value }))}
-                disabled={saving || disableControls || isTestingKeys}
-                ariaLabel={t('ai_providers.disable_cooling_label')}
-              />
-              <div className="hint">{t('ai_providers.disable_cooling_hint')}</div>
-            </div>
+            <CoolingPolicySelect
+              value={form.disableCooling}
+              onChange={(value) => setForm((prev) => ({ ...prev, disableCooling: value }))}
+              disabled={saving || disableControls || isTestingKeys}
+              id="openai-page-cooling-policy"
+            />
 
             {/* 模型配置区域 - 统一布局 */}
             <div className={styles.modelConfigSection}>

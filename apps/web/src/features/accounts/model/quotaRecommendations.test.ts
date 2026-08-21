@@ -115,12 +115,129 @@ describe('quotaRecommendations', () => {
     expect(recommendation?.reasonKey).toBe('accounts.recommend_reason_error');
   });
 
+  it('reauthenticates accounts when quota refresh returns a current HTTP 401', () => {
+    const recommendation = buildAccountRecommendation(
+      makeRow({
+        quota: {
+          status: 'error',
+          error: 'quota refresh failed: HTTP 401',
+          failedAtMs: 2_000,
+        },
+      })
+    );
+
+    expect(recommendation).toMatchObject({
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_quota_auth',
+    });
+  });
+
+  it('does not recommend refresh for neutral or superseded quota refresh failures', () => {
+    expect(
+      buildAccountRecommendation(
+        makeRow({
+          quota: {
+            status: 'error',
+            error: 'context canceled',
+            errorStatus: 499,
+            failedAtMs: 2_000,
+          },
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      buildAccountRecommendation(
+        makeRow({
+          quota: {
+            status: 'error',
+            error: 'upstream unavailable',
+            errorStatus: 503,
+            failedAtMs: 1_000,
+          },
+        }),
+        { latestRequest: { timestamp_ms: 2_000, failed: false } }
+      )
+    ).toBeNull();
+  });
+
+  it('reauthenticates current credential and Header authentication failures', () => {
+    for (const row of [
+      makeRow({
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 401 },
+        updatedAtMs: 2_000,
+      }),
+      makeRow({
+        quota: {
+          status: 'ok',
+          observedAtMs: 2_000,
+          observedErrorKind: 'auth',
+          observedErrorCode: 'invalid_api_key',
+        },
+      }),
+    ]) {
+      expect(buildAccountRecommendation(row)).toMatchObject({
+        action: 'reauth',
+        priority: 'critical',
+        reasonKey: 'accounts.recommend_reason_credential_auth',
+      });
+    }
+  });
+
   it('enables disabled accounts after quota recovery', () => {
-    const recommendation = buildAccountRecommendation(makeRow({ disabled: true }));
+    const recommendation = buildAccountRecommendation(
+      makeRow({
+        disabled: true,
+        quota: {
+          status: 'disabled',
+          remainingPercent: null,
+          usedPercent: null,
+          resetLabel: '-',
+          planType: null,
+          source: 'none',
+        },
+      }),
+      { latestRequest: { timestamp_ms: 2_000, failed: false } }
+    );
 
     expect(recommendation?.action).toBe('enable');
     expect(recommendation?.priority).toBe('medium');
     expect(recommendation?.reasonKey).toBe('accounts.recommend_reason_recovered');
+  });
+
+  it('classifies a healthy inspection enable action as recovered', () => {
+    const recommendation = buildAccountRecommendation(
+      makeRow({
+        disabled: true,
+        quota: {
+          status: 'disabled',
+          remainingPercent: null,
+          usedPercent: null,
+          resetLabel: '-',
+          planType: null,
+          source: 'none',
+        },
+        inspection: {
+          source: 'server',
+          action: 'enable',
+          actionReason: 'recovered',
+          actionStatus: 'pending',
+          statusCode: 200,
+          usedPercent: 20,
+          isQuota: false,
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 2_000,
+        },
+      })
+    );
+
+    expect(recommendation).toMatchObject({
+      action: 'enable',
+      priority: 'medium',
+      reasonKey: 'accounts.recommend_reason_recovered',
+    });
   });
 
   it('restores negative priority to default when the account is otherwise healthy', () => {
@@ -159,6 +276,202 @@ describe('quotaRecommendations', () => {
     expect(recommendation?.action).toBe('reauth');
     expect(recommendation?.priority).toBe('critical');
     expect(recommendation?.reasonKey).toBe('accounts.recommend_reason_inspection');
+  });
+
+  it('uses newer inspection authentication evidence over an older quota refresh failure', () => {
+    const recommendation = buildAccountRecommendation(
+      makeRow({
+        quota: {
+          status: 'error',
+          error: 'HTTP 401 unauthorized',
+          errorStatus: 401,
+          failedAtMs: 1_000,
+        },
+        inspection: {
+          source: 'server',
+          action: 'reauth',
+          actionReason: 'expired',
+          actionStatus: 'pending',
+          statusCode: 401,
+          usedPercent: null,
+          runId: 1,
+          resultId: 2,
+          createdAtMs: 2_000,
+        },
+      })
+    );
+
+    expect(recommendation).toMatchObject({
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_inspection',
+    });
+  });
+
+  it('drops handled or superseded inspection advice', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 1_000,
+      },
+    });
+
+    expect(
+      buildAccountRecommendation(row, {
+        latestRequest: { timestamp_ms: 2_000, failed: false },
+      })
+    ).toBeNull();
+    expect(
+      buildAccountRecommendation({
+        ...row,
+        inspection: { ...row.inspection!, actionStatus: 'success' },
+      })
+    ).toBeNull();
+  });
+
+  it('keeps unresolved inspection advice when newer request evidence is still negative', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 1_000,
+      },
+    });
+
+    expect(
+      buildAccountRecommendation(row, {
+        recentRequests: [
+          { timestamp_ms: 3_000, failed: true, fail_status_code: 503 },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 502 },
+        ],
+      })
+    ).toMatchObject({
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_inspection',
+    });
+  });
+
+  it('creates request-backed recommendations only for qualified failures', () => {
+    const row = makeRow();
+
+    expect(
+      buildAccountRecommendation(row, {
+        latestRequest: { timestamp_ms: 2_000, failed: true, fail_status_code: 499 },
+      })
+    ).toBeNull();
+    expect(
+      buildAccountRecommendation(row, {
+        latestRequest: { timestamp_ms: 2_000, failed: true, fail_status_code: 401 },
+      })
+    ).toMatchObject({
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_request_auth',
+    });
+    expect(
+      buildAccountRecommendation(row, {
+        recentRequests: [
+          { timestamp_ms: 3_000, failed: true, fail_status_code: 503 },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 502 },
+        ],
+      })
+    ).toMatchObject({
+      action: 'review',
+      priority: 'medium',
+      reasonKey: 'accounts.recommend_reason_request_failure',
+    });
+  });
+
+  it('keeps authentication evidence separate from a newer transient health failure', () => {
+    for (const authenticatedRequest of [
+      { timestamp_ms: 3_000, failed: false },
+      { timestamp_ms: 3_000, failed: true, fail_status_code: 429 },
+    ]) {
+      expect(
+        buildAccountRecommendation(makeRow(), {
+          recentRequests: [
+            { timestamp_ms: 5_000, failed: true, fail_status_code: 503 },
+            { timestamp_ms: 4_000, failed: true, fail_status_code: 502 },
+            authenticatedRequest,
+            { timestamp_ms: 2_000, failed: true, fail_status_code: 401 },
+          ],
+        })
+      ).toMatchObject({
+        action: 'review',
+        priority: 'medium',
+        reasonKey: 'accounts.recommend_reason_request_failure',
+      });
+    }
+
+    expect(
+      buildAccountRecommendation(makeRow(), {
+        recentRequests: [
+          { timestamp_ms: 5_000, failed: true, fail_status_code: 503 },
+          { timestamp_ms: 4_000, failed: true, fail_status_code: 502 },
+          { timestamp_ms: 2_000, failed: true, fail_status_code: 401 },
+        ],
+      })
+    ).toMatchObject({
+      action: 'reauth',
+      priority: 'critical',
+      reasonKey: 'accounts.recommend_reason_request_auth',
+    });
+  });
+
+  it('clears request quota risk after a later success', () => {
+    const recommendation = buildAccountRecommendation(makeRow(), {
+      recentRequests: [
+        { timestamp_ms: 3_000, failed: false },
+        { timestamp_ms: 2_000, failed: true, fail_status_code: 429 },
+      ],
+    });
+
+    expect(recommendation).toBeNull();
+  });
+
+  it('clears an older runtime 429 recommendation after a later success', () => {
+    const recommendation = buildAccountRecommendation(
+      makeRow({
+        statusMessage: 'quota exceeded',
+        updatedAtMs: 1_000,
+        raw: { name: 'codex-1.json', type: 'codex', status_code: 429 },
+      }),
+      {
+        latestRequest: { timestamp_ms: 2_000, failed: false },
+      }
+    );
+
+    expect(recommendation).toBeNull();
+  });
+
+  it('prioritizes newer quota risk over older transient failures', () => {
+    const recommendation = buildAccountRecommendation(makeRow(), {
+      recentRequests: [
+        { timestamp_ms: 4_000, failed: true, fail_status_code: 429 },
+        { timestamp_ms: 3_000, failed: true, fail_status_code: 503 },
+        { timestamp_ms: 2_000, failed: true, fail_status_code: 502 },
+      ],
+    });
+
+    expect(recommendation).toMatchObject({
+      action: 'refresh',
+      priority: 'high',
+      reasonKey: 'accounts.recommend_reason_quota_limited',
+    });
   });
 
   it('sorts recommendations by priority rank and then account name', () => {

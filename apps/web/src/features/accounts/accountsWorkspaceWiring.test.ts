@@ -12,30 +12,26 @@ import zhTW from '@/i18n/locales/zh-TW.json';
 const legacyPagesRoot = ['@', 'pages'].join('/');
 
 describe('accounts workspace wiring', () => {
-  it('uses Accounts as the primary workspace and keeps the advanced auth-file entry', () => {
+  it('uses Accounts as the primary credential workspace and keeps the proxy overview entry', () => {
     expect(layoutSource).toContain("path: '/accounts'");
     expect(layoutSource).toContain("label: t('nav.accounts'");
-    expect(layoutSource).toContain("path: '/auth-files',\n        label: t('nav.auth_files')");
+    expect(layoutSource).toContain("path: '/proxy-configs'");
+    expect(layoutSource).not.toContain("path: '/auth-files'");
     expect(layoutSource).not.toContain("path: '/quota',\n        label: t('nav.quota_management')");
     expect(layoutSource).not.toContain("path: '/codex-inspection'");
     expect(layoutSource).not.toContain("label: t('nav.codex_inspection')");
   });
 
-  it('keeps advanced auth-file routes and redirects quota and inspection into Accounts', () => {
-    expect(routesSource).toContain("path: '/auth-files', element: <AuthFilesPage />");
-    expect(routesSource).toContain(
-      "path: '/auth-files/oauth-excluded', element: <AuthFilesOAuthExcludedEditPage />"
-    );
-    expect(routesSource).toContain(
-      "path: '/auth-files/oauth-model-alias', element: <AuthFilesOAuthModelAliasEditPage />"
-    );
-    expect(routesSource).toContain('<LegacyAccountsRedirect view="accounts" />');
-    expect(routesSource).not.toContain('<LegacyAccountsRedirect view="quota" />');
+  it('redirects legacy credential and quota routes without reviving removed pages', () => {
+    expect(routesSource).toContain("path: '/auth-files', element: <LegacyAccountsRedirect />");
+    expect(routesSource).toContain("path: '/quota', element: <LegacyAccountsRedirect />");
+    expect(routesSource).toContain('<LegacyAccountsRedirect view="oauth" />');
     expect(routesSource).toContain("{ path: '/oauth', element: <OAuthPage /> }");
-    expect(routesSource).toContain('<LegacyAccountsRedirect view="health" healthMode="local" />');
-    expect(routesSource).toContain('<LegacyAccountsRedirect view="health" healthMode="server" />');
+    expect(routesSource).toContain('<LegacyAccountsRedirect healthMode="local" />');
+    expect(routesSource).toContain('<LegacyAccountsRedirect healthMode="server" />');
     expect(routesSource).not.toContain(`${legacyPagesRoot}/CodexInspectionPage`);
     expect(routesSource).not.toContain(`${legacyPagesRoot}/ServerCodexInspectionPage`);
+    expect(routesSource).not.toContain(`${legacyPagesRoot}/AuthFilesPage`);
   });
 
   it('embeds credential health as an Accounts tab and isolates header tabs from actions', () => {
@@ -66,6 +62,12 @@ describe('accounts workspace wiring', () => {
     expect(accountsPageSource).not.toContain('controlsFilterSection');
   });
 
+  it('keeps local batch weight editing on the unified Accounts workspace', () => {
+    expect(accountsPageSource).toContain("setBatchWeightOpen(true)");
+    expect(accountsPageSource).toContain("await batchPatchFields(patchTargets, { weight });");
+    expect(accountsPageSource).toContain("t('auth_files.weight_display')");
+  });
+
   it.each([
     [en, 'Credential Management', 'Credential List'],
     [ru, 'Управление учётными данными', 'Список учётных данных'],
@@ -79,6 +81,12 @@ describe('accounts workspace wiring', () => {
     expect(locale.accounts.metric_attention).toBeTypeOf('string');
     expect(locale.accounts.metric_quota_risk).toBeTypeOf('string');
     expect(locale.accounts.metric_unconfirmed).toBeTypeOf('string');
+    expect(locale.accounts.account_display_masked).toBeTypeOf('string');
+    expect(locale.accounts.account_display_full).toBeTypeOf('string');
+    expect(locale.accounts.show_full_credentials_hint).toBeTypeOf('string');
+    expect(locale.accounts.show_masked_credentials_hint).toBeTypeOf('string');
+    expect(locale.monitoring.observed_from_usage_headers).toBeTypeOf('string');
+    expect(locale.monitoring.observed_from_usage_headers_at).toBeTypeOf('string');
     expect(locale.accounts).not.toHaveProperty('tab_inspection');
     expect(locale.accounts).not.toHaveProperty('tab_quota');
     expect(locale.accounts).not.toHaveProperty('tab_value');
@@ -88,6 +96,7 @@ describe('accounts workspace wiring', () => {
     expect(locale.nav).not.toHaveProperty('codex_inspection');
     expect(locale.nav).not.toHaveProperty('codex_inspection_short');
     expect(locale.nav).not.toHaveProperty('server_codex_inspection');
+    expect(locale).not.toHaveProperty('quota_management');
   });
 
   it.each([

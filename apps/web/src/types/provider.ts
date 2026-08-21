@@ -17,6 +17,7 @@ export interface ModelAlias {
 
 export interface ApiKeyEntry {
   apiKey: string;
+  weight?: number;
   proxyUrl?: string;
   headers?: Record<string, string>;
   authIndex?: string;
@@ -32,6 +33,7 @@ export interface CloakConfig {
 export interface GeminiKeyConfig {
   apiKey: string;
   priority?: number;
+  weight?: number;
   prefix?: string;
   baseUrl?: string;
   proxyUrl?: string;
@@ -39,12 +41,13 @@ export interface GeminiKeyConfig {
   headers?: Record<string, string>;
   excludedModels?: string[];
   authIndex?: string;
-  disableCooling?: boolean;
+  disableCooling?: boolean | null;
 }
 
 export interface ProviderKeyConfig {
   apiKey: string;
   priority?: number;
+  weight?: number;
   prefix?: string;
   baseUrl?: string;
   websockets?: boolean;
@@ -54,7 +57,7 @@ export interface ProviderKeyConfig {
   excludedModels?: string[];
   cloak?: CloakConfig;
   authIndex?: string;
-  disableCooling?: boolean;
+  disableCooling?: boolean | null;
   experimentalCchSigning?: boolean;
   rebuildMidSystemMessage?: boolean;
 }
@@ -70,6 +73,6 @@ export interface OpenAIProviderConfig {
   priority?: number;
   testModel?: string;
   authIndex?: string;
-  disableCooling?: boolean;
+  disableCooling?: boolean | null;
   [key: string]: unknown;
 }

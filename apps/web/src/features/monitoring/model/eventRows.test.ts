@@ -104,6 +104,35 @@ describe('buildEventRows', () => {
     expect(row.searchText).toContain('medium');
   });
 
+  it('uses the analytics model as primary identity while keeping requested and resolved models searchable', () => {
+    const [row] = buildRows({
+      __modelName: 'deepseek-v4-flash',
+      __requestedModel: 'deepseek-v4-flash(max)',
+      __resolvedModel: 'resolved-deepseek-v4-flash',
+    });
+
+    expect(row.model).toBe('deepseek-v4-flash');
+    expect(row.requestedModel).toBe('deepseek-v4-flash(max)');
+    expect(row.resolvedModel).toBe('resolved-deepseek-v4-flash');
+    expect(row.searchText).toContain('deepseek-v4-flash(max)');
+    expect(row.searchText).toContain('resolved-deepseek-v4-flash');
+  });
+
+  it('keeps downstream request metadata searchable', () => {
+    const [row] = buildRows({
+      client_ip: '192.0.2.10',
+      x_forwarded_for: '203.0.113.5, 198.51.100.8',
+      user_agent: 'test-client/1.0',
+    });
+
+    expect(row.clientIp).toBe('192.0.2.10');
+    expect(row.xForwardedFor).toBe('203.0.113.5, 198.51.100.8');
+    expect(row.userAgent).toBe('test-client/1.0');
+    expect(row.searchText).toContain('192.0.2.10');
+    expect(row.searchText).toContain('198.51.100.8');
+    expect(row.searchText).toContain('test-client/1.0');
+  });
+
   it('keeps response header diagnostics searchable', () => {
     const [row] = buildRows({
       failed: true,

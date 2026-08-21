@@ -26,7 +26,8 @@ export const buildRealtimeSourceDisplay = (
     | 'provider'
     | 'source'
     | 'sourceMasked'
-  >,
+  > &
+    Partial<Pick<MonitoringEventRow, 'clientIp' | 'userAgent' | 'xForwardedFor'>>,
   t: TFunction,
   accountDisplayMode: AccountDisplayMode = 'masked'
 ) => {
@@ -60,19 +61,38 @@ export const buildRealtimeSourceDisplay = (
       channel,
       provider
     ) || '-';
-  const metaCandidate = [
-    { value: provider, label: t('monitoring.filter_provider') },
-    { value: host, label: t('monitoring.column_host') },
-    { value: account, label: '' },
-    { value: source, label: t('monitoring.source') },
-  ].find(
-    (candidate) =>
-      candidate.value && !isRedundantMonitoringLabel(candidate.value, primary)
-  );
+  const metaCandidate = provider
+    ? { value: provider, label: t('monitoring.filter_provider') }
+    : [
+        { value: host, label: t('monitoring.column_host') },
+        { value: account, label: '' },
+        { value: source, label: t('monitoring.source') },
+      ].find(
+        (candidate) =>
+          candidate.value && !isRedundantMonitoringLabel(candidate.value, primary)
+      );
   const meta =
     metaCandidate && metaCandidate.label
       ? `${metaCandidate.label}: ${metaCandidate.value}`
       : metaCandidate?.value || '';
+  const clientIp = row.clientIp?.trim() || '';
+  const xForwardedFor = row.xForwardedFor?.trim() || '';
+  const userAgent = row.userAgent?.trim() || '';
+  const requestMetadata =
+    accountDisplayMode === 'full'
+      ? [
+          hasReadableRealtimeValue(clientIp)
+            ? `${t('monitoring.client_ip')}: ${clientIp}`
+            : '',
+          hasReadableRealtimeValue(xForwardedFor)
+            ? `${t('monitoring.x_forwarded_for_unverified')}: ${xForwardedFor}`
+            : '',
+          hasReadableRealtimeValue(userAgent)
+            ? `${t('monitoring.user_agent')}: ${userAgent}`
+            : '',
+        ]
+      : [];
+  const requestMetadataTitle = requestMetadata.filter(hasReadableRealtimeValue).join('\n');
   const title = Array.from(
     new Set(
       [
@@ -84,6 +104,7 @@ export const buildRealtimeSourceDisplay = (
         maskedAccount,
         host,
         provider,
+        ...requestMetadata,
       ].filter(hasReadableRealtimeValue)
     )
   ).join(' · ');
@@ -92,5 +113,6 @@ export const buildRealtimeSourceDisplay = (
     primary,
     meta,
     title,
+    requestMetadataTitle,
   };
 };

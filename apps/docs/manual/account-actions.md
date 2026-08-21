@@ -55,7 +55,7 @@ CPAMP 不会因为 HTTP 状态码本身自动禁用账号。`401`、`403` 只是
 
 - 需要看失败详情：去 [请求监控](./monitoring.md)。
 - 需要重新授权：去 [OAuth 登录](./oauth.md)。
-- 需要禁用或恢复账号：去 [认证文件](./auth-files.md)。
+- 需要禁用或恢复账号：去 [凭证管理](./accounts.md)。
 - 需要判断 Codex/xAI 配额和状态：去 [账号巡检](./codex-inspection.md)。
 
 ## 使用建议

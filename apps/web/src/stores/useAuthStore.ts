@@ -35,7 +35,11 @@ interface AuthStoreState extends AuthState {
   logout: () => void;
   checkAuth: () => Promise<boolean>;
   restoreSession: (options?: RestoreSessionOptions) => Promise<RestoreSessionResult>;
-  updateServerVersion: (version: string | null, buildDate?: string | null) => void;
+  updateServerVersion: (
+    version: string | null,
+    buildDate?: string | null,
+    commit?: string | null
+  ) => void;
   updateServerPluginSupport: (supportsPlugin: boolean) => void;
   updateConnectionStatus: (status: ConnectionStatus, error?: string | null) => void;
 }
@@ -79,6 +83,7 @@ export const useAuthStore = create<AuthStoreState>()(
       managementKey: '',
       rememberPassword: false,
       serverVersion: null,
+      serverCommit: null,
       serverBuildDate: null,
       supportsPlugin: false,
       sessionMode: '',
@@ -100,9 +105,12 @@ export const useAuthStore = create<AuthStoreState>()(
           const legacyKey = obfuscatedStorage.getItem<string>('managementKey');
 
           const { apiBase, managementKey, rememberPassword, sessionMode } = get();
-          const resolvedBase = normalizeApiBase(apiBase || legacyBase || detectApiBaseFromLocation());
+          const resolvedBase = normalizeApiBase(
+            apiBase || legacyBase || detectApiBaseFromLocation()
+          );
           const resolvedKey = managementKey || legacyKey || '';
-          const resolvedRememberPassword = rememberPassword || Boolean(managementKey) || Boolean(legacyKey);
+          const resolvedRememberPassword =
+            rememberPassword || Boolean(managementKey) || Boolean(legacyKey);
 
           if (
             !sessionMatchesExpectedRuntime({
@@ -112,7 +120,9 @@ export const useAuthStore = create<AuthStoreState>()(
               sessionMode,
             })
           ) {
-            const fallbackBase = normalizeApiBase(options?.expectedPanelBase || detectApiBaseFromLocation());
+            const fallbackBase = normalizeApiBase(
+              options?.expectedPanelBase || detectApiBaseFromLocation()
+            );
             set({
               apiBase: fallbackBase,
               managementKey: '',
@@ -130,7 +140,9 @@ export const useAuthStore = create<AuthStoreState>()(
             managementKey: resolvedKey,
             rememberPassword: resolvedRememberPassword,
             sessionMode: options?.expectedMode ?? sessionMode,
-            sessionPanelBase: normalizeApiBase(options?.expectedPanelBase || get().sessionPanelBase)
+            sessionPanelBase: normalizeApiBase(
+              options?.expectedPanelBase || get().sessionPanelBase
+            ),
           });
           apiClient.setConfig({ apiBase: resolvedBase, managementKey: resolvedKey });
 
@@ -163,7 +175,9 @@ export const useAuthStore = create<AuthStoreState>()(
         const managementKey = credentials.managementKey.trim();
         const rememberPassword = credentials.rememberPassword ?? get().rememberPassword ?? false;
         const sessionMode = credentials.sessionMode ?? get().sessionMode;
-        const sessionPanelBase = normalizeApiBase(credentials.sessionPanelBase || get().sessionPanelBase);
+        const sessionPanelBase = normalizeApiBase(
+          credentials.sessionPanelBase || get().sessionPanelBase
+        );
         const quotaCacheScope = sha256Hex(`${apiBase}\u0000${managementKey}`);
 
         const markAuthenticated = (result: LoginResult = {}) => {
@@ -177,7 +191,7 @@ export const useAuthStore = create<AuthStoreState>()(
             sessionMode,
             sessionPanelBase,
             connectionStatus: 'connected',
-            connectionError: null
+            connectionError: null,
           });
           if (rememberPassword) {
             localStorage.setItem('isLoggedIn', 'true');
@@ -188,13 +202,19 @@ export const useAuthStore = create<AuthStoreState>()(
         };
 
         try {
-          set({ connectionStatus: 'connecting', supportsPlugin: false });
+          set({
+            connectionStatus: 'connecting',
+            supportsPlugin: false,
+            serverVersion: null,
+            serverCommit: null,
+            serverBuildDate: null,
+          });
           useModelsStore.getState().clearCache();
 
           // 配置 API 客户端
           apiClient.setConfig({
             apiBase,
-            managementKey
+            managementKey,
           });
 
           // 测试连接 - 获取配置
@@ -231,7 +251,7 @@ export const useAuthStore = create<AuthStoreState>()(
           set({
             connectionStatus: 'error',
             connectionError: message || 'Connection failed',
-            supportsPlugin: false
+            supportsPlugin: false,
           });
           throw error;
         }
@@ -250,12 +270,13 @@ export const useAuthStore = create<AuthStoreState>()(
           apiBase: '',
           managementKey: '',
           serverVersion: null,
+          serverCommit: null,
           serverBuildDate: null,
           supportsPlugin: false,
           sessionMode: '',
           sessionPanelBase: '',
           connectionStatus: 'disconnected',
-          connectionError: null
+          connectionError: null,
         });
         localStorage.removeItem('isLoggedIn');
       },
@@ -271,14 +292,19 @@ export const useAuthStore = create<AuthStoreState>()(
         try {
           // 重新配置客户端
           apiClient.setConfig({ apiBase, managementKey });
-          set({ supportsPlugin: false });
+          set({
+            supportsPlugin: false,
+            serverVersion: null,
+            serverCommit: null,
+            serverBuildDate: null,
+          });
 
           // 验证连接
           await useConfigStore.getState().fetchConfig();
 
           set({
             isAuthenticated: true,
-            connectionStatus: 'connected'
+            connectionStatus: 'connected',
           });
 
           return true;
@@ -286,15 +312,19 @@ export const useAuthStore = create<AuthStoreState>()(
           set({
             isAuthenticated: false,
             connectionStatus: 'error',
-            supportsPlugin: false
+            supportsPlugin: false,
           });
           return false;
         }
       },
 
       // 更新服务器版本
-      updateServerVersion: (version, buildDate) => {
-        set({ serverVersion: version || null, serverBuildDate: buildDate || null });
+      updateServerVersion: (version, buildDate, commit) => {
+        set({
+          serverVersion: version || null,
+          serverCommit: commit || null,
+          serverBuildDate: buildDate || null,
+        });
       },
 
       updateServerPluginSupport: (supportsPlugin) => {
@@ -305,9 +335,9 @@ export const useAuthStore = create<AuthStoreState>()(
       updateConnectionStatus: (status, error = null) => {
         set({
           connectionStatus: status,
-          connectionError: error
+          connectionError: error,
         });
-      }
+      },
     }),
     {
       name: STORAGE_KEY_AUTH,
@@ -321,7 +351,7 @@ export const useAuthStore = create<AuthStoreState>()(
         },
         removeItem: (name) => {
           obfuscatedStorage.removeItem(name);
-        }
+        },
       })),
       partialize: (state) => ({
         apiBase: state.apiBase,
@@ -330,8 +360,8 @@ export const useAuthStore = create<AuthStoreState>()(
         serverVersion: state.serverVersion,
         serverBuildDate: state.serverBuildDate,
         sessionMode: state.sessionMode,
-        sessionPanelBase: state.sessionPanelBase
-      })
+        sessionPanelBase: state.sessionPanelBase,
+      }),
     }
   )
 );
@@ -342,18 +372,14 @@ if (typeof window !== 'undefined') {
     useAuthStore.getState().logout();
   });
 
-  window.addEventListener(
-    'server-version-update',
-    ((e: CustomEvent) => {
-      const detail = e.detail || {};
-      useAuthStore.getState().updateServerVersion(detail.version || null, detail.buildDate || null);
-    }) as EventListener
-  );
+  window.addEventListener('server-version-update', ((e: CustomEvent) => {
+    const detail = e.detail || {};
+    useAuthStore
+      .getState()
+      .updateServerVersion(detail.version || null, detail.buildDate || null, detail.commit || null);
+  }) as EventListener);
 
-  window.addEventListener(
-    'server-plugin-support-update',
-    ((e: CustomEvent) => {
-      useAuthStore.getState().updateServerPluginSupport(e.detail?.supportsPlugin === true);
-    }) as EventListener
-  );
+  window.addEventListener('server-plugin-support-update', ((e: CustomEvent) => {
+    useAuthStore.getState().updateServerPluginSupport(e.detail?.supportsPlugin === true);
+  }) as EventListener);
 }

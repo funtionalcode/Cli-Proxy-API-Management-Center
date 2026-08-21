@@ -55,8 +55,10 @@ type HarnessApi = {
   unmount: () => void;
 };
 
+const DIAGRAM_FILES = [{ name: 'codex.json', type: 'codex' }];
+
 /**
- * Mimics AuthFilesPage: call loaders once when they appear in the dependency list.
+ * Mimics the credential workspace: call loaders once when they appear in the dependency list.
  * Unstable loader identities re-trigger this effect after every successful load.
  */
 function AuthFilesInitEffectHarness({
@@ -92,6 +94,19 @@ function AuthFilesInitEffectHarness({
   // Force a harmless re-render path that must not recreate loader identities.
   void renderTick;
   onResult(result);
+  return null;
+}
+
+function OAuthDiagramHarness() {
+  useAuthFilesOauth({
+    viewMode: 'diagram',
+    files: DIAGRAM_FILES,
+    connectionKey: 'connection-a',
+    requestScope: {
+      apiBase: 'http://connection-a.local:8317',
+      managementKey: 'connection-a-key',
+    },
+  });
   return null;
 }
 
@@ -208,6 +223,20 @@ describe('useAuthFilesOauth loader reference stability', () => {
     expect(afterRerender.loadModelAlias).toBe(loadModelAliasBeforeRerender);
     expect(mocks.getOauthExcludedModels).toHaveBeenCalledTimes(1);
     expect(mocks.getOauthModelAlias).toHaveBeenCalledTimes(1);
+  });
+
+  it('pins OAuth diagram model requests to the captured CPA connection', async () => {
+    let renderer: ReactTestRenderer;
+    act(() => {
+      renderer = create(<OAuthDiagramHarness />);
+    });
+    await flushAsync();
+
+    expect(mocks.getModelDefinitions).toHaveBeenCalledWith('codex', {
+      apiBase: 'http://connection-a.local:8317',
+      managementKey: 'connection-a-key',
+    });
+    act(() => renderer!.unmount());
   });
 
   it('clears OAuth rules immediately and ignores late responses from the previous connection', async () => {

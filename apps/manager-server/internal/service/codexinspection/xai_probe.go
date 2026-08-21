@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -16,14 +17,15 @@ import (
 )
 
 const (
-	xaiBillingWeeklyURL    = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
-	xaiBillingMonthlyURL   = "https://cli-chat-proxy.grok.com/v1/billing"
-	xaiOfficialAPIMeURL    = "https://api.x.ai/v1/me"
-	xaiOfficialAPIBaseURL  = "https://api.x.ai/v1"
-	xaiCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
-	xaiGrokVersion         = "0.2.101"
-	xaiGrokUserAgent       = "grok-pager/0.2.101 grok-shell/0.2.101 (macos; aarch64)"
-	xaiInferenceUserAgent  = model.DefaultXAIInferenceUserAgent
+	xaiBillingWeeklyURL     = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+	xaiBillingMonthlyURL    = "https://cli-chat-proxy.grok.com/v1/billing"
+	xaiOfficialAPIMeURL     = "https://api.x.ai/v1/me"
+	xaiOfficialAPIBaseURL   = "https://api.x.ai/v1"
+	xaiCLIChatProxyBaseURL  = "https://cli-chat-proxy.grok.com/v1"
+	xaiGrokVersion          = "0.2.101"
+	xaiGrokUserAgent        = "grok-pager/0.2.101 grok-shell/0.2.101 (macos; aarch64)"
+	xaiInferenceUserAgent   = model.DefaultXAIInferenceUserAgent
+	xaiLegacyBillingTimeout = 3 * time.Second
 )
 
 type xaiProbeDecision struct {
@@ -41,9 +43,17 @@ type xaiBillingSummary struct {
 	UsedPercent         *float64
 	OnDemandUsedPercent *float64
 	MonthlyLimitCents   *float64
+	UsedCents           *float64
+	IncludedUsedCents   *float64
 	OnDemandCapCents    *float64
+	OnDemandUsedCents   *float64
 	HasWeeklyData       bool
 	HasMonthlyData      bool
+	HasMonthlyLimit     bool
+	HasUsed             bool
+	HasIncludedUsed     bool
+	HasOnDemandCap      bool
+	HasOnDemandUsed     bool
 	PeriodEnd           string
 	BillingPeriodEnd    string
 	ProductUsage        []xaiProductUsage
@@ -484,32 +494,60 @@ func (s *Service) requestXAIBilling(
 		header["x-userid"] = userID
 	}
 
-	weekly, err := s.requestProviderBilling(ctx, setup, settings, item, xaiBillingWeeklyURL, header)
-	if err != nil {
-		weekly = xaiBillingResult{Failure: xaiDecision(0, "upstream_error", err.Error())}
-	}
-	monthly, err := s.requestProviderBilling(ctx, setup, settings, item, xaiBillingMonthlyURL, header)
-	if err != nil {
-		monthly = xaiBillingResult{Failure: xaiDecision(0, "upstream_error", err.Error())}
-	}
+	var weekly xaiBillingResult
+	var monthly xaiBillingResult
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		result, err := s.requestProviderBilling(ctx, setup, settings, item, xaiBillingWeeklyURL, header)
+		if err != nil {
+			result = xaiBillingResult{Failure: xaiDecision(0, "upstream_error", err.Error())}
+		}
+		weekly = result
+	}()
+	go func() {
+		defer wait.Done()
+		legacyTimeout := xaiLegacyBillingTimeout
+		if settings.Timeout > 0 {
+			configuredTimeout := time.Duration(settings.Timeout) * time.Millisecond
+			if configuredTimeout < legacyTimeout {
+				legacyTimeout = configuredTimeout
+			}
+		}
+		legacyCtx, cancel := context.WithTimeout(ctx, legacyTimeout)
+		defer cancel()
+		result, err := s.requestProviderBilling(legacyCtx, setup, settings, item, xaiBillingMonthlyURL, header)
+		if err != nil {
+			result = xaiBillingResult{Failure: xaiDecision(0, "upstream_error", err.Error())}
+		}
+		monthly = result
+	}()
+	wait.Wait()
 
 	probe := xaiBillingProbe{}
-	for _, result := range []xaiBillingResult{weekly, monthly} {
-		if result.Summary != nil {
-			if probe.Summary == nil {
-				probe.Summary = result.Summary
-			} else {
-				probe.Summary = mergeXAIBillingSummary(probe.Summary, result.Summary)
-			}
-			if probe.StatusCode <= 0 {
-				probe.StatusCode = result.StatusCode
-			}
-			probe.Partial = probe.Partial || result.Partial
-			probe.Healthy = true
+	if weekly.Summary != nil {
+		probe.Summary = mergeXAIBillingSummary(weekly.Summary, monthly.Summary)
+		probe.StatusCode = weekly.StatusCode
+		probe.Healthy = true
+		// The deprecated monthly endpoint is optional once unified weekly billing is healthy.
+		// Its absence or denial must not downgrade health or drive an automatic action.
+		return probe, nil
+	}
+	if monthly.Summary != nil {
+		probe.Summary = monthly.Summary
+		probe.StatusCode = monthly.StatusCode
+		probe.Partial = true
+		probe.Healthy = true
+		if weekly.Failure != nil {
+			probe.Failures = append(probe.Failures, *weekly.Failure)
 		}
-		if result.Failure != nil {
-			probe.Failures = append(probe.Failures, *result.Failure)
-		}
+		return probe, nil
+	}
+	if weekly.Failure != nil {
+		probe.Failures = append(probe.Failures, *weekly.Failure)
+	} else if monthly.Failure != nil {
+		probe.Failures = append(probe.Failures, *monthly.Failure)
 	}
 	if probe.Summary == nil {
 		if xaiOfficialAPIFallbackEligible(probe.Failures) {
@@ -529,7 +567,6 @@ func (s *Service) requestXAIBilling(
 		}
 		return probe, fmt.Errorf("xAI billing returned no usable data")
 	}
-	probe.Partial = probe.Partial || len(probe.Failures) > 0
 	return probe, nil
 }
 
@@ -641,33 +678,105 @@ func mergeXAIBillingSummary(primary, fallback *xaiBillingSummary) *xaiBillingSum
 		return primary
 	}
 	merged := *primary
-	if merged.UsagePercent == nil {
+	primaryHasWeeklyData := primary.HasWeeklyData || primary.UsagePercent != nil || len(primary.ProductUsage) > 0
+	if !primaryHasWeeklyData {
 		merged.UsagePercent = fallback.UsagePercent
-	}
-	if merged.UsedPercent == nil {
-		merged.UsedPercent = fallback.UsedPercent
-	}
-	if merged.OnDemandUsedPercent == nil {
-		merged.OnDemandUsedPercent = fallback.OnDemandUsedPercent
-	}
-	if merged.MonthlyLimitCents == nil {
-		merged.MonthlyLimitCents = fallback.MonthlyLimitCents
-	}
-	if merged.OnDemandCapCents == nil {
-		merged.OnDemandCapCents = fallback.OnDemandCapCents
-	}
-	merged.HasWeeklyData = merged.HasWeeklyData || fallback.HasWeeklyData
-	merged.HasMonthlyData = merged.HasMonthlyData || fallback.HasMonthlyData
-	if merged.PeriodEnd == "" {
 		merged.PeriodEnd = fallback.PeriodEnd
-	}
-	if merged.BillingPeriodEnd == "" {
-		merged.BillingPeriodEnd = fallback.BillingPeriodEnd
-	}
-	if len(merged.ProductUsage) == 0 {
 		merged.ProductUsage = fallback.ProductUsage
 	}
+	primaryMonthlyLimit := xaiEvidenceFloat(primary.HasMonthlyLimit, primary.MonthlyLimitCents)
+	fallbackMonthlyLimit := xaiEvidenceFloat(fallback.HasMonthlyLimit, fallback.MonthlyLimitCents)
+	merged.MonthlyLimitCents = firstXAIFloat(primaryMonthlyLimit, fallbackMonthlyLimit)
+	primaryRawUsed := xaiEvidenceFloat(primary.HasUsed, primary.UsedCents)
+	fallbackRawUsed := xaiEvidenceFloat(fallback.HasUsed, fallback.UsedCents)
+	merged.HasIncludedUsed = primary.HasIncludedUsed
+	merged.IncludedUsedCents = xaiEvidenceFloat(primary.HasIncludedUsed, primary.IncludedUsedCents)
+	if merged.IncludedUsedCents == nil && primaryRawUsed != nil {
+		merged.IncludedUsedCents = primaryRawUsed
+	}
+	if merged.IncludedUsedCents == nil && fallback.HasIncludedUsed {
+		merged.IncludedUsedCents = fallback.IncludedUsedCents
+		merged.HasIncludedUsed = merged.IncludedUsedCents != nil
+	}
+	if merged.IncludedUsedCents == nil && fallbackRawUsed != nil {
+		merged.IncludedUsedCents = fallbackRawUsed
+	}
+	if merged.IncludedUsedCents != nil && merged.MonthlyLimitCents != nil && *merged.MonthlyLimitCents > 0 {
+		includedUsed := math.Min(*merged.IncludedUsedCents, *merged.MonthlyLimitCents)
+		merged.IncludedUsedCents = &includedUsed
+	}
+
+	primaryOnDemandCap := xaiEvidenceFloat(primary.HasOnDemandCap, primary.OnDemandCapCents)
+	fallbackOnDemandCap := xaiEvidenceFloat(fallback.HasOnDemandCap, fallback.OnDemandCapCents)
+	merged.OnDemandCapCents = firstXAIFloat(primaryOnDemandCap, fallbackOnDemandCap)
+	merged.HasOnDemandUsed = primary.HasOnDemandUsed
+	merged.OnDemandUsedCents = xaiEvidenceFloat(primary.HasOnDemandUsed, primary.OnDemandUsedCents)
+	if merged.OnDemandUsedCents == nil && primaryRawUsed != nil && merged.MonthlyLimitCents != nil {
+		onDemandUsed := math.Max(0, *primaryRawUsed-*merged.MonthlyLimitCents)
+		merged.OnDemandUsedCents = &onDemandUsed
+	}
+	if merged.OnDemandUsedCents == nil && fallback.HasOnDemandUsed {
+		merged.OnDemandUsedCents = fallback.OnDemandUsedCents
+		merged.HasOnDemandUsed = merged.OnDemandUsedCents != nil
+	}
+	if merged.OnDemandUsedCents == nil && fallbackRawUsed != nil && merged.MonthlyLimitCents != nil {
+		onDemandUsed := math.Max(0, *fallbackRawUsed-*merged.MonthlyLimitCents)
+		merged.OnDemandUsedCents = &onDemandUsed
+	}
+	hasPrimaryComponentEvidence := primary.HasIncludedUsed || primary.HasOnDemandUsed
+	if primaryRawUsed != nil {
+		merged.UsedCents = primaryRawUsed
+	} else if hasPrimaryComponentEvidence && merged.IncludedUsedCents != nil && merged.OnDemandUsedCents != nil {
+		used := *merged.IncludedUsedCents + *merged.OnDemandUsedCents
+		merged.UsedCents = &used
+	} else if hasPrimaryComponentEvidence {
+		merged.UsedCents = firstXAIFloat(merged.IncludedUsedCents, merged.OnDemandUsedCents)
+	} else if fallbackRawUsed != nil {
+		merged.UsedCents = fallbackRawUsed
+	} else if merged.IncludedUsedCents != nil && merged.OnDemandUsedCents != nil {
+		used := *merged.IncludedUsedCents + *merged.OnDemandUsedCents
+		merged.UsedCents = &used
+	} else {
+		merged.UsedCents = firstXAIFloat(merged.IncludedUsedCents, merged.OnDemandUsedCents)
+	}
+	merged.UsedPercent = firstXAIFloat(primary.UsedPercent, fallback.UsedPercent)
+	if merged.MonthlyLimitCents != nil && *merged.MonthlyLimitCents > 0 && merged.IncludedUsedCents != nil {
+		usedPercent := (*merged.IncludedUsedCents / *merged.MonthlyLimitCents) * 100
+		merged.UsedPercent = &usedPercent
+	}
+	merged.OnDemandUsedPercent = firstXAIFloat(primary.OnDemandUsedPercent, fallback.OnDemandUsedPercent)
+	if merged.OnDemandCapCents != nil && *merged.OnDemandCapCents > 0 && merged.OnDemandUsedCents != nil {
+		onDemandUsedPercent := (*merged.OnDemandUsedCents / *merged.OnDemandCapCents) * 100
+		merged.OnDemandUsedPercent = &onDemandUsedPercent
+	}
+	merged.HasMonthlyData = primary.HasMonthlyData || fallback.HasMonthlyData ||
+		merged.MonthlyLimitCents != nil || merged.IncludedUsedCents != nil || merged.UsedPercent != nil
+	merged.HasMonthlyLimit = primary.HasMonthlyLimit || fallback.HasMonthlyLimit
+	merged.HasUsed = primary.HasUsed || (!hasPrimaryComponentEvidence && fallback.HasUsed)
+	merged.HasOnDemandCap = primary.HasOnDemandCap || fallback.HasOnDemandCap
+	merged.BillingPeriodEnd = firstNonEmpty(primary.BillingPeriodEnd, fallback.BillingPeriodEnd)
+	merged.HasWeeklyData = primaryHasWeeklyData || fallback.HasWeeklyData
 	return &merged
+}
+
+func firstXAIFloat(values ...*float64) *float64 {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func xaiEvidenceFloat(hasEvidence bool, value *float64) *float64 {
+	if !hasEvidence {
+		return nil
+	}
+	return value
+}
+
+func positiveXAIFloat(value *float64) bool {
+	return value != nil && *value > 0
 }
 
 type xaiBillingResult struct {
@@ -694,7 +803,11 @@ func (s *Service) requestProviderBilling(
 		if payload == nil {
 			payload = parseRecord(response.BodyText)
 		}
-		summary := parseXAIBillingSummary(readMap(payload, "config"))
+		config := readMap(payload, "config")
+		if config == nil {
+			config = payload
+		}
+		summary := parseXAIBillingSummary(config)
 		if summary == nil {
 			return xaiBillingResult{Failure: xaiDecision(response.StatusCode, "protocol_changed", "xAI billing response schema changed")}, nil
 		}
@@ -815,15 +928,49 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 	if config == nil {
 		return nil
 	}
+	period := readMap(config, "current_period", "currentPeriod")
+	periodType := strings.ToLower(readString(period, "type"))
+	periodStart := readString(period, "start")
+	periodEnd := readString(period, "end")
 	usage := readNullableFloat(config, "credit_usage_percent", "creditUsagePercent")
-	monthlyLimit := readXAICentFloat(config, "monthly_limit", "monthlyLimit")
-	used := readXAICentFloat(config, "used")
-	onDemandCap := readXAICentFloat(config, "on_demand_cap", "onDemandCap")
-	onDemandUsed := readXAICentFloat(config, "on_demand_used", "onDemandUsed")
-	includedUsed := used
-	if includedUsed != nil && monthlyLimit != nil && *monthlyLimit > 0 {
-		value := math.Min(*includedUsed, *monthlyLimit)
-		includedUsed = &value
+	if usage == nil && strings.Contains(periodType, "weekly") && validXAIPeriodWindow(periodStart, periodEnd) {
+		zero := float64(0)
+		usage = &zero
+	}
+	monthlyLimit, hasMonthlyLimitEvidence := readXAICentFloatWithEvidence(config, "monthly_limit", "monthlyLimit")
+	nestedUsage := readMap(config, "usage")
+	nestedIncludedUsed, hasNestedIncludedEvidence := readXAICentFloatWithEvidence(nestedUsage, "included_used", "includedUsed")
+	explicitOnDemandUsed, hasOnDemandUsedEvidence := readXAICentFloatWithEvidence(config, "on_demand_used", "onDemandUsed")
+	if !hasOnDemandUsedEvidence {
+		explicitOnDemandUsed, hasOnDemandUsedEvidence = readXAICentFloatWithEvidence(nestedUsage, "on_demand_used", "onDemandUsed")
+	}
+	used, hasUsedEvidence := readXAICentFloatWithEvidence(config, "used")
+	if !hasUsedEvidence {
+		used, hasUsedEvidence = readXAICentFloatWithEvidence(nestedUsage, "total_used", "totalUsed")
+	}
+	if used == nil && (nestedIncludedUsed != nil || explicitOnDemandUsed != nil) {
+		value := float64(0)
+		if nestedIncludedUsed != nil {
+			value += *nestedIncludedUsed
+		}
+		if explicitOnDemandUsed != nil {
+			value += *explicitOnDemandUsed
+		}
+		used = &value
+	}
+	onDemandCap, hasOnDemandCapEvidence := readXAICentFloatWithEvidence(config, "on_demand_cap", "onDemandCap")
+	onDemandUsed := explicitOnDemandUsed
+	hasMonthlyData := hasMonthlyLimitEvidence || hasUsedEvidence || hasNestedIncludedEvidence
+	includedUsed := (*float64)(nil)
+	if hasMonthlyData {
+		includedUsed = nestedIncludedUsed
+		if includedUsed == nil {
+			includedUsed = used
+		}
+		if includedUsed != nil && monthlyLimit != nil && *monthlyLimit > 0 {
+			value := math.Min(*includedUsed, *monthlyLimit)
+			includedUsed = &value
+		}
 	}
 	if onDemandUsed == nil && used != nil && monthlyLimit != nil {
 		value := math.Max(0, *used-*monthlyLimit)
@@ -839,7 +986,19 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 		value := (*onDemandUsed / *onDemandCap) * 100
 		onDemandUsedPercent = &value
 	}
-	period := readMap(config, "current_period", "currentPeriod")
+	hasOnDemandData := hasOnDemandCapEvidence || hasOnDemandUsedEvidence || positiveXAIFloat(onDemandUsed)
+	if !hasMonthlyData {
+		monthlyLimit = nil
+		includedUsed = nil
+	}
+	if !hasMonthlyData && !hasOnDemandData {
+		used = nil
+	}
+	if !hasOnDemandData {
+		onDemandCap = nil
+		onDemandUsed = nil
+		onDemandUsedPercent = nil
+	}
 	productUsage := make([]xaiProductUsage, 0)
 	if items := readXAIArray(config, "product_usage", "productUsage"); len(items) > 0 {
 		for _, raw := range items {
@@ -853,11 +1012,13 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 			})
 		}
 	}
-	periodType := strings.ToLower(readString(period, "type"))
-	billingPeriodEnd := readString(config, "billing_period_end", "billingPeriodEnd")
+	billingCycle := readMap(config, "billing_cycle", "billingCycle")
+	billingPeriodEnd := firstNonEmpty(
+		readString(config, "billing_period_end", "billingPeriodEnd"),
+		readString(billingCycle, "billing_period_end", "billingPeriodEnd"),
+	)
 	hasWeeklyData := usage != nil || len(productUsage) > 0 || strings.Contains(periodType, "weekly")
-	hasMonthlyData := monthlyLimit != nil || used != nil || (!hasWeeklyData && (onDemandCap != nil || billingPeriodEnd != ""))
-	if !hasWeeklyData && !hasMonthlyData {
+	if !hasWeeklyData && !hasMonthlyData && !hasOnDemandData {
 		return nil
 	}
 	return &xaiBillingSummary{
@@ -865,13 +1026,27 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 		UsedPercent:         monthlyUsed,
 		OnDemandUsedPercent: onDemandUsedPercent,
 		MonthlyLimitCents:   monthlyLimit,
+		UsedCents:           used,
+		IncludedUsedCents:   includedUsed,
 		OnDemandCapCents:    onDemandCap,
+		OnDemandUsedCents:   onDemandUsed,
 		HasWeeklyData:       hasWeeklyData,
 		HasMonthlyData:      hasMonthlyData,
-		PeriodEnd:           readString(period, "end"),
+		HasMonthlyLimit:     hasMonthlyLimitEvidence,
+		HasUsed:             hasUsedEvidence,
+		HasIncludedUsed:     hasNestedIncludedEvidence,
+		HasOnDemandCap:      hasOnDemandCapEvidence,
+		HasOnDemandUsed:     hasOnDemandUsedEvidence,
+		PeriodEnd:           periodEnd,
 		BillingPeriodEnd:    billingPeriodEnd,
 		ProductUsage:        productUsage,
 	}
+}
+
+func validXAIPeriodWindow(start, end string) bool {
+	startAt, startErr := time.Parse(time.RFC3339, start)
+	endAt, endErr := time.Parse(time.RFC3339, end)
+	return startErr == nil && endErr == nil && endAt.After(startAt)
 }
 
 func xaiSummaryUsedPercent(summary *xaiBillingSummary) *float64 {
@@ -1174,9 +1349,9 @@ func readNullableFloat(record map[string]any, keys ...string) *float64 {
 	return nil
 }
 
-func readXAICentFloat(record map[string]any, keys ...string) *float64 {
+func readXAICentFloatWithEvidence(record map[string]any, keys ...string) (*float64, bool) {
 	if record == nil {
-		return nil
+		return nil, false
 	}
 	for _, key := range keys {
 		raw, ok := record[key]
@@ -1184,14 +1359,31 @@ func readXAICentFloat(record map[string]any, keys ...string) *float64 {
 			continue
 		}
 		if object := toMap(raw); object != nil {
-			raw, _ = firstValue(object, "val", "value")
+			if len(object) == 0 {
+				continue
+			}
+			normalized := math.NaN()
+			for _, nestedKey := range []string{"val", "value"} {
+				nestedRaw, ok := object[nestedKey]
+				if !ok {
+					continue
+				}
+				normalized = readFloat(nestedRaw, math.NaN())
+				if !math.IsNaN(normalized) {
+					break
+				}
+			}
+			if math.IsNaN(normalized) {
+				continue
+			}
+			return &normalized, true
 		}
 		value := readFloat(raw, math.NaN())
 		if !math.IsNaN(value) {
-			return &value
+			return &value, true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 func readXAIArray(record map[string]any, keys ...string) []any {

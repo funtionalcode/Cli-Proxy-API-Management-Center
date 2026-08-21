@@ -13,6 +13,7 @@ import type { MonitoringAccountQuotaTarget } from '@/features/monitoring/account
 import type {
   MonitoringAccountRow,
   MonitoringApiKeyRow,
+  MonitoringEventRow,
 } from '@/features/monitoring/hooks/useMonitoringData';
 import {
   buildAccountOptions,
@@ -22,6 +23,7 @@ import {
   buildMonitoringInitialStateFromQuery,
   buildModelOptionsFromValues,
   buildProviderOptionsFromValues,
+  buildSyncPriceModels,
   mergeObservedAccountQuotaEntry,
   mergeObservedAccountQuotaState,
   requestAccountQuota,
@@ -80,6 +82,24 @@ const t = ((key: string, options?: Record<string, unknown>) => {
   });
   return value;
 }) as TFunction;
+
+describe('monitoringCenterPageModel price sync', () => {
+  it('syncs canonical and resolved identities while preserving saved suffix prices', () => {
+    const rows = [
+      {
+        model: 'deepseek-v4-flash',
+        requestedModel: 'deepseek-v4-flash(max)',
+        resolvedModel: 'resolved-deepseek-v4-flash',
+      },
+    ] as MonitoringEventRow[];
+
+    expect(
+      buildSyncPriceModels(rows, {
+        'deepseek-v4-flash(low)': { prompt: 1, completion: 2, cache: 0.5 },
+      })
+    ).toEqual(['deepseek-v4-flash', 'deepseek-v4-flash(low)', 'resolved-deepseek-v4-flash']);
+  });
+});
 
 const createTarget = (
   overrides: Partial<MonitoringAccountQuotaTarget>
@@ -815,6 +835,42 @@ describe('monitoringCenterPageModel account quota', () => {
     expect(merged?.entries[0].failedAtMs).toBeUndefined();
   });
 
+  it('creates a successful account quota state from header evidence alone', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const observedEntry = {
+      key: target.key,
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Observed from latest usage response headers'],
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    expect(mergeObservedAccountQuotaState(undefined, [target], [observedEntry])).toEqual({
+      status: 'success',
+      targetKey: target.key,
+      entries: [observedEntry],
+      error: '',
+    });
+  });
+
   it('does not merge later header entries when the account quota target set changed', () => {
     const target = createTarget({
       provider: 'codex',
@@ -1040,6 +1096,79 @@ describe('monitoringCenterPageModel account quota', () => {
         },
       ],
     });
+  });
+
+  it('does not synthesize monthly credits from an on-demand reset timestamp', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: 0,
+      periodStart: '2026-08-13T00:00:00Z',
+      periodEnd: '2026-08-20T00:00:00Z',
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: null,
+      includedUsedCents: null,
+      onDemandCapCents: 5_000,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: 0,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows?.map((window) => window.id)).toEqual(['weekly-limit', 'pay-as-you-go']);
+  });
+
+  it('does not synthesize monthly credits from weekly protobuf zero placeholders', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: 0,
+      periodStart: '2026-08-13T00:00:00Z',
+      periodEnd: '2026-08-20T00:00:00Z',
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: 0,
+      includedUsedCents: 0,
+      onDemandCapCents: 0,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows?.map((window) => window.id)).toEqual(['weekly-limit']);
+  });
+
+  it('does not synthesize monthly credits from usage without limit evidence', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'monthly',
+      usagePercent: null,
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: 500,
+      includedUsedCents: 500,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows).toEqual([]);
   });
 
   it('maps official API health without synthesizing quota windows', async () => {

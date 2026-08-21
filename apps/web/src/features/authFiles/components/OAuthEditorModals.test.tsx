@@ -15,6 +15,7 @@ const { mocks } = vi.hoisted(() => ({
     getModelDefinitions: vi.fn(),
     saveOauthExcludedModels: vi.fn(),
     saveOauthModelAlias: vi.fn(),
+    showConfirmation: vi.fn(),
     showNotification: vi.fn(),
     t: vi.fn(),
   },
@@ -39,13 +40,31 @@ vi.mock('@/services/api', () => ({
 
 vi.mock('@/stores', () => ({
   useNotificationStore: (
-    selector: (state: { showNotification: typeof mocks.showNotification }) => unknown
-  ) => selector({ showNotification: mocks.showNotification }),
+    selector: (state: {
+      showConfirmation: typeof mocks.showConfirmation;
+      showNotification: typeof mocks.showNotification;
+    }) => unknown
+  ) =>
+    selector({
+      showConfirmation: mocks.showConfirmation,
+      showNotification: mocks.showNotification,
+    }),
 }));
 
 vi.mock('@/components/ui/Modal', () => ({
-  Modal: ({ children, footer }: { children?: ReactNode; footer?: ReactNode }) => (
+  Modal: ({
+    children,
+    footer,
+    onClose,
+  }: {
+    children?: ReactNode;
+    footer?: ReactNode;
+    onClose: () => void;
+  }) => (
     <section>
+      <button type="button" data-modal-close onClick={onClose}>
+        modal-close
+      </button>
       {children}
       <footer>{footer}</footer>
     </section>
@@ -106,7 +125,16 @@ const flushPromises = async () => {
   await Promise.resolve();
 };
 
-const renderAliasModal = (provider = 'claude') => {
+const REQUEST_SCOPE = {
+  apiBase: 'http://old-cpa.local:8317',
+  managementKey: 'old-cpa-key',
+};
+const NEXT_REQUEST_SCOPE = {
+  apiBase: 'http://new-cpa.local:8317',
+  managementKey: 'new-cpa-key',
+};
+
+const renderAliasModal = (provider = 'claude', onClose = vi.fn()) => {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
@@ -120,7 +148,8 @@ const renderAliasModal = (provider = 'claude') => {
           codex: [{ name: 'codex-existing', alias: 'codex-alias', fork: true }],
           xai: [{ name: 'xai-existing', alias: 'xai-alias', fork: false }],
         }}
-        onClose={vi.fn()}
+        requestScope={REQUEST_SCOPE}
+        onClose={onClose}
         onSaved={vi.fn()}
       />
     );
@@ -141,6 +170,9 @@ const getAliasSourceOptions = (renderer: ReactTestRenderer) =>
     value: string;
     label?: string;
   }>;
+
+const getModalCloseButton = (renderer: ReactTestRenderer) =>
+  renderer.root.find((node) => node.type === 'button' && node.props['data-modal-close'] === true);
 
 const readText = (node: ReactTestInstance): string =>
   node.children
@@ -170,6 +202,7 @@ describe('OAuthEditorModals provider model isolation', () => {
 
     const renderer = renderAliasModal('claude');
     await act(flushPromises);
+    expect(mocks.getModelDefinitions).toHaveBeenCalledWith('claude', REQUEST_SCOPE);
 
     await act(async () => {
       getAutocomplete(renderer, 'oauth_model_alias.provider_placeholder').props.onChange('codex');
@@ -179,6 +212,7 @@ describe('OAuthEditorModals provider model isolation', () => {
     expect(getAliasSourceOptions(renderer).map((option) => option.value)).toEqual([
       'codex-existing',
     ]);
+    expect(mocks.getModelDefinitions).toHaveBeenCalledWith('codex', REQUEST_SCOPE);
 
     await act(async () => {
       claudeRequest.resolve([{ id: 'claude-api-model' }]);
@@ -195,6 +229,148 @@ describe('OAuthEditorModals provider model isolation', () => {
     expect(getAliasSourceOptions(renderer).map((option) => option.value)).toEqual([
       'codex-existing',
     ]);
+  });
+
+  it('does not reuse a provider catalog from the previous CPA connection', async () => {
+    const oldRequest = deferred<Array<{ id: string }>>();
+    const newRequest = deferred<Array<{ id: string }>>();
+    mocks.getModelDefinitions.mockImplementation(
+      (_provider: string, requestScope: typeof REQUEST_SCOPE) =>
+        requestScope.apiBase === REQUEST_SCOPE.apiBase ? oldRequest.promise : newRequest.promise
+    );
+    const modelAlias = {
+      xai: [{ name: 'xai-existing', alias: 'xai-alias', fork: false }],
+    };
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <OAuthModelAliasEditorModal
+          open
+          provider="xai"
+          files={[]}
+          excluded={{}}
+          modelAlias={modelAlias}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      );
+    });
+    await act(async () => {
+      oldRequest.resolve([{ id: 'old-only-model' }]);
+      await flushPromises();
+    });
+    expect(getAliasSourceOptions(renderer).map((option) => option.value)).toContain(
+      'old-only-model'
+    );
+
+    await act(async () => {
+      renderer.update(
+        <OAuthModelAliasEditorModal
+          open
+          provider="xai"
+          files={[]}
+          excluded={{}}
+          modelAlias={modelAlias}
+          requestScope={NEXT_REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      );
+      await flushPromises();
+    });
+    expect(getAliasSourceOptions(renderer).map((option) => option.value)).not.toContain(
+      'old-only-model'
+    );
+
+    await act(async () => {
+      newRequest.resolve([{ id: 'new-only-model' }]);
+      await flushPromises();
+    });
+    expect(getAliasSourceOptions(renderer).map((option) => option.value)).toContain(
+      'new-only-model'
+    );
+  });
+
+  it('confirms before closing a dirty alias draft and locks provider switching', async () => {
+    mocks.getModelDefinitions.mockResolvedValue([]);
+    const onClose = vi.fn();
+    const renderer = renderAliasModal('xai', onClose);
+    await act(flushPromises);
+
+    const aliasInput = renderer.root.find(
+      (node) =>
+        node.type === 'input' && node.props.placeholder === 'oauth_model_alias.alias_placeholder'
+    );
+    await act(async () => {
+      aliasInput.props.onChange({ target: { value: 'updated-alias' } });
+      await flushPromises();
+    });
+
+    const providerInput = getAutocomplete(renderer, 'oauth_model_alias.provider_placeholder');
+    expect(providerInput.props.disabled).toBe(true);
+    await act(async () => {
+      providerInput.props.onChange('codex');
+      await flushPromises();
+    });
+    expect(getAutocomplete(renderer, 'oauth_model_alias.provider_placeholder').props.value).toBe(
+      'xai'
+    );
+
+    await act(async () => {
+      getModalCloseButton(renderer).props.onClick();
+      await flushPromises();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mocks.showConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'common.unsaved_changes_title',
+        message: 'common.unsaved_changes_message',
+        confirmText: 'common.leave',
+        cancelText: 'common.stay',
+        variant: 'danger',
+      })
+    );
+
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as {
+      onConfirm: () => void;
+    };
+    confirmation.onConfirm();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps rule and mapping controls disabled until a provider is selected', async () => {
+    mocks.getModelDefinitions.mockResolvedValue([]);
+    const aliasRenderer = renderAliasModal('');
+    await act(flushPromises);
+
+    expect(
+      getAutocomplete(aliasRenderer, 'oauth_model_alias.alias_name_placeholder').props.disabled
+    ).toBe(true);
+    expect(
+      aliasRenderer.root.find(
+        (node) =>
+          node.type === 'input' && node.props.placeholder === 'oauth_model_alias.alias_placeholder'
+      ).props.disabled
+    ).toBe(true);
+
+    let excludedRenderer!: ReactTestRenderer;
+    act(() => {
+      excludedRenderer = create(
+        <OAuthExcludedEditorModal
+          open
+          files={[]}
+          excluded={{}}
+          modelAlias={{}}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      );
+    });
+    await act(flushPromises);
+    expect(excludedRenderer.root.findByType(Input).props.disabled).toBe(true);
   });
 
   it.each([
@@ -232,6 +408,7 @@ describe('OAuthEditorModals provider model isolation', () => {
       Object.assign(new Error('missing'), { status: 404 })
     );
     const onSaved = vi.fn();
+    const onClose = vi.fn();
     let renderer!: ReactTestRenderer;
     act(() => {
       renderer = create(
@@ -241,7 +418,8 @@ describe('OAuthEditorModals provider model isolation', () => {
           files={[]}
           excluded={{ codex: ['gpt-4o', 'gpt-*'] }}
           modelAlias={{}}
-          onClose={vi.fn()}
+          requestScope={REQUEST_SCOPE}
+          onClose={onClose}
           onSaved={onSaved}
         />
       );
@@ -273,11 +451,13 @@ describe('OAuthEditorModals provider model isolation', () => {
       await flushPromises();
     });
 
-    expect(mocks.saveOauthExcludedModels).toHaveBeenCalledWith('codex', [
-      '*-preview',
-      'gpt-*',
-      'gpt-4o',
-    ]);
+    expect(mocks.saveOauthExcludedModels).toHaveBeenCalledWith(
+      'codex',
+      ['*-preview', 'gpt-*', 'gpt-4o'],
+      REQUEST_SCOPE
+    );
     expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.showConfirmation).not.toHaveBeenCalled();
   });
 });

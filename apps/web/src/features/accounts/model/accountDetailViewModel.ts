@@ -3,13 +3,14 @@ import { getSortedCodexResetCreditExpiries } from '@/components/quota/quotaConfi
 import type {
   AccountActionCandidate,
   MonitoringAccountHistoryItem,
+  MonitoringAccountLatestRequest,
   MonitoringAnalyticsEventRow,
   MonitoringAnalyticsRecentFailure,
   MonitoringAnalyticsSummary,
   MonitoringAccountWindowUsageItem,
   QuotaCooldownInfo,
 } from '@/services/api';
-import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/authFilesPageModel';
+import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/credentialStatus';
 import { normalizePlanType, parseIdTokenPayload } from '@/utils/quota/parsers';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import { resolveCodexPlanType } from '@/utils/quota/resolvers';
@@ -35,8 +36,26 @@ import type {
   AccountQuotaCycleDefinition,
 } from './accountQuotaWindowDefinitions';
 import { accountOperationalItemMatchesRow } from './accountOperationalScope';
-import type { AccountRecommendation, AccountRecommendationPriority } from './quotaRecommendations';
+import {
+  buildAccountRecommendation,
+  isAccountRecommendationEvidenceSensitive,
+  type AccountRecommendation,
+  type AccountRecommendationPriority,
+} from './quotaRecommendations';
 import type { UsageValueRow, UsageValueSource } from './usageValueRows';
+import {
+  classifyAccountCredentialStatusEvidence,
+  getAccountRequestCredentialEvidence,
+  isAccountCredentialStatusProblemCurrent,
+  isAccountInspectionAuthenticationFailure,
+  isAccountInspectionHealthyEvidence,
+  isAccountRequestCredentialEvidenceCurrent,
+  isAccountRequestHealthEvidenceCurrent,
+  mergeAccountRequestEvidenceInputs,
+  resolveAccountRequestHealthEvidence,
+  type AccountRequestEvidenceDirection,
+  type AccountRequestEvidenceInput,
+} from './accountHealthEvidence';
 
 export type AccountDetailValueKind =
   | 'text'
@@ -152,6 +171,8 @@ export interface AccountDetailDiagnosticsActivity {
   latestActivityAtMs: number | null;
   latestSuccessAtMs: number | null;
   latestFailureAtMs: number | null;
+  latestHealthDirection: AccountRequestEvidenceDirection | null;
+  latestHealthEvidenceAtMs: number | null;
   recentFailure: AccountDetailRecentFailureSummary | null;
 }
 
@@ -406,18 +427,79 @@ const buildRecentFailureSummary = (
   };
 };
 
+const toLatestRequestFromEvent = (
+  event: MonitoringAnalyticsEventRow
+): MonitoringAccountLatestRequest => ({
+  timestamp_ms: event.timestamp_ms,
+  failed: event.failed,
+  fail_status_code: event.fail_status_code,
+  fail_summary: event.fail_summary,
+  header_error_kind: event.header_error_kind,
+  header_error_code: event.header_error_code,
+  header_trace_id: event.header_trace_id,
+});
+
+const toLatestRequestFromRecentFailure = (
+  failure: MonitoringAnalyticsRecentFailure
+): MonitoringAccountLatestRequest => ({
+  timestamp_ms: failure.timestamp_ms,
+  failed: true,
+  fail_status_code: failure.fail_status_code,
+  fail_summary: failure.fail_summary,
+  header_error_kind: failure.header_error_kind,
+  header_error_code: failure.header_error_code,
+  header_trace_id: failure.header_trace_id,
+});
+
+const buildDetailRequestEvidenceInput = (
+  history: MonitoringAccountHistoryItem | null | undefined,
+  recentFailure: MonitoringAnalyticsRecentFailure | null | undefined,
+  events: MonitoringAnalyticsEventRow[]
+): AccountRequestEvidenceInput => {
+  return mergeAccountRequestEvidenceInputs([
+    {
+      latestRequest: history?.latest_request ?? null,
+      recentRequests: history?.recent_requests ?? [],
+    },
+    {
+      recentRequests: events.map(toLatestRequestFromEvent),
+    },
+    {
+      latestRequest: recentFailure ? toLatestRequestFromRecentFailure(recentFailure) : null,
+    },
+  ]);
+};
+
+const getLatestDetailActivityAtMs = (
+  history: MonitoringAccountHistoryItem | null | undefined,
+  recentFailure: MonitoringAnalyticsRecentFailure | null | undefined,
+  events: MonitoringAnalyticsEventRow[]
+): number | null =>
+  maxTimestamp([
+    history?.last_seen_ms,
+    history?.latest_request?.timestamp_ms,
+    ...(history?.recent_requests ?? []).map((request) => request.timestamp_ms),
+    ...events.map((event) => event.timestamp_ms),
+    recentFailure?.timestamp_ms,
+  ]);
+
 const buildDiagnosticsActivity = (
+  row: AccountRow,
   summary: MonitoringAnalyticsSummary | null | undefined,
   recentFailure: MonitoringAnalyticsRecentFailure | null | undefined,
-  events: MonitoringAnalyticsEventRow[],
   totalCount: number | null | undefined,
-  knownLatestActivityAtMs: number | null | undefined
+  knownLatestActivityAtMs: number | null | undefined,
+  requestEvidenceInput: AccountRequestEvidenceInput
 ): AccountDetailDiagnosticsActivity => {
+  const requestRows = [
+    ...(requestEvidenceInput.latestRequest ? [requestEvidenceInput.latestRequest] : []),
+    ...(requestEvidenceInput.recentRequests ?? []),
+  ];
   const latestSuccessAtMs = maxTimestamp(
-    events.filter((event) => !event.failed).map((event) => event.timestamp_ms)
+    requestRows.filter((request) => !request.failed).map((request) => request.timestamp_ms)
   );
   const latestLoadedFailureAtMs = maxTimestamp(
-    events.filter((event) => event.failed).map((event) => event.timestamp_ms)
+    requestRows.filter((request) => request.failed).map((request) => request.timestamp_ms)
   );
   const recentFailureSummary = buildRecentFailureSummary(recentFailure);
   const latestFailureAtMs = maxTimestamp([
@@ -425,7 +507,7 @@ const buildDiagnosticsActivity = (
     recentFailureSummary?.timestampMs,
   ]);
   const latestActivityAtMs = maxTimestamp([
-    ...events.map((event) => event.timestamp_ms),
+    ...requestRows.map((request) => request.timestamp_ms),
     recentFailureSummary?.timestampMs,
     knownLatestActivityAtMs,
   ]);
@@ -447,6 +529,13 @@ const buildDiagnosticsActivity = (
     typeof summary?.p95_latency_ms === 'number' && Number.isFinite(summary.p95_latency_ms)
       ? summary.p95_latency_ms
       : null;
+  const resolvedRequestHealthEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const requestHealthEvidence = isAccountRequestHealthEvidenceCurrent(
+    row,
+    resolvedRequestHealthEvidence
+  )
+    ? resolvedRequestHealthEvidence
+    : null;
 
   return {
     totalCalls: resolvedTotalCalls,
@@ -456,6 +545,8 @@ const buildDiagnosticsActivity = (
     latestActivityAtMs,
     latestSuccessAtMs,
     latestFailureAtMs,
+    latestHealthDirection: requestHealthEvidence?.direction ?? null,
+    latestHealthEvidenceAtMs: requestHealthEvidence?.request.timestamp_ms ?? null,
     recentFailure: recentFailureSummary,
   };
 };
@@ -791,10 +882,13 @@ const selectOverviewQuotaWindow = (
     : limitingWindows[0];
 };
 
-const getQuotaObservedAtMs = (row: AccountRow): number | null =>
-  row.quota.source === 'observed-header'
+const getQuotaObservedAtMs = (row: AccountRow): number | null => {
+  const failedAtMs = maxTimestamp([row.quota.failedAtMs]);
+  if (row.quota.status === 'error' && failedAtMs !== null) return failedAtMs;
+  return row.quota.source === 'observed-header'
     ? (row.quota.observedAtMs ?? row.quota.fetchedAtMs ?? null)
     : (row.quota.fetchedAtMs ?? row.quota.observedAtMs ?? null);
+};
 
 const getObservedHeaderAtMs = (row: AccountRow): number | null => row.quota.observedAtMs ?? null;
 
@@ -803,6 +897,13 @@ const resolveOverviewDecisionBasis = (
   listItem: AccountListPresentationItem,
   quotaCooldown: QuotaCooldownInfo | null
 ): { labelKey: string; observedAtMs: number | null } => {
+  if (listItem.health.basisLabelKey) {
+    return {
+      labelKey: listItem.health.basisLabelKey,
+      observedAtMs: listItem.health.observedAtMs,
+    };
+  }
+
   if (
     quotaCooldown &&
     (listItem.health.reasonKey === 'accounts.health_reason_cooldown' ||
@@ -1146,17 +1247,27 @@ const buildOverviewActivity = (
   };
 };
 
-const buildOverviewRecentStatus = (row: AccountRow): AccountDetailOverviewRecentStatus => {
+const buildOverviewRecentStatus = (
+  row: AccountRow,
+  _decision: AccountDetailOverviewDecision,
+  requestEvidence: ReturnType<typeof resolveAccountRequestHealthEvidence>
+): AccountDetailOverviewRecentStatus => {
   const recentRequests = row.usage.recentRequests;
   const totals = sumRecentRequests(recentRequests);
   const total = totals.success + totals.failure;
+  const credentialStatusKind = classifyAccountCredentialStatusEvidence(row);
+  const hasProblemStatusMessage =
+    credentialStatusKind === 'quota' ||
+    (credentialStatusKind === 'credential_failure'
+      ? isAccountCredentialStatusProblemCurrent(row, requestEvidence)
+      : credentialStatusKind === 'transient_failure');
 
   return {
     success: totals.success,
     failure: totals.failure,
     successRate: total > 0 ? (totals.success / total) * 100 : null,
     recentRequests,
-    statusMessage: row.statusMessage,
+    statusMessage: hasProblemStatusMessage ? row.statusMessage : '',
   };
 };
 
@@ -1192,12 +1303,21 @@ const buildOverviewAttention = (
   return null;
 };
 
-type DiagnosticEvidenceDirection = 'positive' | 'negative' | null;
+type DiagnosticEvidenceDirection = AccountRequestEvidenceDirection | null;
 
 const getDiagnosticEvidenceDirection = (action: string): DiagnosticEvidenceDirection => {
   const normalized = action.trim().toLowerCase();
   if (!normalized) return null;
   return normalized === 'keep' || normalized === 'enable' ? 'positive' : 'negative';
+};
+
+const getInspectionDiagnosticEvidenceDirection = (row: AccountRow): DiagnosticEvidenceDirection => {
+  if (!row.inspection) return null;
+  if (isAccountInspectionAuthenticationFailure(row)) return 'negative';
+  if (row.inspection.isQuota === true || isAccountInspectionHealthyEvidence(row)) {
+    return 'positive';
+  }
+  return getDiagnosticEvidenceDirection(row.inspection.action);
 };
 
 const getDiagnosticEvidenceStatusLabelKey = (status: AccountDetailDiagnosticEvidenceStatus) =>
@@ -1208,7 +1328,8 @@ const buildDiagnosticConclusion = (
   recommendation: AccountRecommendation | null,
   actionCandidates: AccountDetailActionCandidateSummary[],
   overviewDecision: AccountDetailOverviewDecision,
-  activity: AccountDetailDiagnosticsActivity
+  activity: AccountDetailDiagnosticsActivity,
+  requestEvidenceInput: AccountRequestEvidenceInput
 ): AccountDetailDiagnosticConclusion => {
   const candidate = actionCandidates[0] ?? null;
   let actionLabelKey = recommendation
@@ -1219,11 +1340,40 @@ const buildDiagnosticConclusion = (
   let sourceLabelKey = overviewDecision.basisLabelKey;
   let observedAtMs = overviewDecision.observedAtMs;
   let direction: DiagnosticEvidenceDirection = null;
+  let latestComparableDirection = activity.latestHealthDirection;
+  let latestComparableEvidenceAtMs = activity.latestHealthEvidenceAtMs;
+  const requestAuthRecommendation =
+    recommendation?.reasonKey === 'accounts.recommend_reason_request_auth';
+  const requestFailureRecommendation =
+    recommendation?.reasonKey === 'accounts.recommend_reason_request_failure';
+  const resolvedRequestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const requestCredentialEvidence = isAccountRequestCredentialEvidenceCurrent(
+    row,
+    resolvedRequestEvidence
+  )
+    ? getAccountRequestCredentialEvidence(resolvedRequestEvidence)
+    : null;
+  const requestIsNewerThanInspection =
+    activity.latestHealthEvidenceAtMs !== null &&
+    (!row.inspection || activity.latestHealthEvidenceAtMs > row.inspection.createdAtMs);
 
-  if (recommendation?.reasonKey === 'accounts.recommend_reason_inspection' && row.inspection) {
+  if (requestAuthRecommendation) {
+    sourceLabelKey = 'accounts.latest_request_time_title';
+    observedAtMs = requestCredentialEvidence?.request.timestamp_ms ?? overviewDecision.observedAtMs;
+    direction = requestCredentialEvidence?.direction ?? 'negative';
+    latestComparableDirection = requestCredentialEvidence?.direction ?? null;
+    latestComparableEvidenceAtMs = requestCredentialEvidence?.request.timestamp_ms ?? null;
+  } else if (requestFailureRecommendation) {
+    sourceLabelKey = 'accounts.latest_request_time_title';
+    observedAtMs = activity.latestHealthEvidenceAtMs;
+    direction = activity.latestHealthDirection;
+  } else if (
+    recommendation?.reasonKey === 'accounts.recommend_reason_inspection' &&
+    row.inspection
+  ) {
     sourceLabelKey = `accounts.inspection_source_${row.inspection.source}`;
     observedAtMs = row.inspection.createdAtMs;
-    direction = getDiagnosticEvidenceDirection(row.inspection.action);
+    direction = getInspectionDiagnosticEvidenceDirection(row);
   } else if (!recommendation && candidate) {
     actionLabelKey = `accounts.action_type_${candidate.actionType}`;
     reasonKey = 'accounts.detail_diagnostic_candidate_reason';
@@ -1231,33 +1381,39 @@ const buildDiagnosticConclusion = (
     sourceLabelKey = 'accounts.detail_action_candidates';
     observedAtMs = candidate.lastSeenAtMs;
     direction = getDiagnosticEvidenceDirection(candidate.actionType);
-  } else if (!recommendation && row.inspection) {
+  } else if (!recommendation && requestIsNewerThanInspection) {
+    sourceLabelKey = 'accounts.latest_request_time_title';
+    observedAtMs = activity.latestHealthEvidenceAtMs;
+    direction = activity.latestHealthDirection;
+  } else if (
+    !recommendation &&
+    row.inspection &&
+    overviewDecision.basisLabelKey === 'accounts.detail_overview_basis_inspection'
+  ) {
     sourceLabelKey = `accounts.inspection_source_${row.inspection.source}`;
     observedAtMs = row.inspection.createdAtMs;
-    direction = getDiagnosticEvidenceDirection(row.inspection.action);
+    direction = getInspectionDiagnosticEvidenceDirection(row);
   }
 
   let evidenceStatus: AccountDetailDiagnosticEvidenceStatus = 'current';
   if (
+    direction !== null &&
     observedAtMs !== null &&
-    activity.latestActivityAtMs !== null &&
-    activity.latestActivityAtMs > observedAtMs
+    latestComparableEvidenceAtMs !== null &&
+    latestComparableEvidenceAtMs > observedAtMs
   ) {
     evidenceStatus = 'outdated';
   }
 
-  const conflictsWithNewerSuccess =
-    direction === 'negative' &&
+  const conflictsWithLatestHealthEvidence =
+    direction !== null &&
+    latestComparableDirection !== null &&
+    direction !== latestComparableDirection &&
     observedAtMs !== null &&
-    activity.latestSuccessAtMs !== null &&
-    activity.latestSuccessAtMs > observedAtMs;
-  const conflictsWithNewerFailure =
-    direction === 'positive' &&
-    observedAtMs !== null &&
-    activity.latestFailureAtMs !== null &&
-    activity.latestFailureAtMs > observedAtMs;
+    latestComparableEvidenceAtMs !== null &&
+    latestComparableEvidenceAtMs > observedAtMs;
 
-  if (conflictsWithNewerSuccess || conflictsWithNewerFailure) {
+  if (conflictsWithLatestHealthEvidence) {
     evidenceStatus = 'conflict';
     actionLabelKey = 'accounts.detail_diagnostic_reinspect';
     reasonKey = 'accounts.detail_diagnostic_conflict_desc';
@@ -1337,7 +1493,19 @@ export const buildAccountDetailViewModel = (
   row: AccountRow,
   options: BuildAccountDetailViewModelOptions = {}
 ): AccountDetailViewModel => {
-  const recommendation = options.recommendation ?? null;
+  const diagnosticsEvents = options.diagnosticsEvents ?? [];
+  const requestEvidence = buildDetailRequestEvidenceInput(
+    options.history,
+    options.diagnosticsRecentFailure,
+    diagnosticsEvents
+  );
+  const computedRecommendation = buildAccountRecommendation(row, requestEvidence);
+  const providedRecommendation = options.recommendation ?? null;
+  const providedRecommendationIsEvidenceSensitive =
+    isAccountRecommendationEvidenceSensitive(providedRecommendation);
+  const recommendation =
+    computedRecommendation ??
+    (providedRecommendationIsEvidenceSensitive ? null : providedRecommendation);
   const quotaCooldown = options.quotaCooldown ?? null;
   const quotaWindows: AccountDetailQuotaWindowInput[] = (options.quotaWindows ?? []).map(
     (window) => {
@@ -1354,6 +1522,7 @@ export const buildAccountDetailViewModel = (
     quotaCooldown,
     codexStatus: options.codexStatus ?? null,
     quotaWindows,
+    requestEvidence,
   });
   const value = buildValueSummary(row, options.valueRow);
   const rawHistory = toHistorySummary(options.history);
@@ -1367,17 +1536,30 @@ export const buildAccountDetailViewModel = (
     .sort((left, right) => right.lastSeenAtMs - left.lastSeenAtMs)
     .map(toActionCandidateSummary);
   const diagnosticsActivity = buildDiagnosticsActivity(
+    row,
     options.diagnosticsSummary,
     options.diagnosticsRecentFailure,
-    options.diagnosticsEvents ?? [],
     options.diagnosticsTotalCount,
-    value.lastSeenMs
+    maxTimestamp([
+      value.lastSeenMs,
+      getLatestDetailActivityAtMs(
+        options.history,
+        options.diagnosticsRecentFailure,
+        diagnosticsEvents
+      ),
+    ]),
+    requestEvidence
   );
+  const overviewDecision = buildOverviewDecision(row, listItem, quotaCooldown);
   const overview = {
-    decision: buildOverviewDecision(row, listItem, quotaCooldown),
+    decision: overviewDecision,
     capacity: buildOverviewCapacity(row, quotaWindows, listItem),
     credential: buildOverviewCredential(row, options.codexQuota),
-    recentStatus: buildOverviewRecentStatus(row),
+    recentStatus: buildOverviewRecentStatus(
+      row,
+      overviewDecision,
+      resolveAccountRequestHealthEvidence(requestEvidence)
+    ),
     activity: buildOverviewActivity(row, value),
     attention: buildOverviewAttention(recommendation, actionCandidates),
   };
@@ -1386,7 +1568,8 @@ export const buildAccountDetailViewModel = (
     recommendation,
     actionCandidates,
     overview.decision,
-    diagnosticsActivity
+    diagnosticsActivity,
+    requestEvidence
   );
 
   return {

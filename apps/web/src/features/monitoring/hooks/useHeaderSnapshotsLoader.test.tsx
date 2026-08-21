@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   monitoringAnalyticsApi,
   type UsageHeaderSnapshot,
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api/usageService';
 import { useHeaderSnapshotsLoader } from './useHeaderSnapshotsLoader';
+import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 
 vi.mock('@/services/api/usageService', () => ({
   monitoringAnalyticsApi: {
@@ -48,6 +49,16 @@ describe('useHeaderSnapshotsLoader', () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   });
 
+  beforeEach(() => {
+    useUsageHeaderSnapshotStore.setState({
+      scopeKey: '',
+      items: [],
+      generatedAtMs: 0,
+      loadedAtMs: 0,
+      contentRevision: '',
+    });
+  });
+
   afterEach(() => {
     renderer?.unmount();
     renderer = null;
@@ -61,14 +72,17 @@ describe('useHeaderSnapshotsLoader', () => {
   function Harness({
     serviceBase,
     managementKey = 'management-key',
+    requestGenerationRef,
   }: {
     serviceBase: string;
     managementKey?: string;
+    requestGenerationRef?: { current: number };
   }) {
     const currentItemsRef = useRef<UsageHeaderSnapshot[]>([]);
     const currentLoad = useHeaderSnapshotsLoader({
       serviceBase,
       managementKey,
+      requestGenerationRef,
       onResponse: (result) => {
         currentItemsRef.current = result.items ?? [];
         observedItems.push(currentItemsRef.current);
@@ -180,6 +194,45 @@ describe('useHeaderSnapshotsLoader', () => {
     expect(observedGeneratedAtMs).toEqual([3]);
   });
 
+  it('restarts the request and ignores the old response after credential evidence changes', async () => {
+    const first = deferred<UsageHeaderSnapshotsResponse>();
+    const second = deferred<UsageHeaderSnapshotsResponse>();
+    const requestGenerationRef = { current: 0 };
+    getHeaderSnapshotsMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await act(async () => {
+      renderer = create(
+        <Harness serviceBase="http://manager.local" requestGenerationRef={requestGenerationRef} />
+      );
+    });
+
+    let firstLoad!: Promise<void>;
+    act(() => {
+      firstLoad = load!();
+    });
+    const firstSignal = getHeaderSnapshotsMock.mock.calls[0]?.[3];
+    requestGenerationRef.current += 1;
+    let secondLoad!: Promise<void>;
+    act(() => {
+      secondLoad = load!();
+    });
+
+    expect(firstSignal?.aborted).toBe(true);
+    expect(getHeaderSnapshotsMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      first.resolve(response('stale'));
+      await firstLoad;
+    });
+    expect(observedItems).toEqual([]);
+
+    await act(async () => {
+      second.resolve(response('current'));
+      await secondLoad;
+    });
+    expect(observedItems).toEqual([[{ event_hash: 'current', timestamp_ms: 2 }]]);
+  });
+
   it('clears snapshots from the previous service when the replacement request fails', async () => {
     getHeaderSnapshotsMock
       .mockResolvedValueOnce(response('manager-a'))
@@ -218,6 +271,30 @@ describe('useHeaderSnapshotsLoader', () => {
 
     expect(getHeaderSnapshotsMock).toHaveBeenCalledTimes(2);
     expect(observedItems).toEqual([[{ event_hash: 'recovered', timestamp_ms: 2 }]]);
+  });
+
+  it('keeps the latest snapshot cached when a consumer remounts in the same scope', async () => {
+    getHeaderSnapshotsMock.mockResolvedValueOnce(response('cached'));
+
+    await act(async () => {
+      renderer = create(<Harness serviceBase="http://manager.local" />);
+    });
+    await act(async () => {
+      await load!();
+    });
+    await act(async () => {
+      renderer?.unmount();
+      renderer = null;
+    });
+
+    await act(async () => {
+      renderer = create(<Harness serviceBase="http://manager.local" />);
+    });
+
+    expect(useUsageHeaderSnapshotStore.getState().items).toMatchObject([
+      { event_hash: 'cached', timestamp_ms: 2 },
+    ]);
+    expect(getHeaderSnapshotsMock).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a response that resolves after the consumer unmounts', async () => {

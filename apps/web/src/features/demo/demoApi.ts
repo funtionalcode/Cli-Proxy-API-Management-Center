@@ -1,4 +1,5 @@
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { parse as parseYaml, parseDocument } from 'yaml';
 import {
   advanceDemoCredentialRefresh,
   getDemoApiCallResult,
@@ -13,7 +14,12 @@ import {
   requestDemoCredentialRefresh,
 } from '@/features/demo/demoFixtures';
 import type { AuthFileItem } from '@/types';
-import { DEMO_API_BASE, DEMO_SERVER_VERSION, getDemoServerBuildDate } from './demoMode';
+import {
+  DEMO_API_BASE,
+  DEMO_SERVER_COMMIT,
+  DEMO_SERVER_VERSION,
+  getDemoServerBuildDate,
+} from './demoMode';
 
 type DemoMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -55,6 +61,7 @@ const createAxiosResponse = <T>(
     statusText: 'OK',
     headers: {
       'x-cpa-version': DEMO_SERVER_VERSION,
+      'x-cpa-commit': DEMO_SERVER_COMMIT,
       'x-cpa-build-date': getDemoServerBuildDate(),
       'x-cpa-support-plugin': 'true',
       ...headers,
@@ -160,6 +167,7 @@ const DEMO_AUTH_FILE_MODELS: Record<string, DemoAuthFileModel[]> = {
 };
 
 const demoAuthFileConfigurationOverrides = new Map<string, Record<string, unknown>>();
+let demoConfigYamlOverride: string | null = null;
 
 const normalizeDemoProvider = (value: unknown): string => {
   const provider = String(value ?? '')
@@ -188,6 +196,31 @@ const getDemoAuthFileConfigurationKey = (file: AuthFileItem): string =>
 
 const isDemoConfigurationRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const getCurrentDemoConfigYaml = () => demoConfigYamlOverride ?? getDemoConfigYaml();
+
+const getCurrentDemoRawConfig = (): Record<string, unknown> => {
+  const rawConfig = getDemoRawConfig();
+  try {
+    const parsed = parseYaml(getCurrentDemoConfigYaml());
+    return isDemoConfigurationRecord(parsed) ? { ...rawConfig, ...parsed } : rawConfig;
+  } catch {
+    return rawConfig;
+  }
+};
+
+const getCurrentDemoRoutingStrategy = (): string => {
+  const routing = getCurrentDemoRawConfig().routing;
+  if (!isDemoConfigurationRecord(routing)) return 'round-robin';
+  return typeof routing.strategy === 'string' ? routing.strategy : 'round-robin';
+};
+
+const updateDemoRoutingStrategy = (strategy: string) => {
+  const document = parseDocument(getCurrentDemoConfigYaml());
+  if (document.errors.length > 0) return;
+  document.setIn(['routing', 'strategy'], strategy);
+  demoConfigYamlOverride = document.toString().trimEnd();
+};
 
 const readDemoConfigurationRecordAuthIndex = (
   record: Record<string, unknown>,
@@ -344,8 +377,10 @@ const applyDemoAuthFileConfigurationPatch = (
 
   handledKeys.add('disable_cooling');
   if (fields.disable_cooling !== undefined) {
-    if (fields.disable_cooling) next.disable_cooling = true;
-    else delete next.disable_cooling;
+    if (fields.disable_cooling === null) delete next.disable_cooling;
+    else next.disable_cooling = fields.disable_cooling;
+    delete next.disableCooling;
+    delete next['disable-cooling'];
   }
 
   handledKeys.add('request_retry');
@@ -459,6 +494,10 @@ export const resetDemoAuthFileConfiguration = () => {
   demoAuthFileConfigurationOverrides.clear();
 };
 
+export const resetDemoConfigState = () => {
+  demoConfigYamlOverride = null;
+};
+
 export async function handleDemoApiRequest<T = unknown>(
   method: DemoMethod,
   url: string,
@@ -466,12 +505,17 @@ export async function handleDemoApiRequest<T = unknown>(
   config?: AxiosRequestConfig
 ): Promise<T> {
   const { pathname, params } = normalizeDemoUrl(url, config);
-  const rawConfig = getDemoRawConfig();
+  const rawConfig = getCurrentDemoRawConfig();
 
   if (pathname === '/config') return rawConfig as T;
   if (pathname === '/latest-version') return getDemoLatestVersion() as T;
-  if (pathname === '/config.yaml')
-    return (typeof data === 'string' ? ok : getDemoConfigYaml()) as T;
+  if (pathname === '/config.yaml') {
+    if (method === 'put' && typeof data === 'string') {
+      demoConfigYamlOverride = data;
+      return ok as T;
+    }
+    return getCurrentDemoConfigYaml() as T;
+  }
 
   const providerKey = providerEndpointKeys[pathname];
   if (providerKey) {
@@ -491,13 +535,19 @@ export async function handleDemoApiRequest<T = unknown>(
       '/logs-max-total-size-mb',
       '/ws-auth',
       '/force-model-prefix',
-      '/routing/strategy',
     ].includes(pathname)
   ) {
     if (method === 'get') {
       if (pathname === '/logs-max-total-size-mb') return { 'logs-max-total-size-mb': 512 } as T;
       if (pathname === '/force-model-prefix') return { 'force-model-prefix': false } as T;
-      if (pathname === '/routing/strategy') return { strategy: 'round-robin' } as T;
+    }
+    return ok as T;
+  }
+
+  if (pathname === '/routing/strategy') {
+    if (method === 'get') return { strategy: getCurrentDemoRoutingStrategy() } as T;
+    if (method === 'put' && isDemoConfigurationRecord(data) && typeof data.value === 'string') {
+      updateDemoRoutingStrategy(data.value);
     }
     return ok as T;
   }
@@ -625,7 +675,9 @@ export async function handleDemoRawRequest(
 ): Promise<AxiosResponse> {
   const { pathname, params } = normalizeDemoUrl(url, config);
   if (pathname === '/config.yaml') {
-    return createAxiosResponse(getDemoConfigYaml(), config, { 'content-type': 'text/yaml' });
+    return createAxiosResponse(getCurrentDemoConfigYaml(), config, {
+      'content-type': 'text/yaml',
+    });
   }
   if (pathname.startsWith('/request-error-logs/')) {
     return createAxiosResponse(

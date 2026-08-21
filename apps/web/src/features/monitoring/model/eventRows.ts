@@ -103,6 +103,10 @@ export const buildEventRows = (
       const endpoint = readString(detail.__endpoint) || '-';
       const endpointMethod = readString(detail.__endpointMethod) || '-';
       const endpointPath = readString(detail.__endpointPath) || endpoint;
+      const requestedModel = readString(detail.__requestedModel);
+      const clientIp = readString(detail.client_ip ?? detail.clientIp);
+      const xForwardedFor = readString(detail.x_forwarded_for ?? detail.xForwardedFor);
+      const userAgent = readString(detail.user_agent ?? detail.userAgent);
       const resolvedModel = readString(detail.__resolvedModel);
       const projectId = readString(detail.auth_project_id_snapshot ?? detail.authProjectIdSnapshot);
       const inputTokens = Math.max(Number(detail.tokens?.input_tokens) || 0, 0);
@@ -190,10 +194,14 @@ export const buildEventRows = (
         dayKey,
         hourLabel,
         model: readString(detail.__modelName) || '-',
+        requestedModel: requestedModel || undefined,
         resolvedModel: resolvedModel || undefined,
         endpoint,
         endpointMethod,
         endpointPath,
+        clientIp,
+        xForwardedFor,
+        userAgent,
         sourceKey,
         source: sourceLabel,
         sourceMasked,
@@ -252,8 +260,12 @@ export const buildEventRows = (
           channelMeta?.host,
           endpointPath,
           endpointMethod,
+          clientIp,
+          xForwardedFor,
+          userAgent,
           authMeta?.provider || snapshotProvider,
           authMeta?.planType,
+          requestedModel,
           resolvedModel,
           projectId,
           reasoningEffort,

@@ -2,6 +2,7 @@ package codexinspection
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,6 +70,120 @@ func TestResultRoundTripPreservesAccountSnapshot(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].DisplayAccount != "Renamed Alice" || items[0].AccountSnapshot != "alice+updated@example.com" {
 		t.Fatalf("updated results = %#v", items)
+	}
+}
+
+func TestResultRoundTripPreservesExplicitEmptyQuotaInventory(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	run, err := repository.CreateRun(ctx, model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: 1,
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	inserted, err := repository.InsertResult(ctx, model.CodexInspectionResult{
+		RunID:                  run.ID,
+		AccountKey:             "codex.json::-::alice",
+		FileName:               "codex.json",
+		DisplayAccount:         "alice@example.com",
+		Provider:               "codex",
+		Action:                 "keep",
+		QuotaInventoryObserved: true,
+	})
+	if err != nil {
+		t.Fatalf("insert result: %v", err)
+	}
+	if inserted.QuotaWindowsJSON != "[]" || !inserted.QuotaInventoryObserved {
+		t.Fatalf("inserted quota inventory = %#v", inserted)
+	}
+
+	items, err := repository.ListResults(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("list results: %v", err)
+	}
+	if len(items) != 1 || len(items[0].QuotaWindows) != 0 || items[0].QuotaWindowsJSON != "[]" || !items[0].QuotaInventoryObserved {
+		t.Fatalf("stored quota inventory = %#v", items)
+	}
+	payload, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var contract map[string]any
+	if err := json.Unmarshal(payload, &contract); err != nil {
+		t.Fatalf("unmarshal result contract: %v", err)
+	}
+	if observed, ok := contract["quotaInventoryObserved"].(bool); !ok || !observed {
+		t.Fatalf("quotaInventoryObserved contract = %#v", contract["quotaInventoryObserved"])
+	}
+}
+
+func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvidence(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repository := New(db)
+	ctx := context.Background()
+	run, err := repository.CreateRun(ctx, model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: 1,
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	valid := model.CodexInspectionResult{
+		RunID:          run.ID,
+		AccountKey:     "codex.json::-::alice",
+		FileName:       "codex.json",
+		DisplayAccount: "alice@example.com",
+		Provider:       "codex",
+		Action:         "keep",
+		QuotaWindows: []model.CodexInspectionQuotaWindow{{
+			ID: "five-hour",
+		}},
+	}
+	inserted, err := repository.InsertResult(ctx, valid)
+	if err != nil {
+		t.Fatalf("insert valid result: %v", err)
+	}
+	if !inserted.QuotaInventoryObserved || len(inserted.QuotaWindows) != 1 {
+		t.Fatalf("inserted valid quota inventory = %#v", inserted)
+	}
+
+	for _, raw := range []string{"{", "null", `{"five-hour":{}}`} {
+		updated := valid
+		updated.Action = "disable"
+		updated.QuotaWindows = nil
+		updated.QuotaWindowsJSON = raw
+		stored, insertErr := repository.InsertResult(ctx, updated)
+		if insertErr != nil {
+			t.Fatalf("upsert malformed quota inventory %q: %v", raw, insertErr)
+		}
+		if stored.QuotaInventoryObserved {
+			t.Fatalf("malformed quota inventory %q was accepted: %#v", raw, stored)
+		}
+	}
+
+	items, err := repository.ListResults(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("list results: %v", err)
+	}
+	if len(items) != 1 || !items[0].QuotaInventoryObserved || len(items[0].QuotaWindows) != 1 || items[0].QuotaWindows[0].ID != "five-hour" {
+		t.Fatalf("valid quota inventory was not preserved: %#v", items)
 	}
 }
 

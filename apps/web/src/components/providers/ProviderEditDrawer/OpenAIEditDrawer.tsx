@@ -8,11 +8,16 @@ import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Modal } from '@/components/ui/Modal';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
-import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { OpenAIKeyTestStatusIndicator } from '@/components/providers';
+import { CoolingPolicySelect } from '@/components/providers/CoolingPolicySelect';
 import { apiCallApi, getApiCallErrorDetails, modelsApi, providersApi } from '@/services/api';
 import { useConfigStore, useNotificationStore } from '@/stores';
-import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
+import {
+  coolingPolicyFromOverride,
+  coolingPolicyToOverride,
+  type ApiKeyEntry,
+  type OpenAIProviderConfig,
+} from '@/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
@@ -23,7 +28,15 @@ import {
   removeKeyTestStatusAtIndex,
 } from '@/features/aiProviders/model/keyTestStatuses';
 import type { ModelInfo } from '@/utils/models';
-import type { OpenAIFormState } from '@/components/providers';
+import type { OpenAIFormApiKeyEntry, OpenAIFormState } from '@/components/providers';
+import {
+  MAX_CREDENTIAL_WEIGHT,
+  getCredentialWeightComparisonValue,
+  getCredentialWeightError,
+  normalizeCredentialWeight,
+  toCredentialWeightInputValue,
+  type CredentialWeightComparisonValue,
+} from '@/utils/credentialWeight';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
 
 interface OpenAIEditDrawerProps {
@@ -47,6 +60,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+  disableCooling: 'inherit',
 });
 
 const normalizeModelEntries = (entries: OpenAIFormState['modelEntries']) =>
@@ -70,21 +84,23 @@ const normalizeKeyHeaders = (headers: ApiKeyEntry['headers']) => {
     });
 };
 
-const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
+const normalizeApiKeyEntries = (entries: OpenAIFormApiKeyEntry[]) =>
   (entries ?? []).reduce<
     Array<{
       apiKey: string;
+      weight: CredentialWeightComparisonValue;
       proxyUrl: string;
       authIndex: string;
       headers: ReturnType<typeof normalizeKeyHeaders>;
     }>
   >((acc, entry) => {
     const apiKey = String(entry?.apiKey ?? '').trim();
+    const weight = getCredentialWeightComparisonValue(entry?.weight);
     const proxyUrl = String(entry?.proxyUrl ?? '').trim();
     const authIndex = normalizeAuthIndex(entry?.authIndex) ?? '';
     const headers = normalizeKeyHeaders(entry?.headers);
-    if (!apiKey && !proxyUrl && !authIndex && headers.length === 0) return acc;
-    acc.push({ apiKey, proxyUrl, authIndex, headers });
+    if (!apiKey && weight === null && !proxyUrl && !authIndex && headers.length === 0) return acc;
+    acc.push({ apiKey, weight, proxyUrl, authIndex, headers });
     return acc;
   }, []);
 
@@ -96,7 +112,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState) => ({
       : null,
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
-  disableCooling: Boolean(form.disableCooling),
+  disableCooling: form.disableCooling,
   headers: normalizeHeaderEntries(form.headers),
   apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
   models: normalizeModelEntries(form.modelEntries),
@@ -114,6 +130,7 @@ const areNormalizedApiKeyEntriesEqual = (
     if (!left || !right) return false;
     if (
       left.apiKey !== right.apiKey ||
+      left.weight !== right.weight ||
       left.proxyUrl !== right.proxyUrl ||
       left.authIndex !== right.authIndex
     )
@@ -233,7 +250,7 @@ export function OpenAIEditDrawer({
         apiKeyEntries: initialData.apiKeyEntries?.length
           ? initialData.apiKeyEntries
           : [buildApiKeyEntry()],
-        disableCooling: initialData.disableCooling,
+        disableCooling: coolingPolicyFromOverride(initialData.disableCooling),
       };
       setForm(seededForm);
       setBaseline(buildOpenAIBaseline(seededForm));
@@ -264,7 +281,11 @@ export function OpenAIEditDrawer({
     }
   }, [availableModels, loaded, testModel]);
 
-  const canSave = !disabled && !loading && !saving && !invalidIndex && !isTestingKeys;
+  const hasInvalidWeight = form.apiKeyEntries.some((entry) =>
+    getCredentialWeightError(entry.weight)
+  );
+  const canSave =
+    !disabled && !loading && !saving && !invalidIndex && !isTestingKeys && !hasInvalidWeight;
 
   const isDirty = useMemo(() => {
     const normalizedPriority =
@@ -276,7 +297,7 @@ export function OpenAIEditDrawer({
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
-      baseline.disableCooling !== Boolean(form.disableCooling) ||
+      baseline.disableCooling !== form.disableCooling ||
       !areKeyValueEntriesEqual(baseline.headers, normalizeHeaderEntries(form.headers)) ||
       !areNormalizedApiKeyEntriesEqual(
         baseline.apiKeyEntries,
@@ -299,13 +320,16 @@ export function OpenAIEditDrawer({
     setModelDiscoveryError('');
     const headerObject = buildHeaderObject(form.headers);
     try {
-      const firstKey = form.apiKeyEntries[0];
+      const firstKey = form.apiKeyEntries.find(
+        (entry) => entry.apiKey?.trim() || normalizeAuthIndex(entry.authIndex)
+      );
       const keyAuthIndex = normalizeAuthIndex(firstKey?.authIndex) ?? undefined;
       const list = await modelsApi.fetchModelsViaApiCall(
         form.baseUrl.trim(),
         firstKey?.apiKey?.trim() || undefined,
         headerObject,
-        keyAuthIndex
+        keyAuthIndex,
+        firstKey?.proxyUrl
       );
       setDiscoveredModels(list);
     } catch (err: unknown) {
@@ -632,8 +656,9 @@ export function OpenAIEditDrawer({
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
         headers: buildHeaderObject(form.headers),
-        apiKeyEntries: form.apiKeyEntries.map((entry: ApiKeyEntry) => ({
+        apiKeyEntries: form.apiKeyEntries.map((entry) => ({
           apiKey: entry.apiKey.trim(),
+          weight: normalizeCredentialWeight(entry.weight),
           proxyUrl: entry.proxyUrl?.trim() || undefined,
           authIndex: normalizeAuthIndex(entry.authIndex) ?? undefined,
           headers: entry.headers,
@@ -641,7 +666,7 @@ export function OpenAIEditDrawer({
       };
       if (form.priority !== undefined && Number.isFinite(form.priority))
         payload.priority = Math.trunc(form.priority);
-      if (form.disableCooling !== undefined) payload.disableCooling = form.disableCooling;
+      payload.disableCooling = coolingPolicyToOverride(form.disableCooling);
       if (initialData?.disabled !== undefined) payload.disabled = initialData.disabled;
       const resolvedTestModel = testModel.trim();
       if (resolvedTestModel) payload.testModel = resolvedTestModel;
@@ -705,7 +730,7 @@ export function OpenAIEditDrawer({
 
   const renderKeyEntries = () => {
     const list = form.apiKeyEntries.length ? form.apiKeyEntries : [buildApiKeyEntry()];
-    const updateEntry = (idx: number, field: keyof ApiKeyEntry, value: string) => {
+    const updateEntry = (idx: number, field: keyof OpenAIFormApiKeyEntry, value: string) => {
       const next = list.map((entry, i) => (i === idx ? { ...entry, [field]: value } : entry));
       setForm((prev) => ({ ...prev, apiKeyEntries: next }));
       setKeyTestStatuses((prev) => {
@@ -713,6 +738,11 @@ export function OpenAIEditDrawer({
         nextStatuses[idx] = { status: 'idle', message: '' };
         return nextStatuses;
       });
+    };
+    const updateEntryWeight = (idx: number, raw: string) => {
+      const weight = toCredentialWeightInputValue(raw);
+      const next = list.map((entry, i) => (i === idx ? { ...entry, weight } : entry));
+      setForm((prev) => ({ ...prev, apiKeyEntries: next }));
     };
     const removeEntry = (idx: number) => {
       const next = list.filter((_, i) => i !== idx);
@@ -745,11 +775,14 @@ export function OpenAIEditDrawer({
             <div className={styles.keyTableColIndex}>#</div>
             <div className={styles.keyTableColStatus}>{t('common.status')}</div>
             <div className={styles.keyTableColKey}>{t('common.api_key')}</div>
+            <div className={styles.keyTableColWeight}>{t('ai_providers.weight_label')}</div>
             <div className={styles.keyTableColProxy}>{t('common.proxy_url')}</div>
             <div className={styles.keyTableColAction}>{t('common.action')}</div>
           </div>
+          <div className="hint">{t('ai_providers.model_discovery_proxy_version_hint')}</div>
           {list.map((entry, index) => {
             const keyStatus = keyTestStatuses[index]?.status ?? 'idle';
+            const weightError = getCredentialWeightError(entry.weight);
             const canTestKey =
               Boolean(entry.apiKey?.trim() || normalizeAuthIndex(entry.authIndex)) &&
               hasConfiguredModels;
@@ -771,6 +804,31 @@ export function OpenAIEditDrawer({
                     className={`input ${styles.keyTableInput}`}
                     placeholder={t('ai_providers.openai_key_placeholder')}
                   />
+                </div>
+                <div className={styles.keyTableColWeight}>
+                  <div className={styles.keyTableWeightField}>
+                    <input
+                      type="text"
+                      inputMode="text"
+                      value={entry.weight ?? ''}
+                      onChange={(e) => updateEntryWeight(index, e.target.value)}
+                      disabled={saving || disabled || isTestingKeys}
+                      className={`input ${styles.keyTableInput}`}
+                      placeholder="1"
+                      aria-invalid={Boolean(weightError)}
+                      aria-label={`${t('ai_providers.weight_label')} ${index + 1}`}
+                    />
+                    {weightError && (
+                      <span className={styles.keyTableWeightError}>
+                        {t(
+                          weightError === 'maximum'
+                            ? 'ai_providers.weight_error_maximum'
+                            : 'ai_providers.weight_error_integer',
+                          { max: MAX_CREDENTIAL_WEIGHT.toLocaleString() }
+                        )}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className={styles.keyTableColProxy}>
                   <input
@@ -888,16 +946,12 @@ export function OpenAIEditDrawer({
               removeButtonAriaLabel={t('common.delete')}
               disabled={saving || disabled || isTestingKeys}
             />
-            <div className="form-group">
-              <label>{t('ai_providers.disable_cooling_label')}</label>
-              <ToggleSwitch
-                checked={Boolean(form.disableCooling)}
-                onChange={(value) => setForm((prev) => ({ ...prev, disableCooling: value }))}
-                disabled={saving || disabled || isTestingKeys}
-                ariaLabel={t('ai_providers.disable_cooling_label')}
-              />
-              <div className="hint">{t('ai_providers.disable_cooling_hint')}</div>
-            </div>
+            <CoolingPolicySelect
+              value={form.disableCooling}
+              onChange={(value) => setForm((prev) => ({ ...prev, disableCooling: value }))}
+              disabled={saving || disabled || isTestingKeys}
+              id="openai-drawer-cooling-policy"
+            />
 
             <div className={styles.keyEntriesSection}>
               <div className={styles.keyEntriesHeader}>

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type eventPageCandidate struct {
@@ -148,9 +149,11 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		coalesce(request_id, ''),
 		event_hash,
 		timestamp_ms,
-		timestamp,
-		model,
-		coalesce(resolved_model, ''),
+			timestamp,
+			model,
+			`+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as analytics_model,
+			coalesce(nullif(requested_model, ''), model, ''),
+			coalesce(resolved_model, ''),
 		coalesce(endpoint, ''),
 		coalesce(method, ''),
 		coalesce(path, ''),
@@ -205,6 +208,8 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			&item.TimestampMS,
 			&item.Timestamp,
 			&item.Model,
+			&item.AnalyticsModel,
+			&item.RequestedModel,
 			&item.ResolvedModel,
 			&item.Endpoint,
 			&item.Method,

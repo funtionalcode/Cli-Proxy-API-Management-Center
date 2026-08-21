@@ -30,6 +30,7 @@ import {
   formatCompactNumber,
   formatUsd,
   getCacheHitTotals,
+  normalizeAnalyticsModel,
 } from '@/utils/usage';
 
 export type UsageAnalyticsTab =
@@ -2332,7 +2333,9 @@ export const buildDrilldownPreview = (
     ])
   );
   return rows.map((row) => {
-    const model = row.model || row.resolved_model || '-';
+    const requestedModel = row.requested_model || row.model;
+    const model =
+      row.analytics_model || normalizeAnalyticsModel(requestedModel) || row.resolved_model || '-';
     const totalTokens = toNumber(row.total_tokens);
     const costPerToken = modelCostPerToken.get(model) ?? 0;
     return {

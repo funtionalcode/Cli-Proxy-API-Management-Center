@@ -450,6 +450,6 @@ location ^~ /v0/resource/plugins/ { proxy_pass http://cpamp; }
 location ^~ /usage-service/ { proxy_pass http://cpamp; }
 ```
 
-如果实际使用中发现 CPAMP 面板中的配置、日志、认证文件等页面出现 401 / 404，再根据具体路径补充精确规则。
+如果实际使用中发现 CPAMP 面板中的配置、日志或凭证管理出现 401 / 404，再根据具体路径补充精确规则。
 
 不建议一开始就把所有不确定路径都转给 CPAMP，否则可能影响 CPA 原生接口或未来新增路由。

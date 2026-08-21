@@ -59,7 +59,7 @@ If the installer did not save a CPA connection, enter these values when Full Mod
 ### Lightweight Panel
 
 - You can log in with the CPA Management Key.
-- CPA management features such as providers, auth files, OAuth, quota, logs, and plugins load normally.
+- CPA management features such as providers, Accounts, OAuth, logs, and plugins load normally.
 - The page remains on CPA `:8317/management.html`.
 
 ### Full Mode
@@ -74,7 +74,7 @@ If Full Mode opens but has no request data, see [Monitoring Has No Data](../trou
 ## What To Do Next
 
 - Add model services: [AI Providers](../manual/ai-providers.md)
-- Log in or import accounts: [OAuth Login](../manual/oauth.md) and [Auth Files](../manual/auth-files.md)
+- Log in or import accounts: [OAuth Login](../manual/oauth.md) and [Accounts](../manual/accounts.md)
 - Configure clients: [Client Configuration](../gateway/clients.md)
 - Upgrade and back up: [Upgrade CPAMP](../operations/update.md) and [Backup And Restore](../operations/backup.md)
 - Maintain deployment manually: [Docker Deployment](../deployment/docker.md) or [Native Packages](../deployment/native.md)

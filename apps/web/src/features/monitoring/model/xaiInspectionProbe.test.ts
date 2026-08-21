@@ -314,15 +314,73 @@ describe('inspectSingleXaiAccount', () => {
     });
   });
 
-  it('prioritizes a blocking partial billing failure while retaining quota windows', async () => {
+  it('keeps a healthy weekly result when the deprecated monthly endpoint reports a limit', async () => {
     const blockingFailure = billingError(402, {
       code: 'personal-team-blocked:spending-limit',
     });
     mockProbeXaiQuota.mockResolvedValue({
       summary: healthySummary,
+      failures: [],
+      partial: false,
+      source: 'billing',
+      statusCode: 200,
+    });
+
+    const result = await inspectSingleXaiAccount(baseAccount, {
+      ...settings,
+      xaiInferenceEnabled: false,
+    });
+
+    expect(result).toMatchObject({
+      action: 'keep',
+      statusCode: 200,
+      errorKind: 'billing_healthy',
+      usedPercent: 40,
+    });
+    expect(result.quotaWindows).not.toHaveLength(0);
+    expect(blockingFailure.decision.suggestedAction).toBe('disable');
+  });
+
+  it('does not create a local monthly inspection window from protobuf zero placeholders', async () => {
+    mockProbeXaiQuota.mockResolvedValue({
+      summary: {
+        periodType: 'weekly',
+        usagePercent: 0,
+        periodEnd: '2026-08-20T00:00:00Z',
+        productUsage: [],
+        monthlyLimitCents: null,
+        usedCents: 0,
+        includedUsedCents: 0,
+        onDemandCapCents: 0,
+        onDemandUsedCents: 0,
+        onDemandUsedPercent: null,
+        billingPeriodEnd: '2026-09-01T00:00:00Z',
+        usedPercent: null,
+      },
+      failures: [],
+      partial: false,
+      source: 'billing',
+      statusCode: 200,
+    });
+
+    const result = await inspectSingleXaiAccount(baseAccount, {
+      ...settings,
+      xaiInferenceEnabled: false,
+    });
+
+    expect(result.quotaWindows?.map((window) => window.id)).toEqual(['xai-weekly']);
+  });
+
+  it('keeps an authoritative weekly blocking failure when only legacy quota data is available', async () => {
+    const blockingFailure = billingError(402, {
+      code: 'personal-team-blocked:spending-limit',
+    });
+    mockProbeXaiQuota.mockResolvedValue({
+      summary: { ...healthySummary, periodType: 'monthly', usagePercent: null },
       failures: [blockingFailure],
       partial: true,
       source: 'billing',
+      statusCode: 200,
       blockingFailure,
     });
 
@@ -335,7 +393,6 @@ describe('inspectSingleXaiAccount', () => {
       action: 'disable',
       statusCode: 402,
       errorKind: 'spending_limit',
-      usedPercent: 40,
     });
     expect(result.quotaWindows).not.toHaveLength(0);
   });

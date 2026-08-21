@@ -64,7 +64,13 @@ func AccountKey(fields Fields) (string, bool) {
 // PricingStructureRevision binds the pricing rollup structure to the identity
 // format as well as model/context-tier structure.
 func PricingStructureRevision(modelPriceRevision string) string {
-	return fmt.Sprintf("identity-%s:%s", FormatVersion, strings.TrimSpace(modelPriceRevision))
+	return fmt.Sprintf("model-%s:identity-%s:%s", ModelFormatVersion, FormatVersion, strings.TrimSpace(modelPriceRevision))
+}
+
+// AccountHistoryStructureRevision binds the legacy account-history rollup to
+// both credential identity and analytics model identity.
+func AccountHistoryStructureRevision() string {
+	return fmt.Sprintf("identity-%s:model-%s", FormatVersion, ModelFormatVersion)
 }
 
 // SQLAccountKeyExpression returns the SQLite expression equivalent of

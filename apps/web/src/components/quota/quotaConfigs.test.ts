@@ -1,9 +1,6 @@
-import React from 'react';
 import type { TFunction } from 'i18next';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import type { ClaudeQuotaState, CodexQuotaState, XaiQuotaState } from '@/types';
-import type { QuotaRenderHelpers } from './QuotaCard';
+import type { CodexQuotaState } from '@/types';
 import {
   ANTIGRAVITY_CONFIG,
   buildObservedCodexQuotaState,
@@ -157,168 +154,6 @@ describe('getSortedCodexResetCreditExpiries', () => {
       new Date('2026-07-18T08:31:33Z').getTime(),
       new Date('2026-07-19T00:42:09Z').getTime(),
     ]);
-  });
-});
-
-describe('CLAUDE_CONFIG.renderQuotaItems', () => {
-  it('renders scoped model quota windows with their dynamic labels', () => {
-    const quota: ClaudeQuotaState = {
-      status: 'success',
-      windows: [
-        {
-          id: 'weekly-scoped-fable%205%20max',
-          label: 'Fable 5 Max',
-          usedPercent: 100,
-          resetLabel: '07/08 21:00',
-        },
-      ],
-    };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    let renderer!: ReactTestRenderer;
-
-    act(() => {
-      renderer = create(
-        React.createElement(
-          React.Fragment,
-          null,
-          CLAUDE_CONFIG.renderQuotaItems(quota, ((key: string) => key) as TFunction, helpers)
-        )
-      );
-    });
-
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain('Fable 5 Max');
-    expect(output).toContain('0%');
-    expect(output).toContain('07/08 21:00');
-    expect(output).toContain('"data-percent":0');
-  });
-});
-
-describe('XAI_CONFIG.renderQuotaItems', () => {
-  it('renders partial billing diagnostics as a user-facing explanation', () => {
-    const quota: XaiQuotaState = {
-      status: 'success',
-      billing: {
-        periodType: 'monthly',
-        usagePercent: null,
-        productUsage: [],
-        monthlyLimitCents: 10_000,
-        usedCents: 2_500,
-        includedUsedCents: 2_500,
-        onDemandCapCents: null,
-        onDemandUsedCents: null,
-        onDemandUsedPercent: null,
-        usedPercent: 25,
-        partial: true,
-        diagnostics: [
-          {
-            classification: 'protocol_changed',
-            statusCode: 200,
-            message: 'xAI billing response schema changed',
-          },
-        ],
-      },
-    };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    const t = ((key: string, options?: Record<string, unknown>) => {
-      const messages: Record<string, string> = {
-        'xai_quota.partial_data': 'Some billing data is unavailable. Reason: {{details}}',
-        'xai_quota.diagnostic_protocol_changed':
-          'The billing endpoint returned data that cannot currently be recognized',
-      };
-      let message = messages[key] ?? key;
-      Object.entries(options ?? {}).forEach(([name, value]) => {
-        message = message.replace(`{{${name}}}`, String(value));
-      });
-      return message;
-    }) as TFunction;
-    let renderer!: ReactTestRenderer;
-
-    act(() => {
-      renderer = create(
-        React.createElement(React.Fragment, null, XAI_CONFIG.renderQuotaItems(quota, t, helpers))
-      );
-    });
-
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain(
-      'The billing endpoint returned data that cannot currently be recognized'
-    );
-    expect(output).not.toContain('protocol_changed');
-    expect(output).not.toContain('HTTP 200');
-  });
-
-  it('renders official API health without fake billing or pay-as-you-go rows', () => {
-    const quota: XaiQuotaState = {
-      status: 'success',
-      billing: {
-        periodType: 'unknown',
-        usagePercent: null,
-        productUsage: [],
-        monthlyLimitCents: null,
-        usedCents: null,
-        includedUsedCents: null,
-        onDemandCapCents: null,
-        onDemandUsedCents: null,
-        onDemandUsedPercent: null,
-        usedPercent: null,
-        officialApiHealth: {
-          source: 'api.x.ai/v1/me',
-          userId: 'user-1',
-          teamId: 'team-1',
-          teamBlocked: false,
-        },
-      },
-    };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    const t = ((key: string) =>
-      ({
-        'xai_quota.plan_label': 'Plan',
-        'xai_quota.official_api_plan': 'Official API',
-        'xai_quota.official_api_health':
-          'Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.',
-      })[key] ?? key) as TFunction;
-    let renderer!: ReactTestRenderer;
-
-    act(() => {
-      renderer = create(
-        React.createElement(React.Fragment, null, XAI_CONFIG.renderQuotaItems(quota, t, helpers))
-      );
-    });
-
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain('Official API');
-    expect(output).toContain('Official xAI API identity is reachable');
-    expect(output).not.toContain('Pay-as-you-go');
-    expect(output).not.toContain('Monthly credits');
-    expect(output).not.toContain('data-percent');
   });
 });
 
@@ -788,22 +623,6 @@ describe('resolveQuotaDisplayState', () => {
 
 describe('Codex plan precedence', () => {
   const t = ((key: string) => key) as TFunction;
-
-  it('uses the live quota plan for sorting instead of a stale token plan', () => {
-    const file = {
-      name: 'stale-plan.codex.json',
-      type: 'codex',
-      id_token: { plan_type: 'plus' },
-    };
-    const quota: CodexQuotaState = {
-      status: 'success',
-      planType: 'free',
-      windows: [],
-    };
-
-    expect(CODEX_CONFIG.getPlanSortRank?.(file, quota)).toBe(10);
-    expect(CODEX_CONFIG.getSearchText?.(file, quota, t)).toContain('free');
-  });
 
   it('uses a newer observed header plan before the credential token plan', () => {
     const state = buildObservedCodexQuotaState(

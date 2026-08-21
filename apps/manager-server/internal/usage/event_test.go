@@ -143,8 +143,37 @@ func TestNormalizeRawPrefersResolvedModelOverRequestedAndDisplayAliases(t *testi
 	if event.ResolvedModel != "claude-sonnet-4" || event.RequestedModel != "gpt-5-alias" || event.Model != "gpt-5-alias" {
 		t.Fatalf("models = resolved:%q requested:%q display:%q", event.ResolvedModel, event.RequestedModel, event.Model)
 	}
+	if event.AnalyticsModel != "gpt-5-alias" {
+		t.Fatalf("analytics model = %q", event.AnalyticsModel)
+	}
 	if event.CacheInputMode != CacheInputModeSeparate || event.NormalizedTotalInputTokens != 120 {
 		t.Fatalf("accounting = mode:%q total:%d", event.CacheInputMode, event.NormalizedTotalInputTokens)
+	}
+}
+
+func TestNormalizeRawPreservesRequestedModelWhileCanonicalizingReasoningSuffix(t *testing.T) {
+	event, err := NormalizeRaw([]byte(`{
+		"timestamp":"2026-08-12T00:00:00Z",
+		"alias":"deepseek-v4-flash(max)",
+		"model":"deepseek-v4-flash",
+		"reasoning_effort":"max"
+	}`))
+	if err != nil {
+		t.Fatalf("NormalizeRaw: %v", err)
+	}
+	if event.Model != "deepseek-v4-flash(max)" || event.RequestedModel != "deepseek-v4-flash(max)" {
+		t.Fatalf("requested models = model:%q requested:%q", event.Model, event.RequestedModel)
+	}
+	if event.AnalyticsModel != "deepseek-v4-flash" {
+		t.Fatalf("analytics model = %q", event.AnalyticsModel)
+	}
+	if event.ResolvedModel != "deepseek-v4-flash" || event.ReasoningEffort != "max" {
+		t.Fatalf("resolved/effort = %q/%q", event.ResolvedModel, event.ReasoningEffort)
+	}
+	wantHash := event.EventHash
+	event.AnalyticsModel = "different-derived-value"
+	if got := buildEventHash(event); got != wantHash {
+		t.Fatalf("derived analytics model changed event hash: got %q want %q", got, wantHash)
 	}
 }
 

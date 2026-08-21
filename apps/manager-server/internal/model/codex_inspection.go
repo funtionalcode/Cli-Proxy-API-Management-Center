@@ -175,7 +175,7 @@ type CodexInspectionResult struct {
 	PlanType               string                       `json:"planType,omitempty"`
 	QuotaWindows           []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
 	QuotaWindowsJSON       string                       `json:"-"`
-	QuotaInventoryObserved bool                         `json:"-"`
+	QuotaInventoryObserved bool                         `json:"quotaInventoryObserved"`
 	ErrorKind              string                       `json:"errorKind,omitempty"`
 	ErrorDetail            string                       `json:"errorDetail,omitempty"`
 	CreatedAtMS            int64                        `json:"createdAtMs"`
@@ -537,14 +537,20 @@ func MarshalCodexInspectionQuotaWindows(windows []CodexInspectionQuotaWindow) st
 }
 
 func UnmarshalCodexInspectionQuotaWindows(raw string) []CodexInspectionQuotaWindow {
-	if strings.TrimSpace(raw) == "" {
-		return nil
+	windows, _ := ParseCodexInspectionQuotaWindows(raw)
+	return windows
+}
+
+func ParseCodexInspectionQuotaWindows(raw string) ([]CodexInspectionQuotaWindow, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, false
 	}
 	var windows []CodexInspectionQuotaWindow
-	if err := json.Unmarshal([]byte(raw), &windows); err != nil {
-		return nil
+	if err := json.Unmarshal([]byte(trimmed), &windows); err != nil || windows == nil {
+		return nil, false
 	}
-	return windows
+	return windows, true
 }
 
 func CodexInspectionTriggerKey(now time.Time, cfg ManagerCodexInspectionConfig) string {

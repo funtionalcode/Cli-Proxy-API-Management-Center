@@ -11,6 +11,7 @@
 import type { SetStateAction } from 'react';
 import { create } from 'zustand';
 import type { ProviderFormState } from '@/components/providers/types';
+import type { CoolingPolicy } from '@/types';
 
 export type ClaudeTestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -24,10 +25,11 @@ export type ClaudeEditBaseline = {
   apiKey: string;
   authIndex: string;
   priority: number | null;
+  weight: number | null;
   prefix: string;
   baseUrl: string;
   proxyUrl: string;
-  disableCooling: boolean;
+  disableCooling: CoolingPolicy;
   rebuildMidSystemMessage: boolean;
   headers: Array<{ key: string; value: string }>;
   models: Array<{
@@ -79,6 +81,7 @@ const resolveAction = <T,>(action: SetStateAction<T>, prev: T): T =>
 
 const buildEmptyForm = (): ProviderFormState => ({
   apiKey: '',
+  weight: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -87,6 +90,7 @@ const buildEmptyForm = (): ProviderFormState => ({
   excludedModels: [],
   modelEntries: [{ name: '', alias: '' }],
   excludedText: '',
+  disableCooling: 'inherit',
 });
 
 const buildEmptyDraft = (): ClaudeEditDraft => ({

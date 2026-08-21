@@ -76,4 +76,29 @@ describe('consumeCodexRateLimitResetCredit', () => {
       redeem_request_id: expect.any(String),
     });
   });
+
+  it('posts the redeem request through the captured CPA scope', async () => {
+    mocks.request.mockResolvedValue({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '{}',
+      body: {},
+    });
+
+    await consumeCodexRateLimitResetCredit(
+      { name: 'codex-auth.json', type: 'codex', authIndex: 'auth-1' },
+      undefined,
+      {
+        apiBase: 'https://captured-cpa.example.test',
+        managementKey: 'captured-key',
+      }
+    );
+
+    expect(mocks.request.mock.calls[0]?.[1]).toMatchObject({
+      baseURL: 'https://captured-cpa.example.test/v0/management',
+      headers: { Authorization: 'Bearer captured-key' },
+      cpampScopedRequest: true,
+    });
+  });
 });

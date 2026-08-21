@@ -1,6 +1,9 @@
-import type { QuotaAccountDisplayMode } from '@/features/quota/quotaPageUiState';
 import type { AuthFileItem } from '@/types';
 import { maskSensitiveText } from '@/utils/format';
+
+export type QuotaAccountDisplayMode = 'masked' | 'full';
+
+export const DEFAULT_QUOTA_ACCOUNT_DISPLAY_MODE: QuotaAccountDisplayMode = 'full';
 
 const EMAIL_TOKEN_REGEX = /[^\s/\\()[\]{}<>:;"',]+@[^\s/\\()[\]{}<>:;"',]+/g;
 

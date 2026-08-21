@@ -192,6 +192,12 @@ export interface UsageDetail {
   authSnapshotAtMs?: number;
   auth_type?: string;
   authType?: string;
+  client_ip?: string;
+  clientIp?: string;
+  x_forwarded_for?: string;
+  xForwardedFor?: string;
+  user_agent?: string;
+  userAgent?: string;
   reasoning_effort?: string;
   reasoningEffort?: string;
   service_tier?: string;
@@ -205,6 +211,8 @@ export interface UsageDetail {
   executor_type?: string;
   executorType?: string;
   provider?: string;
+  analytics_model?: string;
+  analyticsModel?: string;
   requested_model?: string;
   requestedModel?: string;
   resolved_model?: string;
@@ -234,6 +242,7 @@ export interface UsageDetail {
   fail_body?: string;
   failBody?: string;
   __modelName?: string;
+  __requestedModel?: string;
   __resolvedModel?: string;
   __timestampMs?: number;
 }
@@ -316,6 +325,37 @@ const readDetailString = (value: unknown): string | undefined => {
   if (value === null || value === undefined) return undefined;
   const text = String(value).trim();
   return text || undefined;
+};
+
+const REASONING_MODEL_SUFFIXES = new Set([
+  'none',
+  'auto',
+  '-1',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+const isReasoningModelSuffix = (value: string): boolean => {
+  if (REASONING_MODEL_SUFFIXES.has(value.toLowerCase())) return true;
+  if (!/^[+-]?\d+$/.test(value)) return false;
+  try {
+    return BigInt(value) >= 0n && BigInt(value) <= 9_223_372_036_854_775_807n;
+  } catch {
+    return false;
+  }
+};
+
+export const normalizeAnalyticsModel = (value: unknown): string => {
+  const model = value === null || value === undefined ? '' : String(value);
+  const open = model.lastIndexOf('(');
+  if (open <= 0 || !model.endsWith(')')) return model;
+  const suffix = model.slice(open + 1, -1);
+  if (!isReasoningModelSuffix(suffix)) return model;
+  return model.slice(0, open) || model;
 };
 
 const readResponseHeaderMetadata = (value: unknown): UsageResponseHeaderMetadata | undefined =>
@@ -853,6 +893,11 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
         const latencyMs = extractLatencyMs(detailRaw);
         const ttftMs = extractTTFTMs(detailRaw);
         const failRaw = isRecord(detailRaw.fail) ? detailRaw.fail : {};
+        const requestedModel =
+          readDetailString(
+            detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
+          ) || modelName;
+        const analyticsModel = normalizeAnalyticsModel(requestedModel);
         details.push({
           timestamp,
           source: normalizeSourceWithCache(sourceCache, detailRaw.source),
@@ -888,9 +933,8 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           provider: readDetailString(
             detailRaw.provider ?? detailRaw.type ?? detailRaw.auth_type ?? detailRaw.authType
           ),
-          requested_model: readDetailString(
-            detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
-          ),
+          analytics_model: analyticsModel,
+          requested_model: requestedModel,
           resolved_model: readDetailString(detailRaw.resolved_model ?? detailRaw.resolvedModel),
           latency_ms: latencyMs ?? undefined,
           ttft_ms: ttftMs ?? undefined,
@@ -935,7 +979,8 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           ),
           header_trace_id: readDetailString(detailRaw.header_trace_id ?? detailRaw.headerTraceId),
           fail_body: readDetailString(detailRaw.fail_body ?? detailRaw.failBody ?? failRaw.body),
-          __modelName: modelName,
+          __modelName: analyticsModel,
+          __requestedModel: requestedModel,
           __resolvedModel: readDetailString(detailRaw.resolved_model ?? detailRaw.resolvedModel),
           __timestampMs: Number.isNaN(timestampMs) ? 0 : timestampMs,
         });
@@ -980,6 +1025,11 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
         const latencyMs = extractLatencyMs(detailRaw);
         const ttftMs = extractTTFTMs(detailRaw);
         const failRaw = isRecord(detailRaw.fail) ? detailRaw.fail : {};
+        const requestedModel =
+          readDetailString(
+            detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
+          ) || modelName;
+        const analyticsModel = normalizeAnalyticsModel(requestedModel);
         details.push({
           timestamp,
           source: normalizeSourceWithCache(sourceCache, detailRaw.source),
@@ -1015,9 +1065,8 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           provider: readDetailString(
             detailRaw.provider ?? detailRaw.type ?? detailRaw.auth_type ?? detailRaw.authType
           ),
-          requested_model: readDetailString(
-            detailRaw.requested_model ?? detailRaw.requestedModel ?? detailRaw.alias
-          ),
+          analytics_model: analyticsModel,
+          requested_model: requestedModel,
           resolved_model: readDetailString(detailRaw.resolved_model ?? detailRaw.resolvedModel),
           request_service_tier: readDetailString(
             detailRaw.request_service_tier ?? detailRaw.requestServiceTier
@@ -1062,7 +1111,8 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           ),
           header_trace_id: readDetailString(detailRaw.header_trace_id ?? detailRaw.headerTraceId),
           fail_body: readDetailString(detailRaw.fail_body ?? detailRaw.failBody ?? failRaw.body),
-          __modelName: modelName,
+          __modelName: analyticsModel,
+          __requestedModel: requestedModel,
           __resolvedModel: readDetailString(detailRaw.resolved_model ?? detailRaw.resolvedModel),
           __endpoint: endpoint,
           __endpointMethod: endpointMethod,
@@ -1110,6 +1160,7 @@ export function calculateCost(
     UsageDetail,
     | 'tokens'
     | '__modelName'
+    | '__requestedModel'
     | '__resolvedModel'
     | 'service_tier'
     | 'serviceTier'
@@ -1128,14 +1179,18 @@ export function calculateCost(
   modelPrices: Record<string, ModelPrice>
 ): number {
   const resolvedModel = detail.__resolvedModel || '';
-  const requestedModel = detail.__modelName || '';
+  const analyticsModel = detail.__modelName || '';
+  const requestedModel = detail.__requestedModel || analyticsModel;
   const resolvedPrice = resolvedModel ? modelPrices[resolvedModel] : undefined;
+  const analyticsPrice = analyticsModel ? modelPrices[analyticsModel] : undefined;
   const requestedPrice = requestedModel ? modelPrices[requestedModel] : undefined;
-  const behaviorModel = resolvedModel || requestedModel;
+  const behaviorModel = resolvedModel || analyticsModel || requestedModel;
   const behaviorFallback = getOfficialGpt56Price(behaviorModel);
   const officialCandidatePrice =
-    getOfficialGpt56Price(resolvedModel) || getOfficialGpt56Price(requestedModel);
-  const configuredPrice = resolvedPrice || requestedPrice;
+    getOfficialGpt56Price(resolvedModel) ||
+    getOfficialGpt56Price(analyticsModel) ||
+    getOfficialGpt56Price(requestedModel);
+  const configuredPrice = resolvedPrice || analyticsPrice || requestedPrice;
   const basePrice = configuredPrice
     ? {
         ...configuredPrice,
@@ -1488,14 +1543,17 @@ export function formatCompactNumber(value: number): string {
   return abs >= 1 ? num.toFixed(0) : num.toFixed(2);
 }
 
-export function formatUsd(value: number): string {
+export function formatUsd(value: number, fractionDigits = 2): string {
   const num = Number(value);
-  if (!Number.isFinite(num)) return '$0.00';
+  const digits = Number.isInteger(fractionDigits)
+    ? Math.max(0, Math.min(6, fractionDigits))
+    : 2;
+  if (!Number.isFinite(num)) return `$${(0).toFixed(digits)}`;
 
-  const fixed = num.toFixed(2);
+  const fixed = num.toFixed(digits);
   const parts = Number(fixed).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
   });
   return `$${parts}`;
 }

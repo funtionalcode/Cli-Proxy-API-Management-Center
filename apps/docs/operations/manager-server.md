@@ -241,16 +241,26 @@ USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 
 升级到使用无损 model 编码的版本时，Manager Server 会清空旧的 `usage_dashboard_hourly_rollups` 并重置 `dashboard_hourly` checkpoint。小时汇总启用时，后台 worker 会随后分批重建；禁用时则保持为空，直到重新启用。该格式迁移本身不会修改或删除 `usage_events`，也不会重置 account-history rollup；重建完成前相关长窗口查询会临时回退 raw events。新的编码会区分空 model、字面量 `-` 和包含前后空格的 model，避免合法的 `-` model 使整个查询回退。
 
-升级旧数据库时，Manager Server 在启动阶段执行 schema/metadata 变更和必要的派生 rollup 重置，但不扫描历史 `usage_events`。需要扫描历史事件的 cache accounting 修正会在 HTTP 服务开始监听后，以每批 1000 条的方式在后台执行。每批数据更新和 checkpoint 在同一个事务中提交，进程重启后会从最后成功的 event ID 继续，不会重新处理已经提交的批次。
+升级旧数据库时，Manager Server 在启动阶段执行 schema/metadata 变更和必要的派生 rollup 重置，但不扫描历史 `usage_events`。需要扫描历史事件的 cache accounting 修正会在 HTTP 服务开始监听后，以每批 1000 条的方式在后台执行。候选扫描、事件修正和过期派生行清理都使用有界事务并提交各阶段进度，进程重启后会从当前阶段继续，不会重新处理已经提交的批次；修正历史数据或清理旧 rollup 期间，读路径会回退到 raw events。
 
 迁移期间：
 
 - 新采集的事件会按新格式直接写入，不进入旧数据迁移目标范围。
 - account history 和 dashboard hourly rollup 暂停追平，避免基于半迁移数据生成错误汇总。
 - 日志输出迁移进度、完成状态或可重试错误。
-- `GET /status` 的 `dataMigration` 字段可查看 `status`、`lastEventId`、`targetEventId` 和 `processedRows`；该接口不返回底层迁移错误文本。
+- `GET /status` 的 `dataMigration` 字段可查看 `status`、`lastEventId`、`targetEventId`、`processedRows`、`changedRows` 和 `appliedRows`；该接口不返回底层迁移错误文本。
 
 迁移完成后，response metadata backfill 和两个 rollup worker 会自动继续。不要为了缩短迁移时间同时启动第二个 Manager Server 连接同一 SQLite 或消费同一 CPA 队列。
+
+历史 rollup 重建和过期行清理只会在 HTTP 监听可用后执行。启动阶段的索引准备严格受限：仅当目标表为空且索引名未被 parked 表保留时，Manager Server 才会创建缺失索引。非空表索引和被旧表占用的索引名会记录为 deferred，避免大表建索引延迟采集器启动。重建期间，查询使用当前完整 revision，尚未完成时回退到原始 `usage_events`；批次中断后，进程重启会从已提交 checkpoint 继续。这些任务不得修改或删除 `usage_events`。
+
+数据库升级后，旧的请求监控 FTS generation 可能在配对投影行完成分批在线清理后继续保留；非空表索引也可能被延后，旧 quota cooldown identity 索引则可能需要离线替换。极端情况下，单个旧 quota observation group 超过在线安全批次限制时，迁移会进入 failed 状态并记录 `offline cleanup required`，原始 snapshot fallback 仍继续可用。日志出现 deferred index preparation、`cleanup requires offline finalization` 或 `offline cleanup required` 时，先停止所有使用该数据库的 Manager Server 进程，再使用同版本二进制执行一次命令，完成后重启服务：
+
+```bash
+cpa-manager-plus cleanup-derived --db-path /data/usage.sqlite
+```
+
+原生安装若使用默认数据库路径，可直接运行 `cpa-manager-plus cleanup-derived`。Manager Server 在整个生命周期内都会持有 `<数据库绝对路径>.manager.lock` 操作系统锁；锁仍被持有时，该命令会直接拒绝执行。锁文件会持久保留，无需手工删除，应停止 Manager Server 进程后重试。符号链接别名会解析到同一个锁；具有多个硬链接的数据库会被拒绝，因为 SQLite WAL/SHM 侧车文件无法安全共享这些别名。离线维护前应备份 SQLite 和 `data.key`。该命令会创建延后的索引、替换过期派生索引、完成超大旧 quota observation group 的迁移并删除已过期的 FTS/投影 generation，不会修改 `usage_events`。
 
 完整的优化原因、实现阶段和 100k benchmark 数据见 [2026-07-10 性能优化报告](./performance-optimization-2026-07-10.md)。
 
@@ -269,7 +279,7 @@ USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 | `PUT /usage-service/config`                                      | 保存 CPAMP 配置，必要时重启采集器。                      |
 | `GET /usage-service/account-processing-policy`                   | 读取配额冷却、账号处理队列和自动禁用策略。               |
 | `PATCH /usage-service/account-processing-policy`                 | 更新账号处理策略；被环境变量锁定的字段不能通过接口修改。 |
-| `GET /usage-service/quota-cooldowns`                             | 读取当前活跃的配额冷却，用于认证文件页面展示恢复提示。   |
+| `GET /usage-service/quota-cooldowns`                             | 读取当前活跃的配额冷却，用于凭证管理展示恢复提示。       |
 | `POST /setup`                                                    | 首次 setup。                                             |
 | `GET /v0/management/usage`                                       | 兼容 usage data。                                        |
 | `GET /v0/management/usage/export`                                | 导出 JSONL usage events。                                |

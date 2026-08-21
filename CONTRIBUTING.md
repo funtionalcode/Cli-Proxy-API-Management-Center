@@ -13,7 +13,11 @@ work is integrated through `dev` before it is promoted to `main`.
 5. A maintainer promotes the tested repository `dev` branch to `main`.
 
 Do not open a feature or fix pull request directly to `main`. `main` accepts
-only a pull request from this repository's `dev` branch.
+only a pull request from this repository's `dev` branch. If a community or
+maintenance pull request targets another branch, repository automation changes
+its base to `dev`. Changing the base can alter the displayed diff and make
+existing review comments outdated, so select `dev` when opening the pull
+request instead of relying on the correction.
 
 ```bash
 git remote add upstream https://github.com/seakee/CPA-Manager-Plus.git

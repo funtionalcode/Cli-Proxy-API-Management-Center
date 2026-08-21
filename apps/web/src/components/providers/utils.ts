@@ -280,6 +280,7 @@ export const getOpenAIEntryKey = (entry: ApiKeyEntry, index: number): string => 
 
 export const buildApiKeyEntry = (input?: Partial<ApiKeyEntry>): ApiKeyEntry => ({
   apiKey: input?.apiKey ?? '',
+  weight: input?.weight,
   proxyUrl: input?.proxyUrl ?? '',
   authIndex: input?.authIndex ?? '',
   headers: input?.headers ?? {},

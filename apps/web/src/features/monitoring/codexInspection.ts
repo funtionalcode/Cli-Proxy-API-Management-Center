@@ -1,4 +1,5 @@
-import { authFilesApi } from '@/services/api/authFiles';
+import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
+import { createScopedApiRequestConfig } from '@/services/api/client';
 import type { TFunction } from 'i18next';
 import { getApiCallErrorMessage } from '@/services/api/apiCall';
 import type { AuthFileItem, Config } from '@/types';
@@ -151,6 +152,8 @@ export interface CodexInspectionQuotaWindow {
   labelParams?: Record<string, string | number>;
   usedPercent: number | null;
   resetLabel: string;
+  resetAtMs?: number | null;
+  resetAccuracy?: 'exact' | 'derived' | 'estimated' | 'unknown';
   limitWindowSeconds: number | null;
 }
 
@@ -164,6 +167,7 @@ export interface CodexInspectionResultItem extends CodexInspectionAccount {
   error: string;
   planType?: string | null;
   quotaWindows?: CodexInspectionQuotaWindow[];
+  quotaInventoryObserved?: boolean;
   errorKind?: string;
   errorDetail?: string;
   actionHandled?: boolean;
@@ -400,6 +404,11 @@ export const createCodexInspectionSession = ({
   deferCompletionLog = false,
 }: CreateCodexInspectionSessionOptions): CodexInspectionSession => {
   const resolvedSettings = resolveCodexInspectionSettings(config, apiBase, managementKey, settings);
+  const requestScope: AuthFilesApiRequestScope = {
+    apiBase: resolvedSettings.baseUrl,
+    managementKey: resolvedSettings.token,
+  };
+  const requestConfig = createScopedApiRequestConfig(requestScope);
   const translate = t ?? identityT;
   const sessionId = `codex-inspection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -528,8 +537,8 @@ export const createCodexInspectionSession = ({
 
       void (
         account.provider === 'xai'
-          ? inspectSingleXaiAccount(account, resolvedSettings, onLog, translate)
-          : inspectSingleAccount(account, resolvedSettings, onLog, translate)
+          ? inspectSingleXaiAccount(account, resolvedSettings, onLog, translate, requestConfig)
+          : inspectSingleAccount(account, resolvedSettings, onLog, translate, requestConfig)
       )
         .then((inspectionResult) => {
           resultMap.set(inspectionResult.key, inspectionResult);
@@ -597,7 +606,7 @@ export const createCodexInspectionSession = ({
       }
     );
 
-    const authFilesResponse = await authFilesApi.list();
+    const authFilesResponse = await authFilesApi.list(requestScope);
     files = Array.isArray(authFilesResponse.files) ? authFilesResponse.files : [];
     const accounts = files.map(toInspectionAccount);
     const connectionFingerprint = createCodexInspectionConnectionFingerprint(
@@ -921,7 +930,7 @@ export const resolveCodexInspectionAutoActionPlan = (
           buildAutoActionPreflightOutcome(
             item,
             'needs_review',
-            '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理'
+            '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到凭证管理中手动处理'
           )
         )
       );

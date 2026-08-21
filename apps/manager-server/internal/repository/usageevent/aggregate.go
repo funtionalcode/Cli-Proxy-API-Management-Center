@@ -7,6 +7,12 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
+)
+
+var (
+	requestedModelExpr = usageidentity.SQLEffectiveRequestedModelExpression("model", "requested_model")
+	analyticsModelExpr = usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")
 )
 
 func pricingBandedUsageEventsCTEWithBaseFilter(baseFilter string) string {
@@ -17,7 +23,9 @@ func pricingBandedUsageEventsCTEWithBaseFilter(baseFilter string) string {
 	return fmt.Sprintf(`with pricing_base_events as (
 	select
 		usage_events.*,
-		coalesce(nullif(resolved_model, ''), model) as billing_model_value,
+		%s as requested_model_value,
+		%s as analytics_model_value,
+		coalesce(nullif(resolved_model, ''), %s) as billing_model_value,
 		coalesce(normalized_total_input_tokens, input_tokens, 0) as normalized_input_tokens_value
 	from usage_events%s
 ), pricing_resolved_events as (
@@ -25,12 +33,14 @@ func pricingBandedUsageEventsCTEWithBaseFilter(baseFilter string) string {
 		pricing_base_events.*,
 		case
 			when billing_price.model is not null then billing_model_value
-			when display_price.model is not null then pricing_base_events.model
+			when analytics_price.model is not null then pricing_base_events.analytics_model_value
+			when display_price.model is not null then pricing_base_events.requested_model_value
 			else billing_model_value
 		end as pricing_model_value
 	from pricing_base_events
 	left join model_prices billing_price on billing_price.model = pricing_base_events.billing_model_value
-	left join model_prices display_price on display_price.model = pricing_base_events.model
+	left join model_prices analytics_price on analytics_price.model = pricing_base_events.analytics_model_value
+	left join model_prices display_price on display_price.model = pricing_base_events.requested_model_value
 ), banded_usage_events as (
 	select
 		pricing_resolved_events.*,
@@ -41,7 +51,7 @@ func pricingBandedUsageEventsCTEWithBaseFilter(baseFilter string) string {
 				and pricing_resolved_events.normalized_input_tokens_value > tier.threshold_tokens
 		), %d) as context_threshold_tokens_value
 	from pricing_resolved_events
-)`, whereClause, model.ModelPriceBaseContextThreshold)
+	)`, requestedModelExpr, analyticsModelExpr, analyticsModelExpr, whereClause, model.ModelPriceBaseContextThreshold)
 }
 
 var pricingBandedUsageEventsCTE = pricingBandedUsageEventsCTEWithBaseFilter("")
@@ -163,15 +173,15 @@ func (r *repository) AggregateBetween(ctx context.Context, fromMs, toMs int64) (
 
 var topModelsSQL = fmt.Sprintf(pricingBandedUsageEventsCTEWithBaseFilter("timestamp_ms >= ? and timestamp_ms < ?")+`, top_models as (
 	select
-		model,
+		analytics_model_value as model,
 		count(*) as model_calls
 	from banded_usage_events
-	group by model
+	group by analytics_model_value
 	order by model_calls desc
 	limit ?
 )
 select
-	e.model,
+	e.analytics_model_value as model,
 	e.billing_model_value as billing_model,
 	e.pricing_model_value,
 	e.context_threshold_tokens_value,
@@ -191,9 +201,9 @@ select
 	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.cache_creation_tokens else 0 end), 0),
 	coalesce(sum(e.total_tokens), 0)
 from banded_usage_events e
-join top_models t on t.model = e.model
-group by e.model, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
-order by max(t.model_calls) desc, e.model, calls desc`, usage.LongContextInputTokenThreshold)
+join top_models t on t.model = e.analytics_model_value
+group by e.analytics_model_value, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
+order by max(t.model_calls) desc, e.analytics_model_value, calls desc`, usage.LongContextInputTokenThreshold)
 
 // TopModelsBetween returns the most active models ordered by call count.
 func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, limit int) ([]ModelStat, error) {
@@ -239,7 +249,7 @@ func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, l
 
 var modelStatsSQL = fmt.Sprintf(pricingBandedUsageEventsCTE+`
 select
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -260,7 +270,7 @@ select
 	coalesce(sum(total_tokens), 0)
 from banded_usage_events
 where timestamp_ms >= ? and timestamp_ms < ?
-group by model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by calls desc`, usage.LongContextInputTokenThreshold)
 
 // ModelStatsBetween returns per-model totals for all models in a window.
@@ -302,8 +312,8 @@ func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) 
 	return stats, rows.Err()
 }
 
-const recentFailuresSQL = `select
-	timestamp_ms, model,
+var recentFailuresSQL = `select
+	timestamp_ms, ` + analyticsModelExpr + ` as model,
 	coalesce(api_key_hash, ''),
 	coalesce(source, ''),
 	coalesce(source_hash, ''),

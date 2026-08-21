@@ -51,7 +51,7 @@ const toLocalInspectionResult = (
   state: item.state,
   action: item.action,
   actionReason: item.actionReason,
-  actionStatus: item.actionHandled ? 'executed' : 'pending',
+  actionStatus: item.actionHandled ? 'success' : 'pending',
   statusCode: item.statusCode ?? undefined,
   usedPercent: item.usedPercent ?? undefined,
   isQuota: item.isQuota,
@@ -59,6 +59,7 @@ const toLocalInspectionResult = (
   error: item.error,
   planType: item.planType,
   quotaWindows: item.quotaWindows,
+  quotaInventoryObserved: item.quotaInventoryObserved,
   errorKind: item.errorKind,
   errorDetail: item.errorDetail,
   createdAtMs,
@@ -111,13 +112,18 @@ export const createStoredLocalCredentialInspectionSnapshot = (
 export const createServerCredentialInspectionSnapshot = (
   detail: CodexInspectionRunDetail,
   runs: CodexInspectionRun[]
-): CredentialInspectionSnapshot => ({
-  source: 'server',
-  completedAtMs:
-    detail.run.finishedAtMs || detail.run.updatedAtMs || detail.run.startedAtMs || Date.now(),
-  results: detail.results.map((item) => ({ ...item, inspectionSource: 'server' })),
-  runs,
-});
+): CredentialInspectionSnapshot | null => {
+  if (!isCompletedCredentialInspectionRun(detail.run)) {
+    return null;
+  }
+
+  return {
+    source: 'server',
+    completedAtMs: detail.run.finishedAtMs,
+    results: detail.results.map((item) => ({ ...item, inspectionSource: 'server' })),
+    runs,
+  };
+};
 
 export const selectLatestCredentialInspectionSnapshot = (
   snapshots: Array<CredentialInspectionSnapshot | null | undefined>
@@ -128,5 +134,51 @@ export const selectLatestCredentialInspectionSnapshot = (
     return latest;
   }, null);
 
-export const isCompletedCredentialInspectionRun = (run: CodexInspectionRun): boolean =>
-  typeof run.finishedAtMs === 'number' && run.finishedAtMs > 0;
+export const isCompletedCredentialInspectionRun = (
+  run: CodexInspectionRun
+): run is CodexInspectionRun & { finishedAtMs: number } =>
+  run.status.trim().toLowerCase() === 'completed' &&
+  typeof run.finishedAtMs === 'number' &&
+  run.finishedAtMs > 0;
+
+const isCredentialMutationAction = (action: string | undefined): boolean =>
+  action === 'delete' || action === 'disable' || action === 'enable';
+
+export const getServerCredentialMutationSyncKey = (
+  snapshot: CredentialInspectionSnapshot,
+  options: { requireLatestCompletedRun?: boolean } = {}
+): string | null => {
+  if (snapshot.source !== 'server') return null;
+
+  const successfulMutations = snapshot.results
+    .filter((result) => {
+      if (result.actionStatus !== 'success') return false;
+      return isCredentialMutationAction(result.executedAction || result.action);
+    })
+    .map((result) => `${result.runId}:${result.id}:${result.executedAction || result.action}`)
+    .sort();
+  if (successfulMutations.length === 0) return null;
+
+  const runIds = new Set(
+    snapshot.results
+      .filter(
+        (result) =>
+          result.actionStatus === 'success' &&
+          isCredentialMutationAction(result.executedAction || result.action)
+      )
+      .map((result) => result.runId)
+  );
+  if (runIds.size !== 1) return null;
+
+  const runId = runIds.values().next().value;
+  if (typeof runId !== 'number') return null;
+  const run = snapshot.runs.find((item) => item.id === runId);
+  if (!run || !isCompletedCredentialInspectionRun(run)) return null;
+
+  if (options.requireLatestCompletedRun !== false) {
+    const latestCompletedRun = snapshot.runs.find(isCompletedCredentialInspectionRun);
+    if (!latestCompletedRun || latestCompletedRun.id !== runId) return null;
+  }
+
+  return [runId, run.finishedAtMs ?? 0, successfulMutations.join(',')].join('\u001f');
+};

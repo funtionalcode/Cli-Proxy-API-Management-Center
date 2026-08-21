@@ -394,10 +394,15 @@ type EventPageItem struct {
 	TimestampMS            int64
 	Timestamp              string
 	Model                  string
+	AnalyticsModel         string
+	RequestedModel         string
 	ResolvedModel          string
 	Endpoint               string
 	Method                 string
 	Path                   string
+	ClientIP               string
+	XForwardedFor          string
+	UserAgent              string
 	AuthIndex              string
 	Source                 string
 	SourceHash             string
@@ -503,7 +508,7 @@ func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsF
 	where, args := analyticsWhere(filter)
 	query := pricingBandedUsageEventsCTE + `
 select
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -523,21 +528,21 @@ select
 	coalesce(sum(` + longCacheCreationExpr + `), 0),
 	coalesce(sum(total_tokens), 0)
 from banded_usage_events ` + where + `
-group by model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by calls desc`
 	if limit > 0 {
 		query = pricingBandedUsageEventsCTE + `, filtered as (
 	select * from banded_usage_events ` + where + `
 ),
 top_models as (
-	select model, count(*) as model_calls
+	select analytics_model_value as model, count(*) as model_calls
 	from filtered
-	group by model
+	group by analytics_model_value
 	order by model_calls desc
 	limit ?
 )
 select
-	f.model,
+	f.analytics_model_value as model,
 	f.billing_model_value as billing_model,
 	f.pricing_model_value,
 	f.context_threshold_tokens_value,
@@ -557,9 +562,9 @@ select
 	coalesce(sum(` + longCacheCreationFExpr + `), 0),
 	coalesce(sum(f.total_tokens), 0)
 from filtered f
-join top_models t on t.model = f.model
-group by f.model, billing_model, f.pricing_model_value, f.context_threshold_tokens_value, coalesce(f.service_tier, '')
-order by max(t.model_calls) desc, f.model, calls desc`
+join top_models t on t.model = f.analytics_model_value
+group by f.analytics_model_value, billing_model, f.pricing_model_value, f.context_threshold_tokens_value, coalesce(f.service_tier, '')
+order by max(t.model_calls) desc, f.analytics_model_value, calls desc`
 		args = append(args, limit)
 	}
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -604,7 +609,7 @@ func (r *repository) TimelineWithFilter(ctx context.Context, filter AnalyticsFil
 	query := fmt.Sprintf(pricingBandedUsageEventsCTE+`
 select
 	timestamp_ms,
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -619,7 +624,7 @@ select
 	total_tokens,
 	latency_ms
 from banded_usage_events %s
-order by timestamp_ms, model`, where)
+order by timestamp_ms, analytics_model_value`, where)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -737,7 +742,7 @@ func (r *repository) APIKeyTimelineWithFilter(ctx context.Context, filter Analyt
 select
 	timestamp_ms,
 	coalesce(api_key_hash, ''),
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -752,7 +757,7 @@ select
 	total_tokens,
 	latency_ms
 from banded_usage_events %s
-order by timestamp_ms, api_key_hash, model`, where)
+order by timestamp_ms, api_key_hash, analytics_model_value`, where)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1067,7 +1072,7 @@ func (r *repository) FilterOptionValuesWithFilter(ctx context.Context, filter An
 }
 
 func (r *repository) FilterSelectorValuesWithFilter(ctx context.Context, filter AnalyticsFilter) (FilterSelectorValues, error) {
-	models, err := r.distinctFilterValues(ctx, filter, "coalesce(nullif(model, ''), '')")
+	models, err := r.distinctFilterValues(ctx, filter, usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model"))
 	if err != nil {
 		return FilterSelectorValues{}, err
 	}
@@ -1239,7 +1244,7 @@ func (r *repository) HeatmapWithFilter(ctx context.Context, filter AnalyticsFilt
 	rows, err := r.db.QueryContext(ctx, pricingBandedUsageEventsCTE+`
 select
 	timestamp_ms,
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -1374,7 +1379,7 @@ select
 	coalesce(max(account_snapshot), ''),
 	coalesce(max(auth_label_snapshot), ''),
 	coalesce(nullif(max(auth_provider_snapshot), ''), max(provider), ''),
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -1396,7 +1401,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by auth_index, model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by auth_index, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -1497,7 +1502,7 @@ select
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -1521,7 +1526,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -1596,7 +1601,7 @@ func (r *repository) AccountWindowModelStats(ctx context.Context, windows []Acco
 )
 select
 	w.request_index,
-	e.model,
+		e.analytics_model_value as model,
 	e.billing_model_value as billing_model,
 	e.pricing_model_value,
 	e.context_threshold_tokens_value,
@@ -1621,7 +1626,7 @@ from window_targets w
 		on e.timestamp_ms >= w.from_ms
 		and e.timestamp_ms < w.to_ms
 		and `+usageidentity.SQLAccountKeyExpression("e")+` = w.account_key
-group by w.request_index, e.model, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
+	group by w.request_index, e.analytics_model_value, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
 order by w.request_index, max(e.timestamp_ms) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -1690,7 +1695,7 @@ select
 	coalesce(max(auth_label_snapshot), ''),
 	coalesce(nullif(max(auth_provider_snapshot), ''), max(provider), ''),
 	coalesce(max(auth_project_id_snapshot), ''),
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -1713,7 +1718,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by credential_id, auth_file_snapshot, auth_index, source_hash, model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+	group by credential_id, auth_file_snapshot, auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -1813,7 +1818,7 @@ select
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
 	coalesce(auth_project_id_snapshot, ''),
-	model,
+		analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -1828,7 +1833,7 @@ select
 	total_tokens,
 	latency_ms
 from banded_usage_events %s
-order by timestamp_ms, credential_id, model`, where)
+	order by timestamp_ms, credential_id, analytics_model_value`, where)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1984,7 +1989,7 @@ func (r *repository) credentialTimelineHourlyWithFilter(ctx context.Context, fil
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
 	coalesce(auth_project_id_snapshot, ''),
-	model,
+		analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -2011,8 +2016,8 @@ group by ` + bucketExpr + `, credential_id,
 	coalesce(auth_file_snapshot, ''), coalesce(auth_index, ''), coalesce(source, ''), coalesce(source_hash, ''),
 	coalesce(account_snapshot, ''), coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''), coalesce(auth_project_id_snapshot, ''),
-	model, billing_model, pricing_model_value, context_threshold_tokens_value, service_tier
-order by min(timestamp_ms), credential_id, model`
+		analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, service_tier
+	order by min(timestamp_ms), credential_id, analytics_model_value`
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
@@ -2194,7 +2199,7 @@ select
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
-	model,
+	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
 	context_threshold_tokens_value,
@@ -2217,7 +2222,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -2277,7 +2282,7 @@ func (r *repository) TaskBucketsWithFilter(ctx context.Context, filter Analytics
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
 	coalesce(auth_index, ''),
-	coalesce(group_concat(distinct model), ''),
+		coalesce(group_concat(distinct `+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+`), ''),
 	coalesce(group_concat(distinct endpoint), ''),
 		coalesce(sum(`+normalizedInputExpr+`), 0),
 	coalesce(sum(output_tokens), 0),
@@ -2336,7 +2341,7 @@ func (r *repository) RecentFailuresWithFilter(ctx context.Context, filter Analyt
 	args = append(args, limit)
 	rows, err := r.db.QueryContext(ctx, `select
 	timestamp_ms,
-	model,
+		`+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as model,
 	coalesce(api_key_hash, ''),
 	coalesce(source, ''),
 	coalesce(source_hash, ''),
@@ -2437,12 +2442,17 @@ func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsF
 	coalesce(request_id, ''),
 	event_hash,
 	timestamp_ms,
-	timestamp,
-	model,
-	coalesce(resolved_model, ''),
+		timestamp,
+		model,
+		`+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as analytics_model,
+		coalesce(nullif(requested_model, ''), model, ''),
+		coalesce(resolved_model, ''),
 	coalesce(endpoint, ''),
 	coalesce(method, ''),
 	coalesce(path, ''),
+	coalesce(client_ip, ''),
+	coalesce(x_forwarded_for, ''),
+	coalesce(user_agent, ''),
 	coalesce(auth_index, ''),
 	coalesce(source, ''),
 	coalesce(source_hash, ''),
@@ -2494,10 +2504,15 @@ limit ?`, args...)
 			&item.TimestampMS,
 			&item.Timestamp,
 			&item.Model,
+			&item.AnalyticsModel,
+			&item.RequestedModel,
 			&item.ResolvedModel,
 			&item.Endpoint,
 			&item.Method,
 			&item.Path,
+			&item.ClientIP,
+			&item.XForwardedFor,
+			&item.UserAgent,
 			&item.AuthIndex,
 			&item.Source,
 			&item.SourceHash,
@@ -2694,11 +2709,11 @@ func (r *repository) ActiveDaysWithFilter(ctx context.Context, filter AnalyticsF
 
 func (r *repository) ZeroTokenModelsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]string, error) {
 	where, args := analyticsWhere(filter)
-	rows, err := r.db.QueryContext(ctx, `select distinct coalesce(model, '')
+	rows, err := r.db.QueryContext(ctx, `select distinct `+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as analytics_model
 from usage_events `+where+`
 and total_tokens = 0
 and failed = 0
-order by model`, args...)
+order by analytics_model`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2728,7 +2743,11 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 		like := "%" + query + "%"
 		searchConditions := make([]string, 0, len(analyticsSearchTextColumns)+1)
 		for _, column := range analyticsSearchTextColumns {
-			searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", column))
+			expression := column
+			if column == "analytics_model" {
+				expression = usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")
+			}
+			searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", expression))
 			args = append(args, like)
 		}
 		if hash != "" {
@@ -2748,7 +2767,7 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 		conditions = append(conditions, fmt.Sprintf("coalesce(%s, '') in (select value from json_each(?))", column))
 		args = append(args, encodeJSONFilterValues(normalized))
 	}
-	addInCondition("model", filter.Models)
+	addInCondition(usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model"), normalizeModelFilterValues(filter.Models))
 	addProviderCondition(filter.Providers, &conditions, &args)
 	addAccountCondition(filter.Accounts, &conditions, &args)
 	addInCondition(credentialIDExpr, filter.CredentialIDs)
@@ -2846,6 +2865,18 @@ func normalizeFilterValues(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func normalizeModelFilterValues(values []string) []string {
+	models := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		models = append(models, usageidentity.AnalyticsModel(trimmed))
+	}
+	return normalizeFilterValues(models)
 }
 
 func normalizeLowerFilterValues(values []string) []string {

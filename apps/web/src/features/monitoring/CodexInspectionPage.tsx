@@ -73,6 +73,7 @@ import {
   type CredentialInspectionSnapshot,
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
+import type { AuthFilesApiRequestScope } from '@/services/api/authFiles';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import styles from './CodexInspectionPage.module.scss';
 
@@ -80,7 +81,10 @@ interface CodexInspectionPageProps {
   embedded?: boolean;
   modeControl?: ReactNode;
   onSnapshotChange?: (snapshot: CredentialInspectionSnapshot) => void;
-  onCredentialsChanged?: () => void | Promise<void>;
+  onCredentialsChanged?: (
+    target?: CodexReauthTarget | null,
+    snapshot?: CredentialInspectionSnapshot | null
+  ) => void | Promise<void>;
   onOpenCredential?: (target: CredentialInspectionTarget) => void;
 }
 
@@ -101,6 +105,10 @@ export function CodexInspectionPage({
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const connectionFingerprint = useMemo(
     () => createCodexInspectionConnectionFingerprint(apiBase, managementKey),
+    [apiBase, managementKey]
+  );
+  const authFilesRequestScope = useMemo(
+    () => ({ apiBase, managementKey }),
     [apiBase, managementKey]
   );
   const initialLastRunRef = useRef<ReturnType<typeof loadCodexInspectionLastRun> | undefined>(
@@ -151,6 +159,8 @@ export function CodexInspectionPage({
   const logCounterRef = useRef(initialLastRun?.logs.length ?? 0);
   const sessionRef = useRef<CodexInspectionSession | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  const activeConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
+  const executionGenerationRef = useRef(0);
   const restoredConnectionFingerprintRef = useRef<string | null>(connectionFingerprint);
   const logListRef = useRef<HTMLDivElement | null>(null);
   const executeItemsRef = useRef<
@@ -160,6 +170,7 @@ export function CodexInspectionPage({
           resultOverride?: CodexInspectionRunResult | null;
           source?: ExecutionTriggerSource;
           connectionFingerprint?: string | null;
+          requestScope?: AuthFilesApiRequestScope;
           preflightOutcomes?: CodexInspectionExecutionOutcome[];
         }
       ) => Promise<void>)
@@ -169,15 +180,18 @@ export function CodexInspectionPage({
     () => logs.map((entry) => toLocalInspectionLogViewEntry(entry, t)),
     [logs, t]
   );
+  activeConnectionFingerprintRef.current = connectionFingerprint;
 
   useEffect(() => {
     if (restoredConnectionFingerprintRef.current === connectionFingerprint) return;
     restoredConnectionFingerprintRef.current = connectionFingerprint;
 
+    executionGenerationRef.current += 1;
     activeSessionIdRef.current = null;
     sessionRef.current?.stop();
     sessionRef.current = null;
     setExecuting(false);
+    setCodexReauthTarget(null);
 
     const restored = connectionFingerprint
       ? loadCodexInspectionLastRun(connectionFingerprint)
@@ -231,10 +245,11 @@ export function CodexInspectionPage({
   useEffect(() => {
     if (!onSnapshotChange || !result || result.finishedAt <= 0) return;
     if (runStatus === 'running' || runStatus === 'paused') return;
+    if (!connectionFingerprint || resultConnectionFingerprint !== connectionFingerprint) return;
     onSnapshotChange(
       createLocalCredentialInspectionSnapshot(result, result.finishedAt || Date.now())
     );
-  }, [onSnapshotChange, result, runStatus]);
+  }, [connectionFingerprint, onSnapshotChange, result, resultConnectionFingerprint, runStatus]);
 
   const appendLog = useCallback(
     (level: CodexInspectionLogLevel, message: string, detail?: CodexInspectionLogDetail) => {
@@ -322,6 +337,7 @@ export function CodexInspectionPage({
 
   useEffect(() => {
     return () => {
+      executionGenerationRef.current += 1;
       activeSessionIdRef.current = null;
       sessionRef.current?.stop();
       sessionRef.current = null;
@@ -334,13 +350,17 @@ export function CodexInspectionPage({
       promise: Promise<CodexInspectionRunResult>,
       autoActionMode: CodexInspectionAutoActionMode,
       autoRecoverEnabled: boolean,
-      runConnectionFingerprint: string | null
+      runConnectionFingerprint: string | null,
+      runRequestScope: AuthFilesApiRequestScope
     ) => {
       const sessionId = session.id;
+      const isCurrentSession = () =>
+        activeSessionIdRef.current === sessionId &&
+        activeConnectionFingerprintRef.current === runConnectionFingerprint;
 
       void promise
         .then((nextResult) => {
-          if (activeSessionIdRef.current !== sessionId) return;
+          if (!isCurrentSession()) return;
           const nextSuggestedResults = nextResult.results.filter(isSuggestedAction);
           const autoPlan = resolveCodexInspectionAutoActionPlan(
             autoActionMode,
@@ -370,6 +390,7 @@ export function CodexInspectionPage({
                 resultOverride: nextResult,
                 source: 'auto',
                 connectionFingerprint: runConnectionFingerprint,
+                requestScope: runRequestScope,
                 preflightOutcomes: autoPlan.preflightOutcomes,
               });
               return;
@@ -423,7 +444,7 @@ export function CodexInspectionPage({
           showNotification(noActionsMessage, 'success');
         })
         .catch((error) => {
-          if (activeSessionIdRef.current !== sessionId) return;
+          if (!isCurrentSession()) return;
           if (isCodexInspectionStoppedError(error)) {
             setRunStatus('idle');
             setProgress(createIdleProgressSnapshot());
@@ -462,6 +483,7 @@ export function CodexInspectionPage({
 
       const autoActionMode = options?.autoActionMode ?? inspectionSettings.autoActionMode;
       const runConnectionFingerprint = connectionFingerprint;
+      const runRequestScope = { apiBase, managementKey };
 
       if (!preserveLogs) {
         setLogs([]);
@@ -486,11 +508,21 @@ export function CodexInspectionPage({
         t,
         deferCompletionLog: true,
         onLog: (level, message, detail) => {
-          if (activeSessionIdRef.current !== session.id) return;
+          if (
+            activeSessionIdRef.current !== session.id ||
+            activeConnectionFingerprintRef.current !== runConnectionFingerprint
+          ) {
+            return;
+          }
           appendLog(level, message, detail);
         },
         onProgress: (snapshot) => {
-          if (activeSessionIdRef.current !== session.id) return;
+          if (
+            activeSessionIdRef.current !== session.id ||
+            activeConnectionFingerprintRef.current !== runConnectionFingerprint
+          ) {
+            return;
+          }
           setProgress(snapshot);
           if (snapshot.status === 'running') {
             setRunStatus('running');
@@ -501,7 +533,12 @@ export function CodexInspectionPage({
           }
         },
         onResultsChange: (nextResult) => {
-          if (activeSessionIdRef.current !== session.id) return;
+          if (
+            activeSessionIdRef.current !== session.id ||
+            activeConnectionFingerprintRef.current !== runConnectionFingerprint
+          ) {
+            return;
+          }
           setResult(nextResult);
           setResultConnectionFingerprint(runConnectionFingerprint);
         },
@@ -515,7 +552,8 @@ export function CodexInspectionPage({
         session.start(),
         autoActionMode,
         inspectionSettings.autoRecoverEnabled,
-        runConnectionFingerprint
+        runConnectionFingerprint,
+        runRequestScope
       );
     },
     [
@@ -568,6 +606,7 @@ export function CodexInspectionPage({
         resultOverride?: CodexInspectionRunResult | null;
         source?: ExecutionTriggerSource;
         connectionFingerprint?: string | null;
+        requestScope?: AuthFilesApiRequestScope;
         preflightOutcomes?: CodexInspectionExecutionOutcome[];
       }
     ) => {
@@ -576,6 +615,7 @@ export function CodexInspectionPage({
       if (!currentResult) return;
       const currentResultFingerprint =
         options?.connectionFingerprint ?? resultConnectionFingerprint;
+      const requestScope = options?.requestScope ?? { apiBase, managementKey };
       if (!connectionFingerprint || currentResultFingerprint !== connectionFingerprint) {
         showNotification(t('notification.connection_required'), 'warning');
         return;
@@ -589,6 +629,11 @@ export function CodexInspectionPage({
 
       setExecuting(true);
       setLogsCollapsed(false);
+      const executionGeneration = executionGenerationRef.current + 1;
+      executionGenerationRef.current = executionGeneration;
+      const isCurrentExecution = () =>
+        executionGenerationRef.current === executionGeneration &&
+        activeConnectionFingerprintRef.current === currentResultFingerprint;
 
       try {
         const execution = await executeCodexInspectionActions({
@@ -597,11 +642,15 @@ export function CodexInspectionPage({
           referenceItems: currentResult.results,
           previousFiles: currentResult.files,
           connectionFingerprint: currentResultFingerprint,
+          requestScope,
           source,
           preflightOutcomes,
-          onLog: appendLog,
+          onLog: (level, message, detail) => {
+            if (isCurrentExecution()) appendLog(level, message, detail);
+          },
           t,
         });
+        if (!isCurrentExecution()) return;
 
         const outcomeSummary = execution.outcomes.reduce(
           (summary, outcome) => {
@@ -615,6 +664,21 @@ export function CodexInspectionPage({
               message: execution.refreshError,
             })
           : '';
+        const nextResult = applyCodexInspectionExecutionResult(currentResult, execution);
+        setResult(nextResult);
+        setResultConnectionFingerprint(currentResultFingerprint);
+        onSnapshotChange?.(createLocalCredentialInspectionSnapshot(nextResult, Date.now()));
+        let synchronizationWarning = '';
+        try {
+          await onCredentialsChanged?.();
+        } catch (error: unknown) {
+          if (!isCurrentExecution()) return;
+          const message =
+            error instanceof Error ? error.message : String(error || t('common.unknown_error'));
+          synchronizationWarning = `${t('notification.refresh_failed')}: ${message}`;
+        }
+        if (!isCurrentExecution()) return;
+
         if (source === 'manual') {
           if (
             outcomeSummary.failed > 0 ||
@@ -627,20 +691,19 @@ export function CodexInspectionPage({
               review: outcomeSummary.needs_review,
               failed: outcomeSummary.failed,
             });
+            const warnings = [failureSummary, refreshWarning, synchronizationWarning].filter(
+              Boolean
+            );
+            showNotification(warnings.join('；'), 'warning');
+          } else if (refreshWarning || synchronizationWarning) {
             showNotification(
-              refreshWarning ? `${failureSummary}；${refreshWarning}` : failureSummary,
+              [refreshWarning, synchronizationWarning].filter(Boolean).join('；'),
               'warning'
             );
-          } else if (refreshWarning) {
-            showNotification(refreshWarning, 'warning');
           } else {
             showNotification(t('monitoring.codex_inspection_execute_success'), 'success');
           }
         }
-        const nextResult = applyCodexInspectionExecutionResult(currentResult, execution);
-        setResult(nextResult);
-        setResultConnectionFingerprint(currentResultFingerprint);
-        void onCredentialsChanged?.();
 
         if (source === 'auto') {
           const successCount = outcomeSummary.success;
@@ -653,14 +716,15 @@ export function CodexInspectionPage({
             failed: failedCount,
             remaining: remainingCount,
           });
-          const summaryMessage = refreshWarning
-            ? `${baseSummaryMessage}；${refreshWarning}`
-            : baseSummaryMessage;
+          const summaryMessage = [baseSummaryMessage, refreshWarning, synchronizationWarning]
+            .filter(Boolean)
+            .join('；');
           const hasExecutionWarning =
             failedCount > 0 ||
             outcomeSummary.needs_review > 0 ||
             remainingCount > 0 ||
-            Boolean(execution.refreshError);
+            Boolean(execution.refreshError) ||
+            Boolean(synchronizationWarning);
           appendLog(hasExecutionWarning ? 'warning' : 'success', summaryMessage, {
             successCount,
             failedCount,
@@ -677,11 +741,14 @@ export function CodexInspectionPage({
               })),
             refreshFailed: Boolean(execution.refreshError),
             ...(execution.refreshError ? { refreshError: execution.refreshError } : {}),
+            synchronizationFailed: Boolean(synchronizationWarning),
+            ...(synchronizationWarning ? { synchronizationWarning } : {}),
           });
           showNotification(summaryMessage, hasExecutionWarning ? 'warning' : 'success');
           appendInspectionCompletionLog(nextResult, execution.outcomes, execution.refreshError);
         }
       } catch (error) {
+        if (!isCurrentExecution()) return;
         const message =
           error instanceof Error ? error.message : String(error || t('common.unknown_error'));
         const requestedCount = targets.length + preflightOutcomes.length;
@@ -736,14 +803,17 @@ export function CodexInspectionPage({
         }
         showNotification(failureMessage, 'error');
       } finally {
-        setExecuting(false);
+        if (isCurrentExecution()) setExecuting(false);
       }
     },
     [
       appendInspectionCompletionLog,
       appendLog,
+      apiBase,
       connectionFingerprint,
+      managementKey,
       onCredentialsChanged,
+      onSnapshotChange,
       result,
       resultConnectionFingerprint,
       showNotification,
@@ -795,6 +865,7 @@ export function CodexInspectionPage({
 
     const targets = executableResults;
     const counts = countActions(targets);
+    const confirmationConnectionFingerprint = connectionFingerprint;
     showConfirmation({
       title: t('monitoring.codex_inspection_execute_confirm_title'),
       message: t('monitoring.codex_inspection_execute_confirm_body', {
@@ -806,13 +877,17 @@ export function CodexInspectionPage({
       confirmText: t('monitoring.codex_inspection_execute_now'),
       cancelText: t('common.cancel'),
       variant: 'danger',
-      onConfirm: () => executeItems(targets),
+      onConfirm: () => {
+        if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+        void executeItems(targets);
+      },
     });
-  }, [executableResults, executeItems, result, showConfirmation, t]);
+  }, [connectionFingerprint, executableResults, executeItems, result, showConfirmation, t]);
 
   const handleExecuteSingle = useCallback(
     (item: CodexInspectionResultItem) => {
       const actionLabel = formatActionLabel(item.action, t);
+      const confirmationConnectionFingerprint = connectionFingerprint;
       showConfirmation({
         title: t('monitoring.codex_inspection_execute_single_title'),
         message: t('monitoring.codex_inspection_execute_single_body', {
@@ -822,16 +897,20 @@ export function CodexInspectionPage({
         confirmText: actionLabel,
         cancelText: t('common.cancel'),
         variant: item.action === 'delete' ? 'danger' : 'primary',
-        onConfirm: () => executeItems([item]),
+        onConfirm: () => {
+          if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+          void executeItems([item]);
+        },
       });
     },
-    [executeItems, showConfirmation, t]
+    [connectionFingerprint, executeItems, showConfirmation, t]
   );
 
   const handleDeleteReauthPlanned = useCallback(() => {
     if (!result) return;
 
     const targets = reauthResults.map(toReauthDeleteExecutionItem);
+    const confirmationConnectionFingerprint = connectionFingerprint;
     showConfirmation({
       title: t('monitoring.codex_inspection_delete_reauth_confirm_title'),
       message: t('monitoring.codex_inspection_delete_reauth_confirm_body', {
@@ -840,12 +919,16 @@ export function CodexInspectionPage({
       confirmText: t('monitoring.codex_inspection_delete_reauth_now'),
       cancelText: t('common.cancel'),
       variant: 'danger',
-      onConfirm: () => executeItems(targets),
+      onConfirm: () => {
+        if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+        void executeItems(targets);
+      },
     });
-  }, [executeItems, reauthResults, result, showConfirmation, t]);
+  }, [connectionFingerprint, executeItems, reauthResults, result, showConfirmation, t]);
 
   const handleDeleteSingleReauth = useCallback(
     (item: CodexInspectionResultItem) => {
+      const confirmationConnectionFingerprint = connectionFingerprint;
       showConfirmation({
         title: t('monitoring.codex_inspection_delete_reauth_single_title'),
         message: t('monitoring.codex_inspection_delete_reauth_single_body', {
@@ -855,10 +938,13 @@ export function CodexInspectionPage({
         confirmText: t('monitoring.codex_inspection_action_delete'),
         cancelText: t('common.cancel'),
         variant: 'danger',
-        onConfirm: () => executeItems([toReauthDeleteExecutionItem(item)]),
+        onConfirm: () => {
+          if (activeConnectionFingerprintRef.current !== confirmationConnectionFingerprint) return;
+          void executeItems([toReauthDeleteExecutionItem(item)]);
+        },
       });
     },
-    [executeItems, showConfirmation, t]
+    [connectionFingerprint, executeItems, showConfirmation, t]
   );
 
   const handleOpenCodexReauth = useCallback(
@@ -870,17 +956,20 @@ export function CodexInspectionPage({
       setCodexReauthTarget({
         account: item.displayAccount || item.accountId || item.fileName,
         fileName: item.fileName,
-        authIndex: item.authIndex,
-        accountId: item.accountId,
+        runtimeId: item.runtimeId ?? null,
+        provider: item.provider ?? 'codex',
+        authIndex: item.authIndex ?? null,
+        accountId: item.accountId ?? null,
+        accountSnapshot: item.accountSnapshot ?? null,
       });
     },
     [navigate]
   );
 
-  const handleCodexReauthSuccess = useCallback(() => {
+  const handleCodexReauthSuccess = useCallback(async () => {
+    await onCredentialsChanged?.(codexReauthTarget);
     showNotification(t('codex_reauth.rerun_hint'), 'success');
-    void onCredentialsChanged?.();
-  }, [onCredentialsChanged, showNotification, t]);
+  }, [codexReauthTarget, onCredentialsChanged, showNotification, t]);
 
   const summaryCards = useMemo<SummaryCard[]>(() => {
     const summarySource =
@@ -1318,6 +1407,7 @@ export function CodexInspectionPage({
       <CodexReauthDialog
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
+        requestScope={authFilesRequestScope}
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
       />

@@ -8,6 +8,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type Repository interface {
@@ -111,6 +112,7 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 
 	stmt, err := tx.PrepareContext(ctx, `insert or ignore into usage_events (
 		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, model, endpoint, method, path,
+		client_ip, x_forwarded_for, user_agent,
 		auth_type, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
 		requested_model, resolved_model, reasoning_effort, service_tier, request_service_tier, response_service_tier, cache_input_mode,
@@ -119,7 +121,7 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 		latency_ms, ttft_ms, failed, fail_status_code, fail_summary,
 		response_metadata_json, header_quota_recover_at_ms, header_quota_used_percent, header_quota_plan_type, header_error_kind, header_error_code, header_trace_id,
 		fail_body, raw_json, created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return model.InsertResult{}, err
 	}
@@ -149,6 +151,7 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 			continue
 		}
 
+		usage.NormalizeRequestMetadata(&event)
 		accounting := usage.NormalizeCacheAccounting(usage.CacheInputContext{
 			ExplicitMode:     event.CacheInputMode,
 			ExecutorType:     event.ExecutorType,
@@ -198,6 +201,9 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 			nullString(event.Endpoint),
 			nullString(event.Method),
 			nullString(event.Path),
+			nullString(event.ClientIP),
+			nullString(event.XForwardedFor),
+			nullString(event.UserAgent),
 			nullString(event.AuthType),
 			nullString(event.AuthIndex),
 			nullString(event.Source),
@@ -292,6 +298,7 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 	}
 	rows, err := r.db.QueryContext(ctx, `select
 		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, model, endpoint, method, path,
+		client_ip, x_forwarded_for, user_agent,
 		auth_type, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
 		requested_model, resolved_model, reasoning_effort, service_tier, request_service_tier, response_service_tier, cache_input_mode,
@@ -311,7 +318,7 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 	events := make([]model.UsageEvent, 0)
 	for rows.Next() {
 		var event model.UsageEvent
-		var requestID, provider, executorType, endpoint, method, path, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, requestServiceTier, responseServiceTier, cacheInputMode, failSummary sql.NullString
+		var requestID, provider, executorType, endpoint, method, path, clientIP, xForwardedFor, userAgent, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, requestServiceTier, responseServiceTier, cacheInputMode, failSummary sql.NullString
 		var responseMetadataJSON, quotaPlanType, errorKind, errorCode, traceID, rawJSON string
 		var authSnapshotAt sql.NullInt64
 		var latency, ttft sql.NullInt64
@@ -331,6 +338,9 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 			&endpoint,
 			&method,
 			&path,
+			&clientIP,
+			&xForwardedFor,
+			&userAgent,
 			&authType,
 			&authIndex,
 			&source,
@@ -379,11 +389,15 @@ func (r *repository) ListRecent(ctx context.Context, limit int) ([]model.UsageEv
 			return nil, err
 		}
 		event.RequestID = requestID.String
+		event.AnalyticsModel = usageidentity.AnalyticsModelForRequest(event.Model, requestedModel.String)
 		event.Provider = provider.String
 		event.ExecutorType = executorType.String
 		event.Endpoint = endpoint.String
 		event.Method = method.String
 		event.Path = path.String
+		event.ClientIP = clientIP.String
+		event.XForwardedFor = xForwardedFor.String
+		event.UserAgent = userAgent.String
 		event.AuthType = authType.String
 		event.AuthIndex = authIndex.String
 		event.Source = source.String

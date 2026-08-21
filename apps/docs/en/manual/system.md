@@ -2,7 +2,7 @@
 
 System shows what runtime the panel is connected to, which models are visible, and which basic details to collect before troubleshooting.
 
-Use [Logs](./logs.md) for log content. Use [Monitoring](./monitoring.md), [Usage Analytics](./usage-analytics.md), and [Auth Files](./auth-files.md) for requests, cost, and account state.
+Use [Logs](./logs.md) for log content. Use [Monitoring](./monitoring.md), [Usage Analytics](./usage-analytics.md), and [Accounts](./accounts.md) for requests, cost, and account state.
 
 ## Main Content
 

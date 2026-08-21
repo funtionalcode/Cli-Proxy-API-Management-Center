@@ -7,6 +7,7 @@ import type { CodexInspectionRunDetail } from '@/services/api';
 import {
   createLocalCredentialInspectionSnapshot,
   createServerCredentialInspectionSnapshot,
+  getServerCredentialMutationSyncKey,
   isCompletedCredentialInspectionRun,
   selectLatestCredentialInspectionSnapshot,
 } from './credentialInspectionSnapshot';
@@ -102,8 +103,17 @@ const serverDetail = {
 
 describe('credentialInspectionSnapshot', () => {
   it('normalizes local and server results with their source', () => {
-    const local = createLocalCredentialInspectionSnapshot(localResult, 210);
-    const server = createServerCredentialInspectionSnapshot(serverDetail, [serverDetail.run]);
+    const local = createLocalCredentialInspectionSnapshot(
+      {
+        ...localResult,
+        results: localResult.results.map((result) => ({
+          ...result,
+          quotaInventoryObserved: true,
+        })),
+      },
+      210
+    );
+    const server = createServerCredentialInspectionSnapshot(serverDetail, [serverDetail.run])!;
 
     expect(local.results[0]).toMatchObject({
       fileName: 'local.json',
@@ -111,6 +121,7 @@ describe('credentialInspectionSnapshot', () => {
       accountSnapshot: 'local@example.com',
       inspectionSource: 'local',
       actionStatus: 'pending',
+      quotaInventoryObserved: true,
     });
     expect(server.results[0]).toMatchObject({
       fileName: 'server.json',
@@ -120,11 +131,12 @@ describe('credentialInspectionSnapshot', () => {
 
   it('selects the most recently completed inspection snapshot', () => {
     const local = createLocalCredentialInspectionSnapshot(localResult, 210);
-    const server = createServerCredentialInspectionSnapshot(serverDetail, [serverDetail.run]);
+    const server = createServerCredentialInspectionSnapshot(serverDetail, [serverDetail.run])!;
 
     expect(selectLatestCredentialInspectionSnapshot([server, local])?.source).toBe('server');
-    expect(selectLatestCredentialInspectionSnapshot([server, { ...local, completedAtMs: 400 }]))
-      .toMatchObject({ source: 'local', completedAtMs: 400 });
+    expect(
+      selectLatestCredentialInspectionSnapshot([server, { ...local, completedAtMs: 400 }])
+    ).toMatchObject({ source: 'local', completedAtMs: 400 });
   });
 
   it('accepts only finished server runs as snapshot candidates', () => {
@@ -136,5 +148,98 @@ describe('credentialInspectionSnapshot', () => {
         finishedAtMs: undefined,
       })
     ).toBe(false);
+    expect(
+      isCompletedCredentialInspectionRun({
+        ...serverDetail.run,
+        status: 'failed',
+      })
+    ).toBe(false);
+    expect(
+      isCompletedCredentialInspectionRun({
+        ...serverDetail.run,
+        status: 'cancelled',
+      })
+    ).toBe(false);
+    expect(
+      isCompletedCredentialInspectionRun({
+        ...serverDetail.run,
+        status: 'interrupted',
+      })
+    ).toBe(false);
+  });
+
+  it('rejects non-completed server details as authoritative snapshots', () => {
+    expect(
+      createServerCredentialInspectionSnapshot(
+        {
+          ...serverDetail,
+          run: {
+            ...serverDetail.run,
+            status: 'failed',
+          },
+        },
+        [{ ...serverDetail.run, status: 'failed' }]
+      )
+    ).toBeNull();
+  });
+
+  it('builds a stable sync key only for successful mutations in the latest completed run', () => {
+    const successfulDetail = {
+      ...serverDetail,
+      results: [
+        {
+          ...serverDetail.results[0],
+          actionStatus: 'success',
+          executedAction: 'disable',
+        },
+      ],
+    } as CodexInspectionRunDetail;
+    const snapshot = createServerCredentialInspectionSnapshot(successfulDetail, [
+      successfulDetail.run,
+    ])!;
+
+    expect(getServerCredentialMutationSyncKey(snapshot)).toBe('7\u001f300\u001f7:9:disable');
+    expect(
+      getServerCredentialMutationSyncKey({
+        ...snapshot,
+        results: snapshot.results.map((result) => ({ ...result, actionStatus: 'pending' })),
+      })
+    ).toBeNull();
+    expect(
+      getServerCredentialMutationSyncKey({
+        ...snapshot,
+        source: 'local',
+      })
+    ).toBeNull();
+  });
+
+  it('ignores historical run mutations unless they came from an explicit action response', () => {
+    const successfulDetail = {
+      ...serverDetail,
+      results: [
+        {
+          ...serverDetail.results[0],
+          actionStatus: 'success',
+          executedAction: 'disable',
+        },
+      ],
+    } as CodexInspectionRunDetail;
+    const newerRun = {
+      ...successfulDetail.run,
+      id: 8,
+      startedAtMs: 350,
+      finishedAtMs: 400,
+      createdAtMs: 350,
+      updatedAtMs: 400,
+    };
+    const snapshot = createServerCredentialInspectionSnapshot(successfulDetail, [
+      newerRun,
+      successfulDetail.run,
+    ])!;
+
+    expect(getServerCredentialMutationSyncKey(snapshot)).toBeNull();
+    expect(getServerCredentialMutationSyncKey(snapshot, { requireLatestCompletedRun: false })).toBe(
+      '7\u001f300\u001f7:9:disable'
+    );
   });
 });

@@ -957,9 +957,20 @@ export const mergeObservedAccountQuotaState = (
   targets: MonitoringAccountQuotaTarget[],
   observedEntries: AccountQuotaEntry[]
 ): AccountQuotaState | undefined => {
-  if (!state || state.status === 'loading' || observedEntries.length === 0) return state;
+  if (state?.status === 'loading' || observedEntries.length === 0) return state;
 
   const targetKey = targets.map((target) => target.key).join('|');
+  if (!state) {
+    const targetKeys = new Set(targets.map((target) => target.key));
+    const entries = observedEntries.filter((entry) => targetKeys.has(entry.key));
+    if (entries.length === 0) return state;
+    return {
+      status: 'success',
+      targetKey,
+      entries,
+      error: '',
+    };
+  }
   if (state.targetKey !== targetKey) return state;
 
   const observedByKey = new Map(observedEntries.map((entry) => [entry.key, entry]));
@@ -1077,9 +1088,7 @@ const buildXaiAccountQuotaWindows = (
       Boolean(billing.periodEnd) ||
       billing.productUsage.length > 0);
   const hasMonthlyData =
-    billing.monthlyLimitCents !== null ||
-    billing.usedCents !== null ||
-    Boolean(billing.billingPeriodEnd);
+    billing.usedPercent !== null || billing.monthlyLimitCents !== null;
 
   if (hasWeeklyData) {
     windows.push({
@@ -1226,11 +1235,11 @@ export const buildObservedCodexAccountQuotaEntry = (
   const metaLabels = [
     planLabel ? `${t('codex_quota.plan_label')}: ${planLabel}` : '',
     observedAt
-      ? t('quota_management.observed_from_usage_headers_at', {
+      ? t('monitoring.observed_from_usage_headers_at', {
           time: observedAt,
           defaultValue: `Observed from latest usage response headers · ${observedAt}`,
         })
-      : t('quota_management.observed_from_usage_headers', {
+      : t('monitoring.observed_from_usage_headers', {
           defaultValue: 'Observed from latest usage response headers',
         }),
     [errorKind, errorCode].filter(Boolean).join(' / '),

@@ -1,6 +1,6 @@
 # 二开功能保留清单
 
-更新时间：2026-07-31
+更新时间：2026-08-21
 
 本文记录当前 `master`（及已落地未提交的本地改动）中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
@@ -24,6 +24,7 @@
 - 2026-07-03 已补充并验证的提交：`da3e5a0 fix(frontend): 恢复认证文件权重展示`。
 - 2026-07-09 已补充并验证的提交：`f0be172 feat(proxy-configs): 新增代理配置总览页面`。
 - 2026-07-31 日志分页/筛选与认证文件单账号别名、权重编辑（见下文第 3、5 节增量）。
+- 2026-08-21 同步上游 `v1.12.1` 后，认证文件和额度工作流迁入统一 Accounts；旧 URL 保留重定向兼容，本地增强迁入新架构。
 
 ## 当前应保留的二开功能
 
@@ -107,30 +108,30 @@
 - `apps/web/src/services/api/transformers.ts`
 - `apps/web/src/types/provider.ts`
 
-### 5. AuthFiles 认证文件增强
+### 5. Accounts 认证文件增强
 
-- 认证文件页支持列表、筛选、套餐排序、状态展示、批量刷新认证文件和额度。
-- 认证文件卡片显示最近请求状态、额度状态、冷却恢复信息、项目 ID、优先级 `priority`、权重 `weight` 等。
+- 统一 Accounts 工作区支持凭证列表、筛选、套餐排序、状态展示、批量刷新认证文件和额度；旧 `/auth-files` 及其 OAuth 规则 URL 重定向到 Accounts 对应视图。
+- Accounts 凭证卡片显示最近请求状态、额度状态、冷却恢复信息、项目 ID、优先级 `priority`、权重 `weight` 等。
 - Codex 额度冷却恢复后可触发对应账号额度刷新，避免继续展示过期 Header 快照。
 - 支持 Auth JSON 粘贴导入，包含 ChatGPT session/sub2api 到 CPA Codex 登录文件的转换。
-- Prefix/Proxy 编辑器支持编辑 `prefix`、`proxy`、`priority`、`weight`、`headers`、`note`，以及条件字段 `websockets` / `using_api`。
-- `priority` 仅接受整数；留空会清理该字段；认证文件页支持按优先级高低排序和批量设置优先级。
-- `weight` 仅接受正整数；留空或 `≤0` 会清理该字段；**详情弹窗必须有权重输入**；卡片在 `weight > 0` 时展示权重徽章；**批量栏提供「设置权重」**（与批量优先级并列）。
+- Accounts 配置页支持编辑 `prefix`、`proxy_url`、`priority`、`weight`、`headers`、`note`，以及 Provider 条件字段。
+- `priority` 仅接受整数；留空会清理该字段；Accounts 支持按优先级排序和批量设置优先级。
+- `weight` 遵循上游 weighted round-robin 语义：留空清理局部覆盖，正数设置流量比例，`0` 在加权轮询中排除该凭证；详情页、凭证卡片及批量栏都必须保留权重入口。
 - `headers` 按 JSON 对象编辑，支持写入、更新和清空。
-- **单账号模型别名 `model_aliases`：** 详情弹窗提供 JSON 数组文本框（兼容 `model-aliases` 读入）；保存走 `authFilesApi.patchFields` 的 `model_aliases`；非法 JSON/重复/与 name 相同等校验阻止保存；空数组表示清空账号级别名。
+- **单账号模型别名 `model_aliases`：** Accounts 配置页提供 JSON 数组文本框（兼容 `model-aliases` 读入）；保存走 `authFilesApi.patchFields` 的 `model_aliases`；非法 JSON、重复或与 name 相同会阻止保存；空数组表示清空账号级别名。
 - `AuthFileFieldsPatch` 必须包含：`priority`、`weight`、`model_aliases`、`headers`、`proxy_url`、`note` 等字段。
 - `authFilesApi.patchFieldsForAuthIndexes` / 本地 JSON apply 路径支持写入/清空 `weight`、`headers`、`model_aliases`（勿只改 UI 不改 apply）。
-- OAuth 排除模型、OAuth 模型别名（全局）页面保留，模型别名支持图形化关系视图；**全局别名页与单账号 `model_aliases` 同时保留，不可互相替代。**
-- 认证文件列表的图形/列表视图偏好、排序偏好需要保留。
+- OAuth 排除模型、OAuth 模型别名（全局）编辑器保留在 Accounts OAuth 视图；**全局别名与单账号 `model_aliases` 同时保留，不可互相替代。**
+- Accounts 的凭证排序、筛选和分页偏好需要保留。
 - 大量认证文件采用服务端分页和前端渐进加载：首批数据返回后立即展示，其余分页并发补齐；列表默认不触发远程余额查询，避免单个账号的网络超时拖死整个接口。
 
 关键位置：
 
-- `apps/web/src/features/authFiles/`
-- `apps/web/src/features/authFiles/AuthFilesPage.tsx`（批量优先级/权重）
-- `apps/web/src/features/authFiles/components/AuthFileCard.tsx`
-- `apps/web/src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.tsx`
-- `apps/web/src/features/authFiles/hooks/useAuthFilesPrefixProxyEditor.ts`
+- `apps/web/src/features/accounts/AccountsPage.tsx`
+- `apps/web/src/features/accounts/components/accountDetail/AccountConfigurationTab.tsx`
+- `apps/web/src/features/authFiles/hooks/useAuthFileConfigurationEditor.ts`
+- `apps/web/src/features/authFiles/model/authFileConfiguration.ts`
+- `apps/web/src/features/authFiles/hooks/useAuthFilesData.ts`
 - `apps/web/src/services/api/authFiles.ts`
 - `apps/web/src/features/authFiles/sessionAuthConverter.ts`
 - `apps/web/src/i18n/locales/{zh-CN,zh-TW,en,ru}.json`（`weight_*`、`batch_weight_*`、`model_aliases_*`）
@@ -155,7 +156,7 @@
 
 ### 7. 额度管理增强
 
-- 统一额度页 `/quota` 支持 Claude、Codex、Antigravity、Kimi、xAI 等账号额度。
+- Accounts 凭证详情的额度视图支持 Claude、Codex、Antigravity、Kimi、xAI 等账号额度；旧 `/quota` 重定向到 Accounts。
 - Claude 额度支持 `one_day` 日限额窗口。
 - Codex 额度支持 5 小时、7 天、月额度等窗口展示，以及 reset credit 数量和过期提示。
 - Codex 额度支持从真实查询结果和最近用量响应 Header 快照合并展示。
@@ -163,12 +164,12 @@
 - 支持 Codex reset credit 消耗确认。
 - Antigravity 额度和套餐查询保留。
 - xAI Grok 额度展示保留。
-- 额度页和认证文件页的套餐档位排序逻辑需要保留。
+- Accounts 的套餐档位排序逻辑需要保留。
 
 关键位置：
 
 - `apps/web/src/components/quota/`
-- `apps/web/src/features/quota/`
+- `apps/web/src/features/accounts/`
 - `apps/web/src/utils/quota/`
 - `apps/web/src/services/api/codexQuota.ts`
 - `apps/web/src/services/api/antigravitySubscription.ts`
@@ -255,10 +256,10 @@
 - 日志页能否切换成功请求日志，能否下载格式化错误/成功日志，耗时筛选是否有效。
 - 日志三个 Tab 分页、请求日志模型/请求 ID/时间筛选、大文件下载超时是否仍可用。
 - Provider 保存后是否保留 `headers`、`weight`、`balanceToken`，keyless OpenAI custom entry 是否不会被丢弃。
-- AuthFiles Prefix/Proxy 编辑器是否能保存和清空 `priority`、`weight`、`headers`、`model_aliases`。
-- AuthFiles 批量栏是否同时有「设置优先级」和「设置权重」。
+- Accounts 配置页是否能保存和清空 `priority`、`weight`、`headers`、`model_aliases`。
+- Accounts 批量栏是否同时有「设置优先级」和「设置权重」。
 - 代理配置总览页是否能展示全局、Provider、OpenAI key entry、认证文件代理配置；代理用户是否可见、代理密码是否脱敏；按 `authIndex` 编辑认证文件代理是否只影响目标账号。
-- AuthFiles 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级/权重是否仍可用。
+- Accounts 卡片是否展示 `priority` 和 `weight`，优先级排序、套餐排序、批量设置优先级/权重是否仍可用。
 - 全局 OAuth 模型别名页与单账号 `model_aliases` 是否同时存在。
 - Claude `one_day` 日额度窗口是否正常展示。
 - Codex 额度 Header 快照、手动刷新、冷却恢复刷新是否不会相互覆盖错误状态。
@@ -293,16 +294,17 @@ npm --workspace apps/web run test -- \
   src/features/authFiles/constants.test.ts \
   src/services/api/authFiles.test.ts \
   src/features/authFiles/hooks/useAuthFilesData.test.ts \
-  src/features/authFiles/components/AuthFileCard.test.tsx \
-  src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.credentialRefresh.test.tsx \
+  src/features/authFiles/model/authFileConfiguration.test.ts \
+  src/features/accounts/components/accountDetail/AccountConfigurationTab.test.tsx \
+  src/features/accounts/AccountsPage.test.tsx \
   src/features/proxyConfigs/proxyConfigModel.test.ts \
-  src/components/quota/QuotaSection.test.tsx
+  src/features/proxyConfigs/ProxyConfigsPage.test.tsx
 ```
 
 ```bash
-# 或在 apps/web 下
-bunx tsc --noEmit
-bunx vitest run src/features/authFiles/components/AuthFilesPrefixProxyEditorModal.credentialRefresh.test.tsx
+# 或在仓库根目录
+npm run type-check
+npm --workspace apps/web run test -- src/features/authFiles/model/authFileConfiguration.test.ts
 ```
 
 ## 变更记录
@@ -312,3 +314,4 @@ bunx vitest run src/features/authFiles/components/AuthFilesPrefixProxyEditorModa
 | 2026-07-16 | 代理配置总览等既有清单 |
 | 2026-07-31 | 补充日志三 Tab 分页/筛选/大文件下载；认证文件权重编辑与批量权重；单账号 `model_aliases`；联调契约与回归项 |
 | 2026-07-31 | 错误/成功请求日志筛选栏补充请求 ID（对接 CPA `request_id`） |
+| 2026-08-21 | 同步上游 v1.12.1；将权重、单账号模型别名、渐进加载和旧 URL 兼容迁入统一 Accounts 架构。 |

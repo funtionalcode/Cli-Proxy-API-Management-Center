@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { KeyboardEvent, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import type { TFunction } from 'i18next';
 import { useLocation, useNavigate, type BlockerFunction } from 'react-router-dom';
@@ -45,20 +45,32 @@ import {
   KIMI_CONFIG,
   XAI_CONFIG,
   buildObservedCodexQuotaState,
-  resolveQuotaDisplayState,
   type QuotaConfig,
 } from '@/components/quota';
 import { buildQuotaFailureState, getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
+import { useInterval } from '@/hooks/useInterval';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
+import {
+  MAX_CREDENTIAL_WEIGHT,
+  getCredentialWeightError,
+  normalizeCredentialWeight,
+} from '@/utils/credentialWeight';
 import { getAuthFileIcon } from '@/features/authFiles/constants';
-import { useAuthFilesData } from '@/features/authFiles/hooks/useAuthFilesData';
+import {
+  useAuthFilesData,
+  type AuthFilesCredentialMutation,
+} from '@/features/authFiles/hooks/useAuthFilesData';
 import { useAuthFilesOauth } from '@/features/authFiles/hooks/useAuthFilesOauth';
 import { useAuthFilesModels } from '@/features/authFiles/hooks/useAuthFilesModels';
 import { useAuthFileConfigurationEditor } from '@/features/authFiles/hooks/useAuthFileConfigurationEditor';
-import { useCredentialInspectionSnapshot } from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
+import {
+  createCredentialInspectionSnapshotScopeKey,
+  useCredentialInspectionSnapshot,
+} from '@/features/accounts/hooks/useCredentialInspectionSnapshot';
 import { useAccountsWorkspaceRefresh } from '@/features/accounts/hooks/useAccountsWorkspaceRefresh';
+import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderSnapshotsLoader';
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
@@ -75,20 +87,53 @@ import {
 } from '@/features/oauth/codexReauthModel';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
+  buildAccountInspectionBySelectionKey,
   buildAccountMetrics,
   buildAccountRows,
+  filterSuppressedAccountInspectionResults,
   findAccountRowForInspectionTarget,
   filterAccountRows,
+  getHandledAccountInspectionResultKeys,
   getPlanOptions,
   getProviderOptions,
   isAccountCodexStatusFilter,
   normalizeAccountProvider,
+  readAuthFileCredentialRefreshAtMs,
+  readAuthFileUpdatedAtMs,
   sortAccountRows,
   type AccountQuotaBand,
   type AccountRow,
   type AccountRowSort,
   type AccountStatusFilter,
 } from '@/features/accounts/model/accountRows';
+import {
+  buildInspectionCodexQuotaState,
+  getEffectiveAccountInspectionAction,
+  getAccountCredentialEvidenceCutoffs,
+  getCodexQuotaEvidenceAtMs,
+  isEvidenceOlderThan,
+  isKnownHealthyCodexQuota,
+  reconcileCodexQuotaEvidence,
+  stripSupersededAccountInspectionStatus,
+  type AccountCredentialEvidenceBoundary,
+} from '@/features/accounts/model/accountCredentialEvidence';
+import {
+  loadAccountCredentialEvidenceBoundaryState,
+  saveAccountCredentialEvidenceBoundaryState,
+} from '@/features/accounts/model/accountCredentialEvidenceStorage';
+import {
+  acknowledgeAccountCredentialMutationMarkers,
+  listAccountCredentialMutationMarkers,
+  type AccountCredentialMutationMarker,
+} from '@/features/accounts/model/accountCredentialMutationMarker';
+import {
+  acknowledgePendingAccountDirectReauths,
+  confirmAccountDirectReauth,
+  createAccountDirectReauthBaseline,
+  listPendingAccountDirectReauths,
+  recordPendingAccountDirectReauth,
+  type AccountDirectReauthBaseline,
+} from '@/features/accounts/model/accountDirectReauth';
 import { buildAccountRecommendations } from '@/features/accounts/model/quotaRecommendations';
 import {
   buildAccountListItem,
@@ -97,9 +142,12 @@ import {
 } from '@/features/accounts/model/accountListPresentation';
 import {
   buildAccountHistoryByRowKey,
+  buildAccountHistoryTargetBatches,
   buildAccountHistoryTargetEntries,
+  retainAccountHistoryRowKeys,
   type AccountHistoryTargetEntry,
 } from '@/features/accounts/model/accountHistoryRows';
+import { mapWithConcurrency } from '@/features/accounts/model/asyncPool';
 import {
   buildAccountWindowUsageByKey,
   buildAccountWindowUsageTargetEntries,
@@ -147,14 +195,18 @@ import {
   type DetailTab,
 } from '@/features/accounts/model/accountsPagePresentation';
 import {
+  getAuthFileCodexInspectionKeyForFile,
   getAuthFileCodexInspectionKeyForIdentity,
+  getAuthFileNameFromSelectionKey,
   getAuthFileCodexStatus,
   getAuthFilePatchTarget,
   getAuthFileSelectionKey,
   getAuthFileScopedCodexQuota,
   getFreshAuthFileCodexStatusSources,
   hasPartialSharedAuthFileSelection,
-} from '@/features/authFiles/model/authFilesPageModel';
+  sanitizeSupersededAuthHeaderSnapshot,
+  isObservedCodexAuthenticationError,
+} from '@/features/authFiles/model/credentialStatus';
 import {
   buildUsageValueRowFromMonitoringSummary,
   buildUsageValueRowsFromRecent,
@@ -166,8 +218,25 @@ import {
   partitionOAuthRulePreviewRows,
 } from '@/features/accounts/model/oauthRulePreview';
 import { resolveAccountReauthAction } from '@/features/accounts/model/accountReauth';
+import {
+  beginAccountOAuthReauthSession,
+  buildAccountOAuthReauthPath,
+  readCompletedAccountReauthResultKeys,
+  recordCompletedAccountReauthSession,
+} from '@/features/accounts/model/accountReauthSession';
 import { beginAccountQuotaRequest } from '@/features/accounts/model/accountQuotaRequestGate';
-import { buildAccountOperationalItemsByRowKey } from '@/features/accounts/model/accountOperationalScope';
+import {
+  buildAccountOperationalItemsByRowKey,
+  getAccountOperationalItemIdentityKey,
+} from '@/features/accounts/model/accountOperationalScope';
+import {
+  getAccountRequestCredentialEvidence,
+  isAccountInspectionStatusEvidenceCurrent,
+  isAccountRequestCredentialEvidenceCurrent,
+  resolveAccountAuthenticationProblemEvidence,
+  resolveAccountRequestHealthEvidence,
+  type AccountRequestEvidenceInput,
+} from '@/features/accounts/model/accountHealthEvidence';
 import {
   DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE,
   readAccountsWorkspaceUiState,
@@ -195,6 +264,7 @@ import {
   accountQuotaSnapshotApi,
   monitoringAnalyticsApi,
   usageServiceApi,
+  type AuthFilesApiRequestScope,
   type AccountActionCandidate,
   type AccountQuotaSnapshotObservationInput,
   type AccountQuotaSnapshotWriteEntry,
@@ -207,11 +277,14 @@ import {
   type MonitoringAccountWindowUsageItem,
   type QuotaCooldownInfo,
   type UsageHeaderSnapshot,
+  type UsageHeaderSnapshotsResponse,
 } from '@/services/api';
 import type { AuthFileItem, CodexQuotaState, XaiQuotaState } from '@/types';
 import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
-import { type QuotaAccountDisplayMode } from '@/features/quota/quotaPageUiState';
-import { maskQuotaAccountText } from '@/components/quota/quotaDisplay';
+import {
+  maskQuotaAccountText,
+  type QuotaAccountDisplayMode,
+} from '@/components/quota/quotaDisplay';
 import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
@@ -220,9 +293,13 @@ import {
   useQuotaStore,
   useThemeStore,
 } from '@/stores';
+import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
+import { normalizeAuthIndex } from '@/utils/authIndex';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
   buildUsageHeaderSnapshotLookup,
+  getHeaderSnapshotErrorCode,
+  getHeaderSnapshotErrorKind,
   getHighConfidenceUsageHeaderSnapshotForAuthFile,
   hasUsageHeaderQuotaSignal,
   isUsageHeaderQuotaSnapshotExpired,
@@ -238,8 +315,10 @@ import {
 import { createCodexInspectionConnectionFingerprint } from '@/features/monitoring/codexInspection';
 import type {
   CredentialHealthInspectionMode,
+  CredentialInspectionSnapshot,
   CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
+import { getServerCredentialMutationSyncKey } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import styles from './AccountsPage.module.scss';
 
 type QuotaUpdater<T> = T | ((prev: T) => T);
@@ -247,6 +326,507 @@ type QuotaSetter<T> = (updater: QuotaUpdater<Record<string, T>>) => void;
 
 const MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER = 1;
 const MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS = 3;
+const MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS = 2;
+const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
+const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
+const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
+const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
+interface CodexCredentialEvidenceInvalidation {
+  file: AuthFileItem;
+  invalidatedAtMs: number;
+}
+
+interface AccountCredentialEvidenceBoundarySessionState {
+  scopeKey: string;
+  evidence: Map<string, AccountCredentialEvidenceBoundary>;
+  status: Map<string, AccountCredentialEvidenceBoundary>;
+}
+
+const EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY: AccountCredentialEvidenceBoundary = {
+  localAtMs: 0,
+  inspectionAtMs: 0,
+  inspectionBaselinePending: false,
+  headerAtMs: 0,
+  headerBaselinePending: false,
+  actionAtMs: 0,
+  actionBaselinePending: false,
+  authenticationActionAtMs: 0,
+  authenticationActionBaselinePending: false,
+  quotaActionAtMs: 0,
+  quotaActionBaselinePending: false,
+  cooldownAtMs: 0,
+  cooldownBaselinePending: false,
+  fallbackInspectionAtMs: 0,
+  fallbackInspectionBaselinePending: false,
+  fallbackHeaderAtMs: 0,
+  fallbackHeaderBaselinePending: false,
+  fallbackActionAtMs: 0,
+  fallbackActionBaselinePending: false,
+  fallbackCooldownAtMs: 0,
+  fallbackCooldownBaselinePending: false,
+  rawStatusAtMs: 0,
+  rawStatusMessages: [],
+};
+
+const mirrorAccountCredentialEvidenceBoundaryToFallback = (
+  boundary: AccountCredentialEvidenceBoundary
+): AccountCredentialEvidenceBoundary => ({
+  ...boundary,
+  fallbackInspectionAtMs: Math.max(boundary.fallbackInspectionAtMs, boundary.inspectionAtMs),
+  fallbackInspectionBaselinePending:
+    boundary.fallbackInspectionBaselinePending === true ||
+    boundary.inspectionBaselinePending === true,
+  fallbackHeaderAtMs: Math.max(boundary.fallbackHeaderAtMs, boundary.headerAtMs),
+  fallbackHeaderBaselinePending:
+    boundary.fallbackHeaderBaselinePending === true || boundary.headerBaselinePending === true,
+  fallbackActionAtMs: Math.max(boundary.fallbackActionAtMs, boundary.actionAtMs),
+  fallbackActionBaselinePending:
+    boundary.fallbackActionBaselinePending === true || boundary.actionBaselinePending === true,
+  fallbackCooldownAtMs: Math.max(boundary.fallbackCooldownAtMs, boundary.cooldownAtMs),
+  fallbackCooldownBaselinePending:
+    boundary.fallbackCooldownBaselinePending === true || boundary.cooldownBaselinePending === true,
+});
+
+const toFallbackAccountCredentialEvidenceBoundary = (
+  boundary: AccountCredentialEvidenceBoundary
+): AccountCredentialEvidenceBoundary => ({
+  ...EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+  localAtMs: boundary.localAtMs,
+  fallbackInspectionAtMs: Math.max(boundary.fallbackInspectionAtMs, boundary.inspectionAtMs),
+  fallbackInspectionBaselinePending:
+    boundary.fallbackInspectionBaselinePending === true ||
+    boundary.inspectionBaselinePending === true,
+  fallbackHeaderAtMs: Math.max(boundary.fallbackHeaderAtMs, boundary.headerAtMs),
+  fallbackHeaderBaselinePending:
+    boundary.fallbackHeaderBaselinePending === true || boundary.headerBaselinePending === true,
+  fallbackActionAtMs: Math.max(boundary.fallbackActionAtMs, boundary.actionAtMs),
+  fallbackActionBaselinePending:
+    boundary.fallbackActionBaselinePending === true || boundary.actionBaselinePending === true,
+  fallbackCooldownAtMs: Math.max(boundary.fallbackCooldownAtMs, boundary.cooldownAtMs),
+  fallbackCooldownBaselinePending:
+    boundary.fallbackCooldownBaselinePending === true || boundary.cooldownBaselinePending === true,
+});
+
+const getCredentialEvidenceUniqueFileNameBoundaryKey = (fileName: string): string =>
+  `${CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX}${fileName}`;
+
+const getCredentialEvidenceSourceFileBoundaryKey = (fileName: string): string =>
+  `${CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX}${fileName}`;
+
+const getCredentialEvidenceProviderBoundaryKey = (provider: string): string =>
+  `${CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX}${provider}`;
+
+const releaseObservedRawStatusBoundaries = (
+  current: Map<string, AccountCredentialEvidenceBoundary>,
+  files: readonly AuthFileItem[]
+): Map<string, AccountCredentialEvidenceBoundary> => {
+  let next: Map<string, AccountCredentialEvidenceBoundary> | null = null;
+  current.forEach((boundary, key) => {
+    if (boundary.rawStatusMessages.length === 0) return;
+    let matchingFiles: readonly AuthFileItem[];
+    if (key.startsWith(CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX)) {
+      const fileName = key.slice(CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX.length);
+      matchingFiles = files.filter((file) => file.name === fileName);
+    } else if (key.startsWith(CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX)) {
+      const provider = key.slice(CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX.length);
+      matchingFiles = files.filter((file) => normalizeAccountProvider(file) === provider);
+    } else if (key.startsWith(CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX)) {
+      const fileName = key.slice(CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX.length);
+      matchingFiles = files.filter((file) => file.name === fileName);
+    } else {
+      matchingFiles = files.filter((file) => getAuthFileSelectionKey(file) === key);
+    }
+    if (matchingFiles.length === 0) return;
+    const currentMessages = new Set(matchingFiles.map(readAccountRawStatusMessage).filter(Boolean));
+    const remainingMessages = boundary.rawStatusMessages.filter((message) =>
+      currentMessages.has(message)
+    );
+    if (remainingMessages.length === boundary.rawStatusMessages.length) return;
+    if (!next) next = new Map(current);
+    next.set(key, {
+      ...boundary,
+      rawStatusAtMs: remainingMessages.length > 0 ? boundary.rawStatusAtMs : 0,
+      rawStatusMessages: remainingMessages,
+    });
+  });
+  return next ?? current;
+};
+
+const pruneCodexQuotaStatesForCredentialMutation = (
+  current: Record<string, CodexQuotaState>,
+  {
+    affectedFileNames,
+    invalidatedStoreKeys = new Set<string>(),
+    preservedFiles = [],
+    preserveEvidenceAfterMs = 0,
+  }: {
+    affectedFileNames: ReadonlySet<string>;
+    invalidatedStoreKeys?: ReadonlySet<string>;
+    preservedFiles?: readonly AuthFileItem[];
+    preserveEvidenceAfterMs?: number;
+  }
+): Record<string, CodexQuotaState> => {
+  let changed = false;
+  const next = { ...current };
+  Object.entries(current).forEach(([key, state]) => {
+    if (
+      preserveEvidenceAfterMs > 0 &&
+      (getCodexQuotaEvidenceAtMs(state) ?? 0) > preserveEvidenceAfterMs
+    ) {
+      return;
+    }
+    if (invalidatedStoreKeys.has(key)) {
+      delete next[key];
+      changed = true;
+      return;
+    }
+    const stateFileName = state.authFileName?.trim() ?? '';
+    if (!affectedFileNames.has(key) && !affectedFileNames.has(stateFileName)) return;
+    if (preservedFiles.some((file) => getAuthFileScopedCodexQuota(file, state) === state)) return;
+    delete next[key];
+    changed = true;
+  });
+  return changed ? next : current;
+};
+
+const pruneCredentialQuotaStatesForProviderMutation = <
+  TState extends {
+    authFileName?: string;
+    authFileKey?: string;
+    fetchedAtMs?: number;
+    failedAtMs?: number;
+  },
+>(
+  current: Record<string, TState>,
+  targetFiles: readonly AuthFileItem[],
+  getStoreKey: (file: AuthFileItem) => string,
+  preserveEvidenceAfterMs = 0
+): Record<string, TState> => {
+  const storeKeys = new Set(targetFiles.map(getStoreKey));
+  const fileNames = new Set(targetFiles.map((file) => file.name));
+  let changed = false;
+  const next = { ...current };
+  Object.entries(current).forEach(([key, state]) => {
+    const evidenceAtMs = Math.max(state.fetchedAtMs ?? 0, state.failedAtMs ?? 0);
+    if (preserveEvidenceAfterMs > 0 && evidenceAtMs > preserveEvidenceAfterMs) return;
+    const stateFileName = state.authFileName?.trim() ?? '';
+    const stateFileKey = state.authFileKey?.trim() ?? '';
+    if (
+      !storeKeys.has(key) &&
+      (!stateFileKey || !storeKeys.has(stateFileKey)) &&
+      (!stateFileName || !fileNames.has(stateFileName))
+    ) {
+      return;
+    }
+    delete next[key];
+    changed = true;
+  });
+  return changed ? next : current;
+};
+
+const mergeAccountCredentialEvidenceBoundaries = (
+  ...boundaries: Array<AccountCredentialEvidenceBoundary | undefined>
+): AccountCredentialEvidenceBoundary => {
+  const rawStatusMessages = new Set<string>();
+  let localAtMs = 0;
+  let inspectionAtMs = 0;
+  let inspectionBaselinePending = false;
+  let headerAtMs = 0;
+  let headerBaselinePending = false;
+  let actionAtMs = 0;
+  let actionBaselinePending = false;
+  let authenticationActionAtMs = 0;
+  let authenticationActionBaselinePending = false;
+  let quotaActionAtMs = 0;
+  let quotaActionBaselinePending = false;
+  let cooldownAtMs = 0;
+  let cooldownBaselinePending = false;
+  let fallbackInspectionAtMs = 0;
+  let fallbackInspectionBaselinePending = false;
+  let fallbackHeaderAtMs = 0;
+  let fallbackHeaderBaselinePending = false;
+  let fallbackActionAtMs = 0;
+  let fallbackActionBaselinePending = false;
+  let fallbackCooldownAtMs = 0;
+  let fallbackCooldownBaselinePending = false;
+  let rawStatusAtMs = 0;
+  boundaries.forEach((boundary) => {
+    if (!boundary) return;
+    localAtMs = Math.max(localAtMs, boundary.localAtMs);
+    inspectionAtMs = Math.max(inspectionAtMs, boundary.inspectionAtMs);
+    inspectionBaselinePending =
+      inspectionBaselinePending || boundary.inspectionBaselinePending === true;
+    headerAtMs = Math.max(headerAtMs, boundary.headerAtMs);
+    headerBaselinePending = headerBaselinePending || boundary.headerBaselinePending === true;
+    actionAtMs = Math.max(actionAtMs, boundary.actionAtMs);
+    actionBaselinePending = actionBaselinePending || boundary.actionBaselinePending === true;
+    authenticationActionAtMs = Math.max(
+      authenticationActionAtMs,
+      boundary.authenticationActionAtMs
+    );
+    authenticationActionBaselinePending =
+      authenticationActionBaselinePending || boundary.authenticationActionBaselinePending === true;
+    quotaActionAtMs = Math.max(quotaActionAtMs, boundary.quotaActionAtMs);
+    quotaActionBaselinePending =
+      quotaActionBaselinePending || boundary.quotaActionBaselinePending === true;
+    cooldownAtMs = Math.max(cooldownAtMs, boundary.cooldownAtMs);
+    cooldownBaselinePending = cooldownBaselinePending || boundary.cooldownBaselinePending === true;
+    fallbackInspectionAtMs = Math.max(fallbackInspectionAtMs, boundary.fallbackInspectionAtMs);
+    fallbackInspectionBaselinePending =
+      fallbackInspectionBaselinePending || boundary.fallbackInspectionBaselinePending === true;
+    fallbackHeaderAtMs = Math.max(fallbackHeaderAtMs, boundary.fallbackHeaderAtMs);
+    fallbackHeaderBaselinePending =
+      fallbackHeaderBaselinePending || boundary.fallbackHeaderBaselinePending === true;
+    fallbackActionAtMs = Math.max(fallbackActionAtMs, boundary.fallbackActionAtMs);
+    fallbackActionBaselinePending =
+      fallbackActionBaselinePending || boundary.fallbackActionBaselinePending === true;
+    fallbackCooldownAtMs = Math.max(fallbackCooldownAtMs, boundary.fallbackCooldownAtMs);
+    fallbackCooldownBaselinePending =
+      fallbackCooldownBaselinePending || boundary.fallbackCooldownBaselinePending === true;
+    rawStatusAtMs = Math.max(rawStatusAtMs, boundary.rawStatusAtMs);
+    boundary.rawStatusMessages.forEach((message) => rawStatusMessages.add(message));
+  });
+  if (
+    localAtMs === 0 &&
+    inspectionAtMs === 0 &&
+    headerAtMs === 0 &&
+    actionAtMs === 0 &&
+    authenticationActionAtMs === 0 &&
+    quotaActionAtMs === 0 &&
+    cooldownAtMs === 0 &&
+    fallbackInspectionAtMs === 0 &&
+    fallbackHeaderAtMs === 0 &&
+    fallbackActionAtMs === 0 &&
+    fallbackCooldownAtMs === 0 &&
+    rawStatusAtMs === 0 &&
+    rawStatusMessages.size === 0
+  ) {
+    return EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY;
+  }
+  return {
+    localAtMs,
+    inspectionAtMs,
+    inspectionBaselinePending,
+    headerAtMs,
+    headerBaselinePending,
+    actionAtMs,
+    actionBaselinePending,
+    authenticationActionAtMs,
+    authenticationActionBaselinePending,
+    quotaActionAtMs,
+    quotaActionBaselinePending,
+    cooldownAtMs,
+    cooldownBaselinePending,
+    fallbackInspectionAtMs,
+    fallbackInspectionBaselinePending,
+    fallbackHeaderAtMs,
+    fallbackHeaderBaselinePending,
+    fallbackActionAtMs,
+    fallbackActionBaselinePending,
+    fallbackCooldownAtMs,
+    fallbackCooldownBaselinePending,
+    rawStatusAtMs,
+    rawStatusMessages: Array.from(rawStatusMessages),
+  };
+};
+
+const upsertAccountCredentialEvidenceBoundaries = (
+  current: ReadonlyMap<string, AccountCredentialEvidenceBoundary>,
+  entries: Iterable<readonly [string, AccountCredentialEvidenceBoundary]>
+): Map<string, AccountCredentialEvidenceBoundary> => {
+  const next = new Map(current);
+  for (const [key, boundary] of entries) {
+    next.set(key, mergeAccountCredentialEvidenceBoundaries(next.get(key), boundary));
+  }
+  return next;
+};
+
+type AccountCredentialEvidenceBaselineSource = 'inspection' | 'header' | 'action' | 'cooldown';
+
+interface AccountCredentialEvidenceBaselineIndex {
+  exactBySelectionKey: ReadonlyMap<string, number>;
+  anyByFileName: ReadonlyMap<string, number>;
+  fallbackByFileName: ReadonlyMap<string, number>;
+  defaultAtMs: number;
+}
+
+interface AccountCredentialEvidenceTimestampItem {
+  fileName: string;
+  identityKey: string;
+  atMs: number;
+}
+
+const updateCredentialEvidenceTimestamp = (
+  target: Map<string, number>,
+  key: string,
+  value: number
+): void => {
+  const normalizedKey = key.trim();
+  if (!normalizedKey || !Number.isFinite(value) || value <= 0) return;
+  target.set(normalizedKey, Math.max(target.get(normalizedKey) ?? 0, value));
+};
+
+const buildAccountCredentialEvidenceBaselineIndex = (
+  files: readonly AuthFileItem[],
+  items: readonly AccountCredentialEvidenceTimestampItem[],
+  defaultAtMs = 0
+): AccountCredentialEvidenceBaselineIndex => {
+  const byIdentity = new Map<string, number>();
+  const anyByFileName = new Map<string, number>();
+  const fallbackByFileName = new Map<string, number>();
+  items.forEach((item) => {
+    const fileName = item.fileName.trim();
+    if (!fileName) return;
+    updateCredentialEvidenceTimestamp(byIdentity, item.identityKey, item.atMs);
+    updateCredentialEvidenceTimestamp(anyByFileName, fileName, item.atMs);
+    if (item.identityKey === getAuthFileCodexInspectionKeyForIdentity({ fileName })) {
+      updateCredentialEvidenceTimestamp(fallbackByFileName, fileName, item.atMs);
+    }
+  });
+  const exactBySelectionKey = new Map<string, number>();
+  files.forEach((file) => {
+    const atMs = byIdentity.get(getAuthFileCodexInspectionKeyForFile(file)) ?? 0;
+    updateCredentialEvidenceTimestamp(exactBySelectionKey, getAuthFileSelectionKey(file), atMs);
+  });
+  return {
+    exactBySelectionKey,
+    anyByFileName,
+    fallbackByFileName,
+    defaultAtMs: Number.isFinite(defaultAtMs) && defaultAtMs > 0 ? Math.trunc(defaultAtMs) : 0,
+  };
+};
+
+const resolveAccountCredentialEvidenceBaseline = (
+  key: string,
+  index: AccountCredentialEvidenceBaselineIndex
+): { atMs: number; fallbackAtMs: number } => {
+  if (key.startsWith(CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX)) {
+    const fileName = key.slice(CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX.length);
+    return {
+      atMs: Math.max(index.defaultAtMs, index.anyByFileName.get(fileName) ?? 0),
+      fallbackAtMs: Math.max(index.defaultAtMs, index.fallbackByFileName.get(fileName) ?? 0),
+    };
+  }
+  if (key.startsWith(CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX)) {
+    return { atMs: index.defaultAtMs, fallbackAtMs: index.defaultAtMs };
+  }
+  if (key.startsWith(CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX)) {
+    const fileName = key.slice(CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX.length);
+    return {
+      atMs: index.defaultAtMs,
+      fallbackAtMs: Math.max(index.defaultAtMs, index.fallbackByFileName.get(fileName) ?? 0),
+    };
+  }
+  const fileName = getAuthFileNameFromSelectionKey(key).trim();
+  return {
+    atMs: Math.max(index.defaultAtMs, index.exactBySelectionKey.get(key) ?? 0),
+    fallbackAtMs: Math.max(index.defaultAtMs, index.fallbackByFileName.get(fileName) ?? 0),
+  };
+};
+
+const ACCOUNT_CREDENTIAL_EVIDENCE_BASELINE_FIELDS = {
+  inspection: {
+    atMs: 'inspectionAtMs',
+    pending: 'inspectionBaselinePending',
+    fallbackAtMs: 'fallbackInspectionAtMs',
+    fallbackPending: 'fallbackInspectionBaselinePending',
+  },
+  header: {
+    atMs: 'headerAtMs',
+    pending: 'headerBaselinePending',
+    fallbackAtMs: 'fallbackHeaderAtMs',
+    fallbackPending: 'fallbackHeaderBaselinePending',
+  },
+  action: {
+    atMs: 'actionAtMs',
+    pending: 'actionBaselinePending',
+    fallbackAtMs: 'fallbackActionAtMs',
+    fallbackPending: 'fallbackActionBaselinePending',
+  },
+  cooldown: {
+    atMs: 'cooldownAtMs',
+    pending: 'cooldownBaselinePending',
+    fallbackAtMs: 'fallbackCooldownAtMs',
+    fallbackPending: 'fallbackCooldownBaselinePending',
+  },
+} as const;
+
+const capturePendingAccountCredentialEvidenceBaseline = (
+  current: Map<string, AccountCredentialEvidenceBoundary>,
+  source: AccountCredentialEvidenceBaselineSource,
+  index: AccountCredentialEvidenceBaselineIndex
+): Map<string, AccountCredentialEvidenceBoundary> => {
+  const fields = ACCOUNT_CREDENTIAL_EVIDENCE_BASELINE_FIELDS[source];
+  let next: Map<string, AccountCredentialEvidenceBoundary> | null = null;
+  current.forEach((boundary, key) => {
+    if (boundary[fields.pending] !== true && boundary[fields.fallbackPending] !== true) return;
+
+    const baseline = resolveAccountCredentialEvidenceBaseline(key, index);
+    const updated = { ...boundary };
+    if (boundary[fields.pending] === true) {
+      updated[fields.atMs] = Math.max(updated[fields.atMs], baseline.atMs);
+      updated[fields.pending] = false;
+    }
+    if (boundary[fields.fallbackPending] === true) {
+      updated[fields.fallbackAtMs] = Math.max(updated[fields.fallbackAtMs], baseline.fallbackAtMs);
+      updated[fields.fallbackPending] = false;
+    }
+    if (!next) next = new Map(current);
+    next.set(key, updated);
+  });
+  return next ?? current;
+};
+
+const readAccountRawStatusMessage = (file: AuthFileItem): string => {
+  const value = file.statusMessage ?? file['status_message'];
+  return typeof value === 'string' ? value.trim() : '';
+};
+
+const buildProviderCredentialMutationBoundary = (
+  createdAtMs: number
+): AccountCredentialEvidenceBoundary => ({
+  ...EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+  localAtMs: createdAtMs,
+  inspectionAtMs: createdAtMs,
+  headerAtMs: createdAtMs,
+  actionAtMs: createdAtMs,
+  authenticationActionAtMs: createdAtMs,
+  quotaActionAtMs: createdAtMs,
+  cooldownAtMs: createdAtMs,
+  fallbackInspectionAtMs: createdAtMs,
+  fallbackHeaderAtMs: createdAtMs,
+  fallbackActionAtMs: createdAtMs,
+  fallbackCooldownAtMs: createdAtMs,
+});
+
+const buildCredentialMutationRawStatusBoundary = (
+  file: AuthFileItem,
+  createdAtMs: number
+): AccountCredentialEvidenceBoundary | null => {
+  const updatedAtMs = readAuthFileUpdatedAtMs(file);
+  const rawStatusMessage = readAccountRawStatusMessage(file);
+  if (updatedAtMs === null || updatedAtMs > createdAtMs || !rawStatusMessage) return null;
+  return {
+    ...EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+    localAtMs: createdAtMs,
+    rawStatusAtMs: createdAtMs,
+    rawStatusMessages: [rawStatusMessage],
+  };
+};
+
+const getCredentialEvidenceBoundaryForFile = (
+  file: AuthFileItem,
+  boundaries: ReadonlyMap<string, AccountCredentialEvidenceBoundary>,
+  fileNameCounts: ReadonlyMap<string, number>
+): AccountCredentialEvidenceBoundary =>
+  mergeAccountCredentialEvidenceBoundaries(
+    boundaries.get(getAuthFileSelectionKey(file)),
+    boundaries.get(getCredentialEvidenceProviderBoundaryKey(normalizeAccountProvider(file))),
+    boundaries.get(getCredentialEvidenceSourceFileBoundaryKey(file.name)),
+    fileNameCounts.get(file.name) === 1
+      ? boundaries.get(getCredentialEvidenceUniqueFileNameBoundaryKey(file.name))
+      : undefined
+  );
 
 const readAccountsSearchFromHash = (hash: string): string => {
   const queryIndex = hash.indexOf('?');
@@ -291,26 +871,29 @@ async function refreshQuotaWithConfig<TState, TData>({
   setQuota,
   t,
   isCurrent,
+  requestScope,
 }: {
   config: QuotaConfig<TState, TData>;
   file: AuthFileItem;
   setQuota: QuotaSetter<TState>;
   t: TFunction;
   isCurrent: () => boolean;
+  requestScope?: AuthFilesApiRequestScope;
 }) {
   const storeKey = config.getStoreKey?.(file) ?? file.name;
   const cacheGeneration = captureQuotaCacheGeneration();
   try {
-    const data = await config.fetchQuota(file, t);
-    if (!isCurrent()) return false;
-    return commitIfQuotaCacheCurrent(cacheGeneration, () => {
+    const data = await config.fetchQuota(file, t, requestScope);
+    if (!isCurrent()) return null;
+    const committed = commitIfQuotaCacheCurrent(cacheGeneration, () => {
       setQuota((prev) => ({
         ...prev,
         [storeKey]: config.buildSuccessState(data, file),
       }));
     });
+    return committed ? data : null;
   } catch (error: unknown) {
-    if (!isCurrent()) return false;
+    if (!isCurrent()) return null;
     const message = error instanceof Error ? error.message : t('common.unknown_error');
     const status =
       typeof error === 'object' && error !== null && 'status' in error
@@ -331,7 +914,7 @@ async function refreshQuotaWithConfig<TState, TData>({
         };
       });
     });
-    return false;
+    return null;
   }
 }
 
@@ -353,15 +936,33 @@ export function AccountsPage() {
   const modelsLoadKeyRef = useRef('');
   const modelRulesLoadKeyRef = useRef('');
   const connectionFingerprint = useMemo(
-    () => createCodexInspectionConnectionFingerprint(apiBase, managementKey),
+    () => createCodexInspectionConnectionFingerprint(apiBase, managementKey) ?? '',
+    [apiBase, managementKey]
+  );
+  const authFilesRequestScope = useMemo(
+    () => ({ apiBase, managementKey }),
     [apiBase, managementKey]
   );
   const managerStorageAvailable =
     !featureAvailability.checking &&
     Boolean(featureAvailability.managerServiceBase) &&
     Boolean(managementKey);
+  const managerConnectionFingerprint = useMemo(
+    () =>
+      createCodexInspectionConnectionFingerprint(
+        featureAvailability.managerServiceBase ?? '',
+        managementKey
+      ),
+    [featureAvailability.managerServiceBase, managementKey]
+  );
   const requestHistoryAvailable =
     managerStorageAvailable && featureAvailability.requestMonitoringAvailable;
+  const credentialMutationHandlerRef = useRef<(mutation: AuthFilesCredentialMutation) => void>(
+    () => undefined
+  );
+  const handleCredentialMutation = useCallback((mutation: AuthFilesCredentialMutation) => {
+    credentialMutationHandlerRef.current(mutation);
+  }, []);
 
   const {
     files,
@@ -390,14 +991,18 @@ export function AccountsPage() {
     batchSetStatus,
     batchPatchFields,
     batchDelete,
-  } = useAuthFilesData({ connectionFingerprint });
+  } = useAuthFilesData({
+    connectionFingerprint,
+    requestScope: authFilesRequestScope,
+    onCredentialMutation: handleCredentialMutation,
+  });
 
   const [oauthViewMode, setOauthViewMode] = useState<'diagram' | 'list'>('list');
   const oauthState = useAuthFilesOauth({
     viewMode: oauthViewMode,
     files,
     connectionKey: connectionFingerprint,
-    requestScope: { apiBase, managementKey },
+    requestScope: authFilesRequestScope,
   });
   const {
     modelsLoading,
@@ -413,7 +1018,10 @@ export function AccountsPage() {
     showModels,
     refreshModels,
     invalidateModels,
-  } = useAuthFilesModels({ connectionKey: connectionFingerprint });
+  } = useAuthFilesModels({
+    connectionKey: connectionFingerprint,
+    requestScope: authFilesRequestScope,
+  });
   const antigravityQuota = useQuotaStore((state) => state.antigravityQuota);
   const claudeQuota = useQuotaStore((state) => state.claudeQuota);
   const codexQuota = useQuotaStore((state) => state.codexQuota);
@@ -438,14 +1046,21 @@ export function AccountsPage() {
   const [activeView, setActiveView] = useState<AccountsView>(
     () => initialWorkspaceUrlState.current.view
   );
+  const [documentVisible, setDocumentVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  );
+  const previousDocumentVisibleRef = useRef(documentVisible);
   const [healthMode, setHealthMode] = useState<CredentialHealthInspectionMode>(
     () => initialWorkspaceUrlState.current.healthMode
   );
+  const headerSnapshotRequestGenerationRef = useRef(0);
   const {
+    snapshot: inspectionSnapshot,
     results: inspectionResults,
     loading: inspectionLoading,
     refresh: loadInspectionSummary,
     applySnapshot: applyInspectionSnapshot,
+    invalidatePendingRefresh: invalidateInspectionSummaryRequest,
   } = useCredentialInspectionSnapshot({
     connectionFingerprint,
     checking: featureAvailability.checking,
@@ -453,9 +1068,16 @@ export function AccountsPage() {
     managerServiceBase: featureAvailability.managerServiceBase ?? '',
     managementKey,
   });
+  const inspectionSnapshotRef = useRef(inspectionSnapshot);
+  inspectionSnapshotRef.current = inspectionSnapshot;
   const [quotaRefreshing, setQuotaRefreshing] = useState(false);
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [accountHistoryRefreshRevision, setAccountHistoryRefreshRevision] = useState(0);
+  const [accountHistoryAutoRefreshRevision, setAccountHistoryAutoRefreshRevision] = useState(0);
+  const [accountQuotaRefreshRevision, setAccountQuotaRefreshRevision] = useState(0);
+  const [suppressedInspectionResultKeys, setSuppressedInspectionResultKeys] = useState<Set<string>>(
+    () => readCompletedAccountReauthResultKeys(connectionFingerprint)
+  );
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(
     () => initialWorkspaceUrlState.current.account
@@ -491,6 +1113,8 @@ export function AccountsPage() {
   const [highlightedAccountSortIndex, setHighlightedAccountSortIndex] = useState(-1);
   const [batchPriorityOpen, setBatchPriorityOpen] = useState(false);
   const [batchPriorityValue, setBatchPriorityValue] = useState('');
+  const [batchWeightOpen, setBatchWeightOpen] = useState(false);
+  const [batchWeightValue, setBatchWeightValue] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => initialWorkspaceUrlState.current.pageSize);
   const [usageRows, setUsageRows] = useState<UsageValueRow[]>([]);
@@ -532,6 +1156,7 @@ export function AccountsPage() {
         ? initialWorkspaceUrlState.current.editorProvider
         : null
   );
+  const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const [detailEventsRowKey, setDetailEventsRowKey] = useState<string | null>(null);
@@ -552,24 +1177,87 @@ export function AccountsPage() {
   const [quotaCooldowns, setQuotaCooldowns] = useState<Map<string, QuotaCooldownInfo>>(
     () => new Map()
   );
-  const headerSnapshotLoadKey = useMemo(
+  const credentialEvidenceScopeKey = useMemo(
     () =>
-      JSON.stringify({
+      createCredentialInspectionSnapshotScopeKey(
         connectionFingerprint,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
-        requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
-      }),
-    [
-      connectionFingerprint,
-      featureAvailability.managerServiceBase,
-      featureAvailability.requestMonitoringAvailable,
-      managementKey,
-    ]
+        featureAvailability.managerServiceBase ?? '',
+        managementKey
+      ),
+    [connectionFingerprint, featureAvailability.managerServiceBase, managementKey]
   );
-  const [headerSnapshots, setHeaderSnapshots] = useState<UsageHeaderSnapshot[]>([]);
-  const [headerSnapshotGeneratedAtMs, setHeaderSnapshotGeneratedAtMs] = useState(0);
+  const activeCredentialEvidenceScopeKeyRef = useRef(credentialEvidenceScopeKey);
+  activeCredentialEvidenceScopeKeyRef.current = credentialEvidenceScopeKey;
+  const [credentialEvidenceBoundarySessionState, setCredentialEvidenceBoundarySessionState] =
+    useState<AccountCredentialEvidenceBoundarySessionState>(() => ({
+      scopeKey: credentialEvidenceScopeKey,
+      ...loadAccountCredentialEvidenceBoundaryState(credentialEvidenceScopeKey),
+    }));
+  const credentialEvidenceBoundaries = useMemo(
+    () =>
+      credentialEvidenceBoundarySessionState.scopeKey === credentialEvidenceScopeKey
+        ? credentialEvidenceBoundarySessionState.evidence
+        : new Map<string, AccountCredentialEvidenceBoundary>(),
+    [credentialEvidenceBoundarySessionState, credentialEvidenceScopeKey]
+  );
+  const credentialStatusBoundaries = useMemo(
+    () =>
+      credentialEvidenceBoundarySessionState.scopeKey === credentialEvidenceScopeKey
+        ? credentialEvidenceBoundarySessionState.status
+        : new Map<string, AccountCredentialEvidenceBoundary>(),
+    [credentialEvidenceBoundarySessionState, credentialEvidenceScopeKey]
+  );
+  const setCredentialEvidenceBoundaries = useCallback(
+    (update: SetStateAction<Map<string, AccountCredentialEvidenceBoundary>>) => {
+      setCredentialEvidenceBoundarySessionState((current) => {
+        const active =
+          current.scopeKey === credentialEvidenceScopeKey
+            ? current
+            : {
+                scopeKey: credentialEvidenceScopeKey,
+                ...loadAccountCredentialEvidenceBoundaryState(credentialEvidenceScopeKey),
+              };
+        const evidence = typeof update === 'function' ? update(active.evidence) : update;
+        return evidence === active.evidence && active === current
+          ? current
+          : { ...active, evidence };
+      });
+    },
+    [credentialEvidenceScopeKey]
+  );
+  const setCredentialStatusBoundaries = useCallback(
+    (update: SetStateAction<Map<string, AccountCredentialEvidenceBoundary>>) => {
+      setCredentialEvidenceBoundarySessionState((current) => {
+        const active =
+          current.scopeKey === credentialEvidenceScopeKey
+            ? current
+            : {
+                scopeKey: credentialEvidenceScopeKey,
+                ...loadAccountCredentialEvidenceBoundaryState(credentialEvidenceScopeKey),
+              };
+        const status = typeof update === 'function' ? update(active.status) : update;
+        return status === active.status && active === current ? current : { ...active, status };
+      });
+    },
+    [credentialEvidenceScopeKey]
+  );
+  const headerSnapshotLoadKey = useMemo(() => {
+    return JSON.stringify({
+      connectionFingerprint,
+      managerConnectionFingerprint,
+      requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
+    });
+  }, [
+    connectionFingerprint,
+    featureAvailability.requestMonitoringAvailable,
+    managerConnectionFingerprint,
+  ]);
+  const headerSnapshots = useUsageHeaderSnapshotStore((state) => state.items);
+  const headerSnapshotGeneratedAtMs = useUsageHeaderSnapshotStore((state) => state.generatedAtMs);
+  const headerSnapshotsLoadedAtMs = useUsageHeaderSnapshotStore((state) => state.loadedAtMs);
   const [headerSnapshotLoadedKey, setHeaderSnapshotLoadedKey] = useState('');
+  const headerSnapshotLoadKeyRef = useRef(headerSnapshotLoadKey);
+  headerSnapshotLoadKeyRef.current = headerSnapshotLoadKey;
   const [accountDisplayMode, setAccountDisplayMode] = useState<QuotaAccountDisplayMode>(
     () => initialWorkspaceUrlState.current.accountDisplayMode
   );
@@ -577,17 +1265,21 @@ export function AccountsPage() {
   const detailEventsRequestIdRef = useRef(0);
   const detailEventsAutoLoadKeyRef = useRef<string | null>(null);
   const quotaCooldownRequestIdRef = useRef(0);
-  const headerSnapshotReqIdRef = useRef(0);
-  const headerSnapshotAbortRef = useRef<AbortController | null>(null);
   const accountHistoryAutoAbortRef = useRef<AbortController | null>(null);
   const accountHistoryTargetAbortRef = useRef<AbortController | null>(null);
-  const accountHistoryRequestVersionsRef = useRef<Map<string, number>>(new Map());
+  const accountHistoryRequestVersionsRef = useRef<Map<string, symbol>>(new Map());
   const accountHistoryPendingRequestsRef = useRef<Set<symbol>>(new Set());
   const accountHistoryAutoLoadKeyRef = useRef<string | null>(null);
+  const accountHistoryAutoRequestContextKeyRef = useRef<string | null>(null);
   const accountWindowUsageReqIdRef = useRef(0);
   const accountWindowUsageAbortRef = useRef<AbortController | null>(null);
   const accountWindowUsageAutoLoadKeyRef = useRef<string | null>(null);
-  const quotaRefreshBatchPromiseRef = useRef<Promise<void> | null>(null);
+  const quotaRefreshBatchRef = useRef<{
+    connectionFingerprint: string;
+    generation: number;
+    promise: Promise<void>;
+  } | null>(null);
+  const quotaRefreshGenerationRef = useRef(0);
   const accountHistoryRefreshRequestIdRef = useRef(0);
   const accountHistoryRefreshPromiseRef = useRef<{
     key: string;
@@ -597,6 +1289,44 @@ export function AccountsPage() {
   const usageValuesAutoLoadKeyRef = useRef<string | null>(null);
   const accountActionCandidatesReqIdRef = useRef(0);
   const accountActionCandidatesRef = useRef<AccountActionCandidate[]>([]);
+  const quotaCooldownsRef = useRef<Map<string, QuotaCooldownInfo>>(new Map());
+  const accountActionCandidatesLoadedRef = useRef(false);
+  const quotaCooldownsLoadedRef = useRef(false);
+  const consumedCredentialMutationMarkerIdsRef = useRef<Set<string>>(new Set());
+  const credentialMutationMarkerSynchronizationsRef = useRef<Map<string, Promise<boolean>>>(
+    new Map()
+  );
+  const directReauthSynchronizationsRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const synchronizePendingAccountDirectReauthsRef = useRef<
+    (options?: { reload?: boolean }) => Promise<boolean>
+  >(async () => false);
+  const synchronizedInspectionMutationKeysRef = useRef<Set<string>>(new Set());
+  const synchronizingInspectionMutationsRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const pendingInspectionMutationSnapshotsRef = useRef<Map<string, CredentialInspectionSnapshot>>(
+    new Map()
+  );
+  const capturePendingInspectionEvidenceBaselineRef = useRef<
+    (snapshot: CredentialInspectionSnapshot) => void
+  >(() => undefined);
+  const capturePendingHeaderEvidenceBaselineRef = useRef<
+    (response: UsageHeaderSnapshotsResponse) => void
+  >(() => undefined);
+  const capturePendingActionEvidenceBaselineRef = useRef<
+    (items: readonly AccountActionCandidate[]) => void
+  >(() => undefined);
+  const capturePendingCooldownEvidenceBaselineRef = useRef<
+    (items: readonly QuotaCooldownInfo[]) => void
+  >(() => undefined);
+  const invalidateProviderCredentialEvidenceRef = useRef<
+    (
+      provider: string,
+      createdAtMs: number,
+      options?: {
+        credentialFiles?: readonly AuthFileItem[];
+        supersedeRequests?: boolean;
+      }
+    ) => AuthFileItem[]
+  >(() => []);
   const lastWorkspaceNavigationRef = useRef<string | null>(null);
   const syncingWorkspaceLocationRef = useRef(false);
   const hasProcessedInitialWorkspaceLocationRef = useRef(false);
@@ -622,6 +1352,46 @@ export function AccountsPage() {
   });
 
   useLayoutEffect(() => {
+    const previousConnectionFingerprint = oauthEditorConnectionFingerprintRef.current;
+    oauthEditorConnectionFingerprintRef.current = connectionFingerprint;
+    if (previousConnectionFingerprint === connectionFingerprint) return;
+    setOauthExcludedEditorProvider(null);
+    setOauthModelAliasEditorProvider(null);
+    setAuthJsonPasteOpen(false);
+    setCodexReauthTarget(null);
+    quotaRefreshGenerationRef.current += 1;
+    quotaRefreshBatchRef.current = null;
+    quotaRequestVersionsRef.current.forEach((version, key) => {
+      quotaRequestVersionsRef.current.set(key, version + 1);
+    });
+    setQuotaRefreshing(false);
+  }, [connectionFingerprint]);
+
+  useLayoutEffect(() => {
+    setCredentialEvidenceBoundarySessionState((current) =>
+      current.scopeKey === credentialEvidenceScopeKey
+        ? current
+        : {
+            scopeKey: credentialEvidenceScopeKey,
+            ...loadAccountCredentialEvidenceBoundaryState(credentialEvidenceScopeKey),
+          }
+    );
+  }, [credentialEvidenceScopeKey]);
+
+  useLayoutEffect(() => {
+    if (
+      !credentialEvidenceScopeKey ||
+      credentialEvidenceBoundarySessionState.scopeKey !== credentialEvidenceScopeKey
+    ) {
+      return;
+    }
+    saveAccountCredentialEvidenceBoundaryState(credentialEvidenceScopeKey, {
+      evidence: credentialEvidenceBoundarySessionState.evidence,
+      status: credentialEvidenceBoundarySessionState.status,
+    });
+  }, [credentialEvidenceBoundarySessionState, credentialEvidenceScopeKey]);
+
+  useLayoutEffect(() => {
     if (
       featureAvailability.checking ||
       managerStorageAvailable ||
@@ -632,145 +1402,313 @@ export function AccountsPage() {
     setOperationalFilter('all');
   }, [featureAvailability.checking, managerStorageAvailable, operationalFilter]);
 
-  const loadQuotaCooldowns = useCallback(async () => {
-    const requestId = quotaCooldownRequestIdRef.current + 1;
-    quotaCooldownRequestIdRef.current = requestId;
-    if (!featureAvailability.managerServiceBase) {
-      setQuotaCooldowns((current) => (current.size === 0 ? current : new Map()));
-      return;
-    }
-
-    try {
-      const items = await usageServiceApi.getActiveQuotaCooldowns(
-        featureAvailability.managerServiceBase,
-        managementKey
-      );
-      const next = new Map<string, QuotaCooldownInfo>();
-      for (const item of items) {
-        if (!item.authFileName) continue;
-        const key = getAuthFileCodexInspectionKeyForIdentity({
-          fileName: item.authFileName,
-          provider: item.provider,
-          authIndex: item.authIndex ?? null,
-          accountSnapshot: item.accountSnapshot,
-        });
-        const existing = next.get(key);
-        if (!existing || (item.recoverAtMs ?? 0) > (existing.recoverAtMs ?? 0)) {
-          next.set(key, item);
-        }
+  const loadQuotaCooldowns = useCallback(
+    async (options: { throwOnError?: boolean } = {}) => {
+      const requestId = quotaCooldownRequestIdRef.current + 1;
+      quotaCooldownRequestIdRef.current = requestId;
+      if (!featureAvailability.managerServiceBase) {
+        quotaCooldownsRef.current = new Map();
+        setQuotaCooldowns((current) => (current.size === 0 ? current : new Map()));
+        return;
       }
-      if (quotaCooldownRequestIdRef.current !== requestId) return;
-      setQuotaCooldowns(next);
-    } catch {
-      // Cooldown badges are a derived hint; keep the last known state on transient failures.
-    }
-  }, [featureAvailability.managerServiceBase, managementKey]);
 
-  const loadHeaderSnapshots = useCallback(async () => {
-    if (featureAvailability.checking) {
-      headerSnapshotReqIdRef.current += 1;
-      headerSnapshotAbortRef.current?.abort();
-      headerSnapshotAbortRef.current = null;
-      return;
-    }
-    if (
-      !featureAvailability.requestMonitoringAvailable ||
-      !featureAvailability.managerServiceBase
-    ) {
-      headerSnapshotReqIdRef.current += 1;
-      headerSnapshotAbortRef.current?.abort();
-      headerSnapshotAbortRef.current = null;
-      setHeaderSnapshots((current) => (current.length === 0 ? current : []));
-      setHeaderSnapshotGeneratedAtMs(0);
-      setHeaderSnapshotLoadedKey(headerSnapshotLoadKey);
-      return;
-    }
-
-    const id = ++headerSnapshotReqIdRef.current;
-    headerSnapshotAbortRef.current?.abort();
-    const controller = new AbortController();
-    headerSnapshotAbortRef.current = controller;
-    try {
-      const response = await monitoringAnalyticsApi.getHeaderSnapshots(
-        featureAvailability.managerServiceBase,
-        managementKey,
-        {
-          days: 30,
-          limit: 1000,
-        },
-        controller.signal
-      );
-      if (id !== headerSnapshotReqIdRef.current) return;
-      setHeaderSnapshots(response.items ?? []);
-      setHeaderSnapshotGeneratedAtMs(
-        Number.isFinite(response.generated_at_ms) && response.generated_at_ms > 0
-          ? response.generated_at_ms
-          : Date.now()
-      );
-    } catch {
-      // Header snapshots are passive diagnostics; transient failures should not block accounts.
-    } finally {
-      if (id === headerSnapshotReqIdRef.current) {
-        if (headerSnapshotAbortRef.current === controller) {
-          headerSnapshotAbortRef.current = null;
+      try {
+        const items = await usageServiceApi.getActiveQuotaCooldowns(
+          featureAvailability.managerServiceBase,
+          managementKey
+        );
+        if (quotaCooldownRequestIdRef.current !== requestId) {
+          if (options.throwOnError) throw new Error(t('notification.load_failed'));
+          return;
         }
+        quotaCooldownsLoadedRef.current = true;
+        capturePendingCooldownEvidenceBaselineRef.current(items);
+        const next = new Map<string, QuotaCooldownInfo>();
+        for (const item of items) {
+          if (!item.authFileName) continue;
+          const key = getAuthFileCodexInspectionKeyForIdentity({
+            fileName: item.authFileName,
+            provider: item.provider,
+            authIndex: item.authIndex ?? null,
+            accountSnapshot: item.accountSnapshot,
+          });
+          const existing = next.get(key);
+          if (!existing || (item.recoverAtMs ?? 0) > (existing.recoverAtMs ?? 0)) {
+            next.set(key, item);
+          }
+        }
+        quotaCooldownsRef.current = next;
+        setQuotaCooldowns(next);
+      } catch (error) {
+        // Cooldown badges are a derived hint; keep the last known state on transient failures.
+        if (options.throwOnError) throw error;
+      }
+    },
+    [featureAvailability.managerServiceBase, managementKey, t]
+  );
+
+  const loadSharedHeaderSnapshots = useHeaderSnapshotsLoader({
+    serviceBase:
+      !featureAvailability.checking && featureAvailability.requestMonitoringAvailable
+        ? featureAvailability.managerServiceBase
+        : '',
+    managementKey,
+    requestGenerationRef: headerSnapshotRequestGenerationRef,
+    onResponse: (response) => capturePendingHeaderEvidenceBaselineRef.current(response),
+  });
+  const loadHeaderSnapshots = useCallback(async () => {
+    if (featureAvailability.checking) return;
+    try {
+      await loadSharedHeaderSnapshots();
+    } finally {
+      if (headerSnapshotLoadKeyRef.current === headerSnapshotLoadKey) {
         setHeaderSnapshotLoadedKey(headerSnapshotLoadKey);
       }
     }
-  }, [
-    featureAvailability.checking,
-    featureAvailability.managerServiceBase,
-    featureAvailability.requestMonitoringAvailable,
-    headerSnapshotLoadKey,
-    managementKey,
-  ]);
+  }, [featureAvailability.checking, headerSnapshotLoadKey, loadSharedHeaderSnapshots]);
 
-  const loadAccountActionCandidates = useCallback(async () => {
-    const requestId = accountActionCandidatesReqIdRef.current + 1;
-    accountActionCandidatesReqIdRef.current = requestId;
+  const loadAccountActionCandidates = useCallback(
+    async (options: { throwOnError?: boolean } = {}) => {
+      const requestId = accountActionCandidatesReqIdRef.current + 1;
+      accountActionCandidatesReqIdRef.current = requestId;
 
-    if (featureAvailability.checking || !featureAvailability.managerServiceBase) {
-      accountActionCandidatesRef.current = [];
-      setAccountActionCandidates([]);
-      setAccountActionCandidatesLoading(false);
-      setAccountActionCandidatesError('');
-      return;
-    }
-
-    setAccountActionCandidatesLoading(true);
-    setAccountActionCandidatesError('');
-    try {
-      const response = await usageServiceApi.listAccountActionCandidates(
-        featureAvailability.managerServiceBase,
-        managementKey,
-        'pending',
-        500
-      );
-      if (accountActionCandidatesReqIdRef.current !== requestId) return;
-      const items = response.items ?? [];
-      accountActionCandidatesRef.current = items;
-      setAccountActionCandidates(items);
-    } catch (err: unknown) {
-      if (accountActionCandidatesReqIdRef.current !== requestId) return;
-      setAccountActionCandidatesError(
-        err instanceof Error ? err.message : t('notification.load_failed')
-      );
-    } finally {
-      if (accountActionCandidatesReqIdRef.current === requestId) {
+      if (featureAvailability.checking || !featureAvailability.managerServiceBase) {
+        accountActionCandidatesRef.current = [];
+        setAccountActionCandidates([]);
         setAccountActionCandidatesLoading(false);
+        setAccountActionCandidatesError('');
+        return;
       }
+
+      setAccountActionCandidatesLoading(true);
+      setAccountActionCandidatesError('');
+      try {
+        const response = await usageServiceApi.listAccountActionCandidates(
+          featureAvailability.managerServiceBase,
+          managementKey,
+          'pending',
+          500
+        );
+        if (accountActionCandidatesReqIdRef.current !== requestId) {
+          if (options.throwOnError) throw new Error(t('notification.load_failed'));
+          return;
+        }
+        const items = response.items ?? [];
+        accountActionCandidatesLoadedRef.current = true;
+        capturePendingActionEvidenceBaselineRef.current(items);
+        accountActionCandidatesRef.current = items;
+        setAccountActionCandidates(items);
+      } catch (err: unknown) {
+        if (accountActionCandidatesReqIdRef.current !== requestId) {
+          if (options.throwOnError) throw err;
+          return;
+        }
+        setAccountActionCandidatesError(
+          err instanceof Error ? err.message : t('notification.load_failed')
+        );
+        if (options.throwOnError) throw err;
+      } finally {
+        if (accountActionCandidatesReqIdRef.current === requestId) {
+          setAccountActionCandidatesLoading(false);
+        }
+      }
+    },
+    [featureAvailability.checking, featureAvailability.managerServiceBase, managementKey, t]
+  );
+
+  const reloadInspectionCredentialArtifacts = useCallback(
+    async (
+      options: {
+        requireSuccessfulReload?: boolean;
+        loadCredentialsLast?: boolean;
+      } = {}
+    ): Promise<AuthFileItem[] | undefined> => {
+      const credentialReloadOptions = options.requireSuccessfulReload
+        ? { throwOnError: true }
+        : undefined;
+      const operationalReloads = [
+        loadQuotaCooldowns({ throwOnError: options.requireSuccessfulReload }),
+        loadAccountActionCandidates({ throwOnError: options.requireSuccessfulReload }),
+      ];
+      if (options.loadCredentialsLast) {
+        await Promise.all(operationalReloads);
+        return loadFiles(credentialReloadOptions);
+      }
+      const [reloadedFiles] = await Promise.all([
+        loadFiles(credentialReloadOptions),
+        ...operationalReloads,
+      ]);
+      return reloadedFiles;
+    },
+    [loadAccountActionCandidates, loadFiles, loadQuotaCooldowns]
+  );
+
+  const synchronizeExternalCredentialMutationMarkers = useCallback(async () => {
+    const markers = listAccountCredentialMutationMarkers(connectionFingerprint).filter(
+      (marker) => !consumedCredentialMutationMarkerIdsRef.current.has(marker.id)
+    );
+    if (markers.length === 0) return false;
+    const pendingSynchronization = credentialMutationMarkerSynchronizationsRef.current.get(
+      credentialEvidenceScopeKey
+    );
+    if (pendingSynchronization) return pendingSynchronization;
+
+    const synchronizationScopeKey = credentialEvidenceScopeKey;
+    const synchronization = (async () => {
+      try {
+        const markersByProvider = new Map<string, AccountCredentialMutationMarker[]>();
+        markers.forEach((marker) => {
+          const providerMarkers = markersByProvider.get(marker.provider) ?? [];
+          providerMarkers.push(marker);
+          markersByProvider.set(marker.provider, providerMarkers);
+        });
+        markersByProvider.forEach((providerMarkers, provider) => {
+          const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
+          invalidateProviderCredentialEvidenceRef.current(provider, markerAtMs);
+        });
+        const reloadedFiles = await reloadInspectionCredentialArtifacts({
+          requireSuccessfulReload: true,
+          loadCredentialsLast: true,
+        });
+        if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) return false;
+        if (!reloadedFiles) return false;
+        const consumedIds: string[] = [];
+        markersByProvider.forEach((providerMarkers, provider) => {
+          const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
+          const targetFiles = invalidateProviderCredentialEvidenceRef.current(
+            provider,
+            markerAtMs,
+            {
+              credentialFiles: reloadedFiles,
+              supersedeRequests: false,
+            }
+          );
+          if (targetFiles.length === 0) return;
+          providerMarkers.forEach((marker) => consumedIds.push(marker.id));
+        });
+        if (consumedIds.length === 0) return false;
+        consumedIds.forEach((id) => consumedCredentialMutationMarkerIdsRef.current.add(id));
+        acknowledgeAccountCredentialMutationMarkers(consumedIds);
+        return true;
+      } catch {
+        // Keep the marker for the next Accounts refresh when any required reload fails.
+        return false;
+      } finally {
+        credentialMutationMarkerSynchronizationsRef.current.delete(synchronizationScopeKey);
+      }
+    })();
+    credentialMutationMarkerSynchronizationsRef.current.set(
+      synchronizationScopeKey,
+      synchronization
+    );
+    return synchronization;
+  }, [connectionFingerprint, credentialEvidenceScopeKey, reloadInspectionCredentialArtifacts]);
+
+  const getInspectionCredentialMutationScopedKey = useCallback(
+    (
+      snapshot: CredentialInspectionSnapshot | null | undefined,
+      requireLatestCompletedRun: boolean
+    ) => {
+      if (!snapshot) return null;
+      const mutationKey = getServerCredentialMutationSyncKey(snapshot, {
+        requireLatestCompletedRun,
+      });
+      if (!mutationKey) return null;
+      return [credentialEvidenceScopeKey, mutationKey].join('\u001e');
+    },
+    [credentialEvidenceScopeKey]
+  );
+
+  const synchronizeInspectionCredentialMutations = useCallback(
+    async (
+      snapshot: CredentialInspectionSnapshot | null | undefined,
+      requireLatestCompletedRun: boolean
+    ) => {
+      const synchronizationScopeKey = credentialEvidenceScopeKey;
+      if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) return false;
+      const scopedKey = getInspectionCredentialMutationScopedKey(
+        snapshot,
+        requireLatestCompletedRun
+      );
+      if (!scopedKey) {
+        return false;
+      }
+      if (!requireLatestCompletedRun && snapshot) {
+        pendingInspectionMutationSnapshotsRef.current.set(scopedKey, snapshot);
+      }
+      if (synchronizedInspectionMutationKeysRef.current.has(scopedKey)) {
+        pendingInspectionMutationSnapshotsRef.current.delete(scopedKey);
+        return false;
+      }
+      const pending = synchronizingInspectionMutationsRef.current.get(scopedKey);
+      if (pending) return pending;
+
+      const coveredPendingSnapshots = new Map(pendingInspectionMutationSnapshotsRef.current);
+      const synchronization = (async () => {
+        try {
+          await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true });
+          if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) {
+            return false;
+          }
+          synchronizedInspectionMutationKeysRef.current.add(scopedKey);
+          coveredPendingSnapshots.forEach((pendingSnapshot, pendingKey) => {
+            if (pendingInspectionMutationSnapshotsRef.current.get(pendingKey) !== pendingSnapshot) {
+              return;
+            }
+            synchronizedInspectionMutationKeysRef.current.add(pendingKey);
+            pendingInspectionMutationSnapshotsRef.current.delete(pendingKey);
+          });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          synchronizingInspectionMutationsRef.current.delete(scopedKey);
+        }
+      })();
+      synchronizingInspectionMutationsRef.current.set(scopedKey, synchronization);
+      return synchronization;
+    },
+    [
+      credentialEvidenceScopeKey,
+      getInspectionCredentialMutationScopedKey,
+      reloadInspectionCredentialArtifacts,
+    ]
+  );
+
+  const retryPendingInspectionCredentialMutations = useCallback(async () => {
+    const pendingSnapshot = Array.from(
+      pendingInspectionMutationSnapshotsRef.current.entries()
+    ).find(([key]) => key.startsWith(`${credentialEvidenceScopeKey}\u001e`))?.[1];
+    if (!pendingSnapshot) return false;
+    return synchronizeInspectionCredentialMutations(pendingSnapshot, false);
+  }, [credentialEvidenceScopeKey, synchronizeInspectionCredentialMutations]);
+
+  const loadInspectionSummaryAndSynchronize = useCallback(async () => {
+    const refreshScopeKey = credentialEvidenceScopeKey;
+    const snapshot = await loadInspectionSummary();
+    if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
+    if (snapshot) capturePendingInspectionEvidenceBaselineRef.current(snapshot);
+    const synchronizedLatest = await synchronizeInspectionCredentialMutations(snapshot, true);
+    if (!synchronizedLatest) {
+      await retryPendingInspectionCredentialMutations();
     }
-  }, [featureAvailability.checking, featureAvailability.managerServiceBase, managementKey, t]);
+  }, [
+    credentialEvidenceScopeKey,
+    loadInspectionSummary,
+    retryPendingInspectionCredentialMutations,
+    synchronizeInspectionCredentialMutations,
+  ]);
 
   useLayoutEffect(() => {
     const prev = headerSnapshotContextRef.current;
-    if (
-      prev.managerServiceBase === featureAvailability.managerServiceBase &&
-      prev.managementKey === managementKey &&
-      prev.connectionFingerprint === connectionFingerprint &&
-      prev.checking === featureAvailability.checking &&
-      prev.requestMonitoringAvailable === featureAvailability.requestMonitoringAvailable
-    ) {
+    const connectionScopeChanged =
+      prev.managerServiceBase !== featureAvailability.managerServiceBase ||
+      prev.managementKey !== managementKey ||
+      prev.connectionFingerprint !== connectionFingerprint;
+    const availabilityChanged =
+      prev.checking !== featureAvailability.checking ||
+      prev.requestMonitoringAvailable !== featureAvailability.requestMonitoringAvailable;
+    if (!connectionScopeChanged && !availabilityChanged) {
       return;
     }
     headerSnapshotContextRef.current = {
@@ -781,9 +1719,6 @@ export function AccountsPage() {
       requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
     };
     quotaCooldownRequestIdRef.current += 1;
-    headerSnapshotReqIdRef.current += 1;
-    headerSnapshotAbortRef.current?.abort();
-    headerSnapshotAbortRef.current = null;
     accountHistoryAutoAbortRef.current?.abort();
     accountHistoryAutoAbortRef.current = null;
     accountHistoryTargetAbortRef.current?.abort();
@@ -793,7 +1728,16 @@ export function AccountsPage() {
     accountHistoryRequestVersionsRef.current.clear();
     accountHistoryPendingRequestsRef.current.clear();
     accountHistoryAutoLoadKeyRef.current = null;
+    accountHistoryAutoRequestContextKeyRef.current = null;
     accountActionCandidatesReqIdRef.current += 1;
+    accountActionCandidatesLoadedRef.current = false;
+    quotaCooldownsLoadedRef.current = false;
+    if (connectionScopeChanged) {
+      synchronizedInspectionMutationKeysRef.current.clear();
+      synchronizingInspectionMutationsRef.current.clear();
+      pendingInspectionMutationSnapshotsRef.current.clear();
+      directReauthSynchronizationsRef.current.clear();
+    }
     accountWindowUsageReqIdRef.current += 1;
     accountWindowUsageAbortRef.current?.abort();
     accountWindowUsageAbortRef.current = null;
@@ -803,10 +1747,9 @@ export function AccountsPage() {
     usageValuesAutoLoadKeyRef.current = null;
     detailEventsRequestIdRef.current += 1;
     detailEventsAutoLoadKeyRef.current = null;
+    quotaCooldownsRef.current = new Map();
     setQuotaCooldowns(new Map());
     setAccountActionCandidates([]);
-    setHeaderSnapshots((current) => (current.length === 0 ? current : []));
-    setHeaderSnapshotGeneratedAtMs(0);
     setHeaderSnapshotLoadedKey('');
     setAccountHistoryByRowKey((current) => (current.size === 0 ? current : new Map()));
     setAccountHistoryLoading(false);
@@ -829,6 +1772,7 @@ export function AccountsPage() {
     setDetailEventsRefreshing(false);
     setDetailEventsAppending(false);
     setDetailEventsError('');
+    setSuppressedInspectionResultKeys(readCompletedAccountReauthResultKeys(connectionFingerprint));
   }, [
     connectionFingerprint,
     featureAvailability.checking,
@@ -839,7 +1783,6 @@ export function AccountsPage() {
 
   useEffect(
     () => () => {
-      headerSnapshotAbortRef.current?.abort();
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryTargetAbortRef.current?.abort();
       accountWindowUsageAbortRef.current?.abort();
@@ -852,11 +1795,68 @@ export function AccountsPage() {
   const refreshOauthWorkspace = useCallback(async () => {
     await Promise.all([loadOauthExcluded(), loadOauthModelAlias()]);
   }, [loadOauthExcluded, loadOauthModelAlias]);
+  const refreshAccountsWorkspace = useCallback(async () => {
+    const refreshScopeKey = credentialEvidenceScopeKey;
+    const synchronizedDirectReauth = await synchronizePendingAccountDirectReauthsRef.current();
+    if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
+    const synchronizedExternalArtifacts = await synchronizeExternalCredentialMutationMarkers();
+    if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
+    const snapshot = await loadInspectionSummary();
+    if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
+    if (snapshot) capturePendingInspectionEvidenceBaselineRef.current(snapshot);
+    const synchronizedInspectionArtifacts = await synchronizeInspectionCredentialMutations(
+      snapshot,
+      true
+    );
+    const synchronizedPendingArtifacts = synchronizedInspectionArtifacts
+      ? false
+      : await retryPendingInspectionCredentialMutations();
+    if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
+    await Promise.all([
+      synchronizedInspectionArtifacts || synchronizedPendingArtifacts
+        ? Promise.resolve()
+        : synchronizedDirectReauth || synchronizedExternalArtifacts
+          ? Promise.resolve()
+          : loadFiles(),
+      loadHeaderSnapshots(),
+    ]);
+    setAccountHistoryAutoRefreshRevision((current) => current + 1);
+  }, [
+    credentialEvidenceScopeKey,
+    loadFiles,
+    loadHeaderSnapshots,
+    loadInspectionSummary,
+    retryPendingInspectionCredentialMutations,
+    synchronizeExternalCredentialMutationMarkers,
+    synchronizeInspectionCredentialMutations,
+  ]);
   const refreshActiveWorkspace = useAccountsWorkspaceRefresh(activeView, {
-    refreshAccounts: loadFiles,
-    refreshHealth: loadInspectionSummary,
+    refreshAccounts: refreshAccountsWorkspace,
+    refreshHealth: loadInspectionSummaryAndSynchronize,
     refreshOauth: refreshOauthWorkspace,
   });
+
+  const canLoadHeaderSnapshots =
+    activeView === 'accounts' &&
+    !featureAvailability.checking &&
+    featureAvailability.requestMonitoringAvailable &&
+    Boolean(featureAvailability.managerServiceBase);
+  const canLoadInspectionSummary =
+    activeView === 'accounts' &&
+    managerStorageAvailable &&
+    featureAvailability.serverCodexInspectionAvailable;
+  const refreshPassiveAccountsEvidence = useCallback(async () => {
+    await Promise.all([
+      canLoadHeaderSnapshots ? loadHeaderSnapshots() : Promise.resolve(),
+      canLoadInspectionSummary ? loadInspectionSummaryAndSynchronize() : Promise.resolve(),
+    ]);
+    setAccountHistoryAutoRefreshRevision((current) => current + 1);
+  }, [
+    canLoadHeaderSnapshots,
+    canLoadInspectionSummary,
+    loadHeaderSnapshots,
+    loadInspectionSummaryAndSynchronize,
+  ]);
 
   useHeaderRefresh(refreshActiveWorkspace);
 
@@ -865,9 +1865,52 @@ export function AccountsPage() {
   }, [connectionFingerprint, loadFiles]);
 
   useEffect(() => {
+    if (!connectionFingerprint || loading || error) return;
+    void synchronizePendingAccountDirectReauthsRef.current({ reload: false });
+  }, [connectionFingerprint, error, files, loading]);
+
+  useEffect(() => {
+    if (!connectionFingerprint || loading || error) return;
+    void synchronizeExternalCredentialMutationMarkers();
+  }, [connectionFingerprint, error, files, loading, synchronizeExternalCredentialMutationMarkers]);
+
+  useEffect(() => {
+    if (loading || error) return;
+    setCredentialEvidenceBoundaries((current) =>
+      releaseObservedRawStatusBoundaries(current, files)
+    );
+    setCredentialStatusBoundaries((current) => releaseObservedRawStatusBoundaries(current, files));
+  }, [error, files, loading, setCredentialEvidenceBoundaries, setCredentialStatusBoundaries]);
+
+  useEffect(() => {
     if (activeView === 'accounts') return;
     void refreshActiveWorkspace();
   }, [activeView, connectionFingerprint, refreshActiveWorkspace]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const updateVisibility = () => setDocumentVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const regainedVisibility = documentVisible && !previousDocumentVisibleRef.current;
+    previousDocumentVisibleRef.current = documentVisible;
+    if (!regainedVisibility || activeView !== 'accounts') return;
+    void refreshPassiveAccountsEvidence();
+  }, [activeView, documentVisible, refreshPassiveAccountsEvidence]);
+
+  useInterval(
+    () => {
+      void refreshPassiveAccountsEvidence();
+    },
+    activeView === 'accounts' &&
+      documentVisible &&
+      (canLoadHeaderSnapshots || canLoadInspectionSummary)
+      ? PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS
+      : null
+  );
 
   useEffect(
     () => () => {
@@ -901,16 +1944,989 @@ export function AccountsPage() {
 
   const handleSavePastedAuthJson = useCallback(
     async (type: AuthJsonInputType, fileName: string, jsonText: string) => {
+      const saveConnectionFingerprint = connectionFingerprint;
       await savePastedAuthJson(type, fileName, jsonText);
+      if (oauthEditorConnectionFingerprintRef.current !== saveConnectionFingerprint) return;
       setAuthJsonPasteOpen(false);
     },
-    [savePastedAuthJson]
+    [connectionFingerprint, savePastedAuthJson]
   );
 
+  const credentialFileNameCounts = useMemo(
+    () =>
+      files.reduce((counts, file) => {
+        counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
+        return counts;
+      }, new Map<string, number>()),
+    [files]
+  );
+
+  const buildCurrentCredentialEvidenceBoundary = useCallback(
+    ({
+      targetFiles,
+      fallbackFileNames = [],
+      sourceFileNames = [],
+      localAtMs = Date.now(),
+      actionCandidateItems,
+      quotaCooldownItems,
+    }: {
+      targetFiles: AuthFileItem[];
+      fallbackFileNames?: string[];
+      sourceFileNames?: string[];
+      localAtMs?: number;
+      actionCandidateItems?: readonly AccountActionCandidate[];
+      quotaCooldownItems?: Iterable<QuotaCooldownInfo>;
+    }): AccountCredentialEvidenceBoundary => {
+      const currentInspectionSnapshot = inspectionSnapshotRef.current;
+      const currentInspectionResults = currentInspectionSnapshot?.results ?? [];
+      const currentInspectionBySelectionKey = buildAccountInspectionBySelectionKey(
+        files,
+        currentInspectionResults
+      );
+      const currentHeaderLookup = buildUsageHeaderSnapshotLookup(headerSnapshots);
+      const fallbackNames = new Set(fallbackFileNames.map((name) => name.trim()).filter(Boolean));
+      const sourceNames = new Set(sourceFileNames.map((name) => name.trim()).filter(Boolean));
+      const targetIdentityKeys = new Set(targetFiles.map(getAuthFileCodexInspectionKeyForFile));
+      const uniqueTargetFileNames = new Set(
+        targetFiles
+          .filter((file) => credentialFileNameCounts.get(file.name) === 1)
+          .map((file) => file.name)
+      );
+      const getFilenameOnlyIdentityKey = (fileName: string) =>
+        getAuthFileCodexInspectionKeyForIdentity({ fileName });
+      let inspectionAtMs = 0;
+      let headerAtMs = 0;
+      let actionAtMs = 0;
+      let authenticationActionAtMs = 0;
+      let quotaActionAtMs = 0;
+      let cooldownAtMs = 0;
+      let rawStatusAtMs = 0;
+      const rawStatusMessages = new Set<string>();
+      const currentActionCandidates = actionCandidateItems ?? accountActionCandidatesRef.current;
+      const currentQuotaCooldowns = quotaCooldownItems ?? quotaCooldownsRef.current.values();
+
+      targetFiles.forEach((file) => {
+        const inspection = currentInspectionBySelectionKey.get(getAuthFileSelectionKey(file));
+        inspectionAtMs = Math.max(inspectionAtMs, inspection?.createdAtMs ?? 0);
+        const headerSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
+          currentHeaderLookup,
+          file
+        );
+        headerAtMs = Math.max(headerAtMs, headerSnapshot?.timestamp_ms ?? 0);
+        const rawStatusMessage = readAccountRawStatusMessage(file);
+        if (rawStatusMessage) rawStatusMessages.add(rawStatusMessage);
+        rawStatusAtMs = Math.max(rawStatusAtMs, readAuthFileUpdatedAtMs(file) ?? 0);
+      });
+
+      if (fallbackNames.size > 0 || sourceNames.size > 0) {
+        currentInspectionResults.forEach((result) => {
+          const fileName = result.fileName.trim();
+          const identityKey = getAuthFileCodexInspectionKeyForIdentity({
+            fileName,
+            runtimeId: result.runtimeId,
+            provider: result.provider,
+            authIndex: result.authIndex,
+            accountId: result.accountId,
+            accountSnapshot: result.accountSnapshot,
+          });
+          if (
+            !sourceNames.has(fileName) &&
+            (!fallbackNames.has(fileName) || identityKey !== getFilenameOnlyIdentityKey(fileName))
+          ) {
+            return;
+          }
+          inspectionAtMs = Math.max(inspectionAtMs, result.createdAtMs);
+        });
+        headerSnapshots.forEach((snapshot) => {
+          const fileName = snapshot.auth_file_snapshot?.trim() ?? '';
+          const authIndex =
+            snapshot.auth_index === null || snapshot.auth_index === undefined
+              ? ''
+              : String(snapshot.auth_index).trim();
+          if (!sourceNames.has(fileName) && (!fallbackNames.has(fileName) || authIndex)) return;
+          headerAtMs = Math.max(headerAtMs, snapshot.timestamp_ms);
+        });
+        files.forEach((file) => {
+          if (!sourceNames.has(file.name)) return;
+          const rawStatusMessage = readAccountRawStatusMessage(file);
+          if (rawStatusMessage) rawStatusMessages.add(rawStatusMessage);
+          rawStatusAtMs = Math.max(rawStatusAtMs, readAuthFileUpdatedAtMs(file) ?? 0);
+        });
+      }
+
+      currentActionCandidates.forEach((candidate) => {
+        const fileName = candidate.authFileName.trim();
+        const identityKey = getAccountOperationalItemIdentityKey(candidate);
+        const matchesTarget =
+          targetIdentityKeys.has(identityKey) ||
+          (uniqueTargetFileNames.has(fileName) &&
+            identityKey === getFilenameOnlyIdentityKey(fileName));
+        const matchesFallback =
+          fallbackNames.has(fileName) && identityKey === getFilenameOnlyIdentityKey(fileName);
+        if (!sourceNames.has(fileName) && !matchesTarget && !matchesFallback) return;
+        const candidateAtMs = Math.max(
+          candidate.updatedAtMs,
+          candidate.lastSeenAtMs,
+          candidate.createdAtMs
+        );
+        actionAtMs = Math.max(actionAtMs, candidateAtMs);
+        const actionType = candidate.actionType.trim().toLowerCase();
+        if (actionType === 'reauth' || actionType === 'delete') {
+          authenticationActionAtMs = Math.max(authenticationActionAtMs, candidateAtMs);
+        } else if (actionType === 'disable' || actionType === 'enable') {
+          quotaActionAtMs = Math.max(quotaActionAtMs, candidateAtMs);
+        }
+      });
+      for (const cooldown of currentQuotaCooldowns) {
+        const fileName = cooldown.authFileName.trim();
+        const identityKey = getAccountOperationalItemIdentityKey(cooldown);
+        const matchesTarget =
+          targetIdentityKeys.has(identityKey) ||
+          (uniqueTargetFileNames.has(fileName) &&
+            identityKey === getFilenameOnlyIdentityKey(fileName));
+        const matchesFallback =
+          fallbackNames.has(fileName) && identityKey === getFilenameOnlyIdentityKey(fileName);
+        if (!sourceNames.has(fileName) && !matchesTarget && !matchesFallback) continue;
+        cooldownAtMs = Math.max(
+          cooldownAtMs,
+          cooldown.disabledAtMs ?? 0,
+          cooldown.createdAtMs ?? 0
+        );
+      }
+
+      return {
+        localAtMs,
+        inspectionAtMs,
+        inspectionBaselinePending: currentInspectionSnapshot === null,
+        headerAtMs,
+        headerBaselinePending:
+          !featureAvailability.checking &&
+          featureAvailability.requestMonitoringAvailable &&
+          Boolean(featureAvailability.managerServiceBase) &&
+          headerSnapshotsLoadedAtMs <= 0,
+        actionAtMs,
+        actionBaselinePending: managerStorageAvailable && !accountActionCandidatesLoadedRef.current,
+        authenticationActionAtMs,
+        authenticationActionBaselinePending: false,
+        quotaActionAtMs,
+        quotaActionBaselinePending: false,
+        cooldownAtMs,
+        cooldownBaselinePending: managerStorageAvailable && !quotaCooldownsLoadedRef.current,
+        fallbackInspectionAtMs: 0,
+        fallbackHeaderAtMs: 0,
+        fallbackActionAtMs: 0,
+        fallbackCooldownAtMs: 0,
+        rawStatusAtMs,
+        rawStatusMessages: Array.from(rawStatusMessages),
+      };
+    },
+    [
+      credentialFileNameCounts,
+      featureAvailability.checking,
+      featureAvailability.managerServiceBase,
+      featureAvailability.requestMonitoringAvailable,
+      files,
+      headerSnapshots,
+      headerSnapshotsLoadedAtMs,
+      managerStorageAvailable,
+    ]
+  );
+
+  const invalidateCodexCredentialEvidenceForSourceFiles = useCallback(
+    (fileNames: string[]): void => {
+      const names = new Set(fileNames.map((name) => name.trim()).filter(Boolean));
+      if (names.size === 0) return;
+      headerSnapshotRequestGenerationRef.current += 1;
+      invalidateInspectionSummaryRequest();
+      quotaCooldownRequestIdRef.current += 1;
+      accountActionCandidatesReqIdRef.current += 1;
+      setAccountActionCandidatesLoading(false);
+      const matchedFiles = files.filter((file) => names.has(file.name));
+      const invalidatedAtMs = Date.now();
+      const boundaryEntries: Array<readonly [string, AccountCredentialEvidenceBoundary]> = [
+        ...Array.from(
+          names,
+          (name) =>
+            [
+              getCredentialEvidenceSourceFileBoundaryKey(name),
+              mirrorAccountCredentialEvidenceBoundaryToFallback(
+                buildCurrentCredentialEvidenceBoundary({
+                  targetFiles: [],
+                  sourceFileNames: [name],
+                  localAtMs: invalidatedAtMs,
+                })
+              ),
+            ] as const
+        ),
+        ...matchedFiles.map(
+          (file) =>
+            [
+              getAuthFileSelectionKey(file),
+              buildCurrentCredentialEvidenceBoundary({
+                targetFiles: [file],
+                localAtMs: invalidatedAtMs,
+              }),
+            ] as const
+        ),
+      ];
+      setCredentialEvidenceBoundaries((current) =>
+        upsertAccountCredentialEvidenceBoundaries(current, boundaryEntries)
+      );
+
+      const requestKeys = new Set<string>();
+      matchedFiles.forEach((file) => {
+        if (normalizeAccountProvider(file) !== CODEX_CONFIG.type) return;
+        requestKeys.add(CODEX_CONFIG.getStoreKey?.(file) ?? file.name);
+        requestKeys.add(file.name);
+      });
+      requestKeys.forEach((key) => {
+        beginAccountQuotaRequest(quotaRequestVersionsRef.current, `${CODEX_CONFIG.type}:${key}`);
+      });
+      setCodexQuota((current) => {
+        let changed = false;
+        const next = { ...current };
+        Object.entries(current).forEach(([key, state]) => {
+          const scopedName = state.authFileName?.trim() ?? '';
+          if (!names.has(key) && (!scopedName || !names.has(scopedName)) && !requestKeys.has(key)) {
+            return;
+          }
+          delete next[key];
+          changed = true;
+        });
+        return changed ? next : current;
+      });
+    },
+    [
+      buildCurrentCredentialEvidenceBoundary,
+      files,
+      invalidateInspectionSummaryRequest,
+      setCredentialEvidenceBoundaries,
+      setCodexQuota,
+    ]
+  );
+
+  const invalidateCodexCredentialEvidenceForSelectionKeys = useCallback(
+    (selectionKeys: string[]): void => {
+      const keys = new Set(selectionKeys.filter((key) => key.length > 0));
+      if (keys.size === 0) return;
+      headerSnapshotRequestGenerationRef.current += 1;
+      invalidateInspectionSummaryRequest();
+      quotaCooldownRequestIdRef.current += 1;
+      accountActionCandidatesReqIdRef.current += 1;
+      setAccountActionCandidatesLoading(false);
+      const matchedFiles = files.filter((file) => keys.has(getAuthFileSelectionKey(file)));
+      const invalidatedAtMs = Date.now();
+      const relevantFileNames = new Set(
+        Array.from(keys, getAuthFileNameFromSelectionKey)
+          .map((name) => name.trim())
+          .filter(Boolean)
+      );
+      matchedFiles.forEach((file) => relevantFileNames.add(file.name));
+      const fallbackBoundariesByFileName = new Map(
+        Array.from(relevantFileNames, (fileName) => [
+          fileName,
+          toFallbackAccountCredentialEvidenceBoundary(
+            buildCurrentCredentialEvidenceBoundary({
+              targetFiles: [],
+              fallbackFileNames: [fileName],
+              localAtMs: invalidatedAtMs,
+            })
+          ),
+        ])
+      );
+      const exactBoundariesBySelectionKey = new Map<string, AccountCredentialEvidenceBoundary>();
+      const replacementBoundariesByFileName = new Map<string, AccountCredentialEvidenceBoundary>();
+      matchedFiles.forEach((file) => {
+        const replacementBoundary = mergeAccountCredentialEvidenceBoundaries(
+          buildCurrentCredentialEvidenceBoundary({
+            targetFiles: [file],
+            localAtMs: invalidatedAtMs,
+          }),
+          fallbackBoundariesByFileName.get(file.name)
+        );
+        exactBoundariesBySelectionKey.set(getAuthFileSelectionKey(file), replacementBoundary);
+        replacementBoundariesByFileName.set(
+          file.name,
+          mergeAccountCredentialEvidenceBoundaries(
+            replacementBoundariesByFileName.get(file.name),
+            replacementBoundary
+          )
+        );
+      });
+      setCredentialEvidenceBoundaries((current) =>
+        upsertAccountCredentialEvidenceBoundaries(
+          current,
+          Array.from(keys, (key) => {
+            const fileName = getAuthFileNameFromSelectionKey(key).trim();
+            return [
+              key,
+              exactBoundariesBySelectionKey.get(key) ??
+                replacementBoundariesByFileName.get(fileName) ??
+                fallbackBoundariesByFileName.get(fileName) ??
+                EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+            ] as const;
+          })
+        )
+      );
+
+      const invalidatedSelectionKeys = new Set(
+        matchedFiles.map((file) => getAuthFileSelectionKey(file))
+      );
+      const invalidatedStoreKeys = new Set(
+        matchedFiles.map((file) => CODEX_CONFIG.getStoreKey?.(file) ?? file.name)
+      );
+      const preservedFiles = files.filter(
+        (file) =>
+          relevantFileNames.has(file.name) &&
+          !invalidatedSelectionKeys.has(getAuthFileSelectionKey(file))
+      );
+      invalidatedStoreKeys.forEach((storeKey) => {
+        beginAccountQuotaRequest(
+          quotaRequestVersionsRef.current,
+          `${CODEX_CONFIG.type}:${storeKey}`
+        );
+      });
+      setCodexQuota((current) =>
+        pruneCodexQuotaStatesForCredentialMutation(current, {
+          affectedFileNames: relevantFileNames,
+          invalidatedStoreKeys,
+          preservedFiles,
+        })
+      );
+    },
+    [
+      buildCurrentCredentialEvidenceBoundary,
+      files,
+      invalidateInspectionSummaryRequest,
+      setCredentialEvidenceBoundaries,
+      setCodexQuota,
+    ]
+  );
+
+  const invalidateCodexCredentialStatusForSelectionKeys = useCallback(
+    (
+      selectionKeys: string[],
+      options: {
+        supersedeActionEvidence?: boolean;
+        supersedeAuthenticationActionEvidence?: boolean;
+        supersedeQuotaActionEvidence?: boolean;
+        supersedeCooldownEvidence?: boolean;
+      } = {}
+    ): void => {
+      const keys = new Set(selectionKeys.filter((key) => key.length > 0));
+      if (keys.size === 0) return;
+      invalidateInspectionSummaryRequest();
+      if (
+        options.supersedeActionEvidence ||
+        options.supersedeAuthenticationActionEvidence ||
+        options.supersedeQuotaActionEvidence
+      ) {
+        accountActionCandidatesReqIdRef.current += 1;
+        setAccountActionCandidatesLoading(false);
+      }
+      if (options.supersedeCooldownEvidence) {
+        quotaCooldownRequestIdRef.current += 1;
+      }
+      const invalidatedAtMs = Date.now();
+      const matchedFiles = files.filter((file) => keys.has(getAuthFileSelectionKey(file)));
+      const statusBoundariesBySelectionKey = new Map(
+        matchedFiles.map((file) => {
+          const currentBoundary = buildCurrentCredentialEvidenceBoundary({
+            targetFiles: [file],
+            localAtMs: invalidatedAtMs,
+          });
+          return [
+            getAuthFileSelectionKey(file),
+            {
+              ...currentBoundary,
+              headerAtMs: 0,
+              headerBaselinePending: false,
+              actionAtMs: options.supersedeActionEvidence ? currentBoundary.actionAtMs : 0,
+              actionBaselinePending:
+                options.supersedeActionEvidence === true &&
+                currentBoundary.actionBaselinePending === true,
+              authenticationActionAtMs: options.supersedeAuthenticationActionEvidence
+                ? currentBoundary.authenticationActionAtMs
+                : 0,
+              authenticationActionBaselinePending:
+                options.supersedeAuthenticationActionEvidence === true &&
+                currentBoundary.actionBaselinePending === true,
+              quotaActionAtMs: options.supersedeQuotaActionEvidence
+                ? currentBoundary.quotaActionAtMs
+                : 0,
+              quotaActionBaselinePending:
+                options.supersedeQuotaActionEvidence === true &&
+                currentBoundary.actionBaselinePending === true,
+              cooldownAtMs: options.supersedeCooldownEvidence ? currentBoundary.cooldownAtMs : 0,
+              cooldownBaselinePending:
+                options.supersedeCooldownEvidence === true &&
+                currentBoundary.cooldownBaselinePending === true,
+              fallbackInspectionAtMs: 0,
+              fallbackInspectionBaselinePending: false,
+              fallbackHeaderAtMs: 0,
+              fallbackHeaderBaselinePending: false,
+              fallbackActionAtMs: 0,
+              fallbackActionBaselinePending: false,
+              fallbackCooldownAtMs: 0,
+              fallbackCooldownBaselinePending: false,
+            },
+          ] as const;
+        })
+      );
+      setCredentialStatusBoundaries((current) => {
+        const next = new Map(current);
+        keys.forEach((key) => {
+          const statusBoundary =
+            statusBoundariesBySelectionKey.get(key) ?? EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY;
+          next.set(key, {
+            ...mergeAccountCredentialEvidenceBoundaries(current.get(key), statusBoundary),
+            rawStatusAtMs: statusBoundary.rawStatusAtMs,
+            rawStatusMessages: statusBoundary.rawStatusMessages,
+          });
+        });
+        return next;
+      });
+    },
+    [
+      buildCurrentCredentialEvidenceBoundary,
+      files,
+      invalidateInspectionSummaryRequest,
+      setCredentialStatusBoundaries,
+    ]
+  );
+
+  const invalidateProviderCredentialEvidence = useCallback(
+    (
+      provider: string,
+      createdAtMs: number,
+      options: {
+        credentialFiles?: readonly AuthFileItem[];
+        supersedeRequests?: boolean;
+      } = {}
+    ): AuthFileItem[] => {
+      const normalizedProvider = provider.trim().toLowerCase().replace(/_/g, '-');
+      if (!normalizedProvider) return [];
+      const credentialFiles = options.credentialFiles ?? files;
+      const supersedeRequests = options.supersedeRequests !== false;
+      const targetFiles = credentialFiles.filter(
+        (file) => normalizeAccountProvider(file) === normalizedProvider
+      );
+      const providerBoundary = buildProviderCredentialMutationBoundary(createdAtMs);
+      const rawStatusBoundaryEntries = targetFiles.flatMap((file) => {
+        const boundary = buildCredentialMutationRawStatusBoundary(file, createdAtMs);
+        return boundary ? ([[getAuthFileSelectionKey(file), boundary]] as const) : [];
+      });
+      setCredentialEvidenceBoundaries((current) =>
+        upsertAccountCredentialEvidenceBoundaries(current, [
+          [getCredentialEvidenceProviderBoundaryKey(normalizedProvider), providerBoundary],
+          ...rawStatusBoundaryEntries,
+        ])
+      );
+
+      if (supersedeRequests) {
+        headerSnapshotRequestGenerationRef.current += 1;
+        invalidateInspectionSummaryRequest();
+        accountActionCandidatesReqIdRef.current += 1;
+        quotaCooldownRequestIdRef.current += 1;
+        setAccountActionCandidatesLoading(false);
+      }
+
+      if (normalizedProvider === CODEX_CONFIG.type) {
+        const affectedFileNames = new Set(targetFiles.map((file) => file.name));
+        const invalidatedStoreKeys = new Set(
+          targetFiles.map((file) => CODEX_CONFIG.getStoreKey?.(file) ?? file.name)
+        );
+        if (supersedeRequests) {
+          invalidatedStoreKeys.forEach((storeKey) => {
+            beginAccountQuotaRequest(
+              quotaRequestVersionsRef.current,
+              `${CODEX_CONFIG.type}:${storeKey}`
+            );
+          });
+        }
+        setCodexQuota((current) =>
+          pruneCodexQuotaStatesForCredentialMutation(current, {
+            affectedFileNames,
+            invalidatedStoreKeys,
+            preserveEvidenceAfterMs: createdAtMs,
+          })
+        );
+        return targetFiles;
+      }
+
+      const prune = <
+        TState extends {
+          authFileName?: string;
+          authFileKey?: string;
+          fetchedAtMs?: number;
+          failedAtMs?: number;
+        },
+        TData,
+      >(
+        config: QuotaConfig<TState, TData>,
+        setQuota: QuotaSetter<TState>
+      ) => {
+        if (supersedeRequests) {
+          targetFiles.forEach((file) => {
+            const storeKey = config.getStoreKey?.(file) ?? file.name;
+            beginAccountQuotaRequest(quotaRequestVersionsRef.current, `${config.type}:${storeKey}`);
+          });
+        }
+        setQuota((current) =>
+          pruneCredentialQuotaStatesForProviderMutation(
+            current,
+            targetFiles,
+            (file) => config.getStoreKey?.(file) ?? file.name,
+            createdAtMs
+          )
+        );
+      };
+      switch (normalizedProvider) {
+        case CLAUDE_CONFIG.type:
+          prune(CLAUDE_CONFIG, setClaudeQuota);
+          break;
+        case ANTIGRAVITY_CONFIG.type:
+          prune(ANTIGRAVITY_CONFIG, setAntigravityQuota);
+          break;
+        case KIMI_CONFIG.type:
+          prune(KIMI_CONFIG, setKimiQuota);
+          break;
+        case XAI_CONFIG.type:
+          prune(XAI_CONFIG, setXaiQuota);
+          break;
+        default:
+          break;
+      }
+      return targetFiles;
+    },
+    [
+      files,
+      invalidateInspectionSummaryRequest,
+      setAntigravityQuota,
+      setClaudeQuota,
+      setCredentialEvidenceBoundaries,
+      setCodexQuota,
+      setKimiQuota,
+      setXaiQuota,
+    ]
+  );
+  invalidateProviderCredentialEvidenceRef.current = invalidateProviderCredentialEvidence;
+
+  const capturePendingInspectionEvidenceBaseline = useCallback(
+    (snapshot: CredentialInspectionSnapshot): void => {
+      const index = buildAccountCredentialEvidenceBaselineIndex(
+        files,
+        snapshot.results.map((result) => ({
+          fileName: result.fileName,
+          identityKey: getAuthFileCodexInspectionKeyForIdentity({
+            fileName: result.fileName,
+            runtimeId: result.runtimeId,
+            provider: result.provider,
+            authIndex: result.authIndex,
+            accountId: result.accountId,
+            accountSnapshot: result.accountSnapshot,
+          }),
+          atMs: result.createdAtMs,
+        })),
+        snapshot.completedAtMs
+      );
+      const capture = (current: Map<string, AccountCredentialEvidenceBoundary>) =>
+        capturePendingAccountCredentialEvidenceBaseline(current, 'inspection', index);
+      setCredentialEvidenceBoundaries(capture);
+      setCredentialStatusBoundaries(capture);
+    },
+    [files, setCredentialEvidenceBoundaries, setCredentialStatusBoundaries]
+  );
+  capturePendingInspectionEvidenceBaselineRef.current = capturePendingInspectionEvidenceBaseline;
+
+  const capturePendingHeaderEvidenceBaseline = useCallback(
+    (response: UsageHeaderSnapshotsResponse): void => {
+      const baseIndex = buildAccountCredentialEvidenceBaselineIndex(
+        files,
+        response.items.map((item) => {
+          const fileName = item.auth_file_snapshot?.trim() ?? '';
+          return {
+            fileName,
+            identityKey: getAuthFileCodexInspectionKeyForIdentity({
+              fileName,
+              provider: item.auth_provider_snapshot,
+              authIndex: item.auth_index,
+              accountSnapshot: item.account_snapshot,
+            }),
+            atMs: item.timestamp_ms,
+          };
+        }),
+        Math.max(response.generated_at_ms, response.to_ms)
+      );
+      const exactBySelectionKey = new Map(baseIndex.exactBySelectionKey);
+      const lookup = buildUsageHeaderSnapshotLookup(response.items);
+      files.forEach((file) => {
+        const item = getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, file);
+        if (!item) return;
+        updateCredentialEvidenceTimestamp(
+          exactBySelectionKey,
+          getAuthFileSelectionKey(file),
+          item.timestamp_ms
+        );
+      });
+      const index = { ...baseIndex, exactBySelectionKey };
+      const capture = (current: Map<string, AccountCredentialEvidenceBoundary>) =>
+        capturePendingAccountCredentialEvidenceBaseline(current, 'header', index);
+      setCredentialEvidenceBoundaries(capture);
+      setCredentialStatusBoundaries(capture);
+    },
+    [files, setCredentialEvidenceBoundaries, setCredentialStatusBoundaries]
+  );
+  capturePendingHeaderEvidenceBaselineRef.current = capturePendingHeaderEvidenceBaseline;
+
+  const capturePendingActionEvidenceBaseline = useCallback(
+    (items: readonly AccountActionCandidate[]): void => {
+      const toTimestampItems = (source: readonly AccountActionCandidate[]) =>
+        source.map((item) => ({
+          fileName: item.authFileName,
+          identityKey: getAccountOperationalItemIdentityKey(item),
+          atMs: Math.max(item.updatedAtMs, item.lastSeenAtMs, item.createdAtMs),
+        }));
+      const index = buildAccountCredentialEvidenceBaselineIndex(files, toTimestampItems(items));
+      const authenticationIndex = buildAccountCredentialEvidenceBaselineIndex(
+        files,
+        toTimestampItems(
+          items.filter((item) =>
+            ['reauth', 'delete'].includes(item.actionType.trim().toLowerCase())
+          )
+        )
+      );
+      const quotaIndex = buildAccountCredentialEvidenceBaselineIndex(
+        files,
+        toTimestampItems(
+          items.filter((item) =>
+            ['disable', 'enable'].includes(item.actionType.trim().toLowerCase())
+          )
+        )
+      );
+      const capture = (current: Map<string, AccountCredentialEvidenceBoundary>) =>
+        capturePendingAccountCredentialEvidenceBaseline(current, 'action', index);
+      setCredentialEvidenceBoundaries(capture);
+      setCredentialStatusBoundaries((current) => {
+        const captured = capture(current);
+        let next: Map<string, AccountCredentialEvidenceBoundary> | null = null;
+        captured.forEach((boundary, key) => {
+          if (
+            boundary.authenticationActionBaselinePending !== true &&
+            boundary.quotaActionBaselinePending !== true
+          ) {
+            return;
+          }
+          const updated = { ...boundary };
+          if (boundary.authenticationActionBaselinePending === true) {
+            const baseline = resolveAccountCredentialEvidenceBaseline(key, authenticationIndex);
+            updated.authenticationActionAtMs = Math.max(
+              updated.authenticationActionAtMs,
+              baseline.atMs,
+              baseline.fallbackAtMs
+            );
+            updated.authenticationActionBaselinePending = false;
+          }
+          if (boundary.quotaActionBaselinePending === true) {
+            const baseline = resolveAccountCredentialEvidenceBaseline(key, quotaIndex);
+            updated.quotaActionAtMs = Math.max(
+              updated.quotaActionAtMs,
+              baseline.atMs,
+              baseline.fallbackAtMs
+            );
+            updated.quotaActionBaselinePending = false;
+          }
+          if (!next) next = new Map(captured);
+          next.set(key, updated);
+        });
+        return next ?? captured;
+      });
+    },
+    [files, setCredentialEvidenceBoundaries, setCredentialStatusBoundaries]
+  );
+  capturePendingActionEvidenceBaselineRef.current = capturePendingActionEvidenceBaseline;
+
+  const capturePendingCooldownEvidenceBaseline = useCallback(
+    (items: readonly QuotaCooldownInfo[]): void => {
+      const index = buildAccountCredentialEvidenceBaselineIndex(
+        files,
+        items.map((item) => ({
+          fileName: item.authFileName,
+          identityKey: getAccountOperationalItemIdentityKey(item),
+          atMs: Math.max(item.disabledAtMs ?? 0, item.createdAtMs ?? 0),
+        }))
+      );
+      const capture = (current: Map<string, AccountCredentialEvidenceBoundary>) =>
+        capturePendingAccountCredentialEvidenceBaseline(current, 'cooldown', index);
+      setCredentialEvidenceBoundaries(capture);
+      setCredentialStatusBoundaries(capture);
+    },
+    [files, setCredentialEvidenceBoundaries, setCredentialStatusBoundaries]
+  );
+  capturePendingCooldownEvidenceBaselineRef.current = capturePendingCooldownEvidenceBaseline;
+
+  useLayoutEffect(() => {
+    if (inspectionSnapshot) capturePendingInspectionEvidenceBaseline(inspectionSnapshot);
+  }, [capturePendingInspectionEvidenceBaseline, inspectionSnapshot]);
+
+  credentialMutationHandlerRef.current = (mutation) => {
+    if (mutation.kind === 'source-files-changed') {
+      invalidateCodexCredentialEvidenceForSourceFiles(mutation.fileNames);
+      return;
+    }
+    if (mutation.kind === 'credential-refreshed') {
+      invalidateCodexCredentialEvidenceForSelectionKeys(mutation.selectionKeys);
+      return;
+    }
+    invalidateCodexCredentialStatusForSelectionKeys(mutation.selectionKeys);
+  };
+
+  const invalidateCodexCredentialEvidence = useCallback(
+    (target: CodexReauthTarget | null): CodexCredentialEvidenceInvalidation | null => {
+      if (!target?.fileName) return null;
+      const targetKey = getAuthFileCodexInspectionKeyForIdentity({
+        fileName: target.fileName,
+        runtimeId: target.runtimeId,
+        provider: target.provider ?? CODEX_CONFIG.type,
+        authIndex: target.authIndex,
+        accountId: target.accountId,
+        accountSnapshot: target.accountSnapshot,
+      });
+      const exactMatches = files.filter(
+        (file) => getAuthFileCodexInspectionKeyForFile(file) === targetKey
+      );
+      const hasStableIdentity = Boolean(
+        target.runtimeId ||
+        (target.authIndex !== null &&
+          target.authIndex !== undefined &&
+          String(target.authIndex).trim()) ||
+        target.accountId ||
+        target.accountSnapshot
+      );
+      const fallbackMatches = hasStableIdentity
+        ? []
+        : files.filter((file) => file.name === target.fileName);
+      const matchedFile =
+        exactMatches.length === 1
+          ? exactMatches[0]
+          : exactMatches.length === 0 && fallbackMatches.length === 1
+            ? fallbackMatches[0]
+            : null;
+      if (!matchedFile) return null;
+
+      headerSnapshotRequestGenerationRef.current += 1;
+      invalidateInspectionSummaryRequest();
+      quotaCooldownRequestIdRef.current += 1;
+      accountActionCandidatesReqIdRef.current += 1;
+      setAccountActionCandidatesLoading(false);
+      const selectionKey = getAuthFileSelectionKey(matchedFile);
+      const boundaryKeys = [
+        selectionKey,
+        getCredentialEvidenceUniqueFileNameBoundaryKey(matchedFile.name),
+      ];
+      const invalidatedAtMs = Date.now();
+      const selectionBoundary = buildCurrentCredentialEvidenceBoundary({
+        targetFiles: [matchedFile],
+        localAtMs: invalidatedAtMs,
+      });
+      const uniqueFileNameEvidence = buildCurrentCredentialEvidenceBoundary({
+        targetFiles: [],
+        fallbackFileNames: [matchedFile.name],
+        localAtMs: invalidatedAtMs,
+      });
+      const uniqueFileNameBoundary =
+        toFallbackAccountCredentialEvidenceBoundary(uniqueFileNameEvidence);
+      setCredentialEvidenceBoundaries((current) =>
+        upsertAccountCredentialEvidenceBoundaries(current, [
+          [boundaryKeys[0], selectionBoundary],
+          [boundaryKeys[1], uniqueFileNameBoundary],
+        ])
+      );
+
+      const storeKey = CODEX_CONFIG.getStoreKey?.(matchedFile) ?? matchedFile.name;
+      beginAccountQuotaRequest(quotaRequestVersionsRef.current, `${CODEX_CONFIG.type}:${storeKey}`);
+      const preservedFiles = files.filter(
+        (file) => file.name === matchedFile.name && getAuthFileSelectionKey(file) !== selectionKey
+      );
+      setCodexQuota((current) =>
+        pruneCodexQuotaStatesForCredentialMutation(current, {
+          affectedFileNames: new Set([matchedFile.name]),
+          invalidatedStoreKeys: new Set([storeKey]),
+          preservedFiles,
+        })
+      );
+      return { file: matchedFile, invalidatedAtMs };
+    },
+    [
+      buildCurrentCredentialEvidenceBoundary,
+      files,
+      invalidateInspectionSummaryRequest,
+      setCredentialEvidenceBoundaries,
+      setCodexQuota,
+    ]
+  );
+
+  const captureReloadedCodexOperationalEvidence = useCallback(
+    (invalidation: CodexCredentialEvidenceInvalidation | null): void => {
+      if (!invalidation) return;
+      const { file, invalidatedAtMs } = invalidation;
+      const actionCandidateItems = accountActionCandidatesRef.current;
+      const quotaCooldownItems = Array.from(quotaCooldownsRef.current.values());
+      const exactEvidence = buildCurrentCredentialEvidenceBoundary({
+        targetFiles: [file],
+        localAtMs: invalidatedAtMs,
+        actionCandidateItems,
+        quotaCooldownItems,
+      });
+      const fallbackEvidence = buildCurrentCredentialEvidenceBoundary({
+        targetFiles: [],
+        fallbackFileNames: [file.name],
+        localAtMs: invalidatedAtMs,
+        actionCandidateItems,
+        quotaCooldownItems,
+      });
+      const exactBoundary: AccountCredentialEvidenceBoundary = {
+        ...EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+        actionAtMs: exactEvidence.actionAtMs,
+        cooldownAtMs: exactEvidence.cooldownAtMs,
+      };
+      const fallbackBoundary: AccountCredentialEvidenceBoundary = {
+        ...EMPTY_ACCOUNT_CREDENTIAL_EVIDENCE_BOUNDARY,
+        fallbackActionAtMs: fallbackEvidence.actionAtMs,
+        fallbackCooldownAtMs: fallbackEvidence.cooldownAtMs,
+      };
+      setCredentialEvidenceBoundaries((current) =>
+        upsertAccountCredentialEvidenceBoundaries(current, [
+          [getAuthFileSelectionKey(file), exactBoundary],
+          [getCredentialEvidenceUniqueFileNameBoundaryKey(file.name), fallbackBoundary],
+        ])
+      );
+    },
+    [buildCurrentCredentialEvidenceBoundary, setCredentialEvidenceBoundaries]
+  );
+
+  const completeConfirmedAccountDirectReauth = useCallback(
+    (
+      baseline: AccountDirectReauthBaseline,
+      confirmedFile: AuthFileItem,
+      pendingId?: string
+    ): void => {
+      if (baseline.resultKeys.length > 0) {
+        recordCompletedAccountReauthSession({
+          connectionFingerprint,
+          oauthProvider: 'codex',
+          resultKeys: baseline.resultKeys,
+          completedAtMs: Date.now(),
+        });
+        setSuppressedInspectionResultKeys((current) => {
+          const next = new Set(current);
+          baseline.resultKeys.forEach((key) => next.add(key));
+          return next;
+        });
+      }
+      if (pendingId) acknowledgePendingAccountDirectReauths([pendingId]);
+      const invalidation = invalidateCodexCredentialEvidence(baseline.target);
+      captureReloadedCodexOperationalEvidence(
+        invalidation ?? { file: confirmedFile, invalidatedAtMs: Date.now() }
+      );
+    },
+    [
+      captureReloadedCodexOperationalEvidence,
+      connectionFingerprint,
+      invalidateCodexCredentialEvidence,
+    ]
+  );
+
+  const synchronizePendingAccountDirectReauths = useCallback(
+    async (options: { reload?: boolean } = {}): Promise<boolean> => {
+      const pendingItems = listPendingAccountDirectReauths(connectionFingerprint);
+      if (pendingItems.length === 0) return false;
+      const synchronizationScopeKey = credentialEvidenceScopeKey;
+      const existing = directReauthSynchronizationsRef.current.get(synchronizationScopeKey);
+      if (existing) return existing;
+
+      const synchronization = (async () => {
+        try {
+          const reloadedFiles =
+            options.reload === false
+              ? files
+              : await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true });
+          if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) return false;
+          if (!reloadedFiles) return false;
+
+          let synchronized = false;
+          pendingItems.forEach((pending) => {
+            const confirmedFile = confirmAccountDirectReauth(pending, reloadedFiles);
+            if (!confirmedFile) return;
+            completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
+            synchronized = true;
+          });
+          return synchronized;
+        } catch {
+          return false;
+        } finally {
+          directReauthSynchronizationsRef.current.delete(synchronizationScopeKey);
+        }
+      })();
+      directReauthSynchronizationsRef.current.set(synchronizationScopeKey, synchronization);
+      return synchronization;
+    },
+    [
+      completeConfirmedAccountDirectReauth,
+      connectionFingerprint,
+      credentialEvidenceScopeKey,
+      files,
+      reloadInspectionCredentialArtifacts,
+    ]
+  );
+  synchronizePendingAccountDirectReauthsRef.current = synchronizePendingAccountDirectReauths;
+
   const handleCodexReauthSuccess = useCallback(async () => {
-    await loadFiles();
-    setCodexReauthTarget(null);
-  }, [loadFiles]);
+    const target = codexReauthTarget;
+    if (!target?.fileName) return;
+    const targetIdentityKey = getAuthFileCodexInspectionKeyForIdentity({
+      fileName: target.fileName,
+      runtimeId: target.runtimeId,
+      provider: target.provider,
+      authIndex: target.authIndex ?? null,
+      accountId: target.accountId,
+      accountSnapshot: target.accountSnapshot,
+    });
+    const targetFile = files.find(
+      (file) => getAuthFileCodexInspectionKeyForFile(file) === targetIdentityKey
+    );
+    if (!targetFile) throw new Error(t('notification.refresh_failed'));
+    const baseline = createAccountDirectReauthBaseline({
+      target,
+      file: targetFile,
+      resultKeys: getHandledAccountInspectionResultKeys(
+        inspectionResults,
+        targetIdentityKey,
+        target.fileName,
+        files
+      ),
+    });
+    if (!baseline) throw new Error(t('notification.refresh_failed'));
+    const pending = recordPendingAccountDirectReauth({ connectionFingerprint, baseline });
+    if (!pending) throw new Error(t('notification.refresh_failed'));
+    const reauthScopeKey = credentialEvidenceScopeKey;
+    const reloadedFiles = await reloadInspectionCredentialArtifacts({
+      requireSuccessfulReload: true,
+    });
+    if (activeCredentialEvidenceScopeKeyRef.current !== reauthScopeKey) return;
+    const confirmedFile = reloadedFiles ? confirmAccountDirectReauth(pending, reloadedFiles) : null;
+    if (!confirmedFile) throw new Error(t('notification.refresh_failed'));
+    completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
+  }, [
+    codexReauthTarget,
+    completeConfirmedAccountDirectReauth,
+    connectionFingerprint,
+    credentialEvidenceScopeKey,
+    files,
+    inspectionResults,
+    reloadInspectionCredentialArtifacts,
+    t,
+  ]);
 
   const handleReauthAccount = useCallback(
     (file: AuthFileItem) => {
@@ -920,7 +2936,21 @@ export function AccountsPage() {
         return;
       }
       if (action.kind === 'navigate') {
-        navigate(action.path);
+        const targetIdentityKey = getAuthFileCodexInspectionKeyForFile(file);
+        const handledResultKeys = getHandledAccountInspectionResultKeys(
+          inspectionResults,
+          targetIdentityKey,
+          file.name,
+          files
+        );
+        const sessionId = beginAccountOAuthReauthSession({
+          connectionFingerprint,
+          oauthProvider: action.oauthProvider,
+          resultKeys: handledResultKeys,
+        });
+        navigate(
+          sessionId ? buildAccountOAuthReauthPath(action.oauthProvider, sessionId) : action.path
+        );
         return;
       }
       showNotification(
@@ -931,12 +2961,50 @@ export function AccountsPage() {
         'info'
       );
     },
-    [navigate, showNotification, t]
+    [connectionFingerprint, files, inspectionResults, navigate, showNotification, t]
   );
 
+  const requestEvidenceBySelectionKey = useMemo(() => {
+    const evidenceMap = new Map<string, AccountRequestEvidenceInput>();
+    accountHistoryByRowKey.forEach((history, selectionKey) => {
+      evidenceMap.set(selectionKey, {
+        latestRequest: history.latest_request ?? null,
+        recentRequests: history.recent_requests ?? [],
+      });
+    });
+    return evidenceMap;
+  }, [accountHistoryByRowKey]);
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),
     [headerSnapshots]
+  );
+  const credentialEvidenceBoundariesBySelectionKey = useMemo(() => {
+    const boundaries = new Map<string, AccountCredentialEvidenceBoundary>();
+    files.forEach((file) => {
+      boundaries.set(
+        getAuthFileSelectionKey(file),
+        getCredentialEvidenceBoundaryForFile(
+          file,
+          credentialEvidenceBoundaries,
+          credentialFileNameCounts
+        )
+      );
+    });
+    return boundaries;
+  }, [credentialEvidenceBoundaries, credentialFileNameCounts, files]);
+  const effectiveInspectionResults = useMemo(
+    () =>
+      filterSuppressedAccountInspectionResults(inspectionResults, suppressedInspectionResultKeys),
+    [inspectionResults, suppressedInspectionResultKeys]
+  );
+  const accountInspectionBySelectionKey = useMemo(
+    () =>
+      buildAccountInspectionBySelectionKey(
+        files,
+        effectiveInspectionResults,
+        credentialEvidenceBoundariesBySelectionKey
+      ),
+    [credentialEvidenceBoundariesBySelectionKey, effectiveInspectionResults, files]
   );
   const getActiveCodexQuota = useCallback(
     (file: AuthFileItem): CodexQuotaState | undefined => {
@@ -949,34 +3017,140 @@ export function AccountsPage() {
     },
     [codexQuota]
   );
+  const getCredentialEvidenceBoundary = useCallback(
+    (file: AuthFileItem): AccountCredentialEvidenceBoundary =>
+      getCredentialEvidenceBoundaryForFile(
+        file,
+        credentialEvidenceBoundaries,
+        credentialFileNameCounts
+      ),
+    [credentialEvidenceBoundaries, credentialFileNameCounts]
+  );
   const getFreshCodexHeaderSnapshot = useCallback(
     (file: AuthFileItem): UsageHeaderSnapshot | undefined => {
       const headerSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
         headerSnapshotLookup,
         file
       );
-      return isUsageHeaderQuotaSnapshotExpired(headerSnapshot, headerSnapshotGeneratedAtMs)
-        ? undefined
-        : headerSnapshot;
+      if (isUsageHeaderQuotaSnapshotExpired(headerSnapshot, headerSnapshotGeneratedAtMs)) {
+        return undefined;
+      }
+      const evidenceBoundary = getCredentialEvidenceBoundary(file);
+      const usesFileNameFallback =
+        normalizeAuthIndex(file['auth_index'] ?? file.authIndex) === null;
+      if (
+        evidenceBoundary.headerBaselinePending === true ||
+        (usesFileNameFallback && evidenceBoundary.fallbackHeaderBaselinePending === true)
+      ) {
+        return undefined;
+      }
+      const headerBoundaryAtMs = Math.max(
+        evidenceBoundary.headerAtMs,
+        usesFileNameFallback ? evidenceBoundary.fallbackHeaderAtMs : 0
+      );
+      if (!headerSnapshot || headerSnapshot.timestamp_ms <= headerBoundaryAtMs) {
+        return undefined;
+      }
+      const credentialRefreshAtMs = readAuthFileCredentialRefreshAtMs(file) ?? 0;
+      if (
+        credentialRefreshAtMs > 0 &&
+        headerSnapshot.timestamp_ms <= credentialRefreshAtMs &&
+        isObservedCodexAuthenticationError(
+          getHeaderSnapshotErrorKind(headerSnapshot),
+          getHeaderSnapshotErrorCode(headerSnapshot)
+        )
+      ) {
+        return undefined;
+      }
+      return headerSnapshot;
     },
-    [headerSnapshotGeneratedAtMs, headerSnapshotLookup]
+    [getCredentialEvidenceBoundary, headerSnapshotGeneratedAtMs, headerSnapshotLookup]
+  );
+  const getLatestPositiveRequestAtMs = useCallback(
+    (file: AuthFileItem): number | null => {
+      const requestEvidence = resolveAccountRequestHealthEvidence(
+        requestEvidenceBySelectionKey.get(getAuthFileSelectionKey(file))
+      );
+      const requestCredentialEvidence = getAccountRequestCredentialEvidence(requestEvidence);
+      return requestCredentialEvidence?.direction === 'positive'
+        ? requestCredentialEvidence.request.timestamp_ms
+        : null;
+    },
+    [requestEvidenceBySelectionKey]
+  );
+  const getEffectiveCodexHeaderSnapshot = useCallback(
+    (file: AuthFileItem): UsageHeaderSnapshot | undefined =>
+      sanitizeSupersededAuthHeaderSnapshot(
+        getFreshCodexHeaderSnapshot(file),
+        getLatestPositiveRequestAtMs(file)
+      ),
+    [getFreshCodexHeaderSnapshot, getLatestPositiveRequestAtMs]
+  );
+  const getDisplayCodexHeaderSnapshot = useCallback(
+    (file: AuthFileItem): UsageHeaderSnapshot | undefined => {
+      const activeQuota = getActiveCodexQuota(file);
+      return getFreshAuthFileCodexStatusSources(
+        file,
+        activeQuota,
+        undefined,
+        getEffectiveCodexHeaderSnapshot(file),
+        getLatestPositiveRequestAtMs(file),
+        headerSnapshotGeneratedAtMs
+      ).headerSnapshot;
+    },
+    [
+      getActiveCodexQuota,
+      getEffectiveCodexHeaderSnapshot,
+      getLatestPositiveRequestAtMs,
+      headerSnapshotGeneratedAtMs,
+    ]
+  );
+  const getFreshCodexHeaderQuota = useCallback(
+    (file: AuthFileItem): CodexQuotaState | undefined =>
+      buildObservedCodexQuotaState(
+        file,
+        getDisplayCodexHeaderSnapshot(file),
+        t,
+        headerSnapshotGeneratedAtMs
+      ),
+    [getDisplayCodexHeaderSnapshot, headerSnapshotGeneratedAtMs, t]
   );
   const getDisplayCodexQuota = useCallback(
     (file: AuthFileItem): CodexQuotaState | undefined => {
       if (normalizeAccountProvider(file) !== CODEX_CONFIG.type) return undefined;
-      const activeQuota = getActiveCodexQuota(file);
-      const observedQuota = buildObservedCodexQuotaState(
+      const selectionKey = getAuthFileSelectionKey(file);
+      const headerQuota = getFreshCodexHeaderQuota(file);
+      const inspection = accountInspectionBySelectionKey.get(selectionKey);
+      const inspectionQuota = buildInspectionCodexQuotaState(
         file,
-        getFreshCodexHeaderSnapshot(file),
-        t,
-        headerSnapshotGeneratedAtMs
+        inspection
+          ? stripSupersededAccountInspectionStatus(
+              inspection,
+              credentialStatusBoundaries.get(selectionKey)?.inspectionAtMs ?? 0
+            )
+          : undefined
       );
-      if (activeQuota?.status === 'error' && activeQuota.errorStatus === 401) {
-        return activeQuota;
-      }
-      return resolveQuotaDisplayState(activeQuota, observedQuota);
+      const boundary = getCredentialEvidenceBoundary(file);
+      const reconciled = reconcileCodexQuotaEvidence({
+        providerQuota: getActiveCodexQuota(file),
+        headerQuota,
+        inspectionQuota,
+        credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(file) ?? 0,
+      });
+      return (
+        reconciled ??
+        (boundary.localAtMs > 0 || boundary.inspectionAtMs > 0 || boundary.headerAtMs > 0
+          ? { status: 'idle', windows: [] }
+          : undefined)
+      );
     },
-    [getActiveCodexQuota, getFreshCodexHeaderSnapshot, headerSnapshotGeneratedAtMs, t]
+    [
+      accountInspectionBySelectionKey,
+      credentialStatusBoundaries,
+      getActiveCodexQuota,
+      getCredentialEvidenceBoundary,
+      getFreshCodexHeaderQuota,
+    ]
   );
   const getQuotaSnapshotObservation = useCallback(
     (row: AccountRow): AccountQuotaSnapshotObservationInput | undefined => {
@@ -987,6 +3161,8 @@ export function AccountsPage() {
           const state = getActiveCodexQuota(row.raw);
           if (
             state?.status === 'success' &&
+            (getCodexQuotaEvidenceAtMs(state) ?? 0) >
+              getCredentialEvidenceBoundary(row.raw).localAtMs &&
             (state.quotaInventoryObserved === true || state.windows.length > 0)
           ) {
             fetchedAtMs = state.fetchedAtMs;
@@ -1053,14 +3229,21 @@ export function AccountsPage() {
         inventory_mode: inventoryMode,
       };
     },
-    [baseQuotaStores, getActiveCodexQuota]
+    [baseQuotaStores, getActiveCodexQuota, getCredentialEvidenceBoundary]
   );
   const getCodexHeaderQuotaSnapshotObservation = useCallback(
     (row: AccountRow): AccountQuotaSnapshotObservationInput | undefined => {
       if (row.provider !== CODEX_CONFIG.type) return undefined;
       const activeQuota = getActiveCodexQuota(row.raw);
-      if (activeQuota?.status === 'error' && activeQuota.errorStatus === 401) return undefined;
-      const headerSnapshot = getFreshCodexHeaderSnapshot(row.raw);
+      if (
+        activeQuota?.status === 'error' &&
+        activeQuota.errorStatus === 401 &&
+        (getCodexQuotaEvidenceAtMs(activeQuota) ?? 0) >
+          getCredentialEvidenceBoundary(row.raw).localAtMs
+      ) {
+        return undefined;
+      }
+      const headerSnapshot = getDisplayCodexHeaderSnapshot(row.raw);
       if (
         !headerSnapshot ||
         !hasUsageHeaderQuotaSignal(headerSnapshot) ||
@@ -1086,14 +3269,50 @@ export function AccountsPage() {
         inventory_mode: 'partial',
       };
     },
-    [getActiveCodexQuota, getFreshCodexHeaderSnapshot]
+    [getActiveCodexQuota, getCredentialEvidenceBoundary, getDisplayCodexHeaderSnapshot]
   );
+  const freshAccountInspectionBySelectionKey = useMemo(() => {
+    const fresh = new Map(accountInspectionBySelectionKey);
+    files.forEach((file) => {
+      const selectionKey = getAuthFileSelectionKey(file);
+      const inspection = fresh.get(selectionKey);
+      if (!inspection) return;
+      if (
+        inspection.createdAtMs <=
+        (credentialStatusBoundaries.get(selectionKey)?.inspectionAtMs ?? 0)
+      ) {
+        fresh.delete(selectionKey);
+        return;
+      }
+      const providerQuota = getActiveCodexQuota(file);
+      const headerQuota = getFreshCodexHeaderQuota(file);
+      const cutoffs = getAccountCredentialEvidenceCutoffs({
+        providerQuota,
+        headerQuota,
+        credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(file) ?? 0,
+      });
+      const provider401AtMs =
+        providerQuota?.status === 'error' && providerQuota.errorStatus === 401
+          ? getCodexQuotaEvidenceAtMs(providerQuota)
+          : null;
+      if (Math.max(cutoffs.authenticationAtMs, provider401AtMs ?? 0) >= inspection.createdAtMs) {
+        fresh.delete(selectionKey);
+      }
+    });
+    return fresh;
+  }, [
+    accountInspectionBySelectionKey,
+    credentialStatusBoundaries,
+    files,
+    getActiveCodexQuota,
+    getFreshCodexHeaderQuota,
+  ]);
   const accountQuotaOverrides = useMemo(() => {
     const codexQuotaBySelectionKey = new Map<string, CodexQuotaState>();
     const codexHeaderSnapshotBySelectionKey = new Map<string, UsageHeaderSnapshot>();
     files.forEach((file) => {
       const selectionKey = getAuthFileSelectionKey(file);
-      const headerSnapshot = getFreshCodexHeaderSnapshot(file);
+      const headerSnapshot = getDisplayCodexHeaderSnapshot(file);
       if (headerSnapshot) {
         codexHeaderSnapshotBySelectionKey.set(selectionKey, headerSnapshot);
       }
@@ -1103,73 +3322,250 @@ export function AccountsPage() {
       }
     });
     return { codexQuotaBySelectionKey, codexHeaderSnapshotBySelectionKey };
-  }, [files, getDisplayCodexQuota, getFreshCodexHeaderSnapshot]);
+  }, [files, getDisplayCodexHeaderSnapshot, getDisplayCodexQuota]);
 
   const rows = useMemo(
-    () => buildAccountRows(files, baseQuotaStores, inspectionResults, accountQuotaOverrides),
-    [accountQuotaOverrides, baseQuotaStores, files, inspectionResults]
+    () =>
+      buildAccountRows(
+        files,
+        baseQuotaStores,
+        effectiveInspectionResults,
+        accountQuotaOverrides,
+        freshAccountInspectionBySelectionKey,
+        credentialEvidenceBoundariesBySelectionKey,
+        credentialStatusBoundaries
+      ),
+    [
+      accountQuotaOverrides,
+      baseQuotaStores,
+      files,
+      credentialEvidenceBoundariesBySelectionKey,
+      credentialStatusBoundaries,
+      effectiveInspectionResults,
+      freshAccountInspectionBySelectionKey,
+    ]
   );
   const codexStatusBySelectionKey = useMemo(() => {
     const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
     rows.forEach((row) => {
       if (row.provider !== CODEX_CONFIG.type && row.provider !== XAI_CONFIG.type) return;
-      const activeQuota =
+      const rawActiveQuota =
         row.provider === CODEX_CONFIG.type ? getActiveCodexQuota(row.raw) : undefined;
-      const freshHeaderSnapshot = getFreshCodexHeaderSnapshot(row.raw);
+      const effectiveHeaderSnapshot = getDisplayCodexHeaderSnapshot(row.raw);
+      const newerSuccessfulRequestAtMs = getLatestPositiveRequestAtMs(row.raw);
+      const requestHealthEvidence = resolveAccountRequestHealthEvidence(
+        requestEvidenceBySelectionKey.get(row.selectionKey)
+      );
       const sources = getFreshAuthFileCodexStatusSources(
         row.raw,
-        activeQuota,
-        toAuthFileCodexInspectionSnapshot(row),
-        freshHeaderSnapshot
+        rawActiveQuota,
+        isAccountInspectionStatusEvidenceCurrent(row, requestHealthEvidence)
+          ? toAuthFileCodexInspectionSnapshot(row)
+          : undefined,
+        effectiveHeaderSnapshot,
+        newerSuccessfulRequestAtMs,
+        headerSnapshotGeneratedAtMs
       );
       const statusQuota =
-        row.provider === CODEX_CONFIG.type
-          ? resolveQuotaDisplayState(
-              activeQuota,
-              buildObservedCodexQuotaState(
-                row.raw,
-                sources.headerSnapshot,
-                t,
-                headerSnapshotGeneratedAtMs
-              )
-            )
-          : undefined;
+        row.provider === CODEX_CONFIG.type ? getDisplayCodexQuota(row.raw) : undefined;
+      const authenticationAtMs = getAccountCredentialEvidenceCutoffs({
+        providerQuota: statusQuota,
+        inspection: row.inspection,
+        credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(row.raw) ?? 0,
+      }).authenticationAtMs;
+      const rawStatusSuperseded =
+        (readAccountRawStatusMessage(row.raw) !== '' && row.statusMessage === '') ||
+        (authenticationAtMs > 0 &&
+          (row.updatedAtMs === null || authenticationAtMs >= row.updatedAtMs));
       statusMap.set(
         row.selectionKey,
-        getAuthFileCodexStatus(row.raw, statusQuota, sources.inspection, sources.headerSnapshot)
+        getAuthFileCodexStatus(
+          row.raw,
+          statusQuota,
+          sources.inspection,
+          sources.headerSnapshot,
+          headerSnapshotGeneratedAtMs,
+          {
+            ignoreRawStatusCode: rawStatusSuperseded,
+            effectiveDisabled: row.disabled,
+          }
+        )
       );
     });
     return statusMap;
-  }, [getActiveCodexQuota, getFreshCodexHeaderSnapshot, headerSnapshotGeneratedAtMs, rows, t]);
-  const actionCandidatesByRowKey = useMemo(
-    () =>
-      buildAccountOperationalItemsByRowKey(
-        rows,
-        accountActionCandidates.filter((candidate) => candidate.status === 'pending')
-      ),
-    [accountActionCandidates, rows]
-  );
-  const quotaCooldownsByRowKey = useMemo(
-    () =>
-      buildAccountOperationalItemsByRowKey(
-        rows.filter(
-          (row) => row.provider === CODEX_CONFIG.type || row.provider === XAI_CONFIG.type
-        ),
-        Array.from(quotaCooldowns.values())
-      ),
-    [quotaCooldowns, rows]
-  );
+  }, [
+    getActiveCodexQuota,
+    getDisplayCodexQuota,
+    getDisplayCodexHeaderSnapshot,
+    getLatestPositiveRequestAtMs,
+    headerSnapshotGeneratedAtMs,
+    requestEvidenceBySelectionKey,
+    rows,
+  ]);
+  const actionCandidatesByRowKey = useMemo(() => {
+    const itemsByRowKey = buildAccountOperationalItemsByRowKey(
+      rows,
+      accountActionCandidates.filter((candidate) => candidate.status === 'pending')
+    );
+    rows.forEach((row) => {
+      const evidenceBoundary = getCredentialEvidenceBoundary(row.raw);
+      const statusBoundary = credentialStatusBoundaries.get(row.selectionKey);
+      const cutoffs = getAccountCredentialEvidenceCutoffs({
+        providerQuota:
+          row.provider === CODEX_CONFIG.type ? getActiveCodexQuota(row.raw) : undefined,
+        headerQuota:
+          row.provider === CODEX_CONFIG.type ? getFreshCodexHeaderQuota(row.raw) : undefined,
+        inspection: row.inspection,
+        credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(row.raw) ?? 0,
+      });
+      const effectiveInspectionAction = getEffectiveAccountInspectionAction(row.inspection);
+      const executedInspectionAction = row.inspection?.executedAction?.trim().toLowerCase() ?? '';
+      const inspectionAction = executedInspectionAction || effectiveInspectionAction;
+      const authenticationInspectionActionAtMs =
+        row.inspection && (inspectionAction === 'reauth' || inspectionAction === 'delete')
+          ? row.inspection.createdAtMs
+          : 0;
+      const quotaInspectionActionAtMs =
+        row.inspection && (inspectionAction === 'disable' || inspectionAction === 'enable')
+          ? row.inspection.createdAtMs
+          : 0;
+      itemsByRowKey.set(
+        row.selectionKey,
+        (itemsByRowKey.get(row.selectionKey) ?? []).filter((candidate) => {
+          const candidateUsesFileNameFallback =
+            getAccountOperationalItemIdentityKey(candidate) ===
+            getAuthFileCodexInspectionKeyForIdentity({ fileName: candidate.authFileName });
+          const fallbackActionAtMs = candidateUsesFileNameFallback
+            ? evidenceBoundary.fallbackActionAtMs
+            : 0;
+          if (
+            evidenceBoundary.actionBaselinePending === true ||
+            statusBoundary?.actionBaselinePending === true ||
+            (candidateUsesFileNameFallback &&
+              (evidenceBoundary.fallbackActionBaselinePending === true ||
+                statusBoundary?.fallbackActionBaselinePending === true))
+          ) {
+            return false;
+          }
+          const actionType = candidate.actionType.trim().toLowerCase();
+          const isCredentialStateAction =
+            actionType === 'reauth' ||
+            actionType === 'delete' ||
+            actionType === 'disable' ||
+            actionType === 'enable';
+          const authenticationAction = actionType === 'reauth' || actionType === 'delete';
+          const quotaAction = actionType === 'disable' || actionType === 'enable';
+          if (
+            (authenticationAction &&
+              statusBoundary?.authenticationActionBaselinePending === true) ||
+            (quotaAction && statusBoundary?.quotaActionBaselinePending === true)
+          ) {
+            return false;
+          }
+          const statusActionAtMs = authenticationAction
+            ? (statusBoundary?.authenticationActionAtMs ?? 0)
+            : quotaAction
+              ? (statusBoundary?.quotaActionAtMs ?? 0)
+              : 0;
+          let evidenceCutoffAtMs = 0;
+          if (actionType === 'reauth' || actionType === 'delete') {
+            evidenceCutoffAtMs = Math.max(
+              cutoffs.authenticationAtMs,
+              authenticationInspectionActionAtMs
+            );
+          } else if (actionType === 'disable' || actionType === 'enable') {
+            evidenceCutoffAtMs = Math.max(cutoffs.healthyQuotaAtMs, quotaInspectionActionAtMs);
+          }
+          const cutoffAtMs = Math.max(
+            evidenceCutoffAtMs,
+            evidenceBoundary.actionAtMs,
+            fallbackActionAtMs,
+            isCredentialStateAction ? (statusBoundary?.actionAtMs ?? 0) : 0,
+            statusActionAtMs
+          );
+          return !isEvidenceOlderThan(
+            Math.max(candidate.updatedAtMs, candidate.lastSeenAtMs, candidate.createdAtMs),
+            cutoffAtMs
+          );
+        })
+      );
+    });
+    return itemsByRowKey;
+  }, [
+    accountActionCandidates,
+    credentialStatusBoundaries,
+    getActiveCodexQuota,
+    getCredentialEvidenceBoundary,
+    getFreshCodexHeaderQuota,
+    rows,
+  ]);
+  const quotaCooldownsByRowKey = useMemo(() => {
+    const itemsByRowKey = buildAccountOperationalItemsByRowKey(
+      rows.filter((row) => row.provider === CODEX_CONFIG.type || row.provider === XAI_CONFIG.type),
+      Array.from(quotaCooldowns.values())
+    );
+    rows.forEach((row) => {
+      const evidenceBoundary = getCredentialEvidenceBoundary(row.raw);
+      const statusBoundary = credentialStatusBoundaries.get(row.selectionKey);
+      const cutoffs = getAccountCredentialEvidenceCutoffs({
+        providerQuota:
+          row.provider === CODEX_CONFIG.type ? getActiveCodexQuota(row.raw) : undefined,
+        headerQuota:
+          row.provider === CODEX_CONFIG.type ? getFreshCodexHeaderQuota(row.raw) : undefined,
+        inspection: row.inspection,
+        credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(row.raw) ?? 0,
+      });
+      itemsByRowKey.set(
+        row.selectionKey,
+        (itemsByRowKey.get(row.selectionKey) ?? []).filter((cooldown) => {
+          const cooldownUsesFileNameFallback =
+            getAccountOperationalItemIdentityKey(cooldown) ===
+            getAuthFileCodexInspectionKeyForIdentity({ fileName: cooldown.authFileName });
+          if (
+            evidenceBoundary.cooldownBaselinePending === true ||
+            statusBoundary?.cooldownBaselinePending === true ||
+            (cooldownUsesFileNameFallback &&
+              (evidenceBoundary.fallbackCooldownBaselinePending === true ||
+                statusBoundary?.fallbackCooldownBaselinePending === true))
+          ) {
+            return false;
+          }
+          return !isEvidenceOlderThan(
+            Math.max(cooldown.disabledAtMs ?? 0, cooldown.createdAtMs ?? 0),
+            Math.max(
+              cutoffs.healthyQuotaAtMs,
+              evidenceBoundary.cooldownAtMs,
+              cooldownUsesFileNameFallback ? evidenceBoundary.fallbackCooldownAtMs : 0,
+              statusBoundary?.cooldownAtMs ?? 0
+            )
+          );
+        })
+      );
+    });
+    return itemsByRowKey;
+  }, [
+    credentialStatusBoundaries,
+    getActiveCodexQuota,
+    getCredentialEvidenceBoundary,
+    getFreshCodexHeaderQuota,
+    quotaCooldowns,
+    rows,
+  ]);
   const metrics = useMemo(
     () =>
       buildAccountMetrics(rows, {
         pendingActionsByRowKey: actionCandidatesByRowKey,
         quotaCooldownsByRowKey,
+        requestEvidenceBySelectionKey,
       }),
-    [actionCandidatesByRowKey, quotaCooldownsByRowKey, rows]
+    [actionCandidatesByRowKey, quotaCooldownsByRowKey, requestEvidenceBySelectionKey, rows]
   );
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
   const planOptions = useMemo(() => getPlanOptions(rows), [rows]);
-  const recommendations = useMemo(() => buildAccountRecommendations(rows), [rows]);
+  const recommendations = useMemo(
+    () => buildAccountRecommendations(rows, requestEvidenceBySelectionKey),
+    [requestEvidenceBySelectionKey, rows]
+  );
   const recommendationBySelectionKey = useMemo(
     () => buildRecommendationBySelectionKey(recommendations),
     [recommendations]
@@ -1183,12 +3579,14 @@ export function AccountsPage() {
         quotaBand: quotaBandFilter,
         search,
         codexStatusBySelectionKey,
+        requestEvidenceBySelectionKey,
       }),
     [
       codexStatusBySelectionKey,
       planFilter,
       providerFilter,
       quotaBandFilter,
+      requestEvidenceBySelectionKey,
       rows,
       search,
       statusFilter,
@@ -1199,12 +3597,24 @@ export function AccountsPage() {
       if (effectiveOperationalFilter === 'all') return true;
       if (effectiveOperationalFilter === 'reauth') {
         const recommendation = recommendationBySelectionKey.get(row.selectionKey);
-        const statusMessage = row.statusMessage.trim().toLowerCase();
+        const codexStatus = codexStatusBySelectionKey.get(row.selectionKey);
+        const requestEvidence = resolveAccountRequestHealthEvidence(
+          requestEvidenceBySelectionKey.get(row.selectionKey)
+        );
+        const requestCredentialEvidence = isAccountRequestCredentialEvidenceCurrent(
+          row,
+          requestEvidence
+        )
+          ? getAccountRequestCredentialEvidence(requestEvidence)
+          : null;
+        const authenticationProblem = resolveAccountAuthenticationProblemEvidence(
+          row,
+          requestEvidence
+        );
         return (
           recommendation?.action === 'reauth' ||
-          row.inspection?.action === 'reauth' ||
-          row.inspection?.statusCode === 401 ||
-          ['unauthorized', 'unauthenticated', 'expired', 'token_expired'].includes(statusMessage)
+          authenticationProblem !== null ||
+          (codexStatus?.needsReauth === true && requestCredentialEvidence?.direction !== 'positive')
         );
       }
       if (effectiveOperationalFilter === 'cooldown') {
@@ -1213,16 +3623,21 @@ export function AccountsPage() {
       if (effectiveOperationalFilter === 'automation') {
         return (actionCandidatesByRowKey.get(row.selectionKey)?.length ?? 0) > 0;
       }
-      return row.disabled && row.quota.status === 'ok' && !row.quota.error;
+      return (
+        recommendationBySelectionKey.get(row.selectionKey)?.reasonKey ===
+        'accounts.recommend_reason_recovered'
+      );
     });
-    return sortAccountRows(operationalRows, accountSort);
+    return sortAccountRows(operationalRows, accountSort, requestEvidenceBySelectionKey);
   }, [
     accountSort,
     actionCandidatesByRowKey,
     baseFilteredRows,
+    codexStatusBySelectionKey,
     effectiveOperationalFilter,
     quotaCooldownsByRowKey,
     recommendationBySelectionKey,
+    requestEvidenceBySelectionKey,
   ]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
@@ -1264,38 +3679,36 @@ export function AccountsPage() {
     () => rows.find((row) => row.selectionKey === selectedRowKey) ?? null,
     [rows, selectedRowKey]
   );
-  const accountHistoryTargets = useMemo(() => {
-    const targetRows = [...pageRows];
-    if (selectedRow && !targetRows.some((row) => row.selectionKey === selectedRow.selectionKey)) {
-      targetRows.push(selectedRow);
-    }
-    return buildAccountHistoryTargetEntries(targetRows);
-  }, [pageRows, selectedRow]);
-  const accountHistoryAutoLoadKey = useMemo(
+  const accountHistoryTargets = useMemo(() => buildAccountHistoryTargetEntries(rows), [rows]);
+  const accountHistoryAutoContextKey = useMemo(
     () =>
       JSON.stringify({
         checking: featureAvailability.checking,
+        connectionFingerprint,
         managerServiceBase: featureAvailability.managerServiceBase,
         managementKey,
+        managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         targets: accountHistoryTargets.map((entry) => entry.target),
       }),
     [
       accountHistoryTargets,
+      connectionFingerprint,
       featureAvailability.checking,
       featureAvailability.managerServiceBase,
       featureAvailability.requestMonitoringAvailable,
+      managerConnectionFingerprint,
       managementKey,
     ]
   );
+  const accountHistoryAutoLoadKey = `${accountHistoryAutoContextKey}\u0000${accountHistoryAutoRefreshRevision}`;
   const usageValuesAutoLoadKey = useMemo(
     () =>
       JSON.stringify({
         checking: featureAvailability.checking,
         connectionFingerprint,
         historyRevision: accountHistoryRefreshRevision,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
+        managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         selectedRowKey: selectedRow?.selectionKey ?? selectedRowKey,
       }),
@@ -1303,9 +3716,8 @@ export function AccountsPage() {
       accountHistoryRefreshRevision,
       connectionFingerprint,
       featureAvailability.checking,
-      featureAvailability.managerServiceBase,
       featureAvailability.requestMonitoringAvailable,
-      managementKey,
+      managerConnectionFingerprint,
       selectedRow,
       selectedRowKey,
     ]
@@ -1315,17 +3727,15 @@ export function AccountsPage() {
       JSON.stringify({
         checking: featureAvailability.checking,
         connectionFingerprint,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
+        managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         selectedRowKey: selectedRow?.selectionKey ?? selectedRowKey,
       }),
     [
       connectionFingerprint,
       featureAvailability.checking,
-      featureAvailability.managerServiceBase,
       featureAvailability.requestMonitoringAvailable,
-      managementKey,
+      managerConnectionFingerprint,
       selectedRow,
       selectedRowKey,
     ]
@@ -1352,7 +3762,10 @@ export function AccountsPage() {
     disableControls,
     sourceMemberCount: selectedSourceMemberCount,
     connectionKey: connectionFingerprint,
-    loadFiles,
+    requestScope: authFilesRequestScope,
+    loadFiles: async () => {
+      await loadFiles();
+    },
     onSaved: handleConfigurationSaved,
   });
   const configurationDirty = configurationEditor.dirty;
@@ -1465,10 +3878,8 @@ export function AccountsPage() {
     },
     [confirmConfigurationDiscard, handleDelete, selectedRowKey]
   );
-  const selectedRowProvider = selectedRow?.provider ?? '';
   const hasSelectedAccountDetail = activeView === 'accounts' && Boolean(selectedRowKey);
-  const needsCodexStatusEvidence =
-    activeView === 'accounts' && isAccountCodexStatusFilter(statusFilter);
+  const needsInspectionSummary = canLoadInspectionSummary;
   const needsQuotaCooldowns =
     managerStorageAvailable &&
     activeView === 'accounts' &&
@@ -1480,21 +3891,27 @@ export function AccountsPage() {
     (effectiveOperationalFilter === 'automation' ||
       (hasSelectedAccountDetail && (detailTab === 'overview' || detailTab === 'diagnostics')));
   const needsHeaderSnapshots =
-    (needsCodexStatusEvidence ||
-      (hasSelectedAccountDetail &&
-        (detailTab === 'overview' || detailTab === 'quota') &&
-        selectedRowProvider === CODEX_CONFIG.type)) &&
-    headerSnapshotLoadedKey !== headerSnapshotLoadKey;
+    canLoadHeaderSnapshots && headerSnapshotLoadedKey !== headerSnapshotLoadKey;
 
   useEffect(() => {
-    if (!needsQuotaCooldowns) return;
+    if (
+      !needsQuotaCooldowns ||
+      credentialMutationMarkerSynchronizationsRef.current.has(credentialEvidenceScopeKey)
+    ) {
+      return;
+    }
     void loadQuotaCooldowns();
-  }, [loadQuotaCooldowns, needsQuotaCooldowns]);
+  }, [credentialEvidenceScopeKey, loadQuotaCooldowns, needsQuotaCooldowns]);
 
   useEffect(() => {
-    if (!needsActionCandidates) return;
+    if (
+      !needsActionCandidates ||
+      credentialMutationMarkerSynchronizationsRef.current.has(credentialEvidenceScopeKey)
+    ) {
+      return;
+    }
     void loadAccountActionCandidates();
-  }, [loadAccountActionCandidates, needsActionCandidates]);
+  }, [credentialEvidenceScopeKey, loadAccountActionCandidates, needsActionCandidates]);
 
   useEffect(() => {
     if (!needsHeaderSnapshots) return;
@@ -1502,9 +3919,9 @@ export function AccountsPage() {
   }, [loadHeaderSnapshots, needsHeaderSnapshots]);
 
   useEffect(() => {
-    if (!needsCodexStatusEvidence || featureAvailability.checking) return;
-    void loadInspectionSummary();
-  }, [featureAvailability.checking, loadInspectionSummary, needsCodexStatusEvidence]);
+    if (!needsInspectionSummary) return;
+    void loadInspectionSummaryAndSynchronize();
+  }, [loadInspectionSummaryAndSynchronize, needsInspectionSummary]);
 
   useEffect(() => {
     if (activeView !== 'accounts' || detailTab !== 'models' || !selectedRow) {
@@ -1669,32 +4086,37 @@ export function AccountsPage() {
       filterAccountWindowUsageByTargetRanges(accountWindowUsageTargets, accountWindowUsageByKey),
     [accountWindowUsageByKey, accountWindowUsageTargets]
   );
+  const selectedHeaderSnapshotRevision = useMemo(() => {
+    if (selectedRow?.provider !== CODEX_CONFIG.type) return '';
+    const snapshot = getEffectiveCodexHeaderSnapshot(selectedRow.raw);
+    return snapshot ? `${snapshot.event_hash}\u0000${snapshot.timestamp_ms}` : '';
+  }, [getEffectiveCodexHeaderSnapshot, selectedRow]);
   const accountWindowUsageAutoLoadKey = useMemo(
     () =>
       JSON.stringify({
         checking: featureAvailability.checking,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
+        managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         selectedRowKey: selectedRow?.selectionKey ?? selectedRowKey,
-        headerSnapshotGeneratedAtMs,
+        selectedHeaderSnapshotRevision,
         historyRevision: accountHistoryRefreshRevision,
+        quotaRevision: accountQuotaRefreshRevision,
       }),
     [
       accountHistoryRefreshRevision,
+      accountQuotaRefreshRevision,
       featureAvailability.checking,
-      featureAvailability.managerServiceBase,
       featureAvailability.requestMonitoringAvailable,
-      headerSnapshotGeneratedAtMs,
-      managementKey,
+      managerConnectionFingerprint,
       selectedRow,
+      selectedHeaderSnapshotRevision,
       selectedRowKey,
     ]
   );
   const accountDisplayHint = t(
     accountDisplayMode === 'masked'
-      ? 'quota_management.show_full_credentials_hint'
-      : 'quota_management.show_masked_credentials_hint'
+      ? 'accounts.show_full_credentials_hint'
+      : 'accounts.show_masked_credentials_hint'
   );
   const AccountDisplayIcon = accountDisplayMode === 'masked' ? IconEyeOff : IconEye;
   const oauthPreviewProviders = useMemo(
@@ -2045,9 +4467,86 @@ export function AccountsPage() {
     [location.pathname, location.search, navigate, workspaceUrlState]
   );
 
-  const handleInspectionCredentialsChanged = useCallback(async () => {
-    await loadFiles();
-  }, [loadFiles]);
+  const handleInspectionCredentialsChanged = useCallback(
+    async (target?: CodexReauthTarget | null, snapshot?: CredentialInspectionSnapshot | null) => {
+      const callbackScopeKey = credentialEvidenceScopeKey;
+      if (activeCredentialEvidenceScopeKeyRef.current !== callbackScopeKey) return;
+      if (target) {
+        const targetIdentityKey = getAuthFileCodexInspectionKeyForIdentity({
+          fileName: target.fileName ?? '',
+          runtimeId: target.runtimeId,
+          provider: target.provider,
+          authIndex: target.authIndex ?? null,
+          accountId: target.accountId,
+          accountSnapshot: target.accountSnapshot,
+        });
+        const targetFile = files.find(
+          (file) => getAuthFileCodexInspectionKeyForFile(file) === targetIdentityKey
+        );
+        if (!targetFile) throw new Error(t('notification.refresh_failed'));
+        const baseline = createAccountDirectReauthBaseline({
+          target,
+          file: targetFile,
+          resultKeys: getHandledAccountInspectionResultKeys(
+            inspectionResults,
+            targetIdentityKey,
+            target.fileName ?? '',
+            files
+          ),
+        });
+        if (!baseline) throw new Error(t('notification.refresh_failed'));
+        const pending = recordPendingAccountDirectReauth({ connectionFingerprint, baseline });
+        if (!pending) throw new Error(t('notification.refresh_failed'));
+        const reloadedFiles = await reloadInspectionCredentialArtifacts({
+          requireSuccessfulReload: true,
+        });
+        if (activeCredentialEvidenceScopeKeyRef.current !== callbackScopeKey) return;
+        const confirmedFile = reloadedFiles
+          ? confirmAccountDirectReauth(pending, reloadedFiles)
+          : null;
+        if (!confirmedFile) throw new Error(t('notification.refresh_failed'));
+        completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
+        return;
+      }
+      if (snapshot) {
+        const scopedKey = getInspectionCredentialMutationScopedKey(snapshot, false);
+        if (!scopedKey) return;
+        const synchronized = await synchronizeInspectionCredentialMutations(snapshot, false);
+        if (activeCredentialEvidenceScopeKeyRef.current !== callbackScopeKey) return;
+        if (synchronized || synchronizedInspectionMutationKeysRef.current.has(scopedKey)) return;
+        if (pendingInspectionMutationSnapshotsRef.current.has(scopedKey)) {
+          throw new Error(t('notification.refresh_failed'));
+        }
+        return;
+      }
+      await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true });
+    },
+    [
+      completeConfirmedAccountDirectReauth,
+      connectionFingerprint,
+      credentialEvidenceScopeKey,
+      files,
+      getInspectionCredentialMutationScopedKey,
+      inspectionResults,
+      reloadInspectionCredentialArtifacts,
+      synchronizeInspectionCredentialMutations,
+      t,
+    ]
+  );
+
+  const handleInspectionSnapshotChange = useCallback(
+    (snapshot: CredentialInspectionSnapshot) => {
+      if (activeCredentialEvidenceScopeKeyRef.current !== credentialEvidenceScopeKey) return;
+      capturePendingInspectionEvidenceBaselineRef.current(snapshot);
+      const currentSnapshot = inspectionSnapshotRef.current;
+      if (!currentSnapshot || snapshot.completedAtMs >= currentSnapshot.completedAtMs) {
+        inspectionSnapshotRef.current = snapshot;
+      }
+      applyInspectionSnapshot(snapshot);
+      void synchronizeInspectionCredentialMutations(snapshot, true);
+    },
+    [applyInspectionSnapshot, credentialEvidenceScopeKey, synchronizeInspectionCredentialMutations]
+  );
 
   const handleOpenInspectionCredential = useCallback(
     async (target: CredentialInspectionTarget) => {
@@ -2105,6 +4604,7 @@ export function AccountsPage() {
     setHistoryRefreshing(false);
     usageValuesRequestIdRef.current += 1;
     usageValuesAutoLoadKeyRef.current = null;
+    accountWindowUsageAutoLoadKeyRef.current = null;
     setAccountWindowUsageQueryContext(null);
     detailEventsRequestIdRef.current += 1;
     detailEventsAutoLoadKeyRef.current = null;
@@ -2175,7 +4675,7 @@ export function AccountsPage() {
         if (headerObservation) {
           const headerQuota = buildObservedCodexQuotaState(
             selectedRow.raw,
-            getFreshCodexHeaderSnapshot(selectedRow.raw),
+            getEffectiveCodexHeaderSnapshot(selectedRow.raw),
             t,
             headerSnapshotGeneratedAtMs
           );
@@ -2296,7 +4796,7 @@ export function AccountsPage() {
     featureAvailability.requestMonitoringAvailable,
     getActiveCodexQuota,
     getCodexHeaderQuotaSnapshotObservation,
-    getFreshCodexHeaderSnapshot,
+    getEffectiveCodexHeaderSnapshot,
     getQuotaSnapshotObservation,
     headerSnapshotGeneratedAtMs,
     managementKey,
@@ -2378,13 +4878,35 @@ export function AccountsPage() {
       const entries = targetEntries ?? accountHistoryTargets;
       const mergeResult = targetEntries !== undefined;
       const controllerRef = mergeResult ? accountHistoryTargetAbortRef : accountHistoryAutoAbortRef;
+      const managerServiceBase = featureAvailability.managerServiceBase;
+      if (!mergeResult) {
+        const activeRowKeys = new Set(entries.map((entry) => entry.rowKey));
+        accountHistoryRequestVersionsRef.current = retainAccountHistoryRowKeys(
+          accountHistoryRequestVersionsRef.current,
+          activeRowKeys
+        );
+        setAccountHistoryByRowKey((current) => retainAccountHistoryRowKeys(current, activeRowKeys));
+        setAccountHistoryErrorsByRowKey((current) =>
+          retainAccountHistoryRowKeys(current, activeRowKeys)
+        );
+      }
+      if (
+        !mergeResult &&
+        controllerRef.current &&
+        accountHistoryAutoRequestContextKeyRef.current === accountHistoryAutoContextKey
+      ) {
+        return;
+      }
       controllerRef.current?.abort();
       controllerRef.current = null;
+      if (!mergeResult) {
+        accountHistoryAutoRequestContextKeyRef.current = null;
+      }
 
       if (
         featureAvailability.checking ||
         !featureAvailability.requestMonitoringAvailable ||
-        !featureAvailability.managerServiceBase ||
+        !managerServiceBase ||
         !managementKey ||
         entries.length === 0
       ) {
@@ -2403,11 +4925,14 @@ export function AccountsPage() {
 
       const controller = new AbortController();
       controllerRef.current = controller;
+      if (!mergeResult) {
+        accountHistoryAutoRequestContextKeyRef.current = accountHistoryAutoContextKey;
+      }
       const requestToken = Symbol('account-history-request');
       accountHistoryPendingRequestsRef.current.add(requestToken);
-      const requestVersions = new Map<string, number>();
+      const requestVersions = new Map<string, symbol>();
       entries.forEach((entry) => {
-        const version = (accountHistoryRequestVersionsRef.current.get(entry.rowKey) ?? 0) + 1;
+        const version = Symbol(entry.rowKey);
         accountHistoryRequestVersionsRef.current.set(entry.rowKey, version);
         requestVersions.set(entry.rowKey, version);
       });
@@ -2418,20 +4943,43 @@ export function AccountsPage() {
         return next.size === current.size ? current : next;
       });
       try {
-        const response = await monitoringAnalyticsApi.getAccountHistory(
-          featureAvailability.managerServiceBase,
-          managementKey,
-          {
-            accounts: entries.map((entry) => entry.target),
-          },
-          controller.signal
+        const batches = buildAccountHistoryTargetBatches(entries);
+        const batchResults = await mapWithConcurrency(
+          batches,
+          MAX_CONCURRENT_ACCOUNT_HISTORY_REQUESTS,
+          async (batch) => {
+            try {
+              const response = await monitoringAnalyticsApi.getAccountHistory(
+                managerServiceBase,
+                managementKey,
+                {
+                  accounts: batch.map((entry) => entry.target),
+                },
+                controller.signal
+              );
+              return { batch, response, error: '' };
+            } catch (err: unknown) {
+              if (controller.signal.aborted) throw err;
+              return {
+                batch,
+                response: null,
+                error: err instanceof Error ? err.message : t('notification.load_failed'),
+              };
+            }
+          }
         );
         if (controller.signal.aborted) return;
-        const nextHistory = buildAccountHistoryByRowKey(
-          entries,
-          response.items,
-          response.generated_at_ms
-        );
+        const nextHistory = new Map<string, MonitoringAccountHistoryItem>();
+        const failedRows = new Map<string, string>();
+        batchResults.forEach(({ batch, response, error }) => {
+          if (!response) {
+            batch.forEach((entry) => failedRows.set(entry.rowKey, error));
+            return;
+          }
+          buildAccountHistoryByRowKey(batch, response.items, response.generated_at_ms).forEach(
+            (item, rowKey) => nextHistory.set(rowKey, item)
+          );
+        });
         setAccountHistoryByRowKey((current) => {
           const merged = mergeResult
             ? new Map(current)
@@ -2445,14 +4993,39 @@ export function AccountsPage() {
               }
               return;
             }
+            if (failedRows.has(entry.rowKey)) {
+              if (!mergeResult) {
+                const currentItem = current.get(entry.rowKey);
+                if (currentItem) merged.set(entry.rowKey, currentItem);
+              }
+              return;
+            }
             merged.delete(entry.rowKey);
             const nextItem = nextHistory.get(entry.rowKey);
             if (nextItem) merged.set(entry.rowKey, nextItem);
           });
           return merged;
         });
+        setAccountHistoryErrorsByRowKey((current) => {
+          const next = new Map(current);
+          entries.forEach((entry) => {
+            const requestVersion = requestVersions.get(entry.rowKey);
+            if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
+              return;
+            }
+            const error = failedRows.get(entry.rowKey);
+            if (error) {
+              next.set(entry.rowKey, error);
+            } else {
+              next.delete(entry.rowKey);
+            }
+          });
+          return next;
+        });
       } catch (err: unknown) {
-        if (controller.signal.aborted) return;
+        const requestWasAborted = controller.signal.aborted;
+        if (!requestWasAborted) controller.abort();
+        if (requestWasAborted) return;
         const message = err instanceof Error ? err.message : t('notification.load_failed');
         setAccountHistoryErrorsByRowKey((current) => {
           const next = new Map(current);
@@ -2467,12 +5040,16 @@ export function AccountsPage() {
       } finally {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
+          if (!mergeResult) {
+            accountHistoryAutoRequestContextKeyRef.current = null;
+          }
         }
         accountHistoryPendingRequestsRef.current.delete(requestToken);
         setAccountHistoryLoading(accountHistoryPendingRequestsRef.current.size > 0);
       }
     },
     [
+      accountHistoryAutoContextKey,
       accountHistoryTargets,
       featureAvailability.checking,
       featureAvailability.managerServiceBase,
@@ -2487,6 +5064,7 @@ export function AccountsPage() {
       accountHistoryAutoLoadKeyRef.current = null;
       accountHistoryAutoAbortRef.current?.abort();
       accountHistoryAutoAbortRef.current = null;
+      accountHistoryAutoRequestContextKeyRef.current = null;
       return;
     }
     if (accountHistoryAutoLoadKeyRef.current === accountHistoryAutoLoadKey) return;
@@ -2619,7 +5197,7 @@ export function AccountsPage() {
 
   const refreshQuotaForRow = useCallback(
     async (row: AccountRow) => {
-      if (row.disabled || row.runtimeOnly) return false;
+      if (row.runtimeOnly) return false;
       const refreshWithConfig = <TState, TData>(
         config: QuotaConfig<TState, TData>,
         setQuota: QuotaSetter<TState>
@@ -2634,35 +5212,58 @@ export function AccountsPage() {
             quotaRequestVersionsRef.current,
             `${config.type}:${storeKey}`
           ),
+          requestScope: authFilesRequestScope,
         });
       };
       switch (row.provider) {
-        case CODEX_CONFIG.type:
-          return refreshWithConfig(CODEX_CONFIG, setCodexQuota);
+        case CODEX_CONFIG.type: {
+          const data = await refreshWithConfig(CODEX_CONFIG, setCodexQuota);
+          if (!data) return false;
+          const refreshedQuota = CODEX_CONFIG.buildSuccessState(data, row.raw);
+          const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
+          invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
+            supersedeAuthenticationActionEvidence: true,
+            supersedeQuotaActionEvidence: healthyQuota,
+            supersedeCooldownEvidence: healthyQuota,
+          });
+          return true;
+        }
         case CLAUDE_CONFIG.type:
-          return refreshWithConfig(CLAUDE_CONFIG, setClaudeQuota);
+          return Boolean(await refreshWithConfig(CLAUDE_CONFIG, setClaudeQuota));
         case ANTIGRAVITY_CONFIG.type:
-          return refreshWithConfig(ANTIGRAVITY_CONFIG, setAntigravityQuota);
+          return Boolean(await refreshWithConfig(ANTIGRAVITY_CONFIG, setAntigravityQuota));
         case KIMI_CONFIG.type:
-          return refreshWithConfig(KIMI_CONFIG, setKimiQuota);
+          return Boolean(await refreshWithConfig(KIMI_CONFIG, setKimiQuota));
         case XAI_CONFIG.type:
-          return refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
-            XAI_CONFIG,
-            setXaiQuota
+          return Boolean(
+            await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
+              XAI_CONFIG,
+              setXaiQuota
+            )
           );
         default:
           return false;
       }
     },
-    [setAntigravityQuota, setClaudeQuota, setCodexQuota, setKimiQuota, setXaiQuota, t]
+    [
+      invalidateCodexCredentialStatusForSelectionKeys,
+      setAntigravityQuota,
+      setClaudeQuota,
+      setCodexQuota,
+      setKimiQuota,
+      setXaiQuota,
+      t,
+      authFilesRequestScope,
+    ]
   );
 
   const refreshQuotaRows = useCallback(
     (targets: AccountRow[]): Promise<void> => {
-      if (quotaRefreshBatchPromiseRef.current) {
-        return quotaRefreshBatchPromiseRef.current;
+      const currentBatch = quotaRefreshBatchRef.current;
+      if (currentBatch?.connectionFingerprint === connectionFingerprint) {
+        return currentBatch.promise;
       }
-      const refreshable = targets.filter((row) => !row.disabled && !row.runtimeOnly);
+      const refreshable = targets.filter((row) => !row.runtimeOnly);
       if (refreshable.length === 0) {
         showNotification(t('accounts.no_refreshable_accounts'), 'warning');
         return Promise.resolve();
@@ -2671,6 +5272,10 @@ export function AccountsPage() {
         getProviderKey: (row) => row.provider,
         getCredentialKey: (row) => getQuotaCredentialStoreKey(row.raw),
       });
+      const generation = quotaRefreshGenerationRef.current;
+      const isCurrentBatch = () =>
+        quotaRefreshGenerationRef.current === generation &&
+        oauthEditorConnectionFingerprintRef.current === connectionFingerprint;
       const batchPromise = (async () => {
         setQuotaRefreshing(true);
         try {
@@ -2680,8 +5285,9 @@ export function AccountsPage() {
               perProviderConcurrency: MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER,
               maxConcurrentProviders: MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS,
             },
-            ({ item }) => refreshQuotaForRow(item)
+            ({ item }) => (isCurrentBatch() ? refreshQuotaForRow(item) : Promise.resolve(false))
           );
+          if (!isCurrentBatch()) return;
           const successCount = results.filter(Boolean).length;
           showNotification(
             t('accounts.quota_refresh_result', {
@@ -2691,18 +5297,28 @@ export function AccountsPage() {
             successCount === taskPlan.length ? 'success' : 'warning'
           );
         } finally {
-          quotaRefreshBatchPromiseRef.current = null;
-          setQuotaRefreshing(false);
+          if (
+            quotaRefreshBatchRef.current?.generation === generation &&
+            quotaRefreshBatchRef.current.connectionFingerprint === connectionFingerprint
+          ) {
+            quotaRefreshBatchRef.current = null;
+            setQuotaRefreshing(false);
+          }
         }
       })();
-      quotaRefreshBatchPromiseRef.current = batchPromise;
+      quotaRefreshBatchRef.current = { connectionFingerprint, generation, promise: batchPromise };
       return batchPromise;
     },
-    [refreshQuotaForRow, showNotification, t]
+    [connectionFingerprint, refreshQuotaForRow, showNotification, t]
   );
 
   const refreshAccountQuota = useCallback(
-    (row: AccountRow) => refreshQuotaRows([row]),
+    async (row: AccountRow): Promise<void> => {
+      await refreshQuotaRows([row]);
+      if (selectedRowKeyRef.current === row.selectionKey) {
+        setAccountQuotaRefreshRevision((current) => current + 1);
+      }
+    },
     [refreshQuotaRows]
   );
 
@@ -2712,8 +5328,7 @@ export function AccountsPage() {
       const refreshKey = JSON.stringify({
         checking: featureAvailability.checking,
         connectionFingerprint,
-        managerServiceBase: featureAvailability.managerServiceBase,
-        managementKey,
+        managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         rowKey: row.selectionKey,
       });
@@ -2763,22 +5378,24 @@ export function AccountsPage() {
       loadAccountHistory,
       loadHeaderSnapshots,
       managementKey,
+      managerConnectionFingerprint,
       requestHistoryAvailable,
     ]
   );
 
   useEffect(() => {
-    if (activeView !== 'accounts' || detailTab !== 'quota' || !selectedRowKey) {
+    if (activeView !== 'accounts' || detailTab !== 'quota' || !selectedRowKey || !selectedRow) {
       const hadInFlightRequest = accountWindowUsageAbortRef.current !== null;
       accountWindowUsageReqIdRef.current += 1;
       accountWindowUsageAbortRef.current?.abort();
       accountWindowUsageAbortRef.current = null;
-      if (hadInFlightRequest) {
+      if (hadInFlightRequest || !selectedRow) {
         accountWindowUsageAutoLoadKeyRef.current = null;
       }
       return;
     }
     if (
+      canLoadHeaderSnapshots &&
       selectedRow?.provider === CODEX_CONFIG.type &&
       headerSnapshotLoadedKey !== headerSnapshotLoadKey
     ) {
@@ -2790,6 +5407,7 @@ export function AccountsPage() {
   }, [
     accountWindowUsageAutoLoadKey,
     activeView,
+    canLoadHeaderSnapshots,
     detailTab,
     headerSnapshotLoadKey,
     headerSnapshotLoadedKey,
@@ -2830,7 +5448,7 @@ export function AccountsPage() {
             `${CODEX_CONFIG.type}:${storeKey}`
           );
           try {
-            const data = await CODEX_CONFIG.resetQuota?.(row.raw, t);
+            const data = await CODEX_CONFIG.resetQuota?.(row.raw, t, authFilesRequestScope);
             if (data === undefined) {
               throw new Error(t('common.unknown_error'));
             }
@@ -2882,6 +5500,7 @@ export function AccountsPage() {
       showConfirmation,
       showNotification,
       t,
+      authFilesRequestScope,
     ]
   );
 
@@ -2924,6 +5543,32 @@ export function AccountsPage() {
     setBatchPriorityValue('');
     setIsSelectionMode(false);
   }, [batchPriorityValue, patchPriorityRows, selectedRows, showNotification, t]);
+
+  const handleBatchWeightSave = useCallback(async () => {
+    const trimmed = batchWeightValue.trim();
+    const validationError = getCredentialWeightError(trimmed);
+    if (validationError) {
+      showNotification(
+        t(
+          validationError === 'maximum'
+            ? 'auth_files.weight_error_maximum'
+            : 'auth_files.weight_error_integer',
+          { max: MAX_CREDENTIAL_WEIGHT }
+        ),
+        'error'
+      );
+      return;
+    }
+    const weight = trimmed ? (normalizeCredentialWeight(trimmed) ?? null) : null;
+    const patchTargets = selectedRows
+      .filter((row) => !row.runtimeOnly)
+      .map((row) => getAuthFilePatchTarget(row.raw));
+    if (patchTargets.length === 0) return;
+    await batchPatchFields(patchTargets, { weight });
+    setBatchWeightOpen(false);
+    setBatchWeightValue('');
+    setIsSelectionMode(false);
+  }, [batchPatchFields, batchWeightValue, selectedRows, showNotification, t]);
 
   const patchWebsocketsRows = useCallback(
     async (targets: AccountRow[], websockets: boolean) => {
@@ -3444,8 +6089,8 @@ export function AccountsPage() {
       <AccountDisplayIcon size={15} />
       {t(
         accountDisplayMode === 'masked'
-          ? 'quota_management.account_display_masked'
-          : 'quota_management.account_display_full'
+          ? 'accounts.account_display_masked'
+          : 'accounts.account_display_full'
       )}
     </Button>
   );
@@ -3547,7 +6192,7 @@ export function AccountsPage() {
               variant="secondary"
               size="sm"
               onClick={() => refreshQuotaRows(refreshTargets)}
-              disabled={quotaRefreshing || refreshTargets.length === 0}
+              disabled={disableControls || quotaRefreshing || refreshTargets.length === 0}
               loading={quotaRefreshing}
               title={t('accounts.refresh_quota')}
             >
@@ -3661,7 +6306,7 @@ export function AccountsPage() {
               variant="secondary"
               size="sm"
               onClick={() => refreshQuotaRows(selectedRows)}
-              disabled={quotaRefreshing || selectedRows.length === 0}
+              disabled={disableControls || quotaRefreshing || selectedRows.length === 0}
               loading={quotaRefreshing}
               title={t('accounts.refresh_quota')}
             >
@@ -3699,6 +6344,18 @@ export function AccountsPage() {
               title={t('accounts.set_priority')}
             >
               {t('accounts.set_priority')}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={disableControls || selectedRows.length === 0 || batchFieldsUpdating}
+              onClick={() => {
+                setBatchWeightValue('');
+                setBatchWeightOpen(true);
+              }}
+              title={t('auth_files.batch_weight_button')}
+            >
+              {t('auth_files.batch_weight_button')}
             </Button>
             <DropdownMenu
               items={moreItems}
@@ -3738,11 +6395,23 @@ export function AccountsPage() {
           iconOnly
           className={`${styles.accountIconButton} ${styles.accountIconButtonRefresh}`}
           onClick={() => void refreshAccountQuota(row)}
-          disabled={quotaRefreshing || row.disabled || row.runtimeOnly}
+          disabled={disableControls || quotaRefreshing || row.runtimeOnly}
           title={t('accounts.refresh_quota')}
           aria-label={t('accounts.refresh_quota')}
         >
           <IconRefreshCw size={15} />
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          iconOnly
+          className={`${styles.accountIconButton} ${styles.accountIconButtonSettings}`}
+          onClick={() => void openAccountDetail(row, 'config')}
+          disabled={row.runtimeOnly}
+          title={t('accounts.detail_tab_config')}
+          aria-label={t('accounts.detail_tab_config')}
+        >
+          <IconSettings size={15} />
         </Button>
         <Button
           variant="secondary"
@@ -3830,7 +6499,7 @@ export function AccountsPage() {
       title={t('accounts.empty_title')}
       description={t('accounts.empty_desc')}
       action={
-        <Button variant="secondary" onClick={() => void loadFiles()}>
+        <Button variant="secondary" onClick={() => void refreshAccountsWorkspace()}>
           {t('common.refresh')}
         </Button>
       }
@@ -3852,6 +6521,7 @@ export function AccountsPage() {
           </div>
           {rowsToRender.map((row) => {
             const recommendation = recommendationBySelectionKey.get(row.selectionKey) ?? null;
+            const accountHistory = accountHistoryByRowKey.get(row.selectionKey) ?? null;
             const quotaWindows =
               quotaDisplayWindowsByRowKey.get(row.selectionKey) ?? buildQuotaDisplayWindows(row);
             const quotaCooldown = quotaCooldownsByRowKey.get(row.selectionKey)?.[0] ?? null;
@@ -3861,6 +6531,7 @@ export function AccountsPage() {
               quotaCooldown,
               codexStatus,
               quotaWindows,
+              requestEvidence: requestEvidenceBySelectionKey.get(row.selectionKey),
             });
             const antigravityQuotaMatrix = buildAntigravityQuotaMatrix(row, quotaWindows);
             const displayQuotaWindows = antigravityQuotaMatrix ? [] : quotaWindows.slice(0, 2);
@@ -3889,7 +6560,6 @@ export function AccountsPage() {
                 item.health.cooldown?.recoverAtMs
               )
             );
-            const accountHistory = accountHistoryByRowKey.get(row.selectionKey) ?? null;
             const accountHistoryError = accountHistoryErrorsByRowKey.get(row.selectionKey) ?? '';
             const accountHistoryMatched = accountHistory?.matched === true;
             const accountHistoryTitle = getAccountHistoryTitle(
@@ -4014,6 +6684,14 @@ export function AccountsPage() {
                     >
                       {t('accounts.col_priority')} {item.identity.priority}
                     </span>
+                    {item.identity.weight !== null ? (
+                      <span
+                        className={styles.accountPriorityMeta}
+                        title={t('auth_files.weight_label')}
+                      >
+                        {t('auth_files.weight_display')} {item.identity.weight}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 
@@ -4478,6 +7156,7 @@ export function AccountsPage() {
               variant="secondary"
               onClick={() => void refreshAccountQuota(selectedRow)}
               loading={quotaRefreshing}
+              disabled={disableControls || selectedRow.runtimeOnly}
             >
               {!quotaRefreshing ? <IconRefreshCw size={16} /> : null}
               {t('accounts.refresh_quota')}
@@ -4511,7 +7190,7 @@ export function AccountsPage() {
               <p>
                 {t('accounts.detail_disabled_notice_desc', {
                   defaultValue:
-                    '此账号当前不接收请求,各 Tab 仅展示只读摘要。点击底部"启用"按钮可恢复完整功能。',
+                    '此账号当前不接收业务请求，但仍可刷新额度和维护配置。点击底部“启用”按钮可恢复请求路由。',
                 })}
               </p>
             </div>
@@ -4568,7 +7247,7 @@ export function AccountsPage() {
     <CredentialHealthInspectionWorkspace
       mode={healthMode}
       onModeChange={changeHealthMode}
-      onSnapshotChange={applyInspectionSnapshot}
+      onSnapshotChange={handleInspectionSnapshotChange}
       onCredentialsChanged={handleInspectionCredentialsChanged}
       onOpenCredential={handleOpenInspectionCredential}
     />
@@ -4806,6 +7485,7 @@ export function AccountsPage() {
         files={files}
         excluded={oauthState.excluded}
         modelAlias={oauthState.modelAlias}
+        requestScope={authFilesRequestScope}
         disabled={disableControls}
         unsupported={oauthState.excludedError === 'unsupported'}
         onClose={() => setOauthExcludedEditorProvider(null)}
@@ -4817,6 +7497,7 @@ export function AccountsPage() {
         files={files}
         excluded={oauthState.excluded}
         modelAlias={oauthState.modelAlias}
+        requestScope={authFilesRequestScope}
         disabled={disableControls}
         unsupported={oauthState.modelAliasError === 'unsupported'}
         onClose={() => setOauthModelAliasEditorProvider(null)}
@@ -4868,9 +7549,56 @@ export function AccountsPage() {
           />
         </div>
       </Modal>
+      <Modal
+        open={batchWeightOpen}
+        onClose={() => {
+          if (!batchFieldsUpdating) setBatchWeightOpen(false);
+        }}
+        closeDisabled={batchFieldsUpdating}
+        title={t('auth_files.batch_weight_title')}
+        width={420}
+        footer={
+          <div className={styles.batchPriorityFooter}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setBatchWeightOpen(false)}
+              disabled={batchFieldsUpdating}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void handleBatchWeightSave()}
+              disabled={disableControls || selectedRows.length === 0 || batchFieldsUpdating}
+              loading={batchFieldsUpdating}
+            >
+              {t('common.confirm')}
+            </Button>
+          </div>
+        }
+      >
+        <div className={styles.batchPriorityModal}>
+          <Input
+            label={t('auth_files.weight_label')}
+            placeholder={t('auth_files.weight_placeholder')}
+            hint={t('auth_files.batch_weight_hint')}
+            value={batchWeightValue}
+            onChange={(event) => setBatchWeightValue(event.target.value)}
+            disabled={disableControls || batchFieldsUpdating}
+            inputMode="numeric"
+            autoFocus
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || disableControls || batchFieldsUpdating) return;
+              void handleBatchWeightSave();
+            }}
+          />
+        </div>
+      </Modal>
       <CodexReauthDialog
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
+        requestScope={authFilesRequestScope}
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
       />

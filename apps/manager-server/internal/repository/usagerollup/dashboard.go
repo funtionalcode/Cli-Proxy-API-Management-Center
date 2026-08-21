@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sort"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const dashboardHourMS int64 = 60 * 60 * 1000
@@ -38,6 +41,14 @@ type dashboardHourlyKey struct {
 	BillingModel string
 	ServiceTier  string
 }
+
+type dashboardProjection int
+
+const (
+	dashboardProjectionHourly dashboardProjection = iota
+	dashboardProjectionModel
+	dashboardProjectionDaily
+)
 
 type dashboardEventRow struct {
 	ID                  int64
@@ -81,7 +92,7 @@ func (r *repository) CatchUpDashboardHourly(ctx context.Context, limit int, nowM
 	if err != nil {
 		return CatchUpResult{}, err
 	}
-	events, err := dashboardEventsAfterCheckpoint(ctx, tx, checkpoint.LastEventID, limit)
+	rebuildTargetEventID, err := usageRollupRebuildTargetInTx(ctx, tx, DashboardHourlyCheckpointName)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -89,14 +100,37 @@ func (r *repository) CatchUpDashboardHourly(ctx context.Context, limit int, nowM
 	if err != nil {
 		return CatchUpResult{}, err
 	}
+	targetEventID := latestID
+	rebuilt := rebuildTargetEventID > checkpoint.LastEventID
+	if rebuilt && rebuildTargetEventID < targetEventID {
+		targetEventID = rebuildTargetEventID
+	}
+	events, err := dashboardEventsAfterCheckpoint(ctx, tx, checkpoint.LastEventID, targetEventID, limit)
+	if err != nil {
+		return CatchUpResult{}, err
+	}
 	if len(events) == 0 {
-		if err := upsertCheckpoint(ctx, tx, DashboardHourlyCheckpointName, checkpoint.LastEventID, nowMS, nowMS, nowMS, ""); err != nil {
+		lastEventID := checkpoint.LastEventID
+		if rebuilt && targetEventID > lastEventID {
+			lastEventID = targetEventID
+		}
+		if err := upsertCheckpoint(ctx, tx, DashboardHourlyCheckpointName, lastEventID, nowMS, nowMS, nowMS, ""); err != nil {
 			return CatchUpResult{}, err
+		}
+		if rebuilt && lastEventID >= rebuildTargetEventID {
+			if err := setUsageRollupRebuildTargetInTx(ctx, tx, DashboardHourlyCheckpointName, 0, nowMS); err != nil {
+				return CatchUpResult{}, err
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return CatchUpResult{}, err
 		}
-		return CatchUpResult{LastEventID: checkpoint.LastEventID, Pending: latestID > checkpoint.LastEventID}, nil
+		return CatchUpResult{
+			LastEventID:          lastEventID,
+			Pending:              latestID > lastEventID,
+			Rebuilt:              rebuilt,
+			RebuildTargetEventID: rebuildTargetEventID,
+		}, nil
 	}
 
 	rows := aggregateDashboardHourly(events, nowMS)
@@ -107,157 +141,220 @@ func (r *repository) CatchUpDashboardHourly(ctx context.Context, limit int, nowM
 	if err := upsertCheckpoint(ctx, tx, DashboardHourlyCheckpointName, lastEventID, nowMS, nowMS, nowMS, ""); err != nil {
 		return CatchUpResult{}, err
 	}
+	if rebuilt && lastEventID >= rebuildTargetEventID {
+		if err := setUsageRollupRebuildTargetInTx(ctx, tx, DashboardHourlyCheckpointName, 0, nowMS); err != nil {
+			return CatchUpResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return CatchUpResult{}, err
 	}
 	return CatchUpResult{
-		Processed:   len(events),
-		LastEventID: lastEventID,
-		Pending:     latestID > lastEventID,
+		Processed:            len(events),
+		LastEventID:          lastEventID,
+		Pending:              latestID > lastEventID,
+		Rebuilt:              rebuilt,
+		RebuildTargetEventID: rebuildTargetEventID,
 	}, nil
 }
 
 func (r *repository) DashboardHourlyRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRow, error) {
-	if fromMS >= toMS {
-		return []DashboardHourlyRow{}, nil
-	}
-	rows, err := r.db.QueryContext(ctx, `select
-	bucket_ms,
-	model,
-	billing_model,
-	service_tier,
-	calls,
-	success_calls,
-	failure_calls,
-	input_tokens,
-	output_tokens,
-	reasoning_tokens,
-	cached_tokens,
-	cache_read_tokens,
-	cache_creation_tokens,
-	long_input_tokens,
-	long_output_tokens,
-	long_cached_tokens,
-	long_cache_read_tokens,
-	long_cache_creation_tokens,
-	total_tokens,
-	latency_sum_ms,
-	latency_samples,
-	zero_token_calls,
-	updated_at_ms
-from usage_dashboard_hourly_rollups
-where bucket_ms >= ? and bucket_ms < ?
-order by bucket_ms, model, billing_model, service_tier`, fromMS, toMS)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make([]DashboardHourlyRow, 0)
-	for rows.Next() {
-		var row DashboardHourlyRow
-		if err := rows.Scan(
-			&row.BucketMS,
-			&row.Model,
-			&row.BillingModel,
-			&row.ServiceTier,
-			&row.Calls,
-			&row.SuccessCalls,
-			&row.FailureCalls,
-			&row.InputTokens,
-			&row.OutputTokens,
-			&row.ReasoningTokens,
-			&row.CachedTokens,
-			&row.CacheReadTokens,
-			&row.CacheCreationTokens,
-			&row.LongInputTokens,
-			&row.LongOutputTokens,
-			&row.LongCachedTokens,
-			&row.LongCacheReadTokens,
-			&row.LongCacheCreationTokens,
-			&row.TotalTokens,
-			&row.LatencySumMS,
-			&row.LatencySamples,
-			&row.ZeroTokenCalls,
-			&row.UpdatedAtMS,
-		); err != nil {
-			return nil, err
-		}
-		result = append(result, row)
-	}
-	return result, rows.Err()
+	return r.dashboardRows(ctx, fromMS, toMS, dashboardProjectionHourly)
 }
 
 func (r *repository) DashboardHourlyModelRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRow, error) {
-	return r.dashboardProjectedRows(ctx, `select
-	? as bucket_ms,
-	model,
-	billing_model,
-	service_tier,
-	sum(calls),
-	sum(success_calls),
-	sum(failure_calls),
-	sum(input_tokens),
-	sum(output_tokens),
-	sum(reasoning_tokens),
-	sum(cached_tokens),
-	sum(cache_read_tokens),
-	sum(cache_creation_tokens),
-	sum(long_input_tokens),
-	sum(long_output_tokens),
-	sum(long_cached_tokens),
-	sum(long_cache_read_tokens),
-	sum(long_cache_creation_tokens),
-	sum(total_tokens),
-	sum(latency_sum_ms),
-	sum(latency_samples),
-	sum(zero_token_calls),
-	max(updated_at_ms)
-from usage_dashboard_hourly_rollups
-where bucket_ms >= ? and bucket_ms < ?
-group by model, billing_model, service_tier
-order by model, billing_model, service_tier`, fromMS, fromMS, toMS)
+	return r.dashboardRows(ctx, fromMS, toMS, dashboardProjectionModel)
 }
 
 func (r *repository) DashboardDailyRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRow, error) {
-	return r.dashboardProjectedRows(ctx, `select
-	(bucket_ms / ?) * ? as projected_bucket_ms,
-	model,
-	billing_model,
-	service_tier,
-	sum(calls),
-	sum(success_calls),
-	sum(failure_calls),
-	sum(input_tokens),
-	sum(output_tokens),
-	sum(reasoning_tokens),
-	sum(cached_tokens),
-	sum(cache_read_tokens),
-	sum(cache_creation_tokens),
-	sum(long_input_tokens),
-	sum(long_output_tokens),
-	sum(long_cached_tokens),
-	sum(long_cache_read_tokens),
-	sum(long_cache_creation_tokens),
-	sum(total_tokens),
-	sum(latency_sum_ms),
-	sum(latency_samples),
-	sum(zero_token_calls),
-	max(updated_at_ms)
-from usage_dashboard_hourly_rollups
-where bucket_ms >= ? and bucket_ms < ?
-group by projected_bucket_ms, model, billing_model, service_tier
-order by projected_bucket_ms, model, billing_model, service_tier`, int64(24)*dashboardHourMS, int64(24)*dashboardHourMS, fromMS, toMS)
+	return r.dashboardRows(ctx, fromMS, toMS, dashboardProjectionDaily)
 }
 
-func (r *repository) dashboardProjectedRows(ctx context.Context, query string, args ...any) ([]DashboardHourlyRow, error) {
-	rows, err := r.db.QueryContext(ctx, query, args...)
+func (r *repository) dashboardRows(
+	ctx context.Context,
+	fromMS int64,
+	toMS int64,
+	projection dashboardProjection,
+) ([]DashboardHourlyRow, error) {
+	if fromMS >= toMS {
+		return []DashboardHourlyRow{}, nil
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = tx.Rollback() }()
 
-	result := make([]DashboardHourlyRow, 0)
+	checkpoint, err := checkpointInTx(ctx, tx, DashboardHourlyCheckpointName)
+	if err != nil {
+		return nil, err
+	}
+	rawOnly, err := cacheAccountingRawFallbackInTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[dashboardHourlyKey]*DashboardHourlyRow)
+	afterEventID := checkpoint.LastEventID
+	if rawOnly {
+		afterEventID = 0
+	} else {
+		if err := mergeStoredDashboardRows(ctx, tx, fromMS, toMS, projection, grouped); err != nil {
+			return nil, err
+		}
+	}
+	if err := mergeRawDashboardRows(ctx, tx, fromMS, toMS, afterEventID, projection, grouped); err != nil {
+		return nil, err
+	}
+	result := sortedDashboardRows(grouped)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func mergeStoredDashboardRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	fromMS int64,
+	toMS int64,
+	projection dashboardProjection,
+	grouped map[dashboardHourlyKey]*DashboardHourlyRow,
+) error {
+	bucketExpression, args := storedDashboardBucketExpression(projection, fromMS)
+	args = append(args, fromMS, toMS)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`select
+		%s,
+		model,
+		billing_model,
+		service_tier,
+		sum(calls),
+		sum(success_calls),
+		sum(failure_calls),
+		sum(input_tokens),
+		sum(output_tokens),
+		sum(reasoning_tokens),
+		sum(cached_tokens),
+		sum(cache_read_tokens),
+		sum(cache_creation_tokens),
+		sum(long_input_tokens),
+		sum(long_output_tokens),
+		sum(long_cached_tokens),
+		sum(long_cache_read_tokens),
+		sum(long_cache_creation_tokens),
+		sum(total_tokens),
+		sum(latency_sum_ms),
+		sum(latency_samples),
+		sum(zero_token_calls),
+		max(updated_at_ms)
+	from usage_dashboard_hourly_rollups
+	where bucket_ms >= ? and bucket_ms < ?
+	group by 1, 2, 3, 4
+	order by 1, 2, 3, 4`, bucketExpression), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return scanAndMergeDashboardRows(rows, grouped)
+}
+
+func mergeRawDashboardRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	fromMS int64,
+	toMS int64,
+	afterEventID int64,
+	projection dashboardProjection,
+	grouped map[dashboardHourlyKey]*DashboardHourlyRow,
+) error {
+	bucketExpression, args := rawDashboardBucketExpression(projection, fromMS)
+	args = append(args, afterEventID, fromMS, toMS)
+	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
+	normalizedInputExpression := "coalesce(e.normalized_total_input_tokens, e.input_tokens, 0)"
+	compatibleCachedExpression := `max(
+		max(coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0)) -
+		max(coalesce(e.cache_read_tokens, 0), 0) -
+		max(coalesce(e.cache_creation_tokens, 0), 0),
+		0
+	)`
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`select
+		%s,
+		%s,
+		coalesce(nullif(e.resolved_model, ''), %s),
+		coalesce(e.service_tier, ''),
+		count(*),
+		coalesce(sum(case when coalesce(e.failed, 0) = 0 then 1 else 0 end), 0),
+		coalesce(sum(case when coalesce(e.failed, 0) <> 0 then 1 else 0 end), 0),
+		coalesce(sum(%s), 0),
+		coalesce(sum(coalesce(e.output_tokens, 0)), 0),
+		coalesce(sum(coalesce(e.reasoning_tokens, 0)), 0),
+		coalesce(sum(%s), 0),
+		coalesce(sum(coalesce(e.cache_read_tokens, 0)), 0),
+		coalesce(sum(coalesce(e.cache_creation_tokens, 0)), 0),
+		coalesce(sum(case when %s > %d then %s else 0 end), 0),
+		coalesce(sum(case when %s > %d then coalesce(e.output_tokens, 0) else 0 end), 0),
+		coalesce(sum(case when %s > %d then %s else 0 end), 0),
+		coalesce(sum(case when %s > %d then coalesce(e.cache_read_tokens, 0) else 0 end), 0),
+		coalesce(sum(case when %s > %d then coalesce(e.cache_creation_tokens, 0) else 0 end), 0),
+		coalesce(sum(coalesce(e.total_tokens, 0)), 0),
+		coalesce(sum(case when e.latency_ms is not null and e.latency_ms <> 0 then e.latency_ms else 0 end), 0),
+		count(nullif(e.latency_ms, 0)),
+		coalesce(sum(case when coalesce(e.failed, 0) = 0 and coalesce(e.total_tokens, 0) = 0 then 1 else 0 end), 0),
+		0
+	from usage_events e
+	where e.id > ? and e.timestamp_ms >= ? and e.timestamp_ms < ?
+	group by 1, 2, 3, 4
+	order by 1, 2, 3, 4`,
+		bucketExpression,
+		analyticsModelExpression,
+		analyticsModelExpression,
+		normalizedInputExpression,
+		compatibleCachedExpression,
+		normalizedInputExpression,
+		usage.LongContextInputTokenThreshold,
+		normalizedInputExpression,
+		normalizedInputExpression,
+		usage.LongContextInputTokenThreshold,
+		normalizedInputExpression,
+		usage.LongContextInputTokenThreshold,
+		compatibleCachedExpression,
+		normalizedInputExpression,
+		usage.LongContextInputTokenThreshold,
+		normalizedInputExpression,
+		usage.LongContextInputTokenThreshold,
+	), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return scanAndMergeDashboardRows(rows, grouped)
+}
+
+func storedDashboardBucketExpression(projection dashboardProjection, fromMS int64) (string, []any) {
+	switch projection {
+	case dashboardProjectionModel:
+		return "?", []any{fromMS}
+	case dashboardProjectionDaily:
+		dayMS := int64(24) * dashboardHourMS
+		return "(bucket_ms / ?) * ?", []any{dayMS, dayMS}
+	default:
+		return "bucket_ms", nil
+	}
+}
+
+func rawDashboardBucketExpression(projection dashboardProjection, fromMS int64) (string, []any) {
+	hourlyExpression := fmt.Sprintf("e.timestamp_ms - (e.timestamp_ms %% %d)", dashboardHourMS)
+	switch projection {
+	case dashboardProjectionModel:
+		return "?", []any{fromMS}
+	case dashboardProjectionDaily:
+		dayMS := int64(24) * dashboardHourMS
+		return "((" + hourlyExpression + ") / ?) * ?", []any{dayMS, dayMS}
+	default:
+		return hourlyExpression, nil
+	}
+}
+
+func scanAndMergeDashboardRows(rows *sql.Rows, grouped map[dashboardHourlyKey]*DashboardHourlyRow) error {
 	for rows.Next() {
 		var row DashboardHourlyRow
 		if err := rows.Scan(
@@ -285,19 +382,76 @@ func (r *repository) dashboardProjectedRows(ctx context.Context, query string, a
 			&row.ZeroTokenCalls,
 			&row.UpdatedAtMS,
 		); err != nil {
-			return nil, err
+			return err
 		}
-		result = append(result, row)
+		mergeDashboardRow(grouped, row)
 	}
-	return result, rows.Err()
+	return rows.Err()
 }
 
-func dashboardEventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID int64, limit int) ([]dashboardEventRow, error) {
+func mergeDashboardRow(grouped map[dashboardHourlyKey]*DashboardHourlyRow, row DashboardHourlyRow) {
+	key := dashboardHourlyKey{
+		BucketMS:     row.BucketMS,
+		Model:        row.Model,
+		BillingModel: row.BillingModel,
+		ServiceTier:  row.ServiceTier,
+	}
+	entry := grouped[key]
+	if entry == nil {
+		copy := row
+		grouped[key] = &copy
+		return
+	}
+	entry.Calls += row.Calls
+	entry.SuccessCalls += row.SuccessCalls
+	entry.FailureCalls += row.FailureCalls
+	entry.InputTokens += row.InputTokens
+	entry.OutputTokens += row.OutputTokens
+	entry.ReasoningTokens += row.ReasoningTokens
+	entry.CachedTokens += row.CachedTokens
+	entry.CacheReadTokens += row.CacheReadTokens
+	entry.CacheCreationTokens += row.CacheCreationTokens
+	entry.LongInputTokens += row.LongInputTokens
+	entry.LongOutputTokens += row.LongOutputTokens
+	entry.LongCachedTokens += row.LongCachedTokens
+	entry.LongCacheReadTokens += row.LongCacheReadTokens
+	entry.LongCacheCreationTokens += row.LongCacheCreationTokens
+	entry.TotalTokens += row.TotalTokens
+	entry.LatencySumMS += row.LatencySumMS
+	entry.LatencySamples += row.LatencySamples
+	entry.ZeroTokenCalls += row.ZeroTokenCalls
+	if row.UpdatedAtMS > entry.UpdatedAtMS {
+		entry.UpdatedAtMS = row.UpdatedAtMS
+	}
+}
+
+func sortedDashboardRows(grouped map[dashboardHourlyKey]*DashboardHourlyRow) []DashboardHourlyRow {
+	result := make([]DashboardHourlyRow, 0, len(grouped))
+	for _, row := range grouped {
+		result = append(result, *row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if left.BucketMS != right.BucketMS {
+			return left.BucketMS < right.BucketMS
+		}
+		if left.Model != right.Model {
+			return left.Model < right.Model
+		}
+		if left.BillingModel != right.BillingModel {
+			return left.BillingModel < right.BillingModel
+		}
+		return left.ServiceTier < right.ServiceTier
+	})
+	return result
+}
+
+func dashboardEventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID, targetEventID int64, limit int) ([]dashboardEventRow, error) {
 	rows, err := tx.QueryContext(ctx, `select
 	id,
 	timestamp_ms,
-	model,
-	coalesce(nullif(resolved_model, ''), model) as billing_model,
+	`+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as model,
+	coalesce(nullif(resolved_model, ''), `+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+`) as billing_model,
 	coalesce(service_tier, '') as service_tier,
 	failed,
 	coalesce(normalized_total_input_tokens, input_tokens, 0),
@@ -310,9 +464,9 @@ func dashboardEventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID
 	coalesce(total_tokens, 0),
 	latency_ms
 from usage_events
-where id > ?
+where id > ? and id <= ?
 order by id
-limit ?`, lastEventID, limit)
+limit ?`, lastEventID, targetEventID, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -367,11 +367,23 @@ const initialRawConfig: Record<string, unknown> = {
       ],
     },
   ],
+  'interactions-api-key': [
+    {
+      'api-key': 'interactions-demo-native-key',
+      'auth-index': 'interactions-native-01',
+      priority: 15,
+      weight: 2,
+      prefix: 'interactions',
+      'base-url': 'https://generativelanguage.googleapis.com',
+      models: [{ name: 'gemini-2.5-flash', alias: 'Interactions Native' }],
+    },
+  ],
   'codex-api-key': [
     {
       'api-key': 'codex-demo-team-pool',
       'auth-index': 'codex-team-01',
       priority: 20,
+      weight: 3,
       prefix: 'codex',
       'base-url': 'https://chatgpt.com',
       models: [{ name: 'gpt-5-codex', alias: 'Codex Team' }],
@@ -384,6 +396,7 @@ const initialRawConfig: Record<string, unknown> = {
       prefix: 'xai-team',
       'base-url': 'https://api.x.ai/v1',
       priority: 9,
+      weight: 2,
       websockets: true,
       models: [{ name: 'grok-4.5', alias: 'Grok Team' }],
     },
@@ -393,6 +406,7 @@ const initialRawConfig: Record<string, unknown> = {
       'api-key': 'claude-demo-team-key',
       'auth-index': 'claude-team-01',
       priority: 30,
+      weight: 4,
       prefix: 'claude',
       'base-url': 'https://api.anthropic.com',
       models: [
@@ -406,6 +420,7 @@ const initialRawConfig: Record<string, unknown> = {
       'api-key': 'vertex-demo-service-account',
       'auth-index': 'vertex-prod-01',
       priority: 40,
+      weight: 5,
       prefix: 'vertex',
       'base-url': 'https://aiplatform.googleapis.com',
       models: [{ name: 'gemini-2.5-pro', alias: 'Vertex Regional' }],
@@ -431,8 +446,8 @@ const initialRawConfig: Record<string, unknown> = {
       name: 'kuaileshifu',
       'base-url': 'https://api.kuaileshifu.example/v1',
       'api-key-entries': [
-        { 'api-key': 'sk-kuai-demo-key-1111aaaa', 'auth-index': 'kuai-auth-1' },
-        { 'api-key': 'sk-kuai-demo-key-2222bbbb', 'auth-index': 'kuai-auth-2' },
+        { 'api-key': 'sk-kuai-demo-key-1111aaaa', 'auth-index': 'kuai-auth-1', weight: 3 },
+        { 'api-key': 'sk-kuai-demo-key-2222bbbb', 'auth-index': 'kuai-auth-2', weight: 1 },
       ],
       models: [
         { name: 'gpt-4.1-mini', alias: 'Kuai Mini' },
@@ -1518,8 +1533,16 @@ const buildMonitoringAnalytics = (
   baseNow = now(),
   request?: MonitoringAnalyticsRequest
 ): MonitoringAnalyticsResponse => {
-  const dashboard = dashboardBase(baseNow);
-  const analyticsNow = dashboard.generated_at_ms;
+  const requestNow =
+    typeof request?.now_ms === 'number' && Number.isFinite(request.now_ms) && request.now_ms > 0
+      ? request.now_ms
+      : baseNow;
+  const rangeEnd =
+    typeof request?.to_ms === 'number' && Number.isFinite(request.to_ms) && request.to_ms > 0
+      ? request.to_ms
+      : requestNow;
+  const analyticsNow = Math.min(requestNow, rangeEnd);
+  const dashboard = dashboardBase(requestNow);
   const timeline = Array.from({ length: 14 }, (_, index) => {
     const bucket = analyticsNow - (13 - index) * day;
     const calls = 1180 + ((index * 137) % 620);
@@ -3882,7 +3905,108 @@ const buildMonitoringAnalytics = (
       },
     },
   };
+  const reasoningSuffixEvents: DemoMonitoringEventRow[] = [
+    {
+      request_id: 'demo-deepseek-reasoning-max',
+      event_hash: 'demo-event-deepseek-reasoning-max',
+      timestamp_ms: analyticsNow - minute / 2,
+      model: 'deepseek-chat(max)',
+      analytics_model: 'deepseek-chat',
+      requested_model: 'deepseek-chat(max)',
+      resolved_model: 'deepseek-chat-202608',
+      endpoint: '/v1/chat/completions',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      auth_index: 'deepseek-ops-01',
+      auth_file_snapshot: 'deepseek-ops-01.json',
+      source: 'ops',
+      source_hash: 'src_deepseek_ops',
+      api_key_hash: 'hash_deepseek_ops',
+      account_snapshot: 'Edge Experiments',
+      auth_label_snapshot: 'DeepSeek Ops',
+      auth_provider_snapshot: 'deepseek',
+      reasoning_effort: 'max',
+      service_tier: 'standard',
+      executor_type: 'ops',
+      input_tokens: 1_860,
+      output_tokens: 624,
+      cached_tokens: 0,
+      cache_read_tokens: 420,
+      cache_creation_tokens: 80,
+      reasoning_tokens: 512,
+      total_tokens: 2_996,
+      latency_ms: 1_486,
+      ttft_ms: 264,
+      failed: false,
+    },
+    {
+      request_id: 'demo-deepseek-reasoning-low',
+      event_hash: 'demo-event-deepseek-reasoning-low',
+      timestamp_ms: analyticsNow - minute - minute / 2,
+      model: 'deepseek-chat(low)',
+      analytics_model: 'deepseek-chat',
+      requested_model: 'deepseek-chat(low)',
+      resolved_model: 'deepseek-chat-202608',
+      endpoint: '/v1/chat/completions',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      auth_index: 'kuai-auth-1',
+      auth_file_snapshot: 'kuai-auth-1.json',
+      source: 'k:sk-kuai-demo-key-1111aaaa',
+      source_hash: 'src_kuai_key_1',
+      api_key_hash: 'hash_kuai_key_1',
+      account_snapshot: 'kuaileshifu',
+      auth_label_snapshot: 'kuaileshifu',
+      auth_provider_snapshot: 'openai',
+      reasoning_effort: 'low',
+      service_tier: 'standard',
+      executor_type: 'compat',
+      input_tokens: 1_240,
+      output_tokens: 438,
+      cached_tokens: 0,
+      cache_read_tokens: 240,
+      cache_creation_tokens: 60,
+      reasoning_tokens: 128,
+      total_tokens: 1_806,
+      latency_ms: 1_032,
+      ttft_ms: 198,
+      failed: false,
+    },
+    {
+      request_id: 'demo-deepseek-region-alias',
+      event_hash: 'demo-event-deepseek-region-alias',
+      timestamp_ms: analyticsNow - 2 * minute - minute / 2,
+      model: 'deepseek-chat(region-us)',
+      analytics_model: 'deepseek-chat(region-us)',
+      requested_model: 'deepseek-chat(region-us)',
+      resolved_model: 'deepseek-chat(region-us)',
+      endpoint: '/v1/chat/completions',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      auth_index: 'anyrouter-auth-1',
+      auth_file_snapshot: 'anyrouter-auth-1.json',
+      source: 'k:sk-anyrouter-demo-key',
+      source_hash: 'src_anyrouter_top',
+      api_key_hash: 'hash_anyrouter_top',
+      account_snapshot: 'anyrouter.top #1',
+      auth_label_snapshot: 'anyrouter.top #1',
+      auth_provider_snapshot: 'openai',
+      service_tier: 'standard',
+      executor_type: 'compat',
+      input_tokens: 980,
+      output_tokens: 352,
+      cached_tokens: 0,
+      cache_read_tokens: 180,
+      cache_creation_tokens: 40,
+      reasoning_tokens: 0,
+      total_tokens: 1_332,
+      latency_ms: 884,
+      ttft_ms: 172,
+      failed: false,
+    },
+  ];
   const events: DemoMonitoringEventRow[] = [
+    ...reasoningSuffixEvents,
     xaiFreeUsageEvent,
     xaiSuccessfulRateLimitEvent,
     ...Array.from({ length: 72 }, (_, index) => {
@@ -4613,7 +4737,7 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
     actionReason: 'monitoring.xai_inspection_reason_inference_manual_disable',
     actionStatus: 'none',
     statusCode: 200,
-    usedPercent: 22,
+    usedPercent: 3,
     isQuota: false,
     planType: null,
     quotaWindows: [
@@ -4622,13 +4746,6 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
         labelKey: 'xai_quota.weekly_limit',
         usedPercent: 3,
         resetLabel: new Date(baseNow + 6 * day).toISOString(),
-        limitWindowSeconds: null,
-      },
-      {
-        id: 'xai-monthly',
-        labelKey: 'xai_quota.monthly_limit',
-        usedPercent: 22,
-        resetLabel: new Date(baseNow + 19 * day).toISOString(),
         limitWindowSeconds: null,
       },
       {
@@ -4667,13 +4784,6 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
         labelKey: 'xai_quota.weekly_limit',
         usedPercent: 100,
         resetLabel: new Date(baseNow + 6 * day).toISOString(),
-        limitWindowSeconds: null,
-      },
-      {
-        id: 'xai-monthly',
-        labelKey: 'xai_quota.monthly_limit',
-        usedPercent: 100,
-        resetLabel: new Date(baseNow + 19 * day).toISOString(),
         limitWindowSeconds: null,
       },
       {
@@ -4717,13 +4827,6 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
         limitWindowSeconds: null,
       },
       {
-        id: 'xai-monthly',
-        labelKey: 'xai_quota.monthly_limit',
-        usedPercent: 12,
-        resetLabel: new Date(baseNow + 19 * day).toISOString(),
-        limitWindowSeconds: null,
-      },
-      {
         id: 'xai-product-0',
         labelKey: 'xai_quota.product_usage',
         labelParams: { product: 'Grok Build' },
@@ -4751,7 +4854,7 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
     actionReason: 'monitoring.xai_inspection_reason_inference_healthy',
     actionStatus: 'none',
     statusCode: 200,
-    usedPercent: 22,
+    usedPercent: 100,
     isQuota: false,
     planType: null,
     quotaWindows: [
@@ -4765,7 +4868,14 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
       {
         id: 'xai-monthly',
         labelKey: 'xai_quota.monthly_limit',
-        usedPercent: 22,
+        usedPercent: 100,
+        resetLabel: new Date(baseNow + 19 * day).toISOString(),
+        limitWindowSeconds: null,
+      },
+      {
+        id: 'xai-on-demand',
+        labelKey: 'xai_quota.on_demand_cap',
+        usedPercent: 26,
         resetLabel: new Date(baseNow + 19 * day).toISOString(),
         limitWindowSeconds: null,
       },
@@ -4796,7 +4906,7 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
     actionReason: 'monitoring.xai_inspection_reason_inference_healthy',
     actionStatus: 'none',
     statusCode: 200,
-    usedPercent: 22,
+    usedPercent: 100,
     isQuota: false,
     planType: null,
     quotaWindows: [
@@ -4810,7 +4920,14 @@ const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] =>
       {
         id: 'xai-monthly',
         labelKey: 'xai_quota.monthly_limit',
-        usedPercent: 22,
+        usedPercent: 100,
+        resetLabel: new Date(baseNow + 19 * day).toISOString(),
+        limitWindowSeconds: null,
+      },
+      {
+        id: 'xai-on-demand',
+        labelKey: 'xai_quota.on_demand_cap',
+        usedPercent: 100,
         resetLabel: new Date(baseNow + 19 * day).toISOString(),
         limitWindowSeconds: null,
       },
@@ -6093,15 +6210,13 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           { product: 'Grok Code Fast', usagePercent: 37 },
           { product: 'Grok Code Thinking', usagePercent: 52 },
         ],
-        monthlyLimitCents: 100_000,
-        usedCents: 86_000,
-        includedUsedCents: 86_000,
-        onDemandCapCents: 50_000,
-        onDemandUsedCents: 12_000,
-        onDemandUsedPercent: 24,
-        billingPeriodStart: demoResetIso(-15 * day),
-        billingPeriodEnd: demoResetIso(15 * day),
-        usedPercent: 86,
+        monthlyLimitCents: null,
+        usedCents: null,
+        includedUsedCents: null,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+        usedPercent: null,
       },
     },
     'xai-payg-buffer.json': {
@@ -6999,21 +7114,24 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
       },
     };
   } else if (requestUrl.includes('/billing') && requestUrl.includes('grok.com')) {
-    body = {
-      config: {
-        currentPeriod: {
-          type: 'USAGE_PERIOD_TYPE_MONTHLY',
-          start: new Date(now() - 11 * day).toISOString(),
-          end: new Date(now() + 19 * day).toISOString(),
-        },
-        monthlyLimit: { val: 10000 },
-        used: { val: isXaiSpendingLimited ? 10000 : isXaiExpired ? 1200 : 2200 },
-        onDemandCap: { val: 0 },
-        onDemandUsed: { val: 0 },
-        billingPeriodStart: new Date(now() - 11 * day).toISOString(),
-        billingPeriodEnd: new Date(now() + 19 * day).toISOString(),
-      },
-    };
+    const usesLegacyBilling = ['xai-payg-buffer-02', 'xai-payg-cap-03'].includes(authIndex);
+    body = usesLegacyBilling
+      ? {
+          config: {
+            currentPeriod: {
+              type: 'USAGE_PERIOD_TYPE_MONTHLY',
+              start: new Date(now() - 11 * day).toISOString(),
+              end: new Date(now() + 19 * day).toISOString(),
+            },
+            monthlyLimit: { val: 10000 },
+            used: { val: authIndex === 'xai-payg-cap-03' ? 15000 : 12600 },
+            onDemandCap: { val: authIndex === 'xai-payg-cap-03' ? 5000 : 10000 },
+            onDemandUsed: { val: authIndex === 'xai-payg-cap-03' ? 5000 : 2600 },
+            billingPeriodStart: new Date(now() - 11 * day).toISOString(),
+            billingPeriodEnd: new Date(now() + 19 * day).toISOString(),
+          },
+        }
+      : { config: {} };
   } else if (requestUrl.includes('api.x.ai/v1/me')) {
     if (isXaiExpired) {
       statusCode = 401;

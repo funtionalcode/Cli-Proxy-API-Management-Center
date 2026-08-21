@@ -34,7 +34,7 @@ description: 使用 CPA Manager Plus 按账号、调用方 API Key、Provider、
 3. 打开账号概览，查看是否只有少数账号异常。
 4. 打开 API Key 汇总，判断是否某个调用方造成异常流量。
 5. 在实时请求里点开单条记录，查看模型、提供商、账号、耗时、Token 和失败摘要。
-6. 如果失败指向认证或配额，再进入 [认证文件](./auth-files.md)、[配额管理](./quota.md) 或 [Codex 账号巡检](./codex-inspection.md)。
+6. 如果失败指向认证或配额，再进入 [凭证管理](./accounts.md) 或 [Codex 账号巡检](./codex-inspection.md)。
 
 ## 过滤器怎么用
 

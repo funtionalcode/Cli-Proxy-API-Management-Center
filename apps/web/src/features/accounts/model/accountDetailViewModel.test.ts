@@ -851,7 +851,7 @@ describe('accountDetailViewModel', () => {
     });
   });
 
-  it('marks an actionable inspection as conflicting when a newer request succeeds', () => {
+  it('uses a newer successful request as the current diagnosis over stale inspection advice', () => {
     const row = makeRow({
       inspection: {
         source: 'local',
@@ -877,18 +877,149 @@ describe('accountDetailViewModel', () => {
     });
 
     expect(viewModel.strategy.conclusion).toMatchObject({
-      actionLabelKey: 'accounts.detail_diagnostic_reinspect',
-      reasonKey: 'accounts.detail_diagnostic_conflict_desc',
-      priority: 'medium',
-      sourceLabelKey: 'accounts.inspection_source_local',
-      observedAtMs: 1000,
-      evidenceStatus: 'conflict',
-      evidenceStatusLabelKey: 'accounts.detail_diagnostic_evidence_conflict',
+      actionLabelKey: 'accounts.recommend_normal',
+      reasonKey: 'accounts.recommend_normal_desc',
+      priority: null,
+      sourceLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2000,
+      evidenceStatus: 'current',
+      evidenceStatusLabelKey: 'accounts.detail_diagnostic_evidence_current',
       latestActivityAtMs: 2000,
+    });
+    expect(viewModel.health.status).toBe('available');
+  });
+
+  it('uses a newer successful request over stale quota refresh failure advice', () => {
+    const row = makeRow({
+      quota: {
+        status: 'error',
+        error: 'upstream unavailable',
+        errorStatus: 503,
+        failedAtMs: 1_000,
+      },
+    });
+    const viewModel = buildAccountDetailViewModel(row, {
+      recommendation: {
+        row,
+        action: 'refresh',
+        priority: 'medium',
+        reasonKey: 'accounts.recommend_reason_error',
+      },
+      diagnosticsEvents: [makeAnalyticsEvent({ timestamp_ms: 2_000, failed: false })],
+    });
+
+    expect(viewModel.strategy.conclusion).toMatchObject({
+      actionLabelKey: 'accounts.recommend_normal',
+      reasonKey: 'accounts.recommend_normal_desc',
+      priority: null,
+      sourceLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2_000,
+      evidenceStatus: 'current',
+    });
+    expect(viewModel.health.status).toBe('available');
+  });
+
+  it('keeps a newer healthy Provider result as the detail diagnosis over stale inspection advice', () => {
+    const row = makeRow({
+      quota: {
+        status: 'ok',
+        remainingPercent: 80,
+        usedPercent: 20,
+        source: 'cache',
+        fetchedAtMs: 2_000,
+      },
+      inspection: {
+        source: 'server',
+        action: 'reauth',
+        actionReason: 'expired token',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        isQuota: false,
+        runId: 1,
+        resultId: 2,
+        createdAtMs: 1_000,
+      },
+    });
+    const viewModel = buildAccountDetailViewModel(row);
+
+    expect(viewModel.health.status).toBe('available');
+    expect(viewModel.overview.decision).toMatchObject({
+      basisLabelKey: 'accounts.quota_source_cache',
+      observedAtMs: 2_000,
+    });
+    expect(viewModel.strategy.conclusion).toMatchObject({
+      actionLabelKey: 'accounts.recommend_normal',
+      reasonKey: 'accounts.recommend_normal_desc',
+      sourceLabelKey: 'accounts.quota_source_cache',
+      observedAtMs: 2_000,
+      evidenceStatus: 'current',
     });
   });
 
-  it('marks a healthy inspection as conflicting when a newer failure appears', () => {
+  it('uses the quota refresh failure time as the detail authentication basis', () => {
+    const viewModel = buildAccountDetailViewModel(
+      makeRow({
+        quota: {
+          status: 'error',
+          error: 'HTTP 401 unauthorized',
+          errorStatus: 401,
+          failedAtMs: 2_500,
+          fetchedAtMs: 1_000,
+          source: 'cache',
+        },
+      })
+    );
+
+    expect(viewModel.health).toMatchObject({
+      status: 'reauth',
+      reasonKey: 'accounts.health_reason_reauth_quota_refresh',
+    });
+    expect(viewModel.overview.decision).toMatchObject({
+      basisLabelKey: 'accounts.quota_source_cache',
+      observedAtMs: 2_500,
+    });
+    expect(viewModel.strategy.conclusion).toMatchObject({
+      reasonKey: 'accounts.recommend_reason_quota_auth',
+      sourceLabelKey: 'accounts.quota_source_cache',
+      observedAtMs: 2_500,
+    });
+  });
+
+  it('records a newer HTTP 499 without replacing the credential diagnosis', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'local',
+        action: 'reauth',
+        actionReason: 'expired token',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        isQuota: false,
+        runId: 0,
+        resultId: -1,
+        createdAtMs: 1_000,
+      },
+    });
+    const viewModel = buildAccountDetailViewModel(row, {
+      diagnosticsEvents: [
+        makeAnalyticsEvent({ timestamp_ms: 2_000, failed: true, fail_status_code: 499 }),
+      ],
+    });
+
+    expect(viewModel.health.status).toBe('reauth');
+    expect(viewModel.strategy.conclusion).toMatchObject({
+      actionLabelKey: 'accounts.recommend_action_reauth',
+      sourceLabelKey: 'accounts.inspection_source_local',
+      observedAtMs: 1_000,
+      evidenceStatus: 'current',
+      latestActivityAtMs: 2_000,
+    });
+    expect(viewModel.strategy.activity.latestFailureAtMs).toBe(2_000);
+    expect(viewModel.strategy.activity.latestHealthEvidenceAtMs).toBeNull();
+  });
+
+  it('uses a newer credential failure as the current diagnosis over a healthy inspection', () => {
     const row = makeRow({
       inspection: {
         source: 'server',
@@ -913,11 +1044,221 @@ describe('accountDetailViewModel', () => {
     });
 
     expect(viewModel.strategy.conclusion).toMatchObject({
-      actionLabelKey: 'accounts.detail_diagnostic_reinspect',
-      sourceLabelKey: 'accounts.inspection_source_server',
-      evidenceStatus: 'conflict',
+      actionLabelKey: 'accounts.recommend_action_reauth',
+      reasonKey: 'accounts.recommend_reason_request_auth',
+      priority: 'critical',
+      sourceLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2200,
+      evidenceStatus: 'current',
       latestActivityAtMs: 2200,
     });
+    expect(viewModel.health.status).toBe('reauth');
+  });
+
+  it('uses the last qualified direction instead of any newer success or failure', () => {
+    const row = makeRow({
+      inspection: {
+        source: 'local',
+        action: 'reauth',
+        actionReason: 'expired token',
+        actionStatus: 'pending',
+        statusCode: 401,
+        usedPercent: null,
+        isQuota: false,
+        runId: 0,
+        resultId: -1,
+        createdAtMs: 1_000,
+      },
+    });
+    const viewModel = buildAccountDetailViewModel(row, {
+      diagnosticsEvents: [
+        makeAnalyticsEvent({ timestamp_ms: 2_500, failed: true, fail_status_code: 401 }),
+        makeAnalyticsEvent({ timestamp_ms: 2_000, failed: false }),
+      ],
+    });
+
+    expect(viewModel.strategy.conclusion).toMatchObject({
+      actionLabelKey: 'accounts.recommend_action_reauth',
+      reasonKey: 'accounts.recommend_reason_request_auth',
+      sourceLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: 2_500,
+      evidenceStatus: 'current',
+    });
+  });
+
+  it('shows newer transient health without reviving an older request authentication failure', () => {
+    for (const authenticatedEvent of [
+      makeAnalyticsEvent({ timestamp_ms: 3_000, failed: false }),
+      makeAnalyticsEvent({ timestamp_ms: 3_000, failed: true, fail_status_code: 429 }),
+    ]) {
+      const viewModel = buildAccountDetailViewModel(makeRow(), {
+        diagnosticsEvents: [
+          makeAnalyticsEvent({ timestamp_ms: 5_000, failed: true, fail_status_code: 503 }),
+          makeAnalyticsEvent({ timestamp_ms: 4_000, failed: true, fail_status_code: 502 }),
+          authenticatedEvent,
+          makeAnalyticsEvent({ timestamp_ms: 2_000, failed: true, fail_status_code: 401 }),
+        ],
+      });
+
+      expect(viewModel.health.status).toBe('exception');
+      expect(viewModel.strategy.recommendation).toMatchObject({
+        action: 'review',
+        reasonKey: 'accounts.recommend_reason_request_failure',
+      });
+      expect(viewModel.strategy.conclusion).toMatchObject({
+        actionLabelKey: 'accounts.recommend_action_review',
+        reasonKey: 'accounts.recommend_reason_request_failure',
+        sourceLabelKey: 'accounts.latest_request_time_title',
+        observedAtMs: 5_000,
+        evidenceStatus: 'current',
+      });
+    }
+  });
+
+  it('counts one transient failure only once when detail sources repeat it', () => {
+    const repeatedFailure = {
+      timestamp_ms: 3_000,
+      failed: true,
+      fail_status_code: 503,
+      fail_summary: 'upstream unavailable',
+    };
+    const viewModel = buildAccountDetailViewModel(makeRow(), {
+      history: makeHistory({
+        latest_request: repeatedFailure,
+        recent_requests: [repeatedFailure],
+        last_seen_ms: repeatedFailure.timestamp_ms,
+      }),
+      diagnosticsEvents: [
+        makeAnalyticsEvent({
+          ...repeatedFailure,
+          event_hash: 'repeated-event',
+          request_id: 'repeated-request',
+        }),
+      ],
+      diagnosticsRecentFailure: {
+        timestamp_ms: repeatedFailure.timestamp_ms,
+        model: 'gpt-5',
+        api_key_hash: 'api-key-hash',
+        source_hash: 'source-hash',
+        auth_index: '0',
+        endpoint: '/v1/responses',
+        duration_ms: 120,
+        fail_status_code: repeatedFailure.fail_status_code,
+        fail_summary: repeatedFailure.fail_summary,
+      },
+    });
+
+    expect(viewModel.health.status).toBe('available');
+    expect(viewModel.strategy.activity).toMatchObject({
+      latestActivityAtMs: 3_000,
+      latestFailureAtMs: 3_000,
+      latestHealthDirection: null,
+      latestHealthEvidenceAtMs: null,
+    });
+  });
+
+  it('keeps two distinct transient failures as current negative evidence', () => {
+    const latestFailure = {
+      timestamp_ms: 3_000,
+      failed: true,
+      fail_status_code: 503,
+      fail_summary: 'upstream unavailable',
+    };
+    const viewModel = buildAccountDetailViewModel(makeRow(), {
+      history: makeHistory({
+        latest_request: latestFailure,
+        recent_requests: [
+          latestFailure,
+          {
+            timestamp_ms: 2_500,
+            failed: true,
+            fail_status_code: 502,
+            fail_summary: 'bad gateway',
+          },
+        ],
+        last_seen_ms: latestFailure.timestamp_ms,
+      }),
+    });
+
+    expect(viewModel.health.status).toBe('exception');
+    expect(viewModel.strategy.activity).toMatchObject({
+      latestHealthDirection: 'negative',
+      latestHealthEvidenceAtMs: 3_000,
+    });
+    expect(viewModel.strategy.conclusion.reasonKey).toBe(
+      'accounts.recommend_reason_request_failure'
+    );
+  });
+
+  it('combines distinct transient failures from history and diagnostic events', () => {
+    const viewModel = buildAccountDetailViewModel(makeRow(), {
+      history: makeHistory({
+        latest_request: {
+          timestamp_ms: 3_000,
+          failed: true,
+          fail_status_code: 503,
+          fail_summary: 'upstream unavailable',
+        },
+        recent_requests: [
+          {
+            timestamp_ms: 3_000,
+            failed: true,
+            fail_status_code: 503,
+            fail_summary: 'upstream unavailable',
+          },
+        ],
+        last_seen_ms: 3_000,
+      }),
+      diagnosticsEvents: [
+        makeAnalyticsEvent({
+          timestamp_ms: 2_500,
+          failed: true,
+          fail_status_code: 502,
+          fail_summary: 'bad gateway',
+        }),
+      ],
+    });
+
+    expect(viewModel.health.status).toBe('exception');
+    expect(viewModel.strategy.activity).toMatchObject({
+      latestHealthDirection: 'negative',
+      latestHealthEvidenceAtMs: 3_000,
+    });
+    expect(viewModel.strategy.conclusion.reasonKey).toBe(
+      'accounts.recommend_reason_request_failure'
+    );
+  });
+
+  it('keeps requests current when CPA persists runtime state after request start', () => {
+    const requestAtMs = 1_700_000_002_000;
+    const persistedAtMs = 1_700_000_003_000;
+    const row = makeRow({
+      createdAtMs: persistedAtMs,
+      updatedAtMs: persistedAtMs,
+      raw: {
+        name: 'shared.codex.json',
+        type: 'codex',
+        provider: 'codex',
+        authIndex: '0',
+        account: 'codex@example.com',
+        modtime: persistedAtMs,
+      },
+    });
+    const viewModel = buildAccountDetailViewModel(row, {
+      history: makeHistory({
+        latest_request: { timestamp_ms: requestAtMs, failed: false },
+        recent_requests: [{ timestamp_ms: requestAtMs, failed: false }],
+        last_seen_ms: requestAtMs,
+      }),
+    });
+
+    expect(viewModel.strategy.activity).toMatchObject({
+      latestActivityAtMs: requestAtMs,
+      latestSuccessAtMs: requestAtMs,
+      latestHealthDirection: 'positive',
+      latestHealthEvidenceAtMs: requestAtMs,
+    });
+    expect(viewModel.strategy.conclusion.sourceLabelKey).toBe('accounts.latest_request_time_title');
   });
 
   it('does not use a successful request to clear a quota recommendation', () => {
@@ -942,6 +1283,36 @@ describe('accountDetailViewModel', () => {
       actionLabelKey: 'accounts.recommend_action_disable',
       reasonKey: 'accounts.recommend_reason_exhausted',
       evidenceStatus: 'current',
+    });
+  });
+
+  it('uses the latest request as the detail decision basis for request-only quota limits', () => {
+    const requestAtMs = 2_000;
+    const viewModel = buildAccountDetailViewModel(makeRow(), {
+      history: makeHistory({
+        latest_request: {
+          timestamp_ms: requestAtMs,
+          failed: true,
+          fail_status_code: 429,
+          fail_summary: 'rate limit exceeded',
+        },
+        recent_requests: [
+          {
+            timestamp_ms: requestAtMs,
+            failed: true,
+            fail_status_code: 429,
+            fail_summary: 'rate limit exceeded',
+          },
+        ],
+        last_seen_ms: requestAtMs,
+      }),
+    });
+
+    expect(viewModel.overview.decision).toMatchObject({
+      status: 'limited',
+      reasonKey: 'accounts.health_reason_limited_request',
+      basisLabelKey: 'accounts.latest_request_time_title',
+      observedAtMs: requestAtMs,
     });
   });
 
@@ -1136,7 +1507,7 @@ describe('accountDetailViewModel', () => {
     });
   });
 
-  it('keeps the overview basis aligned with a quota-refresh reauth reason', () => {
+  it('uses newer inspection evidence over an older quota-refresh reauth result', () => {
     const viewModel = buildAccountDetailViewModel(
       makeRow({
         quota: {
@@ -1159,10 +1530,15 @@ describe('accountDetailViewModel', () => {
       })
     );
 
-    expect(viewModel.health.reasonKey).toBe('accounts.health_reason_reauth_quota_refresh');
+    expect(viewModel.health.reasonKey).toBe('accounts.health_reason_reauth_inspection');
+    expect(viewModel.overview.attention).toMatchObject({
+      actionLabelKey: 'accounts.recommend_action_reauth',
+      reasonKey: 'accounts.recommend_reason_inspection',
+      targetTab: 'diagnostics',
+    });
     expect(viewModel.overview.decision).toMatchObject({
-      basisLabelKey: 'accounts.quota_source_cache',
-      observedAtMs: 1_700_000_100_000,
+      basisLabelKey: 'accounts.detail_overview_basis_inspection',
+      observedAtMs: 1_700_000_200_000,
     });
   });
 
@@ -1191,7 +1567,7 @@ describe('accountDetailViewModel', () => {
       })
     );
 
-    expect(viewModel.health.reasonKey).toBe('accounts.health_reason_exception_header');
+    expect(viewModel.health.reasonKey).toBe('accounts.health_reason_limited_header');
     expect(viewModel.overview.decision).toMatchObject({
       basisLabelKey: 'accounts.quota_source_observed_header',
       observedAtMs: 1_700_000_300_000,
@@ -1717,6 +2093,16 @@ describe('accountDetailViewModel', () => {
     const viewModel = buildAccountDetailViewModel(
       makeRow({
         statusMessage: 'rate_limit_reached',
+        updatedAtMs: 1_000,
+        raw: { ...makeRow().raw, status_code: 429 },
+        quota: {
+          status: 'ok',
+          remainingPercent: 80,
+          usedPercent: 20,
+          resetLabel: 'later',
+          source: 'cache',
+          fetchedAtMs: 500,
+        },
         usage: {
           success: 99,
           failure: 1,
@@ -1735,6 +2121,55 @@ describe('accountDetailViewModel', () => {
       successRate: (5 / 6) * 100,
       statusMessage: 'rate_limit_reached',
     });
+    expect(viewModel.overview.decision).toMatchObject({
+      basisLabelKey: 'accounts.detail_overview_basis_credential_state',
+      observedAtMs: 1_000,
+    });
+  });
+
+  it('omits neutral or superseded raw status messages from the current overview diagnosis', () => {
+    const unavailableQuota = {
+      status: 'unknown' as const,
+      remainingPercent: null,
+      usedPercent: null,
+      resetLabel: '-',
+      source: 'none' as const,
+    };
+    const currentAuthFailure = buildAccountDetailViewModel(
+      makeRow({
+        statusMessage: 'unauthorized',
+        updatedAtMs: 1_000,
+        raw: { ...makeRow().raw, status_code: 401 },
+        quota: unavailableQuota,
+      })
+    );
+    const supersededAuthFailure = buildAccountDetailViewModel(
+      makeRow({
+        statusMessage: 'unauthorized',
+        updatedAtMs: 1_000,
+        raw: { ...makeRow().raw, status_code: 401 },
+        quota: unavailableQuota,
+      }),
+      {
+        history: makeHistory({
+          latest_request: { timestamp_ms: 2_000, failed: false },
+          recent_requests: [{ timestamp_ms: 2_000, failed: false }],
+          last_seen_ms: 2_000,
+        }),
+      }
+    );
+    const neutralCancellation = buildAccountDetailViewModel(
+      makeRow({
+        statusMessage: 'context canceled',
+        updatedAtMs: 3_000,
+        raw: { ...makeRow().raw, status_code: 499 },
+        quota: unavailableQuota,
+      })
+    );
+
+    expect(currentAuthFailure.overview.recentStatus.statusMessage).toBe('unauthorized');
+    expect(supersededAuthFailure.overview.recentStatus.statusMessage).toBe('');
+    expect(neutralCancellation.overview.recentStatus.statusMessage).toBe('');
   });
 
   it('treats a failed cached quota lookup without values or windows as missing capacity data', () => {

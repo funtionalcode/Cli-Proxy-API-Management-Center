@@ -134,6 +134,7 @@ describe('ApiClient request scoping', () => {
       config,
       headers: {
         'x-cpa-version': 'v1.2.3',
+        'x-cpa-commit': '5bffd1514fba2ca7cbfd13bb6530a6f7d9d72d43',
         'x-cpa-support-plugin': 'true',
       },
     });
@@ -143,5 +144,29 @@ describe('ApiClient request scoping', () => {
 
     applyResponseSuccessInterceptor(createResponse(currentConfig));
     expect(dispatchEvent).toHaveBeenCalledTimes(2);
+    expect((dispatchEvent.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      version: 'v1.2.3',
+      commit: '5bffd1514fba2ca7cbfd13bb6530a6f7d9d72d43',
+      buildDate: null,
+    });
+  });
+
+  it('publishes a commit even when a development build omits version metadata', () => {
+    const currentConfig = applyRequestInterceptor({
+      url: '/config',
+      headers: {},
+    });
+
+    applyResponseSuccessInterceptor({
+      config: currentConfig,
+      headers: { 'x-cpa-commit': '5bffd151' },
+    });
+
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect((dispatchEvent.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      version: null,
+      commit: '5bffd151',
+      buildDate: null,
+    });
   });
 });

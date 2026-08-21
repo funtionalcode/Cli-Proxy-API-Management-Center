@@ -9,6 +9,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type accountStatKey struct {
@@ -52,11 +53,12 @@ func monitoringBandedProjectedEventsCTE(source string) string {
 	return fmt.Sprintf(`with base_events as (%s), priced_events as (
 		select
 			base_events.*,
-			coalesce(nullif(base_events.resolved_model, ''), base_events.model) as billing_model_value,
+			coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model) as billing_model_value,
 			case
-				when billing_price.model is not null then coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+				when billing_price.model is not null then coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
+				when analytics_price.model is not null then base_events.analytics_model
 				when display_price.model is not null then base_events.model
-				else coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+				else coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
 			end as pricing_model_value,
 			max(
 				max(coalesce(cached_tokens, 0), coalesce(cache_tokens, 0)) -
@@ -66,7 +68,8 @@ func monitoringBandedProjectedEventsCTE(source string) string {
 			) as compatible_cached_tokens_value,
 			normalized_total_input_tokens as normalized_input_tokens_value
 		from base_events
-		left join model_prices billing_price on billing_price.model = coalesce(nullif(base_events.resolved_model, ''), base_events.model)
+		left join model_prices billing_price on billing_price.model = coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
+		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model
 		left join model_prices display_price on display_price.model = base_events.model
 	), banded_events as (
 		select
@@ -159,7 +162,7 @@ func statsReadState(ctx context.Context, tx *sql.Tx) (State, string, bool, error
 	if err != nil {
 		return State{}, "", false, err
 	}
-	if state.StructureRevision != revision {
+	if state.StructureRevision != revision || state.Status == "clearing" {
 		return state, revision, false, nil
 	}
 	return state, revision, true, nil
@@ -318,14 +321,15 @@ func mergeProjectedAccountStats(
 		projectionCoverageEventID,
 		`p.timestamp_ms, p.account_snapshot, p.auth_label_snapshot, p.provider,
 		p.auth_provider_snapshot, p.auth_index, p.source, p.source_hash,
-		p.model, p.resolved_model, p.service_tier, p.failed,
+		p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
 		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
 		p.total_tokens, p.latency_ms`,
 		`e.timestamp_ms, coalesce(e.account_snapshot, ''), coalesce(e.auth_label_snapshot, ''),
 		coalesce(e.provider, ''), coalesce(e.auth_provider_snapshot, ''),
 		coalesce(e.auth_index, ''), coalesce(e.source, ''),
-		coalesce(e.source_hash, ''), coalesce(e.model, ''),
+		coalesce(e.source_hash, ''), `+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`,
+		`+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`,
 		coalesce(e.resolved_model, ''), coalesce(e.service_tier, ''),
 		coalesce(e.failed, 0),
 		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
@@ -349,7 +353,7 @@ func mergeProjectedAccountStats(
 		coalesce(auth_index, ''),
 		coalesce(max(source), ''),
 		coalesce(source_hash, ''),
-		model,
+			analytics_model,
 		billing_model_value,
 		pricing_model_value,
 		context_threshold_tokens_value,
@@ -374,7 +378,7 @@ func mergeProjectedAccountStats(
 	from banded_events
 	group by account_snapshot, auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
-		source_hash, model, billing_model_value, pricing_model_value,
+			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
 	args = appendLongContextThresholdArgs(args)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -455,7 +459,7 @@ func mergeProjectedAPIKeyStats(
 		projectionCoverageEventID,
 		`p.timestamp_ms, p.api_key_hash, p.account_snapshot, p.auth_label_snapshot,
 		p.provider, p.auth_provider_snapshot, p.auth_index, p.source,
-		p.source_hash, p.model, p.resolved_model, p.service_tier, p.failed,
+		p.source_hash, p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
 		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
 		p.total_tokens, p.latency_ms`,
@@ -463,7 +467,7 @@ func mergeProjectedAPIKeyStats(
 		coalesce(e.auth_label_snapshot, ''), coalesce(e.provider, ''),
 		coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_index, ''),
 		coalesce(e.source, ''), coalesce(e.source_hash, ''),
-		coalesce(e.model, ''), coalesce(e.resolved_model, ''),
+		`+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
 		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
 		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
 		coalesce(e.output_tokens, 0), coalesce(e.cached_tokens, 0),
@@ -485,7 +489,7 @@ func mergeProjectedAPIKeyStats(
 		coalesce(auth_index, ''),
 		coalesce(max(source), ''),
 		coalesce(source_hash, ''),
-		model,
+			analytics_model,
 		billing_model_value,
 		pricing_model_value,
 		context_threshold_tokens_value,
@@ -510,7 +514,7 @@ func mergeProjectedAPIKeyStats(
 	from banded_events
 	group by api_key_hash, account_snapshot, auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
-		source_hash, model, billing_model_value, pricing_model_value,
+			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
 	args = appendLongContextThresholdArgs(args)
 	rows, err := tx.QueryContext(ctx, query, args...)

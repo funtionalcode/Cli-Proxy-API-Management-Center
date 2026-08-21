@@ -7,7 +7,7 @@ description: 使用 CPA Manager Plus 仪表盘查看 CPA/Manager Server 连接�
 
 仪表盘适合每天打开面板后先看一眼。它不替代请求明细，而是先回答几个问题：系统连上了吗、今天有没有请求、失败率是否异常、成本有没有突然升高、有没有账号或运行时告警。
 
-如果你已经知道要处理哪个账号或哪条请求，可以直接进入 [请求监控](./monitoring.md)、[认证文件](./auth-files.md) 或 [Codex 账号巡检](./codex-inspection.md)。
+如果你已经知道要处理哪个账号或哪条请求，可以直接进入 [请求监控](./monitoring.md)、[凭证管理](./accounts.md) 或 [Codex 账号巡检](./codex-inspection.md)。
 
 打开[仪表盘演示](https://seakee.github.io/CPA-Manager-Plus/#/demo)可以查看随当前日期生成的虚构请求、成本、失败和 Provider 状态。
 
@@ -45,6 +45,6 @@ description: 使用 CPA Manager Plus 仪表盘查看 CPA/Manager Server 连接�
 
 - 成功率突然下降：进入 [请求监控](./monitoring.md)，按状态码、模型和账号过滤。
 - 成本突然升高：进入 [用量分析](./usage-analytics.md)，看模型和账号拆解。
-- 某个账号异常：进入 [认证文件](./auth-files.md)、[配额管理](./quota.md) 或 [Codex 账号巡检](./codex-inspection.md)。
-- 登录或授权异常：进入 [OAuth 登录](./oauth.md) 重新授权，再回到认证文件确认状态。
+- 某个账号异常：进入 [凭证管理](./accounts.md) 或 [Codex 账号巡检](./codex-inspection.md)。
+- 登录或授权异常：进入 [OAuth 登录](./oauth.md) 重新授权，再回到凭证管理确认状态。
 - 系统状态异常：进入 [日志查看](./logs.md) 和 [系统信息](./system.md)，保留版本和日志线索。

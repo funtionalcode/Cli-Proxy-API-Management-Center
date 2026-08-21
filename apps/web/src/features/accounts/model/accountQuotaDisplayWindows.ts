@@ -592,9 +592,7 @@ const buildXaiQuotaDisplayWindows = (
 
   if (
     monthlyUsedPercent !== null ||
-    billing.monthlyLimitCents !== null ||
-    billing.includedUsedCents !== null ||
-    billing.billingPeriodEnd
+    billing.monthlyLimitCents !== null
   ) {
     windows.push(
       buildAccountQuotaDisplayWindow({

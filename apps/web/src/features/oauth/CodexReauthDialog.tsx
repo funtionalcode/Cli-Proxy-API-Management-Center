@@ -1,30 +1,43 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import {
-  IconCheck,
-  IconCopy,
-  IconExternalLink,
-  IconRefreshCw,
-} from '@/components/ui/icons';
+import { IconCheck, IconCopy, IconExternalLink, IconRefreshCw } from '@/components/ui/icons';
 import { oauthApi } from '@/services/api';
+import type { ApiClientRequestScope } from '@/services/api/client';
 import { useNotificationStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
 import type { CodexReauthTarget } from './codexReauthModel';
 import styles from './CodexReauthDialog.module.scss';
 
-type CodexReauthStatus = 'idle' | 'loading' | 'waiting' | 'success' | 'error';
+type CodexReauthStatus = 'idle' | 'loading' | 'waiting' | 'synchronizing' | 'success' | 'error';
 
 type CodexReauthDialogProps = {
   open: boolean;
   target: CodexReauthTarget | null;
+  requestScope?: ApiClientRequestScope;
   onClose: () => void;
   onSuccess?: () => void | Promise<void>;
 };
 
 const POLL_INTERVAL_MS = 3000;
+
+type CodexReauthDialogContext = {
+  open: boolean;
+  targetKey: string;
+  apiBase: string;
+  managementKey: string;
+};
+
+const isSameDialogContext = (
+  left: CodexReauthDialogContext,
+  right: CodexReauthDialogContext
+): boolean =>
+  left.open === right.open &&
+  left.targetKey === right.targetKey &&
+  left.apiBase === right.apiBase &&
+  left.managementKey === right.managementKey;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object';
@@ -38,6 +51,7 @@ const getErrorMessage = (error: unknown): string => {
 export function CodexReauthDialog({
   open,
   target,
+  requestScope,
   onClose,
   onSuccess,
 }: CodexReauthDialogProps) {
@@ -55,15 +69,39 @@ export function CodexReauthDialog({
   const pollingTimerRef = useRef<number | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
   const successHandledRef = useRef(false);
+  const operationGenerationRef = useRef(0);
 
   const targetKey = useMemo(
     () =>
       target
-        ? [target.account, target.fileName ?? '', target.authIndex ?? '', target.accountId ?? ''].join(
-            '\u0000'
-          )
+        ? [
+            target.account,
+            target.fileName ?? '',
+            target.authIndex ?? '',
+            target.accountId ?? '',
+          ].join('\u0000')
         : '',
     [target]
+  );
+  const dialogContext = useMemo<CodexReauthDialogContext>(
+    () => ({
+      open,
+      targetKey,
+      apiBase: requestScope?.apiBase ?? '',
+      managementKey: requestScope?.managementKey ?? '',
+    }),
+    [open, requestScope?.apiBase, requestScope?.managementKey, targetKey]
+  );
+  const activeDialogContextRef = useRef(dialogContext);
+  useLayoutEffect(() => {
+    activeDialogContextRef.current = dialogContext;
+  }, [dialogContext]);
+
+  const isCurrentOperation = useCallback(
+    (operationGeneration: number, operationContext: CodexReauthDialogContext) =>
+      operationGenerationRef.current === operationGeneration &&
+      isSameDialogContext(activeDialogContextRef.current, operationContext),
+    []
   );
 
   const clearPolling = useCallback(() => {
@@ -93,33 +131,63 @@ export function CodexReauthDialog({
     [clearFeedbackTimer]
   );
 
-  const markSuccess = useCallback(() => {
-    clearPolling();
-    setStatus('success');
-    setError('');
-    setCallbackSubmitting(false);
-    setCallbackStatus('success');
-    setCallbackError('');
-    if (successHandledRef.current) return;
-    successHandledRef.current = true;
-    showNotification(t('codex_reauth.success'), 'success');
-    void Promise.resolve(onSuccess?.()).catch((err: unknown) => {
-      const message = getErrorMessage(err) || t('notification.refresh_failed');
-      showNotification(message, 'error');
-    });
-  }, [clearPolling, onSuccess, showNotification, t]);
+  const markSuccess = useCallback(
+    async (operationGeneration: number, operationContext: CodexReauthDialogContext) => {
+      if (!isCurrentOperation(operationGeneration, operationContext)) return;
+      if (successHandledRef.current) return;
+      successHandledRef.current = true;
+      operationGenerationRef.current += 1;
+      const successGeneration = operationGenerationRef.current;
+      clearPolling();
+      setStatus('synchronizing');
+      setError('');
+      setCallbackSubmitting(true);
+      setCallbackStatus(undefined);
+      setCallbackError('');
+      try {
+        await onSuccess?.();
+        if (
+          operationGenerationRef.current !== successGeneration ||
+          !isSameDialogContext(activeDialogContextRef.current, operationContext)
+        ) {
+          return;
+        }
+        setStatus('success');
+        setCallbackSubmitting(false);
+        setCallbackStatus('success');
+        showNotification(t('codex_reauth.success'), 'success');
+      } catch (err: unknown) {
+        if (
+          operationGenerationRef.current !== successGeneration ||
+          !isSameDialogContext(activeDialogContextRef.current, operationContext)
+        ) {
+          return;
+        }
+        const message = getErrorMessage(err) || t('notification.refresh_failed');
+        const warning = `${t('notification.refresh_failed')}: ${message}`;
+        setStatus('success');
+        setCallbackSubmitting(false);
+        setCallbackStatus('success');
+        setCallbackError(warning);
+        showNotification(`${t('codex_reauth.success')}；${warning}`, 'warning');
+      }
+    },
+    [clearPolling, isCurrentOperation, onSuccess, showNotification, t]
+  );
 
   const startPolling = useCallback(
-    (state: string) => {
+    (state: string, operationGeneration: number, operationContext: CodexReauthDialogContext) => {
       clearPolling();
       pollingTimerRef.current = window.setInterval(async () => {
         try {
-          const response = await oauthApi.getAuthStatus(state);
+          const response = await oauthApi.getAuthStatus(state, requestScope);
+          if (!isCurrentOperation(operationGeneration, operationContext)) return;
           if (response.status === 'ok') {
-            markSuccess();
+            await markSuccess(operationGeneration, operationContext);
             return;
           }
           if (response.status === 'error') {
+            operationGenerationRef.current += 1;
             clearPolling();
             const message = response.error || t('codex_reauth.error');
             setStatus('error');
@@ -127,6 +195,8 @@ export function CodexReauthDialog({
             showNotification(message, 'error');
           }
         } catch (err: unknown) {
+          if (!isCurrentOperation(operationGeneration, operationContext)) return;
+          operationGenerationRef.current += 1;
           clearPolling();
           const message = getErrorMessage(err) || t('codex_reauth.error');
           setStatus('error');
@@ -134,58 +204,78 @@ export function CodexReauthDialog({
         }
       }, POLL_INTERVAL_MS);
     },
-    [clearPolling, markSuccess, showNotification, t]
+    [clearPolling, isCurrentOperation, markSuccess, requestScope, showNotification, t]
   );
 
-  const loadAuthLink = useCallback(async (showRefreshFeedback = false) => {
-    clearPolling();
-    successHandledRef.current = false;
-    setAuthUrl('');
-    setStatus('loading');
-    setError('');
-    setCallbackUrl('');
-    setCallbackSubmitting(false);
-    setCallbackStatus(undefined);
-    setCallbackError('');
-    setCopiedTarget(null);
-    setLinkRefreshed(false);
-    try {
-      const response = await oauthApi.startAuth('codex');
-      if (!response.state) {
-        const message = t('codex_reauth.missing_state');
+  const loadAuthLink = useCallback(
+    async (showRefreshFeedback = false) => {
+      const operationGeneration = operationGenerationRef.current + 1;
+      const operationContext = activeDialogContextRef.current;
+      operationGenerationRef.current = operationGeneration;
+      clearPolling();
+      successHandledRef.current = false;
+      setAuthUrl('');
+      setStatus('loading');
+      setError('');
+      setCallbackUrl('');
+      setCallbackSubmitting(false);
+      setCallbackStatus(undefined);
+      setCallbackError('');
+      setCopiedTarget(null);
+      setLinkRefreshed(false);
+      try {
+        const response = await oauthApi.startAuth('codex', requestScope);
+        if (!isCurrentOperation(operationGeneration, operationContext)) return;
+        if (!response.state) {
+          const message = t('codex_reauth.missing_state');
+          setAuthUrl(response.url);
+          setStatus('error');
+          setError(message);
+          showNotification(message, 'error');
+          return;
+        }
         setAuthUrl(response.url);
+        setStatus('waiting');
+        if (showRefreshFeedback) {
+          showTemporaryFeedback(() => setLinkRefreshed(true));
+        }
+        startPolling(response.state, operationGeneration, operationContext);
+      } catch (err: unknown) {
+        if (!isCurrentOperation(operationGeneration, operationContext)) return;
+        const message = getErrorMessage(err) || t('codex_reauth.error');
         setStatus('error');
         setError(message);
         showNotification(message, 'error');
-        return;
       }
-      setAuthUrl(response.url);
-      setStatus('waiting');
-      if (showRefreshFeedback) {
-        showTemporaryFeedback(() => setLinkRefreshed(true));
-      }
-      startPolling(response.state);
-    } catch (err: unknown) {
-      const message = getErrorMessage(err) || t('codex_reauth.error');
-      setStatus('error');
-      setError(message);
-      showNotification(message, 'error');
-    }
-  }, [clearPolling, showNotification, showTemporaryFeedback, startPolling, t]);
+    },
+    [
+      clearPolling,
+      isCurrentOperation,
+      requestScope,
+      showNotification,
+      showTemporaryFeedback,
+      startPolling,
+      t,
+    ]
+  );
 
   useEffect(() => {
     if (!open || !target) {
+      operationGenerationRef.current += 1;
       clearPolling();
+      clearFeedbackTimer();
       return;
     }
     const timer = window.setTimeout(() => {
       void loadAuthLink();
     }, 0);
     return () => {
+      operationGenerationRef.current += 1;
       window.clearTimeout(timer);
       clearPolling();
+      clearFeedbackTimer();
     };
-  }, [clearPolling, loadAuthLink, open, target, targetKey]);
+  }, [clearFeedbackTimer, clearPolling, loadAuthLink, open, target, targetKey]);
 
   useEffect(
     () => () => {
@@ -221,20 +311,24 @@ export function CodexReauthDialog({
       showNotification(t('codex_reauth.callback_required'), 'warning');
       return;
     }
+    const operationGeneration = operationGenerationRef.current;
+    const operationContext = activeDialogContextRef.current;
     setCallbackSubmitting(true);
     setCallbackStatus(undefined);
     setCallbackError('');
     try {
-      await oauthApi.submitCallback('codex', redirectUrl);
-      markSuccess();
+      await oauthApi.submitCallback('codex', redirectUrl, requestScope);
+      if (!isCurrentOperation(operationGeneration, operationContext)) return;
+      await markSuccess(operationGeneration, operationContext);
     } catch (err: unknown) {
+      if (!isCurrentOperation(operationGeneration, operationContext)) return;
       const message = getErrorMessage(err) || t('codex_reauth.error');
       setCallbackSubmitting(false);
       setCallbackStatus('error');
       setCallbackError(message);
       showNotification(`${t('codex_reauth.error')} ${message}`.trim(), 'error');
     }
-  }, [callbackUrl, markSuccess, showNotification, t]);
+  }, [callbackUrl, isCurrentOperation, markSuccess, requestScope, showNotification, t]);
 
   const statusNode = (() => {
     if (status === 'loading') {
@@ -248,6 +342,13 @@ export function CodexReauthDialog({
       return (
         <div className={`${styles.status} ${styles.statusWaiting}`}>
           {t('codex_reauth.waiting')}
+        </div>
+      );
+    }
+    if (status === 'synchronizing') {
+      return (
+        <div className={`${styles.status} ${styles.statusWaiting}`}>
+          {t('codex_reauth.synchronizing')}
         </div>
       );
     }
@@ -296,9 +397,7 @@ export function CodexReauthDialog({
             disabled={!target?.account}
           >
             <IconCopy size={13} />
-            {copiedTarget === 'account'
-              ? t('codex_reauth.copied')
-              : t('codex_reauth.copy_account')}
+            {copiedTarget === 'account' ? t('codex_reauth.copied') : t('codex_reauth.copy_account')}
           </Button>
         </div>
 
@@ -377,6 +476,9 @@ export function CodexReauthDialog({
             <div className={`${styles.status} ${styles.statusError}`}>
               {callbackError || t('codex_reauth.error')}
             </div>
+          ) : null}
+          {callbackStatus === 'success' && callbackError ? (
+            <div className={`${styles.status} ${styles.statusWarning}`}>{callbackError}</div>
           ) : null}
         </div>
       </div>

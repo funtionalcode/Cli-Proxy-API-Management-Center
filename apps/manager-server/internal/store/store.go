@@ -43,6 +43,7 @@ type CodexInspectionLog = model.CodexInspectionLog
 type CodexInspectionDisableOwnership = model.CodexInspectionDisableOwnership
 type CodexInspectionLease = model.CodexInspectionLease
 type InsertResult = model.InsertResult
+type LegacyQuotaSnapshotBackfillResult = quotasnapshot.LegacyBackfillResult
 type ModelPrice = model.ModelPrice
 type ModelPriceContextTier = model.ModelPriceContextTier
 type ModelPriceServiceTier = model.ModelPriceServiceTier
@@ -175,6 +176,34 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) StartDerivedMaintenance(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	sqliterepo.StartDerivedMaintenance(ctx, s.db)
+}
+
+func (s *Store) RunDerivedStartupMaintenance(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return sqliterepo.RunDerivedStartupMaintenance(ctx, s.db)
+}
+
+func (s *Store) BackfillLegacyQuotaSnapshotsBatch(ctx context.Context, maxGroupSize int) (LegacyQuotaSnapshotBackfillResult, error) {
+	if s == nil {
+		return LegacyQuotaSnapshotBackfillResult{Completed: true}, nil
+	}
+	return quotasnapshot.BackfillLegacySnapshotsBatch(ctx, s.db, maxGroupSize)
+}
+
+func (s *Store) RecordLegacyQuotaSnapshotBackfillFailure(ctx context.Context, migrationErr error) error {
+	if s == nil {
+		return nil
+	}
+	return quotasnapshot.RecordLegacyBackfillFailure(ctx, s.db, migrationErr)
 }
 
 func (s *Store) SaveSetup(ctx context.Context, setup Setup) error {

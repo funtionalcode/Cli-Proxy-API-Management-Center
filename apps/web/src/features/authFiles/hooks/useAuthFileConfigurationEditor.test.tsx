@@ -187,6 +187,47 @@ describe('useAuthFileConfigurationEditor', () => {
     expect(renderer).not.toBeNull();
   });
 
+  it.each([
+    [undefined, 'enabled', false],
+    [true, 'inherit', null],
+  ] as const)(
+    'saves credential cooling %j -> %s as %j',
+    async (initialOverride, nextPolicy, expectedOverride) => {
+      mocks.downloadText.mockResolvedValueOnce(
+        JSON.stringify({
+          type: 'xai',
+          auth_index: 'auth-1',
+          account_id: 'account-1',
+          ...(initialOverride === undefined ? {} : { disable_cooling: initialOverride }),
+        })
+      );
+      await act(async () => {
+        renderer = create(<Harness />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      act(() => latest?.updateField('disableCooling', nextPolicy));
+      setDownloadedRecord({
+        type: 'xai',
+        auth_index: 'auth-1',
+        account_id: 'account-1',
+        disable_cooling: expectedOverride,
+      });
+      await act(async () => {
+        await latest?.save();
+      });
+
+      expect(mocks.patchFieldsWithPluginSourceFallback).toHaveBeenCalledWith(
+        expect.anything(),
+        { disable_cooling: expectedOverride },
+        expect.anything()
+      );
+      expect(latest?.draft?.disableCooling).toBe(nextPolicy);
+      expect(latest?.dirty).toBe(false);
+    }
+  );
+
   it('rewrites the verified source when a canonical exclusion must replace a legacy key', async () => {
     mocks.downloadText.mockResolvedValueOnce(
       JSON.stringify({

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	_ "modernc.org/sqlite"
@@ -33,6 +34,15 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	if err != nil {
 		return err
 	}
+	if err := validateDatabaseFile(dbPath); err != nil {
+		return err
+	}
+	databaseLock, err := processlock.Acquire(dbPath)
+	if err != nil {
+		return fmt.Errorf("acquire admin reset lock; stop Manager Server and retry: %w", err)
+	}
+	defer func() { _ = databaseLock.Close() }()
+	dbPath = databaseLock.DatabasePath()
 	if err := ensureManagerDB(ctx, dbPath); err != nil {
 		return err
 	}
@@ -116,7 +126,7 @@ func resolveDBPath(override string) (string, error) {
 	return cfg.DBPath, nil
 }
 
-func ensureManagerDB(ctx context.Context, dbPath string) error {
+func validateDatabaseFile(dbPath string) error {
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -129,6 +139,13 @@ func ensureManagerDB(ctx context.Context, dbPath string) error {
 	}
 	if info.Size() == 0 {
 		return fmt.Errorf("SQLite database at %s is empty; verify --db-path points to the Manager Server data file", dbPath)
+	}
+	return nil
+}
+
+func ensureManagerDB(ctx context.Context, dbPath string) error {
+	if err := validateDatabaseFile(dbPath); err != nil {
+		return err
 	}
 
 	db, err := sql.Open("sqlite", dbPath)

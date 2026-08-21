@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const (
@@ -59,6 +60,7 @@ type CatchUpResult struct {
 	TargetEventID   int64
 	Pending         bool
 	Rebuilt         bool
+	ContinueSoon    bool
 }
 
 type repository struct {
@@ -71,13 +73,13 @@ func New(db *sql.DB) Repository {
 }
 
 func (r *repository) CatchUpProjection(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, ProjectionRollupName, limit, nowMS, false, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
+	return r.catchUp(ctx, ProjectionRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
 		return usageprojection.UpsertEventRange(ctx, tx, afterID, throughID, updatedAtMS)
 	})
 }
 
 func (r *repository) CatchUpStats(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, StatsRollupName, limit, nowMS, true, func(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, updatedAtMS int64) error {
+	return r.catchUp(ctx, StatsRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, updatedAtMS int64) error {
 		if err := upsertAccountDailyBatch(ctx, tx, revision, afterID, throughID, updatedAtMS); err != nil {
 			return err
 		}
@@ -86,7 +88,7 @@ func (r *repository) CatchUpStats(ctx context.Context, limit int, nowMS int64) (
 }
 
 func (r *repository) CatchUpMetadata(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, MetadataRollupName, limit, nowMS, false, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
+	return r.catchUp(ctx, MetadataRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
 		if err := upsertSelectorDailyBatch(ctx, tx, afterID, throughID, updatedAtMS); err != nil {
 			return err
 		}
@@ -101,7 +103,6 @@ func (r *repository) catchUp(
 	rollupName string,
 	limit int,
 	nowMS int64,
-	pricingAware bool,
 	upsertBatch batchUpserter,
 ) (CatchUpResult, error) {
 	if limit <= 0 {
@@ -138,33 +139,60 @@ func (r *repository) catchUp(
 	}
 
 	revision := state.StructureRevision
-	rebuilt := false
-	if pricingAware {
+	rebuilt := state.CoverageEventID < state.TargetEventID &&
+		(state.Status == "pending" || state.Status == "rebuilding" || state.Status == "clearing")
+	if rollupName == StatsRollupName {
 		revision, err = currentStructureRevision(ctx, tx)
+	} else {
+		revision = usageidentity.ModelFormatVersion
+	}
+	if err != nil {
+		return CatchUpResult{}, err
+	}
+	if state.StructureRevision != revision {
+		if err := resetForRevision(ctx, tx, rollupName, revision, latestID, nowMS); err != nil {
+			return CatchUpResult{}, err
+		}
+		state = State{
+			RollupName:        rollupName,
+			SchemaVersion:     SchemaVersion,
+			StructureRevision: revision,
+			Status:            revisionResetStatus(rollupName),
+			TargetEventID:     latestID,
+			UpdatedAtMS:       nowMS,
+		}
+		rebuilt = true
+	}
+	if state.Status == "clearing" {
+		pending, err := clearStatsRevisionRowsBatch(ctx, tx, revision, limit)
 		if err != nil {
 			return CatchUpResult{}, err
 		}
-		if state.StructureRevision != revision {
-			if err := resetStatsForRevision(ctx, tx, revision, latestID, nowMS); err != nil {
+		if pending {
+			if err := tx.Commit(); err != nil {
 				return CatchUpResult{}, err
 			}
-			state = State{
-				RollupName:        StatsRollupName,
-				SchemaVersion:     SchemaVersion,
-				StructureRevision: revision,
-				Status:            "rebuilding",
-				TargetEventID:     latestID,
-				UpdatedAtMS:       nowMS,
-			}
-			rebuilt = true
+			return CatchUpResult{
+				TargetEventID: state.TargetEventID,
+				Pending:       true,
+				Rebuilt:       true,
+				ContinueSoon:  true,
+			}, nil
 		}
+		if _, err := tx.ExecContext(ctx, `update usage_monitoring_rollup_state set
+			status = 'rebuilding', updated_at_ms = ?, last_error = null
+			where rollup_name = ? and structure_revision = ?`,
+			nowMS, rollupName, revision); err != nil {
+			return CatchUpResult{}, err
+		}
+		state.Status = "rebuilding"
 	}
 
 	targetID := state.TargetEventID
 	if targetID < state.CoverageEventID {
 		targetID = state.CoverageEventID
 	}
-	if state.CoverageEventID >= targetID && latestID > state.CoverageEventID {
+	if !rebuilt && state.CoverageEventID >= targetID && latestID > state.CoverageEventID {
 		targetID = latestID
 		if _, err := tx.ExecContext(ctx, `update usage_monitoring_rollup_state set
 			status = 'catching_up', target_event_id = ?, finished_at_ms = null
@@ -198,6 +226,9 @@ func (r *repository) catchUp(
 		); err != nil {
 			return CatchUpResult{}, err
 		}
+		if err := setSearchIndexReady(ctx, tx, rollupName, !pending, nowMS); err != nil {
+			return CatchUpResult{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return CatchUpResult{}, err
 		}
@@ -217,7 +248,10 @@ func (r *repository) catchUp(
 	pending := lastEventID < targetID || latestID > lastEventID
 	status := "ready"
 	finishedAt := any(nowMS)
-	if pending {
+	if lastEventID < targetID && rebuilt {
+		status = "rebuilding"
+		finishedAt = nil
+	} else if pending {
 		status = "catching_up"
 		finishedAt = nil
 	}
@@ -228,6 +262,9 @@ func (r *repository) catchUp(
 		last_error = null where rollup_name = ?`,
 		status, lastEventID, lastEventID, targetID, len(ids), nowMS, nowMS, finishedAt, rollupName,
 	); err != nil {
+		return CatchUpResult{}, err
+	}
+	if err := setSearchIndexReady(ctx, tx, rollupName, !pending, nowMS); err != nil {
 		return CatchUpResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -251,7 +288,12 @@ func (r *repository) RecordFailure(ctx context.Context, rollupName string, rollu
 		return fmt.Errorf("unknown usage monitoring rollup %q", rollupName)
 	}
 	_, err := r.db.ExecContext(ctx, `update usage_monitoring_rollup_state set
-		status = 'failed', updated_at_ms = ?, finished_at_ms = ?, last_error = ?
+		status = case
+			when status in ('clearing', 'rebuilding') then status
+			when status = 'pending' and target_event_id > coverage_event_id then status
+			else 'failed'
+		end,
+		updated_at_ms = ?, finished_at_ms = ?, last_error = ?
 		where rollup_name = ?`, nowMS, nowMS, rollupErr.Error(), rollupName)
 	return err
 }
@@ -338,22 +380,71 @@ func eventIDsThrough(ctx context.Context, tx *sql.Tx, afterID, throughID int64, 
 	return ids, rows.Err()
 }
 
-func resetStatsForRevision(ctx context.Context, tx *sql.Tx, revision string, latestID, nowMS int64) error {
-	for _, statement := range []string{
-		`delete from usage_monitoring_account_daily_rollups_v1`,
-		`delete from usage_monitoring_api_key_daily_rollups_v1`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	_, err := tx.ExecContext(ctx, `update usage_monitoring_rollup_state set
-		structure_revision = ?, status = 'rebuilding',
+func resetForRevision(ctx context.Context, tx *sql.Tx, rollupName, revision string, latestID, nowMS int64) error {
+	if _, err := tx.ExecContext(ctx, `update usage_monitoring_rollup_state set
+		structure_revision = ?, status = ?,
 		backfill_last_event_id = 0, coverage_event_id = 0,
 		target_event_id = ?, processed_events = 0,
 		last_run_started_at_ms = ?, updated_at_ms = ?, finished_at_ms = null,
 		last_error = null where rollup_name = ?`,
-		revision, latestID, nowMS, nowMS, StatsRollupName,
-	)
+		revision, revisionResetStatus(rollupName), latestID, nowMS, nowMS, rollupName,
+	); err != nil {
+		return err
+	}
+	if rollupName != ProjectionRollupName {
+		return nil
+	}
+	return setSearchIndexReady(ctx, tx, rollupName, false, nowMS)
+}
+
+func revisionResetStatus(rollupName string) string {
+	if rollupName == StatsRollupName {
+		return "clearing"
+	}
+	return "rebuilding"
+}
+
+func clearStatsRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision string, limit int) (bool, error) {
+	remaining := limit
+	for _, tableName := range []string{
+		"usage_monitoring_account_daily_rollups_v1",
+		"usage_monitoring_api_key_daily_rollups_v1",
+	} {
+		if remaining > 0 {
+			result, err := tx.ExecContext(ctx, `delete from `+tableName+` where rowid in (
+				select rowid from `+tableName+` where structure_revision = ? limit ?
+			)`, revision, remaining)
+			if err != nil {
+				return false, fmt.Errorf("clear stats revision rows %s: %w", tableName, err)
+			}
+			deleted, err := result.RowsAffected()
+			if err != nil {
+				return false, fmt.Errorf("count cleared stats revision rows %s: %w", tableName, err)
+			}
+			remaining -= int(deleted)
+		}
+		var pending int
+		if err := tx.QueryRowContext(ctx, `select exists(
+			select 1 from `+tableName+` where structure_revision = ? limit 1
+		)`, revision).Scan(&pending); err != nil {
+			return false, fmt.Errorf("inspect remaining stats revision rows %s: %w", tableName, err)
+		}
+		if pending != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func setSearchIndexReady(ctx context.Context, tx *sql.Tx, rollupName string, ready bool, nowMS int64) error {
+	if rollupName != ProjectionRollupName {
+		return nil
+	}
+	readyValue := 0
+	if ready {
+		readyValue = 1
+	}
+	_, err := tx.ExecContext(ctx, `update usage_monitoring_search_index_state set
+		ready = ?, updated_at_ms = ? where id = 1`, readyValue, nowMS)
 	return err
 }

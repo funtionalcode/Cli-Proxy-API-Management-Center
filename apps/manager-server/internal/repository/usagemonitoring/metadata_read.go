@@ -10,6 +10,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type selectorRow struct {
@@ -187,9 +188,9 @@ func mergeStoredSelectorRows(
 		model, api_key_hash, provider, auth_file_snapshot, account_snapshot,
 		auth_label_snapshot, auth_index, max(source), source_hash
 	from usage_monitoring_selector_daily_rollups_v1
-	where bucket_ms >= ? and bucket_ms < ?
+	where model_format_revision = ? and bucket_ms >= ? and bucket_ms < ?
 	group by model, api_key_hash, provider, auth_file_snapshot,
-		account_snapshot, auth_label_snapshot, auth_index, source_hash`, fromMS, toMS)
+		account_snapshot, auth_label_snapshot, auth_index, source_hash`, usageidentity.ModelFormatVersion, fromMS, toMS)
 	if err != nil {
 		return err
 	}
@@ -213,11 +214,11 @@ func mergeProjectedSelectorRows(
 	source, args := filteredEventSourceSQL(
 		filter,
 		projectionCoverageEventID,
-		`p.model, p.api_key_hash,
+		`p.analytics_model as model, p.api_key_hash,
 		coalesce(nullif(p.auth_provider_snapshot, ''), nullif(p.provider, ''), '') as auth_provider_snapshot,
 		p.auth_file_snapshot, p.account_snapshot, p.auth_label_snapshot,
 		p.auth_index, p.source, p.source_hash`,
-		`coalesce(e.model, ''), coalesce(e.api_key_hash, ''),
+		usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+` as model, coalesce(e.api_key_hash, ''),
 		coalesce(nullif(e.auth_provider_snapshot, ''), nullif(e.provider, ''), ''),
 		coalesce(e.auth_file_snapshot, ''), coalesce(e.account_snapshot, ''),
 		coalesce(e.auth_label_snapshot, ''), coalesce(e.auth_index, ''),

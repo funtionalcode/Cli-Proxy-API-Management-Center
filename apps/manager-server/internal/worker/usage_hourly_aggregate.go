@@ -25,6 +25,8 @@ type UsageHourlyAggregateWorker struct {
 	maxBatches        int
 	checkInterval     time.Duration
 	continuationDelay time.Duration
+	reportedStarted   bool
+	lastReported      int64
 }
 
 func NewUsageHourlyAggregateWorker(store *store.Store) *UsageHourlyAggregateWorker {
@@ -86,6 +88,22 @@ func (w *UsageHourlyAggregateWorker) catchUp(ctx context.Context) bool {
 				log.Printf("[usage-aggregate] record hourly catch-up failure: %v", recordErr)
 			}
 			return false
+		}
+		if result.Rebuilt && result.Processed > 0 && !w.reportedStarted {
+			log.Printf("[usage-aggregate] hourly rebuild started targetEventID=%d batchSize=%d", result.TargetEventID, w.batchLimit)
+			w.reportedStarted = true
+			w.lastReported = 0
+		}
+		rebuildCompleted := result.Rebuilt && result.TargetEventID > 0 && result.CoverageEventID >= result.TargetEventID
+		if w.reportedStarted && result.Rebuilt && result.Processed > 0 &&
+			(result.CoverageEventID-w.lastReported >= 10000 || rebuildCompleted) {
+			log.Printf("[usage-aggregate] hourly rebuild progress coverageEventID=%d targetEventID=%d pending=%t", result.CoverageEventID, result.TargetEventID, result.Pending)
+			w.lastReported = result.CoverageEventID
+		}
+		if w.reportedStarted && rebuildCompleted {
+			log.Printf("[usage-aggregate] hourly rebuild completed coverageEventID=%d", result.CoverageEventID)
+			w.reportedStarted = false
+			w.lastReported = 0
 		}
 		pending = result.Pending
 		if result.Processed == 0 || !result.Pending {

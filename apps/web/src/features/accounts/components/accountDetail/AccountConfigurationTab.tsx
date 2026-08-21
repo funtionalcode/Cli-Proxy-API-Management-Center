@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input';
 import { SegmentedTabs } from '@/components/ui/SegmentedTabs';
 import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { CoolingPolicySelect } from '@/components/providers/CoolingPolicySelect';
 import { IconCode, IconCopy, IconRefreshCw } from '@/components/ui/icons';
 import type { AccountRow } from '@/features/accounts/model/accountRows';
 import { getProviderLabel } from '@/features/accounts/model/accountsPagePresentation';
@@ -45,8 +46,7 @@ export function AccountConfigurationTab({
   } = editor;
   const capabilities = getAuthFileConfigurationCapabilities(state?.providerKey || row.provider);
   const providerLabel = getProviderLabel(state?.providerKey || row.provider, t);
-  const disabled =
-    disableControls || row.disabled || sharedSourceReadOnly || state?.saving === true;
+  const disabled = disableControls || sharedSourceReadOnly || state?.saving === true;
   const reloadAndRestoreFocus = () => {
     void editor.reload().then(() => {
       if (typeof window === 'undefined') return;
@@ -149,7 +149,7 @@ export function AccountConfigurationTab({
             className={styles.configurationToolbarButton}
             onClick={() => void editor.save()}
             loading={state.saving}
-            disabled={!canSave || row.disabled}
+            disabled={!canSave}
           >
             {t('common.save')}
           </Button>
@@ -159,10 +159,6 @@ export function AccountConfigurationTab({
       {sharedSourceReadOnly ? (
         <div className={styles.configurationReadOnlyNotice} role="note">
           {t('accounts.config_shared_source_read_only', { count: sourceMemberCount })}
-        </div>
-      ) : row.disabled ? (
-        <div className={styles.configurationReadOnlyNotice} role="note">
-          {t('accounts.config_disabled_read_only')}
         </div>
       ) : null}
 
@@ -376,24 +372,37 @@ export function AccountConfigurationTab({
             )}
           </div>
         </div>
+        <div className="form-group">
+          <label>{t('auth_files.model_aliases_label')}</label>
+          <textarea
+            className={`input ${errors.modelAliasesText ? styles.configurationTextareaInvalid : ''}`}
+            rows={6}
+            value={draft.modelAliasesText}
+            placeholder={t('auth_files.model_aliases_placeholder')}
+            aria-label={t('auth_files.model_aliases_label')}
+            aria-invalid={Boolean(errors.modelAliasesText)}
+            disabled={disabled}
+            onChange={(event) => editor.updateField('modelAliasesText', event.target.value)}
+          />
+          {fieldError('modelAliasesText') ? (
+            <div className="error-box">{fieldError('modelAliasesText')}</div>
+          ) : (
+            <div className="hint">{t('auth_files.model_aliases_hint')}</div>
+          )}
+        </div>
       </section>
 
       <section className={styles.configurationSection}>
         <h3 className={styles.configurationSectionTitle}>
           {t('accounts.config_section_advanced')}
         </h3>
-        <div className={styles.configurationToggleRow}>
-          <div>
-            <strong>{t('auth_files.disable_cooling_label')}</strong>
-            <p>{t('accounts.config_disable_cooling_hint')}</p>
-          </div>
-          <ToggleSwitch
-            checked={draft.disableCooling}
-            onChange={(value) => editor.updateField('disableCooling', value)}
-            disabled={disabled}
-            ariaLabel={t('auth_files.disable_cooling_label')}
-          />
-        </div>
+        <CoolingPolicySelect
+          value={draft.disableCooling}
+          onChange={(value) => editor.updateField('disableCooling', value)}
+          translationPrefix="auth_files"
+          disabled={disabled}
+          id="account-cooling-policy"
+        />
         <div className={styles.configurationFieldGrid}>
           <Input
             label={t('accounts.config_request_retry_label')}

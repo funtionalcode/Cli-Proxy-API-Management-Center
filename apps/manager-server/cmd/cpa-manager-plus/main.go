@@ -17,8 +17,10 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/adminreset"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/derivedmaintenance"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/httpapi"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	bootstrapservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
@@ -36,6 +38,14 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "cleanup-derived":
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if err := derivedmaintenance.Run(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("cleanup derived data: %v", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 	runServer()
@@ -46,6 +56,16 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	databaseLock, err := processlock.Acquire(cfg.DBPath)
+	if err != nil {
+		log.Fatalf("acquire manager database process lock: %v", err)
+	}
+	defer func() {
+		if err := databaseLock.Close(); err != nil {
+			log.Printf("close manager database process lock: %v", err)
+		}
+	}()
+	cfg.DBPath = databaseLock.DatabasePath()
 	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
 	if err != nil {
 		log.Fatalf("load data key: %v", err)
@@ -123,14 +143,11 @@ func runServer() {
 		runtimeSettings.AccountActionsAutoDisable,
 	)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
-	accountHistoryRollupWorker.Start(ctx)
 	usageDerivedRollupWorker := worker.NewUsagePricingRollupWorker(db)
-	usageDerivedRollupWorker.Start(ctx)
 	serverApp.AppContext().ModelPriceService.SetPricesChangedNotifier(usageDerivedRollupWorker.Wake)
 	var usageHourlyAggregateWorker *worker.UsageHourlyAggregateWorker
 	if cfg.DashboardHourlyRollupEnabled {
 		usageHourlyAggregateWorker = worker.NewUsageHourlyAggregateWorker(db)
-		usageHourlyAggregateWorker.Start(ctx)
 	}
 	serverApp.AppContext().UsageService.SetEventsInsertedNotifier(func() {
 		accountHistoryRollupWorker.Wake()
@@ -146,15 +163,12 @@ func runServer() {
 		accountActionWorker,
 	)
 	serverApp.AppContext().AutomationRuntimeService = automationRuntime
-	automationRuntime.Start(ctx)
 	manager.SetUsageEventHandler(worker.NewUsageEventFanout(
 		automationRuntime.UsageEventHandler(),
 		accountHistoryRollupWorker,
 		usageDerivedRollupWorker,
 		usageHourlyAggregateWorker,
 	))
-
-	collectorWorker.Start(ctx)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -178,17 +192,27 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("http listen: %v", err)
 	}
+	log.Printf("cpa-manager-plus listening on %s", listener.Addr())
 	codexInspectionWorker := worker.NewCodexInspectionWorker(serverApp.AppContext().Store, serverApp.AppContext().CodexInspectionService)
-	codexInspectionWorker.Start(ctx)
 	serverResult := make(chan error, 1)
-	go func() {
-		log.Printf("cpa-manager-plus listening on %s", listener.Addr())
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
+	go serveHTTPServer(server, listener, stop, serverResult)
+
+	if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)
+	}
+	if ctx.Err() == nil {
+		log.Printf("[startup] starting background workers")
+		automationRuntime.Start(ctx)
+		codexInspectionWorker.Start(ctx)
+		accountHistoryRollupWorker.Start(ctx)
+		usageDerivedRollupWorker.Start(ctx)
+		if usageHourlyAggregateWorker != nil {
+			usageHourlyAggregateWorker.Start(ctx)
 		}
-		serverResult <- err
-	}()
+		db.StartDerivedMaintenance(ctx)
+		collectorWorker.Start(ctx)
+		worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
+	}
 
 	usageCacheAccountingMigrationWorker := worker.NewUsageCacheAccountingMigrationWorker(db, func() {
 		accountHistoryRollupWorker.Wake()
@@ -198,10 +222,19 @@ func runServer() {
 		}
 		go runUsageResponseMetadataBackfill(ctx, db)
 	})
-	usageCacheAccountingMigrationWorker.Start(ctx)
+	if ctx.Err() == nil {
+		usageCacheAccountingMigrationWorker.Start(ctx)
+	}
 
 	select {
 	case <-ctx.Done():
+		select {
+		case err := <-serverResult:
+			if err != nil {
+				log.Printf("http server stopped unexpectedly: %v", err)
+			}
+		default:
+		}
 	case err := <-serverResult:
 		if err != nil {
 			log.Printf("http server stopped unexpectedly: %v", err)
@@ -222,6 +255,15 @@ func runServer() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func serveHTTPServer(server *http.Server, listener net.Listener, stop context.CancelFunc, result chan<- error) {
+	err := server.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		err = nil
+	}
+	result <- err
+	stop()
 }
 
 type codexInspectionStopper interface {

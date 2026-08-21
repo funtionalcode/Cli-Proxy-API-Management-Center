@@ -30,6 +30,7 @@ const COMMON_PROVIDER_KEY_FIELDS = [
   'apiKey',
   ...AUTH_INDEX_FIELDS,
   'priority',
+  'weight',
   'prefix',
   'base-url',
   'baseUrl',
@@ -62,7 +63,7 @@ const CLAUDE_KEY_FIELDS = [
   'rebuild_mid_system_message',
 ] as const;
 const GEMINI_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
-const VERTEX_KEY_FIELDS = COMMON_PROVIDER_KEY_FIELDS;
+const VERTEX_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
 
 const OPENAI_PROVIDER_FIELDS = [
   'name',
@@ -118,6 +119,7 @@ const API_KEY_ENTRY_FIELDS = [
   'apiKey',
   'key',
   ...AUTH_INDEX_FIELDS,
+  'weight',
   'proxy-url',
   'proxyUrl',
   'proxy_url',
@@ -552,6 +554,7 @@ const serializeApiKeyEntry = (entry: ApiKeyEntry) => {
   if (apiKey) payload['api-key'] = apiKey;
   const authIndex = serializeAuthIndex(entry.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
+  if (entry.weight !== undefined) payload.weight = entry.weight;
   if (entry.proxyUrl) payload['proxy-url'] = entry.proxyUrl;
   const headers = serializeHeaders(entry.headers);
   if (headers) payload.headers = headers;
@@ -565,6 +568,7 @@ const serializeProviderKey = (config: ProviderKeyConfig) => {
   const authIndex = serializeAuthIndex(config.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.websockets !== undefined) payload.websockets = config.websockets;
@@ -621,8 +625,10 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
   const authIndex = serializeAuthIndex(config.authIndex);
   if (authIndex) payload['auth-index'] = authIndex;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
+  if (config.disableCooling !== undefined) payload['disable-cooling'] = config.disableCooling;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
   const headers = serializeHeaders(config.headers);
   if (headers) payload.headers = headers;
@@ -642,6 +648,7 @@ const serializeGeminiKey = (config: GeminiKeyConfig) => {
   }
   payload['api-key'] = apiKey;
   if (config.priority !== undefined) payload.priority = config.priority;
+  if (config.weight !== undefined) payload.weight = config.weight;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;

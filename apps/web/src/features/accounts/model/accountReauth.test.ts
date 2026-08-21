@@ -11,10 +11,12 @@ describe('accountReauth', () => {
   it('routes xAI and Claude accounts to their OAuth providers', () => {
     expect(resolveAccountReauthAction({ name: 'xai.json', type: 'xai' })).toEqual({
       kind: 'navigate',
+      oauthProvider: 'xai',
       path: '/oauth#oauth-provider-xai',
     });
     expect(resolveAccountReauthAction({ name: 'claude.json', type: 'claude' })).toEqual({
       kind: 'navigate',
+      oauthProvider: 'anthropic',
       path: '/oauth#oauth-provider-anthropic',
     });
   });

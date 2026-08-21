@@ -28,7 +28,7 @@ import {
   type ProxyConfigRow,
   type ProxyConfigScope,
 } from './proxyConfigModel';
-import { getAuthFilePatchTarget } from '@/features/authFiles/model/authFilesPageModel';
+import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
 import styles from './ProxyConfigsPage.module.scss';
 
 type ProviderLists = {

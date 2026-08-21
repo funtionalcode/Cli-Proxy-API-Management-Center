@@ -7,6 +7,7 @@ export * from './api';
 export * from './config';
 export * from './auth';
 export * from './provider';
+export * from './coolingPolicy';
 export * from './authFile';
 export * from './oauth';
 export * from './log';

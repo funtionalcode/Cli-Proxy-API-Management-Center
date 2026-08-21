@@ -9,19 +9,19 @@ description: 对比 CPAMP 轻量面板和完整模式支持的管理、监控、
 
 ## 按使用方式
 
-| 能力                                               | CPAMP 轻量面板        | CPAMP 完整模式  |
-| -------------------------------------------------- | --------------------- | --------------- |
-| CPA 配置、Provider、Auth Files、OAuth、Quota、日志 | ✅                    | ✅              |
-| 插件管理和插件页面                                 | 取决于 CPA 与插件路径 | ✅              |
-| 浏览器本地账号检查                                 | ✅                    | ✅              |
-| SQLite 请求历史                                    | ❌                    | ✅              |
-| 请求监控与失败诊断                                 | ❌                    | ✅              |
-| 用量与成本分析                                     | ❌                    | ✅              |
-| 模型价格和 API Key 别名                            | ❌                    | ✅              |
-| 服务端账号巡检和历史                               | ❌                    | ✅              |
-| 配额冷却与账号处理队列                             | ❌                    | ✅              |
-| 登录凭证                                           | CPA Management Key    | CPAMP Admin Key |
-| 备份、迁移状态、pprof                              | ❌                    | ✅              |
+| 能力                                      | CPAMP 轻量面板        | CPAMP 完整模式  |
+| ----------------------------------------- | --------------------- | --------------- |
+| CPA 配置、Provider、凭证管理、OAuth、日志 | ✅                    | ✅              |
+| 插件管理和插件页面                        | 取决于 CPA 与插件路径 | ✅              |
+| 浏览器本地账号检查                        | ✅                    | ✅              |
+| SQLite 请求历史                           | ❌                    | ✅              |
+| 请求监控与失败诊断                        | ❌                    | ✅              |
+| 用量与成本分析                            | ❌                    | ✅              |
+| 模型价格和 API Key 别名                   | ❌                    | ✅              |
+| 服务端账号巡检和历史                      | ❌                    | ✅              |
+| 配额冷却与账号处理队列                    | ❌                    | ✅              |
+| 登录凭证                                  | CPA Management Key    | CPAMP Admin Key |
+| 备份、迁移状态、pprof                     | ❌                    | ✅              |
 
 CPAMP 轻量面板是 CPA 直接托管的增强 WebUI，与官方面板一样不需要额外服务。它不会连接或读取 Manager Server；需要表中的服务端能力时，必须改用 Manager Server 的 `:18317/management.html` 入口。
 
@@ -62,7 +62,6 @@ Docker 和原生包提供相同的完整模式能力，只是安装方式不同�
 ## 相关文档
 
 - [账号巡检](../manual/codex-inspection.md)
-- [配额管理](../manual/quota.md)
-- [认证文件](../manual/auth-files.md)
+- [凭证管理与账号状态](../manual/accounts.md)
 - [账号处理队列](../manual/account-actions.md)
 - [Manager Server 指南](../operations/manager-server.md)

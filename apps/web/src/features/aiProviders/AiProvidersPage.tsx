@@ -33,8 +33,10 @@ import { Select } from '@/components/ui/Select';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore, useThemeStore } from '@/stores';
-import type {
+import {
   CloakConfig,
+  coolingPolicyToOverride,
+  type CoolingPolicy,
   GeminiKeyConfig,
   OpenAIProviderConfig,
   ProviderKeyConfig,
@@ -869,11 +871,12 @@ export function AiProvidersPage() {
     }
   };
 
-  const setProviderDisableCoolingEnabled = async (
-    provider: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'openai',
+  const setProviderCoolingPolicy = async (
+    provider: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'vertex' | 'openai',
     index: number,
-    enabled: boolean
+    policy: CoolingPolicy
   ) => {
+    const disableCooling = coolingPolicyToOverride(policy);
     if (provider === 'gemini' || provider === 'interactions') {
       const source = provider === 'gemini' ? geminiKeys : interactionsKeys;
       const current = source[index];
@@ -883,7 +886,7 @@ export function AiProvidersPage() {
       if (!beginConfigMutation(switchingKey)) return;
 
       const previousList = source;
-      const nextItem: GeminiKeyConfig = { ...current, disableCooling: enabled };
+      const nextItem: GeminiKeyConfig = { ...current, disableCooling };
       const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
 
       if (provider === 'gemini') {
@@ -937,7 +940,7 @@ export function AiProvidersPage() {
       if (!beginConfigMutation(switchingKey)) return;
 
       const previousList = openaiProviders;
-      const nextItem: OpenAIProviderConfig = { ...current, disableCooling: enabled };
+      const nextItem: OpenAIProviderConfig = { ...current, disableCooling };
       const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
 
       setOpenaiProviders(nextList);
@@ -961,7 +964,13 @@ export function AiProvidersPage() {
     }
 
     const source =
-      provider === 'codex' ? codexConfigs : provider === 'xai' ? xaiConfigs : claudeConfigs;
+      provider === 'codex'
+        ? codexConfigs
+        : provider === 'xai'
+          ? xaiConfigs
+          : provider === 'vertex'
+            ? vertexConfigs
+            : claudeConfigs;
     const current = source[index];
     if (!current) return;
 
@@ -969,7 +978,7 @@ export function AiProvidersPage() {
     if (!beginConfigMutation(switchingKey)) return;
 
     const previousList = source;
-    const nextItem: ProviderKeyConfig = { ...current, disableCooling: enabled };
+    const nextItem: ProviderKeyConfig = { ...current, disableCooling };
     const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
 
     if (provider === 'codex') {
@@ -980,6 +989,10 @@ export function AiProvidersPage() {
       setXAIConfigs(nextList);
       updateConfigValue('xai-api-key', nextList);
       clearCache('xai-api-key');
+    } else if (provider === 'vertex') {
+      setVertexConfigs(nextList);
+      updateConfigValue('vertex-api-key', nextList);
+      clearCache('vertex-api-key');
     } else {
       setClaudeConfigs(nextList);
       updateConfigValue('claude-api-key', nextList);
@@ -995,6 +1008,10 @@ export function AiProvidersPage() {
         await providersApi.updateXAIConfig(current, nextItem);
         await loadConfigs();
         showNotification(t('notification.xai_config_updated'), 'success');
+      } else if (provider === 'vertex') {
+        await providersApi.updateVertexConfig(current, nextItem);
+        await loadConfigs();
+        showNotification(t('notification.vertex_config_updated'), 'success');
       } else {
         await providersApi.updateClaudeConfig(current, nextItem);
         await loadConfigs();
@@ -1010,6 +1027,10 @@ export function AiProvidersPage() {
         setXAIConfigs(previousList);
         updateConfigValue('xai-api-key', previousList);
         clearCache('xai-api-key');
+      } else if (provider === 'vertex') {
+        setVertexConfigs(previousList);
+        updateConfigValue('vertex-api-key', previousList);
+        clearCache('vertex-api-key');
       } else {
         setClaudeConfigs(previousList);
         updateConfigValue('claude-api-key', previousList);
@@ -1375,18 +1396,19 @@ export function AiProvidersPage() {
     void setProviderCloakEnabled(row.kind, row.originalIndex, enabled);
   };
 
-  const handleRowDisableCoolingToggle = (row: ProviderRow, enabled: boolean) => {
+  const handleRowCoolingPolicyChange = (row: ProviderRow, policy: CoolingPolicy) => {
     if (
       row.kind !== 'gemini' &&
       row.kind !== 'interactions' &&
       row.kind !== 'codex' &&
       row.kind !== 'xai' &&
       row.kind !== 'claude' &&
+      row.kind !== 'vertex' &&
       row.kind !== 'openai'
     ) {
       return;
     }
-    void setProviderDisableCoolingEnabled(row.kind, row.originalIndex, enabled);
+    void setProviderCoolingPolicy(row.kind, row.originalIndex, policy);
   };
 
   const handleRowPriorityChange = (row: ProviderRow, priority: number) => {
@@ -1559,7 +1581,7 @@ export function AiProvidersPage() {
         onToggle={handleRowToggle}
         onToggleWebsockets={handleRowWebsocketsToggle}
         onToggleCloak={handleRowCloakToggle}
-        onToggleDisableCooling={handleRowDisableCoolingToggle}
+        onToggleDisableCooling={handleRowCoolingPolicyChange}
       />
       <ProviderHealthCheckDrawer
         open={healthCheckOpen}

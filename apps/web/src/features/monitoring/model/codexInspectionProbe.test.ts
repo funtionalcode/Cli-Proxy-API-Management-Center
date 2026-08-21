@@ -204,6 +204,7 @@ describe('inspectSingleAccount', () => {
     expect(result.usedPercent).toBe(5);
     expect(result.isQuota).toBe(false);
     expect(result.planType).toBe('free');
+    expect(result.quotaInventoryObserved).toBe(true);
     expect(result.quotaWindows).toEqual([
       expect.objectContaining({
         id: 'monthly',
@@ -433,7 +434,26 @@ describe('inspectSingleAccount', () => {
       usedPercent: null,
       isQuota: false,
       autoRecoverEligible: false,
+      quotaInventoryObserved: false,
     });
+  });
+
+  it('preserves an explicitly observed empty Codex quota inventory', async () => {
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      result: {
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"rate_limit":{}}',
+        body: { rate_limit: {} },
+      },
+      payload: { rate_limit: {} },
+    });
+
+    const result = await inspectSingleAccount(baseAccount, settings);
+
+    expect(result.quotaWindows).toEqual([]);
+    expect(result.quotaInventoryObserved).toBe(true);
   });
 
   it('keeps a disabled account while the five-hour window is exhausted', async () => {

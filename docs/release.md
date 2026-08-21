@@ -37,6 +37,11 @@ release/<version> -> dev -> main -> v<version> tag -> GitHub Release
    `dev` SHA, then run the release workflow dry-run from that `main` commit.
 6. Create the tag from the exact `main` commit that passed the dry-run.
 
+Do not promote `dev` immediately before starting this sequence. The release PR
+must first add its three versioned files to `dev`, so a preliminary promotion
+would be followed by a second mandatory promotion. The standard flow has one
+`dev -> main` PR, after the Release PR is merged.
+
 Do not open a release PR directly to `main`: branch protection permits only
 the repository's `dev` branch to promote into `main`.
 
@@ -46,6 +51,28 @@ of the current `dev` ref. This is normal. Before a new release, require that
 does. The release scope is still invalid if `dev` advances after the release PR
 is merged: refresh the notes and repeat the release preflight rather than
 including unreviewed changes in the tag.
+
+## Operator Approval Gates
+
+Normal releases use two explicit gates rather than one confirmation per remote
+operation:
+
+1. **Integrate and validate**: approve the exact release branch and files,
+   conditional Release PR merge, the single conditional `dev -> main` merge,
+   temporary clean-worktree lifecycle, dry-run dispatch, and any disclosed
+   scoped fallback. Both merges proceed only while their recorded head/base
+   SHAs remain unchanged and all required checks pass.
+2. **Tag and publish**: after the dry-run succeeds, approve the exact
+   `refs/tags/<tag> -> <main-promotion-sha>` mapping. The tag-triggered run and
+   read-only closeout then continue without further confirmation.
+
+The operator keeps an in-session manifest containing the source `dev` SHA,
+release content digests, Release PR head and merge SHAs, promotion SHA, dry-run
+ID, tag target, and allowed fallback operations. Any SHA drift, failed check,
+scope change, or new side effect invalidates the current gate and stops the
+flow. A dirty developer checkout is recorded and preserved; remote operations
+and a detached temporary worktree are used instead of requiring unrelated
+local changes to be stashed or cleaned.
 
 ## Release Note Files
 
@@ -206,24 +233,52 @@ silently producing a different release payload. DockerHub publishing is
 optional when its credentials are absent; GHCR remains the configured image
 registry for normal tag runs.
 
+After building the release artifact and before any Docker registry mutation,
+the workflow reads any existing GitHub Release for the tag. A missing release
+is created normally. An exact body, state, asset-name, size, and SHA-256 match
+is skipped idempotently. During an explicitly approved workflow rerun, a strict
+matching subset may resume by uploading only missing assets while the Release
+remains mutable. Unexpected assets, immutable incomplete Releases, changed
+metadata, changed content, or a partial Release on attempt 1 fail before Docker
+publishing. Same-name asset overwrites remain disabled.
+
 Telegram delivery is deliberately non-blocking after the GitHub Release is
 created. The job summary records `sent`, `skipped-config`,
 `skipped-missing-post`, `skipped-invalid-thread`, or `failed-delivery` without
 exposing secret values. A failed notification never rolls back a successful
-release.
+release. Automatic Telegram delivery runs only during workflow attempt 1, so a
+full workflow rerun cannot resend an already delivered post. The Bot API
+`sendMessage` request itself is attempted once because it is non-idempotent; an
+ambiguous network failure is handled as a possible delivery and requires the
+explicit recovery workflow rather than an automatic HTTP retry.
 
 Recovery rules:
 
 1. If pre-tag dry-run fails, fix the source or release files, repeat the Release
    PR/promotion as needed, and rerun the dry-run before creating a tag.
-2. If a tagged run fails because the immutable source is invalid, fix it under
-   a new version and create a new tag; never move the failed tag. For a transient
-   asset or Docker failure, rerun the same immutable tag only after checking
-   which registry or artifact stage already succeeded. Publishing across
-   registries is deterministic but not transactional.
-3. If GitHub Release succeeds and Telegram fails, repair the secret/post or
-   retry the workflow and verify the job summary; the release itself remains
-   valid.
+2. Never rerun a completed successful tagged run. If a tagged run fails because
+   the immutable source is invalid, fix it under a new version and create a new
+   tag; never move the failed tag. For a transient asset or Docker failure,
+   first identify which registries or Release stages already changed state,
+   then obtain explicit recovery approval before rerunning the same tag. A rerun
+   may fill only missing Release assets whose already-published siblings still
+   match the checked payload exactly and whose Release remains mutable. An
+   incomplete immutable Release requires a new version or separately approved
+   administrative recovery. Publishing across registries is deterministic but
+   not transactional.
+3. If GitHub Release succeeds and Telegram fails, repair the secret/post,
+   verify whether a message may already have been delivered, and explicitly
+   dispatch `Recover Telegram Release Notification` with its resend confirmation.
+   Dispatch it from `main`. The recovery job validates the historical tag and
+   complete published Release, extracts the post from the tag, and sends it with
+   the current protected `main` helper. Do not recover Telegram by rerunning the
+   complete release workflow.
+
+For Actions monitoring, use the run-level state as the canonical decision
+surface. Require `status=completed`, a terminal conclusion, and the same
+`run_attempt` on a second observation after a 30-60 second stabilization
+interval. Job-level state may provide detail but must not override a completed
+successful run.
 
 Before enabling production releases, repository administrators must enforce
 the remote controls that local files cannot provide: protected `dev` and

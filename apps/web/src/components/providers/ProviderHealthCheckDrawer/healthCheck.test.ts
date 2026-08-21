@@ -1,15 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+
+const { mocks } = vi.hoisted(() => ({
+  mocks: {
+    fetchModelsViaApiCall: vi.fn(),
+    fetchV1ModelsViaApiCall: vi.fn(),
+    fetchClaudeModelsViaApiCall: vi.fn(),
+    fetchGeminiModelsViaApiCall: vi.fn(),
+  },
+}));
+
+vi.mock('@/services/api', () => ({
+  modelsApi: mocks,
+}));
+
 import { buildProviderRows } from '../ProviderTable/rowData';
 import type { ProviderRecentUsageMap } from '../utils';
 import {
   buildProviderHealthCheckItems,
   getProviderHealthCheckApplyActions,
+  runProviderHealthCheckItem,
   summarizeProviderHealthCheckItems,
   type ProviderHealthCheckItem,
 } from './healthCheck';
 
 const emptyUsageByProvider = new Map() as ProviderRecentUsageMap;
+
+beforeEach(() => {
+  Object.values(mocks).forEach((mock) => mock.mockReset());
+});
 
 describe('provider health check model', () => {
   it('expands key-based providers and OpenAI key entries into check items', () => {
@@ -114,5 +133,72 @@ describe('provider health check model', () => {
     expect(actions.get('openai:a')).toBe('enable');
     expect(actions.get('openai:b')).toBe('disable');
     expect(actions.has('codex:c')).toBe(false);
+  });
+
+  it('passes a key-provider proxy to the health-check model request', async () => {
+    mocks.fetchV1ModelsViaApiCall.mockResolvedValueOnce([{ name: 'gpt-5' }]);
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [
+        {
+          apiKey: 'codex-key',
+          baseUrl: 'https://codex.example.com/v1',
+          proxyUrl: 'socks5://provider-proxy.example:1080',
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    await expect(runProviderHealthCheckItem(rows, item)).resolves.toMatchObject({
+      status: 'success',
+      modelCount: 1,
+    });
+
+    expect(mocks.fetchV1ModelsViaApiCall).toHaveBeenCalledWith(
+      'https://codex.example.com/v1',
+      'codex-key',
+      {},
+      undefined,
+      'socks5://provider-proxy.example:1080'
+    );
+  });
+
+  it('uses the selected OpenAI key entry proxy for health checks', async () => {
+    mocks.fetchModelsViaApiCall.mockResolvedValueOnce([{ name: 'gpt-4.1' }]);
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      claude: [],
+      vertex: [],
+      openai: [
+        {
+          name: 'proxied',
+          baseUrl: 'https://openai.example.com/v1',
+          apiKeyEntries: [
+            { apiKey: 'key-a', proxyUrl: 'http://first-proxy.example:8080' },
+            { apiKey: 'key-b', proxyUrl: 'http://second-proxy.example:8080' },
+          ],
+        },
+      ],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const items = buildProviderHealthCheckItems(rows);
+
+    await expect(runProviderHealthCheckItem(rows, items[1])).resolves.toMatchObject({
+      status: 'success',
+      modelCount: 1,
+    });
+
+    expect(mocks.fetchModelsViaApiCall).toHaveBeenCalledWith(
+      'https://openai.example.com/v1',
+      'key-b',
+      {},
+      undefined,
+      'http://second-proxy.example:8080'
+    );
   });
 });

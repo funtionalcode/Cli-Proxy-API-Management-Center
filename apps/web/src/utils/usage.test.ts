@@ -10,9 +10,11 @@ import {
   compatibleCachedTokens,
   extractTotalTokens,
   formatCompactNumber,
+  formatUsd,
   getServiceTierMultiplier,
   inferCacheInputMode,
   loadModelPrices,
+  normalizeAnalyticsModel,
   normalizeCacheAccounting,
   normalizeUsageSourceId,
 } from './usage';
@@ -32,6 +34,20 @@ describe('formatCompactNumber', () => {
     expect(formatCompactNumber(1_200_000_000_000)).toBe('1.2T');
     expect(formatCompactNumber(-2_500_000_000_000_000)).toBe('-2.5P');
     expect(formatCompactNumber(Number.POSITIVE_INFINITY)).toBe('0');
+  });
+});
+
+describe('formatUsd', () => {
+  it('formats costs globally to two decimal places', () => {
+    expect(formatUsd(19.99)).toBe('$19.99');
+    expect(formatUsd(0.006)).toBe('$0.01');
+    expect(formatUsd(Number.NaN)).toBe('$0.00');
+  });
+
+  it('allows request-scoped precision overrides', () => {
+    expect(formatUsd(19.99, 3)).toBe('$19.990');
+    expect(formatUsd(0.0006, 3)).toBe('$0.001');
+    expect(formatUsd(Number.NaN, 3)).toBe('$0.000');
   });
 });
 
@@ -108,6 +124,20 @@ describe('usage source candidates', () => {
 
   it('preserves legacy UI-masked source IDs when no raw secret is present', () => {
     expect(normalizeUsageSourceId('m:sk******ef')).toBe('m:sk******ef');
+  });
+});
+
+describe('normalizeAnalyticsModel', () => {
+  it('removes only supported CPA reasoning suffixes', () => {
+    expect(normalizeAnalyticsModel('deepseek-v4-flash(max)')).toBe('deepseek-v4-flash');
+    expect(normalizeAnalyticsModel('gemini-2.5-pro(+08192)')).toBe('gemini-2.5-pro');
+    expect(normalizeAnalyticsModel('gemini-2.5-pro(-000)')).toBe('gemini-2.5-pro');
+    expect(normalizeAnalyticsModel('custom(model)(HIGH)')).toBe('custom(model)');
+    expect(normalizeAnalyticsModel('custom-model(region-us)')).toBe('custom-model(region-us)');
+    expect(normalizeAnalyticsModel('custom-model(9223372036854775808)')).toBe(
+      'custom-model(9223372036854775808)'
+    );
+    expect(normalizeAnalyticsModel(' custom-model(max) ')).toBe(' custom-model(max) ');
   });
 });
 
@@ -209,7 +239,7 @@ describe('usage detail collection', () => {
     );
   });
 
-  it('extracts resolved_model alongside the requested model name', () => {
+  it('extracts analytics, requested, and resolved model identities', () => {
     const usageData = {
       apis: {
         'POST /v1/chat/completions': {
@@ -220,6 +250,8 @@ describe('usage detail collection', () => {
                   timestamp: '2026-05-19T10:00:00Z',
                   source: 'alice@example.com',
                   auth_index: 'auth-1',
+                  analytics_model: 'gpt-5',
+                  requested_model: 'gpt-5.4(max)',
                   resolved_model: 'gpt-5.5',
                   tokens: { input_tokens: 1 },
                   failed: false,
@@ -233,8 +265,53 @@ describe('usage detail collection', () => {
 
     const detail = collectUsageDetails(usageData)[0];
     expect(detail.__modelName).toBe('gpt-5.4');
+    expect(detail.__requestedModel).toBe('gpt-5.4(max)');
     expect(detail.__resolvedModel).toBe('gpt-5.5');
-    expect(collectUsageDetailsWithEndpoint(usageData)[0].__resolvedModel).toBe('gpt-5.5');
+    expect(collectUsageDetailsWithEndpoint(usageData)[0]).toMatchObject({
+      __modelName: 'gpt-5.4',
+      __requestedModel: 'gpt-5.4(max)',
+      __resolvedModel: 'gpt-5.5',
+    });
+  });
+
+  it('derives analytics identity for legacy payloads without analytics_model', () => {
+    const usageData = {
+      apis: {
+        'POST /v1/chat/completions': {
+          models: {
+            'deepseek-v4-flash(max)': {
+              details: [
+                {
+                  timestamp: '2026-05-19T10:00:00Z',
+                  tokens: { input_tokens: 1 },
+                  failed: false,
+                },
+              ],
+            },
+            'custom-model(region-us)': {
+              details: [
+                {
+                  timestamp: '2026-05-19T10:00:01Z',
+                  tokens: { input_tokens: 1 },
+                  failed: false,
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    expect(collectUsageDetailsWithEndpoint(usageData)).toEqual([
+      expect.objectContaining({
+        __modelName: 'deepseek-v4-flash',
+        __requestedModel: 'deepseek-v4-flash(max)',
+      }),
+      expect.objectContaining({
+        __modelName: 'custom-model(region-us)',
+        __requestedModel: 'custom-model(region-us)',
+      }),
+    ]);
   });
 
   it('copies TTFT metadata into normalized usage details', () => {
@@ -644,6 +721,37 @@ describe('calculateCost model price preference', () => {
       prices
     );
     expect(cost).toBeCloseTo(50);
+  });
+
+  it('prefers analytics model pricing before the raw requested suffix model', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 1_000_000, output_tokens: 0 },
+        __modelName: 'deepseek-v4-flash',
+        __requestedModel: 'deepseek-v4-flash(max)',
+      },
+      {
+        'deepseek-v4-flash': { prompt: 2, completion: 0, cache: 0 },
+        'deepseek-v4-flash(max)': { prompt: 9, completion: 0, cache: 0 },
+      }
+    );
+
+    expect(cost).toBeCloseTo(2);
+  });
+
+  it('falls back to the raw requested model when analytics pricing is unavailable', () => {
+    const cost = calculateCost(
+      {
+        tokens: { input_tokens: 1_000_000, output_tokens: 0 },
+        __modelName: 'deepseek-v4-flash',
+        __requestedModel: 'deepseek-v4-flash(max)',
+      },
+      {
+        'deepseek-v4-flash(max)': { prompt: 9, completion: 0, cache: 0 },
+      }
+    );
+
+    expect(cost).toBeCloseTo(9);
   });
 
   it('keeps resolved model tier behavior when using a requested price fallback', () => {

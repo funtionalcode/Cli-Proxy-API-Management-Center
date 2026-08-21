@@ -144,10 +144,9 @@ describe('MonitoringCenterPage quota refresh wiring', () => {
       'targets.map((target) => requestAccountQuota(target, t))'
     );
     expect(monitoringCenterPageSource).toContain('useHeaderSnapshotsLoader({');
-    expect(monitoringCenterPageSource).toContain('onResponse: (response) =>');
-    expect(monitoringCenterPageSource).toContain(
-      'setHeaderSnapshotGeneratedAtMs(response.generated_at_ms || Date.now())'
-    );
+    expect(monitoringCenterPageSource).toContain('const accounts = new Set([');
+    expect(monitoringCenterPageSource).toContain('...accountQuotaTargetsByAccount.keys()');
+    expect(monitoringCenterPageSource).not.toContain('onResponse: (response) =>');
   });
 });
 
@@ -376,6 +375,26 @@ describe('MonitoringCenterPage account card', () => {
 
     expect(display.primary).toBe('Claude Relay');
     expect(display.meta).toBe('Provider: openai');
+  });
+
+  it('keeps the provider metadata line when it matches the realtime primary label', () => {
+    const display = buildRealtimeSourceDisplay(
+      {
+        account: 'Edge Experiments',
+        accountMasked: 'Edge Experiments',
+        authLabel: 'DeepSeek Ops',
+        channel: 'deepseek',
+        channelHost: '-',
+        provider: 'deepseek',
+        source: 'Edge Experiments',
+        sourceMasked: 'Edge Experiments',
+      },
+      t
+    );
+
+    expect(display.primary).toBe('deepseek');
+    expect(display.meta).toBe('Provider: deepseek');
+    expect(display.meta).not.toContain('Edge Experiments');
   });
 
   it('shows one realtime source meta value by priority', () => {

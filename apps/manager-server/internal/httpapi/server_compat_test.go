@@ -782,6 +782,17 @@ func TestServerCompatProxyRoutes(t *testing.T) {
 		t.Fatalf("reload proxy request = %#v", reloadReq)
 	}
 
+	apiCallBody := `{"method":"GET","url":"https://api.example.com/v1/models","proxy_url":"socks5h://proxy.example:1080"}`
+	apiCallRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/api-call", apiCallBody, testutil.AdminKey)
+	testutil.RequireStatus(t, apiCallRR, http.StatusOK)
+	apiCallReq, ok := cpa.LastRequest("/v0/management/api-call")
+	if !ok {
+		t.Fatal("CPA mock did not receive /v0/management/api-call")
+	}
+	if apiCallReq.Authorization != "Bearer management-key" || apiCallReq.Body != apiCallBody {
+		t.Fatalf("api-call proxy request = %#v", apiCallReq)
+	}
+
 	modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models?limit=20", nil)
 	modelsReq.Header.Set("Authorization", "Bearer upstream-key")
 	modelsRR := httptest.NewRecorder()

@@ -59,7 +59,7 @@ http://<host>:18317/management.html
 ### 轻量面板
 
 - 可以用 CPA Management Key 登录。
-- Provider、认证文件、OAuth、Quota、日志和插件等 CPA 管理功能可以正常读取。
+- Provider、凭证管理、OAuth、日志和插件等 CPA 管理功能可以正常读取。
 - 页面地址仍然是 CPA 的 `:8317/management.html`。
 
 ### 完整模式
@@ -74,7 +74,7 @@ http://<host>:18317/management.html
 ## 接下来做什么
 
 - 添加模型服务：[AI 提供商](../manual/ai-providers.md)
-- 登录或导入账号：[OAuth 登录](../manual/oauth.md)和[认证文件](../manual/auth-files.md)
+- 登录或导入账号：[OAuth 登录](../manual/oauth.md)和[凭证管理](../manual/accounts.md)
 - 配置客户端：[客户端接入](../gateway/clients.md)
 - 更新和备份：[更新 CPAMP](../operations/update.md)和[备份与恢复](../operations/backup.md)
 - 手动维护部署：[Docker 部署](../deployment/docker.md)或[原生包部署](../deployment/native.md)

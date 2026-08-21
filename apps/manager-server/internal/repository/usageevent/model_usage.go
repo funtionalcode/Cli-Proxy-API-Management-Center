@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const defaultModelUsageLimit = 50000
@@ -14,7 +15,7 @@ func (r *repository) ModelUsageSummary(ctx context.Context, limit int) (model.Mo
 	}
 
 	rows, err := r.db.QueryContext(ctx, `with recent as (
-		select model, coalesce(resolved_model, '') as resolved_model
+		select `+usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")+` as model, coalesce(resolved_model, '') as resolved_model
 		from usage_events
 		order by timestamp_ms desc, id desc
 		limit ?

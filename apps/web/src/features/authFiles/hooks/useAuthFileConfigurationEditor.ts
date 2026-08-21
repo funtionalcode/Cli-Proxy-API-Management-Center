@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { authFilesApi, applyAuthFileFieldsPatchToRecord } from '@/services/api';
+import {
+  authFilesApi,
+  applyAuthFileFieldsPatchToRecord,
+  type AuthFilesApiRequestScope,
+} from '@/services/api';
 import type { AuthFileItem } from '@/types';
 import { useNotificationStore } from '@/stores';
 import {
@@ -16,7 +20,7 @@ import {
 import {
   getAuthFilePatchTarget,
   getAuthFileSelectionKey,
-} from '@/features/authFiles/model/authFilesPageModel';
+} from '@/features/authFiles/model/credentialStatus';
 import { resolveAuthFileStatusMutationTarget } from '@/utils/authFileStatusMutation';
 
 export type AuthFileConfigurationEditorState = {
@@ -38,6 +42,7 @@ export type UseAuthFileConfigurationEditorOptions = {
   disableControls: boolean;
   sourceMemberCount?: number;
   connectionKey?: string | null;
+  requestScope?: AuthFilesApiRequestScope;
   loadFiles: () => Promise<void>;
   onSaved?: (fileName: string) => void;
 };
@@ -83,6 +88,7 @@ export function useAuthFileConfigurationEditor(
     disableControls,
     sourceMemberCount = 0,
     connectionKey = '',
+    requestScope,
     loadFiles,
     onSaved,
   } = options;
@@ -157,7 +163,9 @@ export function useAuthFileConfigurationEditor(
     });
 
     try {
-      const rawText = await authFilesApi.downloadText(fileName);
+      const rawText = requestScope
+        ? await authFilesApi.downloadText(fileName, requestScope)
+        : await authFilesApi.downloadText(fileName);
       if (requestIdRef.current !== requestId || connectionKeyRef.current !== requestConnectionKey) {
         return;
       }
@@ -190,7 +198,7 @@ export function useAuthFileConfigurationEditor(
           : previous
       );
     }
-  }, [enabled, normalizedConnectionKey, resolveLoadError]);
+  }, [enabled, normalizedConnectionKey, requestScope, resolveLoadError]);
 
   useEffect(() => {
     let cancelled = false;
@@ -293,7 +301,9 @@ export function useAuthFileConfigurationEditor(
     );
 
     try {
-      const response = await authFilesApi.list();
+      const response = requestScope
+        ? await authFilesApi.list(requestScope)
+        : await authFilesApi.list();
       if (!isCurrentTarget()) return;
       const currentFiles = Array.isArray(response.files) ? response.files : [];
       const resolution = resolveAuthFileStatusMutationTarget(
@@ -318,18 +328,37 @@ export function useAuthFileConfigurationEditor(
         // verified source JSON so the legacy key is actually removed; this
         // prevents a stale legacy list from shadowing the canonical one at
         // runtime. The helper performs identity and content-hash checks.
-        await authFilesApi.patchFieldsForAuthIndexes(
-          resolution.target.name,
-          [patchTarget],
-          sourceIdentities,
-          patch
-        );
+        if (requestScope) {
+          await authFilesApi.patchFieldsForAuthIndexes(
+            resolution.target.name,
+            [patchTarget],
+            sourceIdentities,
+            patch,
+            requestScope
+          );
+        } else {
+          await authFilesApi.patchFieldsForAuthIndexes(
+            resolution.target.name,
+            [patchTarget],
+            sourceIdentities,
+            patch
+          );
+        }
       } else {
-        await authFilesApi.patchFieldsWithPluginSourceFallback(
-          patchTarget,
-          patch,
-          sourceIdentities
-        );
+        if (requestScope) {
+          await authFilesApi.patchFieldsWithPluginSourceFallback(
+            patchTarget,
+            patch,
+            sourceIdentities,
+            requestScope
+          );
+        } else {
+          await authFilesApi.patchFieldsWithPluginSourceFallback(
+            patchTarget,
+            patch,
+            sourceIdentities
+          );
+        }
       }
       if (!isCurrentTarget()) return;
 
@@ -338,7 +367,9 @@ export function useAuthFileConfigurationEditor(
       let nextRecordIndex = state.recordIndex;
       let sourceRefreshWarning = '';
       try {
-        const refreshedRawText = await authFilesApi.downloadText(fileName);
+        const refreshedRawText = requestScope
+          ? await authFilesApi.downloadText(fileName, requestScope)
+          : await authFilesApi.downloadText(fileName);
         if (!isCurrentTarget()) return;
         const refreshed = parseAuthFileConfigurationSource(
           refreshedRawText,
@@ -411,6 +442,7 @@ export function useAuthFileConfigurationEditor(
     normalizedConnectionKey,
     onSaved,
     patchResult.patch,
+    requestScope,
     showNotification,
     state,
     t,

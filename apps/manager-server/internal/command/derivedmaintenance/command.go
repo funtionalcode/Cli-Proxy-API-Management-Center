@@ -1,0 +1,127 @@
+package derivedmaintenance
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	_ "modernc.org/sqlite"
+)
+
+func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
+	opts, err := parseArgs(args, stderr)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	dbPath, err := resolveDBPath(opts.DBPath)
+	if err != nil {
+		return err
+	}
+	if err := validateDatabaseFile(dbPath); err != nil {
+		return err
+	}
+	databaseLock, err := processlock.Acquire(dbPath)
+	if err != nil {
+		return fmt.Errorf("acquire offline cleanup lock; stop Manager Server and retry: %w", err)
+	}
+	defer func() { _ = databaseLock.Close() }()
+	dbPath = databaseLock.DatabasePath()
+	if err := validateManagerDB(ctx, dbPath); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite %s: %w", dbPath, err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	result, err := sqliterepo.CleanupDerivedOffline(ctx, db)
+	if err != nil {
+		return fmt.Errorf("cleanup derived data: %w", err)
+	}
+	if result.CompletedJobs == 0 && result.ProcessedRows == 0 && result.PreparedIndexes == 0 {
+		_, _ = fmt.Fprintln(stdout, "No pending derived cleanup jobs.")
+		return nil
+	}
+	_, _ = fmt.Fprintf(stdout, "Derived cleanup completed: jobs=%d processed_rows=%d prepared_indexes=%d\n", result.CompletedJobs, result.ProcessedRows, result.PreparedIndexes)
+	return nil
+}
+
+type options struct {
+	DBPath string
+}
+
+func parseArgs(args []string, stderr io.Writer) (options, error) {
+	var opts options
+	fs := flag.NewFlagSet("cleanup-derived", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&opts.DBPath, "db-path", "", "SQLite database path; defaults to Manager Server config")
+	fs.Usage = func() {
+		_, _ = fmt.Fprintln(stderr, "Usage: cpa-manager-plus cleanup-derived [--db-path PATH]")
+		_, _ = fmt.Fprintln(stderr, "Stop Manager Server before running this offline command.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return options{}, err
+	}
+	if fs.NArg() > 0 {
+		return options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	return opts, nil
+}
+
+func resolveDBPath(override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return strings.TrimSpace(override), nil
+	}
+	cfg, err := config.LoadWithoutCreatingDefault()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+	if strings.TrimSpace(cfg.DBPath) == "" {
+		return "", errors.New("SQLite database path is empty; pass --db-path")
+	}
+	return cfg.DBPath, nil
+}
+
+func validateDatabaseFile(dbPath string) error {
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("SQLite database not found at %s; pass --db-path", dbPath)
+		}
+		return fmt.Errorf("stat sqlite %s: %w", dbPath, err)
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return fmt.Errorf("SQLite database at %s is not a non-empty file", dbPath)
+	}
+	return nil
+}
+
+func validateManagerDB(ctx context.Context, dbPath string) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRowContext(ctx, `select count(*) from sqlite_schema
+		where type = 'table' and name in ('settings', 'usage_events')`).Scan(&count); err != nil {
+		return fmt.Errorf("validate sqlite %s: %w", dbPath, err)
+	}
+	if count != 2 {
+		return fmt.Errorf("SQLite database at %s does not look like a CPA Manager Plus Manager Server database", dbPath)
+	}
+	return nil
+}

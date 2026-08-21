@@ -15,9 +15,10 @@ const (
 	defaultUsageCacheAccountingMigrationRetry     = 5 * time.Second
 )
 
-// UsageCacheAccountingMigrationWorker incrementally backfills legacy usage rows
-// after the HTTP server is available. Its checkpoint is committed with each
-// batch, so a restart resumes from the last successful batch.
+// UsageCacheAccountingMigrationWorker incrementally scans, corrects, and
+// invalidates derived data after the HTTP server is available. Each phase uses
+// committed bounded batches, so a restart resumes from the last successful
+// batch.
 type UsageCacheAccountingMigrationWorker struct {
 	store        *store.Store
 	batchSize    int
@@ -27,6 +28,8 @@ type UsageCacheAccountingMigrationWorker struct {
 	start        sync.Once
 	logStarted   sync.Once
 	completion   sync.Once
+	lastStatus   string
+	clearedRows  int64
 }
 
 func NewUsageCacheAccountingMigrationWorker(st *store.Store, onCompletion func()) *UsageCacheAccountingMigrationWorker {
@@ -78,10 +81,7 @@ func (w *UsageCacheAccountingMigrationWorker) run(ctx context.Context) {
 			}
 			continue
 		}
-		progressLogEvery := int64(w.batchSize * 10)
-		if result.Processed > 0 && (result.Completed || progressLogEvery <= 0 || result.State.ProcessedRows%progressLogEvery == 0) {
-			log.Printf("usage cache accounting migration progress: processed=%d changed=%d last_event_id=%d target_event_id=%d", result.State.ProcessedRows, result.State.ChangedRows, result.State.LastEventID, result.State.TargetEventID)
-		}
+		w.logProgress(result)
 		if result.Completed {
 			w.complete(result.State)
 			return
@@ -90,6 +90,27 @@ func (w *UsageCacheAccountingMigrationWorker) run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (w *UsageCacheAccountingMigrationWorker) logProgress(result store.DataMigrationBatchResult) {
+	progressLogEvery := int64(w.batchSize * 10)
+	phaseChanged := result.State.Status != w.lastStatus
+	switch result.State.Status {
+	case "running", "applying":
+		progress := result.State.ProcessedRows
+		if result.State.Status == "applying" {
+			progress = result.State.AppliedRows
+		}
+		if phaseChanged || result.Completed || (result.Processed > 0 && (progressLogEvery <= 0 || progress%progressLogEvery == 0)) {
+			log.Printf("usage cache accounting migration progress: phase=%s scanned=%d changed=%d applied=%d last_event_id=%d target_event_id=%d", result.State.Status, result.State.ProcessedRows, result.State.ChangedRows, result.State.AppliedRows, result.State.LastEventID, result.State.TargetEventID)
+		}
+	case "clearing":
+		w.clearedRows += result.Processed
+		if phaseChanged || result.Completed || (result.Processed > 0 && (progressLogEvery <= 0 || w.clearedRows%progressLogEvery < result.Processed)) {
+			log.Printf("usage cache accounting migration progress: phase=clearing cleared=%d changed=%d applied=%d", w.clearedRows, result.State.ChangedRows, result.State.AppliedRows)
+		}
+	}
+	w.lastStatus = result.State.Status
 }
 
 func (w *UsageCacheAccountingMigrationWorker) complete(state store.DataMigrationState) {

@@ -1,5 +1,6 @@
 import {
   authFilesApi,
+  type AuthFilesApiRequestScope,
   type AuthFileDeleteIdentityTarget,
   type AuthFileStatusTarget,
 } from '@/services/api/authFiles';
@@ -38,6 +39,53 @@ const FILE_DELETE_COVERAGE_REASON =
   '删除动作未完整覆盖该物理认证文件当前包含的全部凭证，已阻止删除，请人工确认';
 const PLUGIN_SOURCE_STATUS_CHANGED_REASON =
   '认证文件成员、Provider 或账号标识已变化，已拒绝插件源文件状态修改';
+
+const listAuthFiles = (requestScope?: AuthFilesApiRequestScope) =>
+  requestScope ? authFilesApi.list(requestScope) : authFilesApi.list();
+
+const setAuthFileStatusWithFallback = (
+  target: AuthFileStatusTarget,
+  disabled: boolean,
+  verifyPluginSourceFallback?: Parameters<typeof authFilesApi.setStatusWithFallback>[2],
+  requestScope?: AuthFilesApiRequestScope
+) =>
+  requestScope
+    ? authFilesApi.setStatusWithFallback(target, disabled, verifyPluginSourceFallback, requestScope)
+    : verifyPluginSourceFallback
+      ? authFilesApi.setStatusWithFallback(target, disabled, verifyPluginSourceFallback)
+      : authFilesApi.setStatusWithFallback(target, disabled);
+
+const setVerifiedSourceFileStatus = (
+  target: AuthFileStatusTarget,
+  disabled: boolean,
+  sourceIdentities: AuthFileStatusTarget[],
+  requestScope?: AuthFilesApiRequestScope
+) =>
+  requestScope
+    ? authFilesApi.setVerifiedSourceFileStatus(target, disabled, sourceIdentities, requestScope)
+    : authFilesApi.setVerifiedSourceFileStatus(target, disabled, sourceIdentities);
+
+const deleteAuthFileByName = (
+  selector: string,
+  physicalName: string,
+  verifyPluginSourceFallback: Parameters<typeof authFilesApi.deleteFileByName>[2],
+  identityTargets: AuthFileDeleteIdentityTarget[],
+  requestScope?: AuthFilesApiRequestScope
+) =>
+  requestScope
+    ? authFilesApi.deleteFileByName(
+        selector,
+        physicalName,
+        verifyPluginSourceFallback,
+        identityTargets,
+        requestScope
+      )
+    : authFilesApi.deleteFileByName(
+        selector,
+        physicalName,
+        verifyPluginSourceFallback,
+        identityTargets
+      );
 
 const formatExecutionAction = (action: string, t: TFunction) => {
   switch (action) {
@@ -99,6 +147,7 @@ type ExecuteCodexInspectionActionsOptions = {
   referenceItems?: CodexInspectionResultItem[];
   previousFiles: AuthFileItem[];
   connectionFingerprint: string;
+  requestScope?: AuthFilesApiRequestScope;
   source: 'auto' | 'manual';
   preflightOutcomes?: CodexInspectionExecutionOutcome[];
   onLog?: CodexInspectionLogHandler;
@@ -288,7 +337,7 @@ const planExecutionItems = (
           item,
           'needs_review',
           true,
-          '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理'
+          '同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到凭证管理中手动处理'
         )
       );
       return;
@@ -542,7 +591,8 @@ const verifyPluginSourceStatusFallback = async (
   snapshotMembers: AuthFileItem[],
   actionMembers: CodexInspectionResultItem[],
   item: CodexInspectionResultItem,
-  runtimeId: string
+  runtimeId: string,
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<AuthFileDeleteIdentityTarget[]> => {
   const physicalName = item.fileName.trim();
   if (
@@ -554,7 +604,7 @@ const verifyPluginSourceStatusFallback = async (
     throw new Error(PLUGIN_SOURCE_STATUS_CHANGED_REASON);
   }
 
-  const response = await authFilesApi.list();
+  const response = await listAuthFiles(requestScope);
   const freshFiles = Array.isArray(response.files) ? response.files : [];
   const freshMembers = freshFiles.filter((file) => readCurrentFileName(file) === physicalName);
   const resolution = resolveAuthFileStatusMutationTarget(freshFiles, {
@@ -679,13 +729,14 @@ type PatchedStatusActionMember = {
 };
 
 const rollbackPatchedStatusActionMembers = async (
-  patchedMembers: PatchedStatusActionMember[]
+  patchedMembers: PatchedStatusActionMember[],
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<string> => {
   const failures: string[] = [];
   for (let index = patchedMembers.length - 1; index >= 0; index--) {
     const patchedMember = patchedMembers[index];
     try {
-      const response = await authFilesApi.list();
+      const response = await listAuthFiles(requestScope);
       const currentFiles = Array.isArray(response.files) ? response.files : [];
       const resolution = resolveAuthFileStatusMutationTarget(currentFiles, {
         name: patchedMember.item.fileName,
@@ -705,9 +756,11 @@ const rollbackPatchedStatusActionMembers = async (
         throw new Error('回滚目标不再是唯一凭证');
       }
       if ((currentFile.disabled === true) === patchedMember.originalDisabled) continue;
-      await authFilesApi.setStatusWithFallback(
+      await setAuthFileStatusWithFallback(
         buildStatusActionTarget(patchedMember.item, currentFile),
-        patchedMember.originalDisabled
+        patchedMember.originalDisabled,
+        undefined,
+        requestScope
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || '未知错误');
@@ -735,12 +788,13 @@ const buildActionValidationOutcome = (
 
 const executeDelete = async (
   item: CodexInspectionResultItem,
-  actionReferenceItems: CodexInspectionResultItem[]
+  actionReferenceItems: CodexInspectionResultItem[],
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<CodexInspectionExecutionOutcome> => {
   let deleteSelector = '';
   let deleteIdentityTargets: AuthFileDeleteIdentityTarget[] = [];
   try {
-    const response = await authFilesApi.list();
+    const response = await listAuthFiles(requestScope);
     const currentFiles = Array.isArray(response.files) ? response.files : [];
     const currentCandidates = currentFiles.filter(
       (file) => readCurrentFileName(file) === item.fileName.trim()
@@ -772,7 +826,7 @@ const executeDelete = async (
 
   try {
     const verifyPluginSourceFallback = async () => {
-      const response = await authFilesApi.list();
+      const response = await listAuthFiles(requestScope);
       const currentFiles = Array.isArray(response.files) ? response.files : [];
       const currentCandidates = currentFiles.filter(
         (file) => readCurrentFileName(file) === item.fileName.trim()
@@ -793,17 +847,19 @@ const executeDelete = async (
     };
     const result =
       deleteSelector === item.fileName.trim()
-        ? await authFilesApi.deleteFileByName(
+        ? await deleteAuthFileByName(
             deleteSelector,
             item.fileName,
             undefined,
-            deleteIdentityTargets
+            deleteIdentityTargets,
+            requestScope
           )
-        : await authFilesApi.deleteFileByName(
+        : await deleteAuthFileByName(
             deleteSelector,
             item.fileName,
             verifyPluginSourceFallback,
-            deleteIdentityTargets
+            deleteIdentityTargets,
+            requestScope
           );
     const failed = result.failed[0];
     if (failed) {
@@ -853,13 +909,14 @@ const executeDelete = async (
 const executeStatusChange = async (
   item: CodexInspectionResultItem,
   disabled: boolean,
-  actionMembers: CodexInspectionResultItem[] = []
+  actionMembers: CodexInspectionResultItem[] = [],
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<CodexInspectionExecutionOutcome> => {
   let snapshotMembers: AuthFileItem[] = [];
   let singleMember: VerifiedStatusActionMember | null = null;
   let actionGroup: VerifiedStatusActionGroup | null = null;
   try {
-    const response = await authFilesApi.list();
+    const response = await listAuthFiles(requestScope);
     const currentFiles = Array.isArray(response.files) ? response.files : [];
     if (actionMembers.length > 0) {
       actionGroup = resolveVerifiedStatusActionGroup(currentFiles, actionMembers, item.fileName);
@@ -927,13 +984,14 @@ const executeStatusChange = async (
   try {
     if (actionGroup) {
       if (actionGroup.sourceMember) {
-        await authFilesApi.setVerifiedSourceFileStatus(
+        await setVerifiedSourceFileStatus(
           buildStatusActionTarget(
             actionGroup.sourceMember.item,
             actionGroup.sourceMember.currentFile
           ),
           disabled,
-          actionGroup.affectedFiles.map(buildDeleteIdentityTarget)
+          actionGroup.affectedFiles.map(buildDeleteIdentityTarget),
+          requestScope
         );
       } else {
         const patchedMembers: PatchedStatusActionMember[] = [];
@@ -943,15 +1001,20 @@ const executeStatusChange = async (
           try {
             const result =
               index === 0
-                ? await authFilesApi.setStatusWithFallback(target, disabled, () =>
-                    verifyPluginSourceStatusFallback(
-                      snapshotMembers,
-                      actionMembers,
-                      member.item,
-                      readAuthFileStatusRuntimeId(member.currentFile)
-                    )
+                ? await setAuthFileStatusWithFallback(
+                    target,
+                    disabled,
+                    () =>
+                      verifyPluginSourceStatusFallback(
+                        snapshotMembers,
+                        actionMembers,
+                        member.item,
+                        readAuthFileStatusRuntimeId(member.currentFile),
+                        requestScope
+                      ),
+                    requestScope
                   )
-                : await authFilesApi.setStatusWithFallback(target, disabled);
+                : await setAuthFileStatusWithFallback(target, disabled, undefined, requestScope);
             if (result.mutationScope === 'source-file') break;
             patchedMembers.push({
               item: member.item,
@@ -960,7 +1023,10 @@ const executeStatusChange = async (
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error || '状态更新失败');
-            const rollbackError = await rollbackPatchedStatusActionMembers(patchedMembers);
+            const rollbackError = await rollbackPatchedStatusActionMembers(
+              patchedMembers,
+              requestScope
+            );
             throw new Error(
               rollbackError ? `${message}; 已修改凭证回滚失败：${rollbackError}` : message
             );
@@ -969,13 +1035,18 @@ const executeStatusChange = async (
       }
     } else if (singleMember) {
       const target = buildStatusActionTarget(singleMember.item, singleMember.currentFile);
-      await authFilesApi.setStatusWithFallback(target, disabled, () =>
-        verifyPluginSourceStatusFallback(
-          snapshotMembers,
-          [singleMember.item],
-          singleMember.item,
-          readAuthFileStatusRuntimeId(singleMember.currentFile)
-        )
+      await setAuthFileStatusWithFallback(
+        target,
+        disabled,
+        () =>
+          verifyPluginSourceStatusFallback(
+            snapshotMembers,
+            [singleMember.item],
+            singleMember.item,
+            readAuthFileStatusRuntimeId(singleMember.currentFile),
+            requestScope
+          ),
+        requestScope
       );
     } else {
       throw new Error('认证凭证状态修改目标未通过校验');
@@ -1008,6 +1079,7 @@ export const executeCodexInspectionActions = async ({
   referenceItems,
   previousFiles,
   connectionFingerprint,
+  requestScope,
   source,
   preflightOutcomes: suppliedPreflightOutcomes = [],
   onLog,
@@ -1055,7 +1127,7 @@ export const executeCodexInspectionActions = async ({
 
   if (dedupedItems.length > 0) {
     try {
-      const response = await authFilesApi.list();
+      const response = await listAuthFiles(requestScope);
       const currentFiles = Array.isArray(response.files) ? response.files : [];
       preflightFiles = currentFiles;
       const currentFilesByName = currentFiles.reduce((filesByName, file) => {
@@ -1244,7 +1316,7 @@ export const executeCodexInspectionActions = async ({
 
   if (deleteItems.length > 0) {
     const deleteOutcomes = await runConcurrently(deleteItems, settings.deleteWorkers, (item) =>
-      executeDelete(item, actionReferenceItems)
+      executeDelete(item, actionReferenceItems, requestScope)
     );
     deleteOutcomes.forEach((outcome) => logExecutionOutcome(outcome, onLog, t));
     outcomes.push(...deleteOutcomes);
@@ -1252,7 +1324,7 @@ export const executeCodexInspectionActions = async ({
 
   if (disableItems.length > 0) {
     const disableOutcomes = await runConcurrently(disableItems, settings.deleteWorkers, (item) =>
-      executeStatusChange(item, true, statusGroupMembersByAccountKey.get(item.key))
+      executeStatusChange(item, true, statusGroupMembersByAccountKey.get(item.key), requestScope)
     );
     if (source === 'auto') {
       const itemByAccountKey = new Map(disableItems.map((item) => [item.key, item] as const));
@@ -1282,7 +1354,12 @@ export const executeCodexInspectionActions = async ({
             });
         if (persisted) continue;
 
-        const rollbackOutcome = await executeStatusChange(item, false, statusGroupMembers);
+        const rollbackOutcome = await executeStatusChange(
+          item,
+          false,
+          statusGroupMembers,
+          requestScope
+        );
         const rolledBack =
           rollbackOutcome.success &&
           (rollbackOutcome.status === 'success' || rollbackOutcome.status === 'skipped');
@@ -1292,7 +1369,7 @@ export const executeCodexInspectionActions = async ({
           ? '自动禁用所有权保存失败，禁用操作已回滚'
           : `自动禁用所有权保存失败，且禁用回滚失败：${
               rollbackOutcome.error || '未知错误'
-            }；请到认证文件管理中手动恢复`;
+            }；请到凭证管理中手动恢复`;
       }
     }
     disableOutcomes.forEach((outcome) => logExecutionOutcome(outcome, onLog, t));
@@ -1301,7 +1378,7 @@ export const executeCodexInspectionActions = async ({
 
   if (enableItems.length > 0) {
     const enableOutcomes = await runConcurrently(enableItems, settings.deleteWorkers, (item) =>
-      executeStatusChange(item, false, statusGroupMembersByAccountKey.get(item.key))
+      executeStatusChange(item, false, statusGroupMembersByAccountKey.get(item.key), requestScope)
     );
     enableOutcomes.forEach((outcome) => logExecutionOutcome(outcome, onLog, t));
     outcomes.push(...enableOutcomes);
@@ -1333,7 +1410,7 @@ export const executeCodexInspectionActions = async ({
   let refreshError = '';
   if (deleteItems.length + disableItems.length + enableItems.length > 0) {
     try {
-      const response = await authFilesApi.list();
+      const response = await listAuthFiles(requestScope);
       refreshedFiles = Array.isArray(response.files) ? response.files : previousFiles;
     } catch (error) {
       refreshError = error instanceof Error ? error.message : String(error || '刷新账号列表失败');

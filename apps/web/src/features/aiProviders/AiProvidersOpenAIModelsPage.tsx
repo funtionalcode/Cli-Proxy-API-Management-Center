@@ -74,7 +74,7 @@ export function AiProvidersOpenAIModelsPage() {
   );
 
   const fetchOpenaiModelDiscovery = useCallback(
-    async ({ allowFallback = true }: { allowFallback?: boolean } = {}) => {
+    async () => {
       const trimmedBaseUrl = form.baseUrl.trim();
       if (!trimmedBaseUrl) return;
 
@@ -92,24 +92,13 @@ export function AiProvidersOpenAIModelsPage() {
           trimmedBaseUrl,
           hasAuthHeader ? undefined : firstKey,
           headerObject,
-          authIndex
+          authIndex,
+          firstEntry?.proxyUrl
         );
         setModels(list);
       } catch (err: unknown) {
-        if (allowFallback) {
-          try {
-            const list = await modelsApi.fetchModelsViaApiCall(trimmedBaseUrl);
-            setModels(list);
-            return;
-          } catch (fallbackErr: unknown) {
-            const message = getErrorMessage(fallbackErr) || getErrorMessage(err);
-            setModels([]);
-            setError(`${t('ai_providers.openai_models_fetch_error')}: ${message}`);
-          }
-        } else {
-          setModels([]);
-          setError(`${t('ai_providers.openai_models_fetch_error')}: ${getErrorMessage(err)}`);
-        }
+        setModels([]);
+        setError(`${t('ai_providers.openai_models_fetch_error')}: ${getErrorMessage(err)}`);
       } finally {
         setFetching(false);
       }
@@ -243,7 +232,7 @@ export function AiProvidersOpenAIModelsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => void fetchOpenaiModelDiscovery({ allowFallback: true })}
+                onClick={() => void fetchOpenaiModelDiscovery()}
                 loading={fetching}
                 disabled={disableControls || saving}
               >

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type dailyAggregateAccumulator struct {
@@ -326,11 +328,11 @@ func mergeProjectedModelStats(
 	source, args := filteredEventSourceSQL(
 		filter,
 		projectionCoverageEventID,
-		`p.model, p.resolved_model, p.service_tier, p.failed,
+		`p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.reasoning_tokens,
 		p.cached_tokens, p.cache_tokens, p.cache_read_tokens,
 		p.cache_creation_tokens, p.total_tokens`,
-		`coalesce(e.model, ''), coalesce(e.resolved_model, ''),
+		usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
 		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
 		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
 		coalesce(e.output_tokens, 0), coalesce(e.reasoning_tokens, 0),
@@ -345,7 +347,7 @@ func mergeProjectedModelStats(
 	)
 	query := fmt.Sprintf(`%s
 	select
-		model, billing_model_value, pricing_model_value,
+		analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, service_tier,
 		count(*), coalesce(sum(case when failed = 0 then 1 else 0 end), 0),
 		coalesce(sum(normalized_total_input_tokens), 0),
@@ -359,7 +361,7 @@ func mergeProjectedModelStats(
 		coalesce(sum(case when normalized_total_input_tokens > ? then cache_creation_tokens else 0 end), 0),
 		coalesce(sum(total_tokens), 0)
 	from banded_events
-	group by model, billing_model_value, pricing_model_value,
+	group by analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, service_tier`, monitoringBandedProjectedEventsCTE(source))
 	args = appendLongContextThresholdArgs(args)
 	rows, err := tx.QueryContext(ctx, query, args...)

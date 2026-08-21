@@ -6,11 +6,11 @@
 
 | Provider 类型     | 常见用途                 | 相关页面                      |
 | ----------------- | ------------------------ | ----------------------------- |
-| Codex             | Codex CLI、账号和配额    | AI 提供商、认证文件、账号巡检 |
-| Claude            | Claude Code 和兼容请求   | AI 提供商、认证文件、请求监控 |
+| Codex             | Codex CLI、账号和配额    | AI 提供商、凭证管理、账号巡检 |
+| Claude            | Claude Code 和兼容请求   | AI 提供商、凭证管理、请求监控 |
 | OpenAI-compatible | 中转、自建或兼容模型服务 | AI 提供商、模型价格、用量分析 |
-| Gemini / Vertex   | Google 模型与项目凭证    | AI 提供商、OAuth、认证文件    |
-| xAI / Grok        | API Key 或 OAuth 账号    | AI 提供商、配额、账号巡检     |
+| Gemini / Vertex   | Google 模型与项目凭证    | AI 提供商、OAuth、凭证管理    |
+| xAI / Grok        | API Key 或 OAuth 账号    | AI 提供商、凭证管理、账号巡检 |
 
 添加 Provider 时优先确认四件事：Base URL、认证方式、客户端使用的模型名、是否绑定对应账号或认证文件。
 

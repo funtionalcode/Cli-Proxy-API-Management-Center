@@ -201,6 +201,39 @@ describe('fetchCodexQuota', () => {
     expect(result.windows).toEqual([]);
   });
 
+  it('keeps every Codex quota request on the captured CPA scope', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { rate_limit: {} },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { available_count: 0, credits: [] },
+      });
+
+    await fetchCodexQuota({ name: 'codex.json', type: 'codex', authIndex: 'auth-1' }, t, {
+      apiBase: 'https://captured-cpa.example.test',
+      managementKey: 'captured-key',
+    });
+
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    for (const call of mocks.request.mock.calls) {
+      expect(call[1]).toMatchObject({
+        baseURL: 'https://captured-cpa.example.test/v0/management',
+        headers: { Authorization: 'Bearer captured-key' },
+        cpampScopedRequest: true,
+      });
+    }
+    expect(mocks.request.mock.calls[1]?.[1]).toMatchObject({ timeout: 8000 });
+  });
+
   it.each([
     ['code-review family', { code_review_rate_limit: {} }],
     ['additional families', { additional_rate_limits: [] }],
@@ -1899,6 +1932,132 @@ describe('buildXaiBillingSummary', () => {
     });
   });
 
+  it('treats an omitted weekly percentage as zero only for a complete valid period', () => {
+    expect(
+      buildXaiBillingSummary({
+        currentPeriod: {
+          type: 'USAGE_PERIOD_TYPE_WEEKLY',
+          start: '2026-08-13T00:00:00Z',
+          end: '2026-08-20T00:00:00Z',
+        },
+      })
+    ).toMatchObject({ periodType: 'weekly', usagePercent: 0 });
+
+    expect(
+      buildXaiBillingSummary({
+        currentPeriod: {
+          type: 'USAGE_PERIOD_TYPE_WEEKLY',
+          end: '2026-08-20T00:00:00Z',
+        },
+      })
+    ).toMatchObject({ periodType: 'weekly', usagePercent: null });
+  });
+
+  it('treats nested protobuf zero placeholders as absent billing evidence', () => {
+    const summary = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'weekly',
+        start: '2026-08-13T00:00:00Z',
+        end: '2026-08-20T00:00:00Z',
+      },
+      onDemandCap: {},
+      usage: {
+        includedUsed: {},
+        onDemandUsed: {},
+        totalUsed: {},
+      },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      usagePercent: 0,
+      usedCents: null,
+      includedUsedCents: null,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+    });
+    expect(summary?.monthlyLimitCents).toBeNull();
+    expect(summary?.billingPeriodEnd).toBeUndefined();
+  });
+
+  it('keeps empty cents placeholders absent when sibling monthly fields have evidence', () => {
+    const summary = buildXaiBillingSummary({
+      monthlyLimit: {},
+      used: { val: 500 },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: null,
+      usedCents: 500,
+      includedUsedCents: 500,
+      usedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+  });
+
+  it('falls through camel-case placeholders to snake-case cents evidence', () => {
+    const summary = buildXaiBillingSummary({
+      monthlyLimit: {},
+      monthly_limit: { val: 10_000 },
+      onDemandCap: { val: 'invalid' },
+      on_demand_cap: { val: 5_000 },
+      used: { val: 2_500 },
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: 10_000,
+      usedCents: 2_500,
+      includedUsedCents: 2_500,
+      usedPercent: 25,
+      onDemandCapCents: 5_000,
+    });
+  });
+
+  it('derives included usage when its placeholder is mixed with real monthly values', () => {
+    const summary = buildXaiBillingSummary({
+      monthlyLimit: { val: 10_000 },
+      used: { val: 12_500 },
+      onDemandCap: { val: 5_000 },
+      usage: {
+        includedUsed: {},
+      },
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: 10_000,
+      usedCents: 12_500,
+      includedUsedCents: 10_000,
+      usedPercent: 100,
+      onDemandUsedCents: 2_500,
+      onDemandUsedPercent: 50,
+    });
+  });
+
+  it('falls through top-level protobuf placeholders to nested billing values', () => {
+    const summary = buildXaiBillingSummary({
+      monthlyLimit: { val: 10_000 },
+      used: {},
+      onDemandCap: { val: 5_000 },
+      onDemandUsed: {},
+      usage: {
+        includedUsed: { val: 10_000 },
+        onDemandUsed: { val: 2_500 },
+        totalUsed: { val: 12_500 },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: 10_000,
+      usedCents: 12_500,
+      includedUsedCents: 10_000,
+      usedPercent: 100,
+      onDemandCapCents: 5_000,
+      onDemandUsedCents: 2_500,
+      onDemandUsedPercent: 50,
+    });
+  });
+
   it('preserves the billing reset for weekly plans with positive on-demand credits', () => {
     const summary = buildXaiBillingSummary({
       currentPeriod: {
@@ -1947,6 +2106,138 @@ describe('mergeXaiBillingSummaries', () => {
       usedCents: 2500,
       billingPeriodEnd: '2026-08-01T00:00:00Z',
     });
+  });
+
+  it('does not let weekly protobuf zero placeholders override legacy billing groups', () => {
+    const weekly = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'weekly',
+        start: '2026-08-13T00:00:00Z',
+        end: '2026-08-20T00:00:00Z',
+      },
+      usage: {
+        includedUsed: {},
+        onDemandUsed: {},
+        totalUsed: {},
+      },
+      onDemandCap: {},
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+    const legacy = buildXaiBillingSummary({
+      monthlyLimit: { val: 10_000 },
+      used: { val: 12_500 },
+      onDemandCap: { val: 5_000 },
+      onDemandUsed: { val: 2_500 },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    expect(mergeXaiBillingSummaries(weekly, legacy)).toMatchObject({
+      periodType: 'weekly',
+      usagePercent: 0,
+      monthlyLimitCents: 10_000,
+      usedCents: 12_500,
+      includedUsedCents: 10_000,
+      usedPercent: 100,
+      onDemandCapCents: 5_000,
+      onDemandUsedCents: 2_500,
+      onDemandUsedPercent: 50,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+  });
+
+  it('recomputes total usage when monthly and pay-as-you-go data come from different sources', () => {
+    const weekly = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'weekly',
+        start: '2026-08-13T00:00:00Z',
+        end: '2026-08-20T00:00:00Z',
+      },
+      onDemandCap: { val: 5_000 },
+      onDemandUsed: { val: 2_500 },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+    const legacy = buildXaiBillingSummary({
+      monthlyLimit: { val: 10_000 },
+      usage: {
+        includedUsed: { val: 8_000 },
+      },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    expect(mergeXaiBillingSummaries(weekly, legacy)).toMatchObject({
+      monthlyLimitCents: 10_000,
+      usedCents: 10_500,
+      includedUsedCents: 8_000,
+      usedPercent: 80,
+      onDemandCapCents: 5_000,
+      onDemandUsedCents: 2_500,
+      onDemandUsedPercent: 50,
+    });
+  });
+
+  it('keeps conflicting unified billing fields over deprecated legacy values', () => {
+    const unified = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'weekly',
+        start: '2026-08-13T00:00:00Z',
+        end: '2026-08-20T00:00:00Z',
+      },
+      monthlyLimit: { val: 20_000 },
+      used: { val: 5_000 },
+      onDemandCap: { val: 6_000 },
+      onDemandUsed: { val: 1_000 },
+      billingPeriodEnd: '2026-09-02T00:00:00Z',
+    });
+    const legacy = buildXaiBillingSummary({
+      monthlyLimit: { val: 10_000 },
+      used: { val: 9_000 },
+      onDemandCap: { val: 2_000 },
+      onDemandUsed: { val: 1_500 },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    const merged = mergeXaiBillingSummaries(unified, legacy);
+    expect(merged).toMatchObject({
+      monthlyLimitCents: 20_000,
+      usedCents: 5_000,
+      includedUsedCents: 5_000,
+      usedPercent: 25,
+      onDemandCapCents: 6_000,
+      onDemandUsedCents: 1_000,
+      billingPeriodEnd: '2026-09-02T00:00:00Z',
+    });
+    expect(merged?.onDemandUsedPercent).toBeCloseTo(100 / 6);
+  });
+
+  it('uses partial legacy billing only to fill missing unified fields', () => {
+    const unified = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'weekly',
+        start: '2026-08-13T00:00:00Z',
+        end: '2026-08-20T00:00:00Z',
+      },
+      usage: {
+        includedUsed: { val: 5_000 },
+      },
+      onDemandCap: { val: 6_000 },
+      onDemandUsed: { val: 1_000 },
+    });
+    const legacy = buildXaiBillingSummary({
+      monthlyLimit: { val: 20_000 },
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+
+    const merged = mergeXaiBillingSummaries(unified, legacy);
+    expect(merged).toMatchObject({
+      monthlyLimitCents: 20_000,
+      usedCents: 6_000,
+      includedUsedCents: 5_000,
+      usedPercent: 25,
+      onDemandCapCents: 6_000,
+      onDemandUsedCents: 1_000,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+    expect(merged?.onDemandUsedPercent).toBeCloseTo(100 / 6);
   });
 });
 
@@ -2018,6 +2309,7 @@ describe('fetchXaiQuota', () => {
         'x-userid': 'user-123',
       }),
     });
+    expect(mocks.request.mock.calls[1][1]).toMatchObject({ timeout: 3000 });
     expect(result).toMatchObject({
       periodType: 'weekly',
       usagePercent: 40,
@@ -2067,6 +2359,71 @@ describe('fetchXaiQuota', () => {
       partial: true,
       diagnostics: [expect.objectContaining({ classification: 'upstream_error', statusCode: 500 })],
     });
+  });
+
+  it('keeps an authoritative weekly blocking failure when legacy monthly data is usable', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 402,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"code":"personal-team-blocked:spending-limit"}',
+        body: { code: 'personal-team-blocked:spending-limit' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { config: { monthly_limit: 20000, used: 5000 } },
+      });
+
+    const result = await probeXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t);
+
+    expect(result).toMatchObject({
+      partial: true,
+      summary: { periodType: 'monthly', usedPercent: 25 },
+      blockingFailure: {
+        decision: { classification: 'spending_limit', suggestedAction: 'disable' },
+      },
+    });
+  });
+
+  it('keeps unified weekly billing healthy when the optional monthly endpoint fails', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          config: {
+            current_period: {
+              type: 'weekly',
+              start: '2026-08-13T00:00:00Z',
+              end: '2026-08-20T00:00:00Z',
+            },
+            credit_usage_percent: 3,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 402,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"code":"personal-team-blocked:spending-limit"}',
+        body: { code: 'personal-team-blocked:spending-limit' },
+      });
+
+    const result = await probeXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t);
+
+    expect(result).toMatchObject({
+      partial: false,
+      failures: [],
+      summary: { periodType: 'weekly', usagePercent: 3 },
+      statusCode: 200,
+    });
+    expect(result.blockingFailure).toBeUndefined();
   });
 
   it('falls back to official API identity health when both CLI billing endpoints deny access', async () => {
@@ -2290,7 +2647,7 @@ describe('fetchXaiQuota', () => {
     expect(result.failures).toHaveLength(1);
   });
 
-  it('preserves usable billing data while exposing a one-sided spending limit as blocking', async () => {
+  it('ignores a deprecated monthly spending-limit response when weekly billing is usable', async () => {
     mocks.request
       .mockResolvedValueOnce({
         statusCode: 200,
@@ -2310,16 +2667,15 @@ describe('fetchXaiQuota', () => {
     const result = await probeXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t);
 
     expect(result).toMatchObject({
-      partial: true,
+      partial: false,
+      failures: [],
       summary: { usagePercent: 3 },
       statusCode: 200,
-      blockingFailure: {
-        decision: { classification: 'spending_limit', suggestedAction: 'disable' },
-      },
     });
+    expect(result.blockingFailure).toBeUndefined();
   });
 
-  it('prefers a verified xAI quota signal when both billing requests fail differently', async () => {
+  it('keeps the unified weekly failure authoritative when both billing requests fail', async () => {
     mocks.request
       .mockResolvedValueOnce({
         statusCode: 500,
@@ -2339,11 +2695,11 @@ describe('fetchXaiQuota', () => {
     await expect(
       probeXaiBilling({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
     ).rejects.toMatchObject({
-      decision: { classification: 'free_quota_exhausted' },
+      decision: { classification: 'upstream_error', suggestedAction: 'keep' },
     });
   });
 
-  it('prefers auth invalid over a generic forbidden billing failure', async () => {
+  it('does not let legacy monthly auth errors override the weekly failure', async () => {
     mocks.request
       .mockResolvedValueOnce({
         statusCode: 403,
@@ -2363,11 +2719,11 @@ describe('fetchXaiQuota', () => {
     await expect(
       probeXaiBilling({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
     ).rejects.toMatchObject({
-      decision: { classification: 'auth_invalid', suggestedAction: 'reauth' },
+      decision: { classification: 'permission_unknown', suggestedAction: 'keep' },
     });
   });
 
-  it('prefers an explicit entitlement denial over an earlier generic forbidden failure', async () => {
+  it('does not let legacy monthly entitlement denial override the weekly failure', async () => {
     mocks.request
       .mockResolvedValueOnce({
         statusCode: 403,
@@ -2382,14 +2738,22 @@ describe('fetchXaiQuota', () => {
         header: {},
         bodyText: 'Need a Grok subscription',
         body: { error: 'Need a Grok subscription' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 503,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'identity unavailable',
+        body: { error: 'identity unavailable' },
       });
 
     await expect(
       fetchXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
     ).rejects.toMatchObject({
-      decision: { classification: 'entitlement_denied', suggestedAction: 'disable' },
+      decision: { classification: 'permission_unknown', suggestedAction: 'keep' },
     });
-    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request).toHaveBeenCalledTimes(3);
+    expect(mocks.request.mock.calls[2][0]).toMatchObject({ url: XAI_OFFICIAL_API_ME_URL });
   });
 
   it('throws the upstream error when weekly and monthly billing both fail', async () => {
@@ -2835,7 +3199,7 @@ describe('fetchAntigravityQuota', () => {
     expect(mocks.request.mock.calls[0][0]).toMatchObject({
       url: ANTIGRAVITY_QUOTA_SUMMARY_URLS[0],
     });
-    expect(mocks.getSubscription).toHaveBeenCalledWith('ag-1');
+    expect(mocks.getSubscription).toHaveBeenCalledWith('ag-1', undefined);
     expect(result.subscription).toEqual({
       plan: 'pro',
       tierName: 'Antigravity Pro',
@@ -2851,6 +3215,39 @@ describe('fetchAntigravityQuota', () => {
       ],
     });
     expect(result.quotaInventoryObserved).toBe(true);
+  });
+
+  it('keeps Antigravity quota and subscription requests on the captured CPA scope', async () => {
+    mocks.getSubscription.mockResolvedValue(null);
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: { groups: [] },
+    });
+    const requestScope = {
+      apiBase: 'https://captured-cpa.example.test',
+      managementKey: 'captured-key',
+    };
+
+    await fetchAntigravityQuota(
+      {
+        name: 'antigravity.json',
+        type: 'antigravity',
+        authIndex: 'ag-1',
+        project_id: 'project-1',
+      },
+      t,
+      requestScope
+    );
+
+    expect(mocks.getSubscription).toHaveBeenCalledWith('ag-1', requestScope);
+    expect(mocks.request.mock.calls[0]?.[1]).toMatchObject({
+      baseURL: 'https://captured-cpa.example.test/v0/management',
+      headers: { Authorization: 'Bearer captured-key' },
+      cpampScopedRequest: true,
+    });
   });
 
   it('falls back to available models when summary endpoints have no usable data', async () => {

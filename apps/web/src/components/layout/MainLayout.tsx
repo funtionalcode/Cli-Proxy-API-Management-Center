@@ -22,11 +22,14 @@ import {
   IconSidebarOauth,
   IconSidebarPlugins,
   IconSidebarProviders,
-  IconSidebarQuota,
   IconSidebarSystem,
   IconSidebarUsage,
 } from '@/components/ui/icons';
-import { INLINE_LOGO_JPEG } from '@/assets/logoInline';
+import {
+  CPAMP_SYMBOL_COLOR_PNG_URL,
+  CPAMP_WORDMARK_COLOR_PNG_URL,
+  CPAMP_WORDMARK_ON_DARK_PNG_URL,
+} from '@/assets/brand';
 import {
   useAuthStore,
   useConfigStore,
@@ -46,7 +49,6 @@ import {
 } from '@/features/plugins/pluginResources';
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
-import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
 import { getDemoLogoutPath, prefixRouteBase, stripRouteBase } from '@/features/demo/demoMode';
 import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER, STORAGE_KEY_SIDEBAR } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';
@@ -61,7 +63,6 @@ const sidebarIcons: Record<string, ReactNode> = {
   proxyConfigs: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
   authFiles: <IconSidebarAuthFiles size={SIDEBAR_ICON_SIZE} />,
   oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
-  quota: <IconSidebarQuota size={SIDEBAR_ICON_SIZE} />,
   usageAnalytics: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
   monitoring: <IconSidebarMonitor size={SIDEBAR_ICON_SIZE} />,
   plugins: <IconSidebarPlugins size={SIDEBAR_ICON_SIZE} />,
@@ -270,12 +271,14 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const headerRef = useRef<HTMLElement | null>(null);
 
   const fullBrandName = 'CPA Manager Plus';
-  const abbrBrandName = t('title.abbr');
   const isLogsPage = routePathname.startsWith('/logs');
   const isPluginResourcePage = routePathname.startsWith('/plugin-pages');
   const showSidebarLabels = !sidebarCollapsed || sidebarOpen;
-  const pluginControlMenuVisible = isPluginManagementNavVisible({ supportsPlugin });
   const configPluginsEnabled = config?.pluginsEnabled;
+  const pluginControlMenuVisible = isPluginManagementNavVisible({
+    supportsPlugin,
+    pluginsEnabled: configPluginsEnabled,
+  });
 
   // 将顶部悬浮控制区高度写入 CSS 变量，供移动端粘性元素和浮层避让。
   useLayoutEffect(() => {
@@ -501,7 +504,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     };
   }, [apiBase, configPluginsEnabled, loadPluginResources]);
 
-  const fileLogsAvailable = isFileLogsAvailable(config);
   const navShortLabel = (key: string, fallback: string) => {
     const shortKey = `${key}_short`;
     const label = t(shortKey, { defaultValue: fallback });
@@ -530,16 +532,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
       }
     : null;
   const operationNavItems: NavItem[] = [
-    ...(fileLogsAvailable
-      ? [
-          {
-            path: '/logs',
-            label: t('nav.logs'),
-            shortLabel: navShortLabel('nav.logs', t('nav.logs')),
-            icon: sidebarIcons.logs,
-          },
-        ]
-      : []),
+    {
+      path: '/logs',
+      label: t('nav.logs'),
+      shortLabel: navShortLabel('nav.logs', t('nav.logs')),
+      icon: sidebarIcons.logs,
+    },
   ];
   const pluginControlNavItems: NavItem[] = pluginControlMenuVisible
     ? [
@@ -594,12 +592,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
           'nav.accounts',
           t('nav.accounts', { defaultValue: t('accounts.title') })
         ),
-        icon: sidebarIcons.authFiles,
-      },
-      {
-        path: '/auth-files',
-        label: t('nav.auth_files'),
-        shortLabel: navShortLabel('nav.auth_files', t('nav.auth_files')),
         icon: sidebarIcons.authFiles,
       },
       {
@@ -934,12 +926,26 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         >
           <div className="sidebar-brand" title={fullBrandName}>
             <div className="sidebar-brand-main">
-              <img src={INLINE_LOGO_JPEG} alt="CPAMC logo" className="sidebar-brand-logo" />
-              {showSidebarLabels && <span className="sidebar-brand-title">{abbrBrandName}</span>}
+              <img
+                src={CPAMP_SYMBOL_COLOR_PNG_URL}
+                alt={showSidebarLabels ? '' : 'CPA Manager Plus'}
+                className="sidebar-brand-symbol"
+              />
+              {showSidebarLabels && (
+                <>
+                  <img
+                    src={CPAMP_WORDMARK_COLOR_PNG_URL}
+                    alt="CPA Manager Plus"
+                    className="sidebar-brand-wordmark sidebar-brand-wordmark-light"
+                  />
+                  <img
+                    src={CPAMP_WORDMARK_ON_DARK_PNG_URL}
+                    alt="CPA Manager Plus"
+                    className="sidebar-brand-wordmark sidebar-brand-wordmark-dark"
+                  />
+                </>
+              )}
             </div>
-            {!showSidebarLabels && (
-              <span className="sidebar-brand-short">{abbrBrandName.charAt(0) || 'C'}</span>
-            )}
           </div>
 
           <div className="nav-section">

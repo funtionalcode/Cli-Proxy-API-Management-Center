@@ -106,7 +106,6 @@ import {
   isUsageImportPausedError,
   type UsageImportProgress,
 } from '@/features/monitoring/services/usageImportSession';
-import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import {
   readMonitoringCenterUiState,
   writeMonitoringCenterUiState,
@@ -117,6 +116,7 @@ import { useInterval } from '@/hooks/useInterval';
 import { useRequestMonitoringAvailability } from '@/hooks/useRequestMonitoringAvailability';
 import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
+import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import type { StatusBarData } from '@/utils/recentRequests';
 import { downloadBlob } from '@/utils/download';
 import { sha256Hex } from '@/utils/apiKeyHash';
@@ -217,8 +217,8 @@ export function MonitoringCenterPage() {
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   );
-  const [headerSnapshots, setHeaderSnapshots] = useState<UsageHeaderSnapshot[]>([]);
-  const [headerSnapshotGeneratedAtMs, setHeaderSnapshotGeneratedAtMs] = useState(0);
+  const headerSnapshots = useUsageHeaderSnapshotStore((state) => state.items);
+  const headerSnapshotGeneratedAtMs = useUsageHeaderSnapshotStore((state) => state.generatedAtMs);
   const [selectedAccount, setSelectedAccount] = useState(
     () => initialMonitoringCenterUiState.current.selectedAccount
   );
@@ -440,14 +440,6 @@ export function MonitoringCenterPage() {
   const loadHeaderSnapshots = useHeaderSnapshotsLoader({
     serviceBase: requestMonitoringAvailability.serviceBase,
     managementKey,
-    onResponse: (response) => {
-      setHeaderSnapshots(response.items ?? []);
-      setHeaderSnapshotGeneratedAtMs(response.generated_at_ms || Date.now());
-    },
-    onReset: () => {
-      setHeaderSnapshots((current) => (current.length === 0 ? current : []));
-      setHeaderSnapshotGeneratedAtMs(0);
-    },
   });
 
   useLayoutEffect(() => {
@@ -791,23 +783,27 @@ export function MonitoringCenterPage() {
   const scopedFailureCount = scopedSummary.failureCalls;
   const accountQuotaStatesWithObservedHeaders = useMemo(() => {
     let changed = false;
-    const nextStates = Object.fromEntries(
-      Object.entries(accountQuotaStates).map(([account, state]) => {
-        const targets = accountQuotaTargetsByAccount.get(account) ?? [];
-        const observedEntries = targets
-          .map((target) =>
-            buildObservedCodexAccountQuotaEntry(
-              target,
-              getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, target.file),
-              t
-            )
+    const nextStates: Record<string, AccountQuotaState> = {};
+    const accounts = new Set([
+      ...accountQuotaTargetsByAccount.keys(),
+      ...Object.keys(accountQuotaStates),
+    ]);
+    accounts.forEach((account) => {
+      const state = accountQuotaStates[account];
+      const targets = accountQuotaTargetsByAccount.get(account) ?? [];
+      const observedEntries = targets
+        .map((target) =>
+          buildObservedCodexAccountQuotaEntry(
+            target,
+            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, target.file),
+            t
           )
-          .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-        const nextState = mergeObservedAccountQuotaState(state, targets, observedEntries) ?? state;
-        changed = changed || nextState !== state;
-        return [account, nextState] as const;
-      })
-    );
+        )
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      const nextState = mergeObservedAccountQuotaState(state, targets, observedEntries);
+      if (nextState) nextStates[account] = nextState;
+      changed = changed || nextState !== state;
+    });
     return changed ? nextStates : accountQuotaStates;
   }, [accountQuotaStates, accountQuotaTargetsByAccount, headerSnapshotLookup, t]);
 

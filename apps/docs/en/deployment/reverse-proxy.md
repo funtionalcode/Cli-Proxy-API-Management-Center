@@ -451,6 +451,6 @@ location ^~ /v0/resource/plugins/ { proxy_pass http://cpamp; }
 location ^~ /usage-service/ { proxy_pass http://cpamp; }
 ```
 
-If the CPAMP panel later shows 401 / 404 on config, logs, or auth file pages, add precise routing rules based on the actual failing path.
+If the CPAMP panel later shows 401 / 404 on configuration, logs, or Credential Management, add precise routing rules based on the actual failing path.
 
 Avoid sending every uncertain path to CPAMP by default, because it may interfere with native CPA routes or future CPA endpoints.

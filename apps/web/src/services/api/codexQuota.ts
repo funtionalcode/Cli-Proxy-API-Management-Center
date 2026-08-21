@@ -11,6 +11,7 @@ import { normalizeAuthIndex, parseCodexUsagePayload } from '@/utils/quota/parser
 import { fetchCodexQuota, type CodexQuotaData } from '@/utils/quota/providerRequests';
 import { resolveCodexChatgptAccountId } from '@/utils/quota/resolvers';
 import { apiCallApi, getApiCallErrorMessage, type ApiCallResult } from './apiCall';
+import { createScopedApiRequestConfig, type ApiClientRequestScope } from './client';
 
 export type CodexUsageRequestParams = {
   authIndex: string;
@@ -71,7 +72,8 @@ export const createCodexRedeemRequestId = () => {
 
 export const consumeCodexRateLimitResetCredit = async (
   file: AuthFileItem,
-  t?: TFunction
+  t?: TFunction,
+  requestScope?: ApiClientRequestScope
 ): Promise<ApiCallResult> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -80,15 +82,18 @@ export const consumeCodexRateLimitResetCredit = async (
   }
 
   const accountId = resolveCodexChatgptAccountId(file);
-  const result = await apiCallApi.request({
-    authIndex,
-    method: 'POST',
-    url: CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_URL,
-    header: buildCodexUsageRequestHeaders(accountId),
-    data: JSON.stringify({
-      redeem_request_id: createCodexRedeemRequestId(),
-    }),
-  });
+  const result = await apiCallApi.request(
+    {
+      authIndex,
+      method: 'POST',
+      url: CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_URL,
+      header: buildCodexUsageRequestHeaders(accountId),
+      data: JSON.stringify({
+        redeem_request_id: createCodexRedeemRequestId(),
+      }),
+    },
+    requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+  );
 
   if (result.statusCode < 200 || result.statusCode >= 300) {
     throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
@@ -99,8 +104,9 @@ export const consumeCodexRateLimitResetCredit = async (
 
 export const resetCodexQuota = async (
   file: AuthFileItem,
-  t: TFunction
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
 ): Promise<CodexQuotaData> => {
-  await consumeCodexRateLimitResetCredit(file, t);
-  return fetchCodexQuota(file, t);
+  await consumeCodexRateLimitResetCredit(file, t, requestScope);
+  return fetchCodexQuota(file, t, requestScope);
 };

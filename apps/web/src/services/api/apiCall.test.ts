@@ -1,5 +1,63 @@
-import { describe, expect, it } from 'vitest';
-import { getApiCallErrorDetails, type ApiCallResult } from './apiCall';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { mocks } = vi.hoisted(() => ({
+  mocks: {
+    post: vi.fn(),
+  },
+}));
+
+vi.mock('./client', () => ({
+  apiClient: {
+    post: mocks.post,
+  },
+}));
+
+import { apiCallApi, getApiCallErrorDetails, type ApiCallResult } from './apiCall';
+
+beforeEach(() => {
+  mocks.post.mockReset();
+  mocks.post.mockResolvedValue({ status_code: 200, body: {} });
+});
+
+describe('apiCallApi', () => {
+  it('serializes the request-level proxy as proxy_url without leaking proxyUrl', async () => {
+    await apiCallApi.request({
+      authIndex: 'auth-1',
+      proxyUrl: '  socks5h://proxy.example:1080  ',
+      method: 'GET',
+      url: 'https://api.example.com/v1/models',
+    });
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      '/api-call',
+      {
+        authIndex: 'auth-1',
+        proxy_url: 'socks5h://proxy.example:1080',
+        method: 'GET',
+        url: 'https://api.example.com/v1/models',
+      },
+      undefined
+    );
+    expect(mocks.post.mock.calls[0]?.[1]).not.toHaveProperty('proxyUrl');
+  });
+
+  it('omits an empty request-level proxy', async () => {
+    await apiCallApi.request({
+      proxyUrl: '   ',
+      method: 'GET',
+      url: 'https://api.example.com/v1/models',
+    });
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      '/api-call',
+      {
+        method: 'GET',
+        url: 'https://api.example.com/v1/models',
+      },
+      undefined
+    );
+  });
+});
 
 const buildResult = (overrides: Partial<ApiCallResult> = {}): ApiCallResult => ({
   statusCode: 401,

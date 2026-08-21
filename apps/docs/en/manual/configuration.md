@@ -1,6 +1,6 @@
 # Configuration
 
-Configuration changes connections, request monitoring, and CPA system settings. Use [AI Providers](./ai-providers.md) to add model services, and use [OAuth Login](./oauth.md) or [Auth Files](./auth-files.md) to add accounts.
+Configuration changes connections, request monitoring, and CPA system settings. Use [AI Providers](./ai-providers.md) to add model services, and use [OAuth Login](./oauth.md) or [Accounts](./accounts.md) to add accounts.
 
 | What you want to do                     | Area to use                              |
 | --------------------------------------- | ---------------------------------------- |
@@ -48,6 +48,19 @@ Use the visual editor for normal operations. Use source mode when you need to:
 - Compare the runtime configuration with your deployment file.
 
 Before saving source configuration, check indentation, arrays, and quoted strings. If a saved change does not appear to take effect, check whether CPA supports hot reload or needs a restart.
+
+## Weighted Round-Robin Routing
+
+To distribute requests proportionally across credentials in the same priority tier, select Weighted Round Robin in Visual Configuration. The equivalent source configuration is:
+
+```yaml
+routing:
+  strategy: weighted-round-robin
+```
+
+CPA first selects the highest currently available `priority` tier, then applies weighted round robin to credentials in that tier. An omitted `weight` defaults to `1`. Weights must be integers with a maximum of `1,000,000`; non-positive values exclude the credential while this strategy is active. Clearing a weight in CPAMP removes the explicit `weight` field and restores the default of `1`.
+
+The strategy and weight fields require a CPA build that supports weighted routing. Older CPA versions may ignore or reject them. After upgrading CPA, set credential weights in [AI Providers](./ai-providers.md) or [Accounts](./accounts.md). Use multiple independent requests when checking the distribution; session affinity can keep one session bound to an existing credential.
 
 ## Verify After Saving
 

@@ -2,7 +2,7 @@ import {
   getAuthFileCodexInspectionKey,
   getAuthFileCodexInspectionKeyForFile,
   getAuthFileCodexInspectionKeyForIdentity,
-} from '@/features/authFiles/model/authFilesPageModel';
+} from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
 
 export interface AccountOperationalItem {
@@ -15,7 +15,7 @@ export interface AccountOperationalItem {
   accountSnapshot?: unknown;
 }
 
-const getAccountOperationalItemIdentityKey = (item: AccountOperationalItem): string =>
+export const getAccountOperationalItemIdentityKey = (item: AccountOperationalItem): string =>
   getAuthFileCodexInspectionKeyForIdentity({
     fileName: item.authFileName,
     runtimeId: typeof item.runtimeId === 'string' ? item.runtimeId : null,

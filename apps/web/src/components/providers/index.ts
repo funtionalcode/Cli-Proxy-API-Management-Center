@@ -4,6 +4,7 @@ export * from './ProviderTable';
 export { ProviderToolbar } from './ProviderToolbar';
 export { ProviderDetailDrawer } from './ProviderDetailDrawer';
 export { ProviderHealthCheckDrawer } from './ProviderHealthCheckDrawer';
+export { CoolingPolicySelect } from './CoolingPolicySelect';
 export type {
   ProviderHealthCheckApplyAction,
   ProviderHealthCheckItem,
@@ -11,6 +12,7 @@ export type {
   ProviderHealthCheckSummary,
 } from './ProviderHealthCheckDrawer';
 export * from './ProviderEditDrawer';
+export * from './CredentialWeightInput';
 export * from './hooks/useProviderRecentRequests';
 export * from './types';
 export * from './utils';

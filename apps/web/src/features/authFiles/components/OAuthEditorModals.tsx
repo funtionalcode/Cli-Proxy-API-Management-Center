@@ -10,6 +10,7 @@ import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { IconInfo, IconX } from '@/components/ui/icons';
 import { authFilesApi } from '@/services/api';
+import type { AuthFilesApiRequestScope } from '@/services/api/authFiles';
 import { useNotificationStore } from '@/stores';
 import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
 import {
@@ -33,6 +34,7 @@ import styles from './OAuthEditorModals.module.scss';
 type OAuthModelMappingFormEntry = OAuthModelAliasEntry & { id: string };
 type ProviderModelsError = 'unsupported' | 'failed' | null;
 type ProviderModelsSnapshot = {
+  requestScopeKey: string;
   providerKey: string;
   models: AuthFileModelItem[];
   loading: boolean;
@@ -45,6 +47,7 @@ type OAuthEditorBaseProps = {
   files: AuthFileItem[];
   excluded: Record<string, string[]>;
   modelAlias: Record<string, OAuthModelAliasEntry[]>;
+  requestScope: AuthFilesApiRequestScope;
   disabled?: boolean;
   unsupported?: boolean;
   onClose: () => void;
@@ -140,17 +143,21 @@ function useProviderOptions({
 function useProviderModels({
   open,
   providerKey,
+  requestScope,
   disabled,
   unsupported,
 }: {
   open: boolean;
   providerKey: string;
+  requestScope: AuthFilesApiRequestScope;
   disabled?: boolean;
   unsupported?: boolean;
 }) {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
+  const requestScopeKey = `${requestScope.apiBase}\u0000${requestScope.managementKey}`;
   const [snapshot, setSnapshot] = useState<ProviderModelsSnapshot>({
+    requestScopeKey: '',
     providerKey: '',
     models: [],
     loading: false,
@@ -165,16 +172,22 @@ function useProviderModels({
 
     const loadModels = async () => {
       try {
-        const items = await authFilesApi.getModelDefinitions(providerKey);
+        const items = await authFilesApi.getModelDefinitions(providerKey, requestScope);
         if (cancelled) return;
-        setSnapshot({ providerKey, models: items, loading: false, error: null });
+        setSnapshot({ requestScopeKey, providerKey, models: items, loading: false, error: null });
       } catch (err: unknown) {
         if (cancelled) return;
         if (readErrorStatus(err) === 404) {
-          setSnapshot({ providerKey, models: [], loading: false, error: 'unsupported' });
+          setSnapshot({
+            requestScopeKey,
+            providerKey,
+            models: [],
+            loading: false,
+            error: 'unsupported',
+          });
           return;
         }
-        setSnapshot({ providerKey, models: [], loading: false, error: 'failed' });
+        setSnapshot({ requestScopeKey, providerKey, models: [], loading: false, error: 'failed' });
         const message = err instanceof Error ? err.message : '';
         showNotification(`${t('notification.load_failed')}: ${message}`, 'error');
       }
@@ -185,12 +198,12 @@ function useProviderModels({
     return () => {
       cancelled = true;
     };
-  }, [active, providerKey, showNotification, t]);
+  }, [active, providerKey, requestScope, requestScopeKey, showNotification, t]);
 
   if (!active) {
     return { models: [], loading: false, error: null };
   }
-  if (snapshot.providerKey !== providerKey) {
+  if (snapshot.requestScopeKey !== requestScopeKey || snapshot.providerKey !== providerKey) {
     return { models: [], loading: true, error: null };
   }
   return {
@@ -206,6 +219,7 @@ export function OAuthExcludedEditorModal({
   files,
   excluded,
   modelAlias,
+  requestScope,
   disabled = false,
   unsupported = false,
   onClose,
@@ -213,6 +227,7 @@ export function OAuthExcludedEditorModal({
 }: OAuthEditorBaseProps) {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
+  const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const [provider, setProvider] = useState(initialProvider);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [customRule, setCustomRule] = useState('');
@@ -237,6 +252,7 @@ export function OAuthExcludedEditorModal({
   const { models, loading, error } = useProviderModels({
     open,
     providerKey: resolvedProviderKey,
+    requestScope,
     disabled,
     unsupported,
   });
@@ -261,19 +277,6 @@ export function OAuthExcludedEditorModal({
     return currentRules.filter((rule) => !optionIds.has(rule));
   }, [currentRules, modelOptions]);
 
-  const handleProviderChange = useCallback(
-    (value: string) => {
-      const providerKey = normalizeProviderKey(value);
-      const nextRules = serializeOAuthExcludedRules(
-        providerKey ? (findProviderEntries(excluded, providerKey) ?? []) : []
-      );
-      setProvider(value);
-      setSelectedModels(new Set(nextRules));
-      setCustomRule('');
-    },
-    [excluded]
-  );
-
   const toggleModel = useCallback((modelId: string, checked: boolean) => {
     setSelectedModels((prev) => {
       const next = new Set(prev);
@@ -295,6 +298,35 @@ export function OAuthExcludedEditorModal({
     );
   }, [draftRules, existingRules]);
 
+  const handleProviderChange = useCallback(
+    (value: string) => {
+      if (hasSelectionChanged) return;
+      const providerKey = normalizeProviderKey(value);
+      const nextRules = serializeOAuthExcludedRules(
+        providerKey ? (findProviderEntries(excluded, providerKey) ?? []) : []
+      );
+      setProvider(value);
+      setSelectedModels(new Set(nextRules));
+      setCustomRule('');
+    },
+    [excluded, hasSelectionChanged]
+  );
+
+  const requestClose = useCallback(() => {
+    if (!hasSelectionChanged) {
+      onClose();
+      return;
+    }
+    showConfirmation({
+      title: t('common.unsaved_changes_title'),
+      message: t('common.unsaved_changes_message'),
+      confirmText: t('common.leave'),
+      cancelText: t('common.stay'),
+      variant: 'danger',
+      onConfirm: onClose,
+    });
+  }, [hasSelectionChanged, onClose, showConfirmation, t]);
+
   const handleSave = useCallback(async () => {
     const providerKey = normalizeProviderKey(provider);
     if (!providerKey) {
@@ -306,9 +338,9 @@ export function OAuthExcludedEditorModal({
     try {
       const modelIds = draftRules;
       if (modelIds.length > 0) {
-        await authFilesApi.saveOauthExcludedModels(providerKey, modelIds);
+        await authFilesApi.saveOauthExcludedModels(providerKey, modelIds, requestScope);
       } else {
-        await authFilesApi.deleteOauthExcludedEntry(providerKey);
+        await authFilesApi.deleteOauthExcludedEntry(providerKey, requestScope);
       }
       await onSaved();
       showNotification(t('oauth_excluded.save_success'), 'success');
@@ -319,7 +351,7 @@ export function OAuthExcludedEditorModal({
     } finally {
       setSaving(false);
     }
-  }, [draftRules, onClose, onSaved, provider, showNotification, t]);
+  }, [draftRules, onClose, onSaved, provider, requestScope, showNotification, t]);
 
   const canSave =
     !disabled && !saving && !unsupported && Boolean(resolvedProviderKey) && hasSelectionChanged;
@@ -330,13 +362,13 @@ export function OAuthExcludedEditorModal({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       closeDisabled={saving}
       title={title}
       width={820}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={saving}>
+          <Button variant="secondary" onClick={requestClose} disabled={saving}>
             {t('common.cancel')}
           </Button>
           <Button onClick={() => void handleSave()} loading={saving} disabled={!canSave}>
@@ -373,7 +405,7 @@ export function OAuthExcludedEditorModal({
                     value={provider}
                     onChange={handleProviderChange}
                     options={providerOptions}
-                    disabled={disabled || saving}
+                    disabled={disabled || saving || hasSelectionChanged}
                     wrapperStyle={{ marginBottom: 0 }}
                   />
                 </div>
@@ -387,7 +419,7 @@ export function OAuthExcludedEditorModal({
                       type="button"
                       className={`${styles.tag} ${active ? styles.tagActive : ''}`}
                       onClick={() => handleProviderChange(option)}
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || hasSelectionChanged}
                     >
                       {getTypeLabel(t, option)}
                     </button>
@@ -427,7 +459,7 @@ export function OAuthExcludedEditorModal({
                   <SelectionCheckbox
                     key={model.id}
                     checked={selectedModels.has(model.id)}
-                    disabled={disabled || saving}
+                    disabled={disabled || saving || !resolvedProviderKey}
                     onChange={(value) => toggleModel(model.id, value)}
                     className={styles.modelItem}
                     labelClassName={styles.modelText}
@@ -470,7 +502,7 @@ export function OAuthExcludedEditorModal({
                   <Input
                     value={customRule}
                     placeholder={t('oauth_excluded.custom_rule_placeholder')}
-                    disabled={disabled || saving}
+                    disabled={disabled || saving || !resolvedProviderKey}
                     onChange={(event) => setCustomRule(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key !== 'Enter') return;
@@ -508,6 +540,7 @@ export function OAuthModelAliasEditorModal({
   files,
   excluded,
   modelAlias,
+  requestScope,
   disabled = false,
   unsupported = false,
   onClose,
@@ -515,6 +548,7 @@ export function OAuthModelAliasEditorModal({
 }: OAuthEditorBaseProps) {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
+  const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const [provider, setProvider] = useState(initialProvider);
   const [mappings, setMappings] = useState<OAuthModelMappingFormEntry[]>([
     buildEmptyMappingEntry(),
@@ -535,6 +569,7 @@ export function OAuthModelAliasEditorModal({
   const { models, loading, error } = useProviderModels({
     open,
     providerKey: resolvedProviderKey,
+    requestScope,
     disabled,
     unsupported,
   });
@@ -547,16 +582,6 @@ export function OAuthModelAliasEditorModal({
     if (!open) return;
     setMappings(normalizeMappingEntries(existingMappings));
   }, [existingMappings, open]);
-
-  const handleProviderChange = useCallback(
-    (value: string) => {
-      const providerKey = normalizeProviderKey(value);
-      const nextMappings = providerKey ? (findProviderEntries(modelAlias, providerKey) ?? []) : [];
-      setProvider(value);
-      setMappings(normalizeMappingEntries(nextMappings));
-    },
-    [modelAlias]
-  );
 
   const headerHint = useMemo(() => {
     if (!provider.trim()) {
@@ -577,6 +602,32 @@ export function OAuthModelAliasEditorModal({
     () => isOAuthAliasDraftDirty(mappings, existingMappings),
     [existingMappings, mappings]
   );
+
+  const handleProviderChange = useCallback(
+    (value: string) => {
+      if (hasMappingsChanged) return;
+      const providerKey = normalizeProviderKey(value);
+      const nextMappings = providerKey ? (findProviderEntries(modelAlias, providerKey) ?? []) : [];
+      setProvider(value);
+      setMappings(normalizeMappingEntries(nextMappings));
+    },
+    [hasMappingsChanged, modelAlias]
+  );
+
+  const requestClose = useCallback(() => {
+    if (!hasMappingsChanged) {
+      onClose();
+      return;
+    }
+    showConfirmation({
+      title: t('common.unsaved_changes_title'),
+      message: t('common.unsaved_changes_message'),
+      confirmText: t('common.leave'),
+      cancelText: t('common.stay'),
+      variant: 'danger',
+      onConfirm: onClose,
+    });
+  }, [hasMappingsChanged, onClose, showConfirmation, t]);
 
   const updateMappingEntry = useCallback(
     (index: number, field: keyof OAuthModelAliasEntry, value: string | boolean) => {
@@ -635,9 +686,9 @@ export function OAuthModelAliasEditorModal({
     setSaving(true);
     try {
       if (normalizedMappings.length > 0) {
-        await authFilesApi.saveOauthModelAlias(providerKey, normalizedMappings);
+        await authFilesApi.saveOauthModelAlias(providerKey, normalizedMappings, requestScope);
       } else {
-        await authFilesApi.deleteOauthModelAlias(providerKey);
+        await authFilesApi.deleteOauthModelAlias(providerKey, requestScope);
       }
       await onSaved();
       showNotification(t('oauth_model_alias.save_success'), 'success');
@@ -648,7 +699,7 @@ export function OAuthModelAliasEditorModal({
     } finally {
       setSaving(false);
     }
-  }, [mappings, onClose, onSaved, provider, showNotification, t]);
+  }, [mappings, onClose, onSaved, provider, requestScope, showNotification, t]);
 
   const canSave =
     !disabled && !saving && !unsupported && Boolean(resolvedProviderKey) && hasMappingsChanged;
@@ -656,13 +707,13 @@ export function OAuthModelAliasEditorModal({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       closeDisabled={saving}
       title={t('oauth_model_alias.add_title')}
       width={940}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={saving}>
+          <Button variant="secondary" onClick={requestClose} disabled={saving}>
             {t('common.cancel')}
           </Button>
           <Button onClick={() => void handleSave()} loading={saving} disabled={!canSave}>
@@ -701,7 +752,7 @@ export function OAuthModelAliasEditorModal({
                     value={provider}
                     onChange={handleProviderChange}
                     options={providerOptions}
-                    disabled={disabled || saving}
+                    disabled={disabled || saving || hasMappingsChanged}
                     wrapperStyle={{ marginBottom: 0 }}
                   />
                 </div>
@@ -715,7 +766,7 @@ export function OAuthModelAliasEditorModal({
                       type="button"
                       className={`${styles.tag} ${active ? styles.tagActive : ''}`}
                       onClick={() => handleProviderChange(option)}
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || hasMappingsChanged}
                     >
                       {getTypeLabel(t, option)}
                     </button>
@@ -732,7 +783,7 @@ export function OAuthModelAliasEditorModal({
                 variant="secondary"
                 size="sm"
                 onClick={addMappingEntry}
-                disabled={disabled || saving || unsupported}
+                disabled={disabled || saving || unsupported || !resolvedProviderKey}
               >
                 {t('oauth_model_alias.add_alias')}
               </Button>
@@ -747,7 +798,7 @@ export function OAuthModelAliasEditorModal({
                       placeholder={t('oauth_model_alias.alias_name_placeholder')}
                       value={entry.name}
                       onChange={(value) => updateMappingEntry(index, 'name', value)}
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || !resolvedProviderKey}
                       options={modelOptions.map((model) => ({
                         value: model.id,
                         label:
@@ -762,13 +813,13 @@ export function OAuthModelAliasEditorModal({
                       placeholder={t('oauth_model_alias.alias_placeholder')}
                       value={entry.alias}
                       onChange={(event) => updateMappingEntry(index, 'alias', event.target.value)}
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || !resolvedProviderKey}
                     />
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => removeMappingEntry(index)}
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || !resolvedProviderKey}
                       title={t('common.delete')}
                       aria-label={t('common.delete')}
                     >
@@ -784,7 +835,7 @@ export function OAuthModelAliasEditorModal({
                       onChange={(event) =>
                         updateMappingEntry(index, 'displayName', event.target.value)
                       }
-                      disabled={disabled || saving}
+                      disabled={disabled || saving || !resolvedProviderKey}
                     />
                     <div className={styles.mappingToggles}>
                       <div className={styles.mappingFork}>
@@ -793,7 +844,7 @@ export function OAuthModelAliasEditorModal({
                           labelPosition="left"
                           checked={Boolean(entry.fork)}
                           onChange={(value) => updateMappingEntry(index, 'fork', value)}
-                          disabled={disabled || saving}
+                          disabled={disabled || saving || !resolvedProviderKey}
                         />
                       </div>
                       <div className={styles.mappingFork}>
@@ -802,7 +853,7 @@ export function OAuthModelAliasEditorModal({
                           labelPosition="left"
                           checked={Boolean(entry.forceMapping)}
                           onChange={(value) => updateMappingEntry(index, 'forceMapping', value)}
-                          disabled={disabled || saving}
+                          disabled={disabled || saving || !resolvedProviderKey}
                         />
                       </div>
                     </div>

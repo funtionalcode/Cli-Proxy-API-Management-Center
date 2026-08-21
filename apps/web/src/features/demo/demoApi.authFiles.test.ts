@@ -243,7 +243,7 @@ describe('auth file credential refresh demo API', () => {
     expect(updatedRecord).not.toHaveProperty('note');
     expect(updatedRecord).not.toHaveProperty('excluded-models');
     expect(updatedRecord).not.toHaveProperty('excluded_models');
-    expect(updatedRecord).not.toHaveProperty('disable_cooling');
+    expect(updatedRecord.disable_cooling).toBe(false);
     expect(updatedRecord).not.toHaveProperty('request_retry');
     expect(updatedRecord).not.toHaveProperty('tool_prefix_disabled');
     expect(updatedRecord).not.toHaveProperty('headers');

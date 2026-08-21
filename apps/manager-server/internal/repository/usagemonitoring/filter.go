@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func SupportsStatsFilter(filter AnalyticsFilter) bool {
@@ -110,7 +112,11 @@ func appendStatsScopeConditions(filter AnalyticsFilter, prefix string, condition
 		*conditions = append(*conditions, "lower(coalesce("+column("api_key_hash")+", '')) = ?")
 		*args = append(*args, hash)
 	}
-	addInCondition(column("model"), filter.Models)
+	modelExpression := column("model")
+	if prefix != "" {
+		modelExpression = usageidentity.SQLRequestAnalyticsModelExpression(modelExpression, prefix+"requested_model")
+	}
+	addInCondition(modelExpression, normalizeModelFilterValues(filter.Models))
 	addProviderStatsCondition(filter.Providers, prefix, conditions, args)
 	addAccountStatsCondition(filter.Accounts, prefix, conditions, args)
 	credentialExpr := fmt.Sprintf("coalesce(nullif(%sauth_file_snapshot, ''), nullif(%sauth_index, ''), nullif(%ssource_hash, ''), nullif(%ssource, ''), '-')", prefix, prefix, prefix, prefix)
@@ -182,6 +188,18 @@ func normalizeFilterValues(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func normalizeModelFilterValues(values []string) []string {
+	models := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		models = append(models, usageidentity.AnalyticsModel(trimmed))
+	}
+	return normalizeFilterValues(models)
 }
 
 func normalizeLowerFilterValues(values []string) []string {

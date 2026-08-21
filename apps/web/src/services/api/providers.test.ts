@@ -22,6 +22,91 @@ beforeEach(() => {
 });
 
 describe('providersApi auth-index preservation', () => {
+  it('normalizes credential weights without collapsing explicit zero into omission', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'codex-api-key': [
+        { 'api-key': 'absent', 'base-url': 'https://example.com/absent' },
+        { 'api-key': 'zero', 'base-url': 'https://example.com/zero', weight: 0 },
+        { 'api-key': 'excluded', 'base-url': 'https://example.com/excluded', weight: -2 },
+        { 'api-key': 'positive', 'base-url': 'https://example.com/positive', weight: 5 },
+        { 'api-key': 'fraction', 'base-url': 'https://example.com/fraction', weight: 1.5 },
+        { 'api-key': 'too-large', 'base-url': 'https://example.com/large', weight: 1_000_001 },
+      ],
+    });
+
+    await expect(providersApi.getCodexConfigs()).resolves.toEqual([
+      expect.not.objectContaining({ weight: expect.anything() }),
+      expect.objectContaining({ apiKey: 'zero', weight: 0 }),
+      expect.objectContaining({ apiKey: 'excluded', weight: -2 }),
+      expect.objectContaining({ apiKey: 'positive', weight: 5 }),
+      expect.not.objectContaining({ weight: expect.anything() }),
+      expect.not.objectContaining({ weight: expect.anything() }),
+    ]);
+  });
+
+  it('serializes provider and OpenAI key weights while allowing an existing weight to be cleared', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'codex-api-key': [
+        { 'api-key': 'clear', 'base-url': 'https://example.com/clear', weight: 9 },
+        { 'api-key': 'zero', 'base-url': 'https://example.com/zero' },
+        { 'api-key': 'positive', 'base-url': 'https://example.com/positive' },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveCodexConfigs([
+      { apiKey: 'clear', baseUrl: 'https://example.com/clear' },
+      { apiKey: 'zero', baseUrl: 'https://example.com/zero', weight: 0 },
+      { apiKey: 'excluded', baseUrl: 'https://example.com/excluded', weight: -2 },
+      { apiKey: 'positive', baseUrl: 'https://example.com/positive', weight: 7 },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/codex-api-key', [
+      { 'api-key': 'clear', 'base-url': 'https://example.com/clear' },
+      { 'api-key': 'zero', 'base-url': 'https://example.com/zero', weight: 0 },
+      { 'api-key': 'excluded', 'base-url': 'https://example.com/excluded', weight: -2 },
+      { 'api-key': 'positive', 'base-url': 'https://example.com/positive', weight: 7 },
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'weighted',
+          'base-url': 'https://openai.example/v1',
+          'api-key-entries': [
+            { 'api-key': 'clear', weight: 4 },
+            { 'api-key': 'zero' },
+            { 'api-key': 'positive' },
+          ],
+        },
+      ],
+    });
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'weighted',
+        baseUrl: 'https://openai.example/v1',
+        apiKeyEntries: [
+          { apiKey: 'clear' },
+          { apiKey: 'zero', weight: 0 },
+          { apiKey: 'positive', weight: 3 },
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'weighted',
+        'base-url': 'https://openai.example/v1',
+        'api-key-entries': [
+          { 'api-key': 'clear' },
+          { 'api-key': 'zero', weight: 0 },
+          { 'api-key': 'positive', weight: 3 },
+        ],
+      },
+    ]);
+  });
+
   it('loads and creates xAI API key configs through the native management section', async () => {
     mocks.get.mockResolvedValueOnce({
       'xai-api-key': [
@@ -654,6 +739,55 @@ describe('providersApi v1.16 provider fields', () => {
     ]);
   });
 
+  it('preserves all four transport states and clears an existing override on inherit', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'gemini-api-key': [
+        { 'api-key': 'true', 'disable-cooling': true },
+        { 'api-key': 'false', 'disable-cooling': false },
+        { 'api-key': 'null', 'disable-cooling': null },
+        { 'api-key': 'absent' },
+      ],
+    });
+
+    await expect(providersApi.getGeminiKeys()).resolves.toEqual([
+      expect.objectContaining({ apiKey: 'true', disableCooling: true }),
+      expect.objectContaining({ apiKey: 'false', disableCooling: false }),
+      expect.objectContaining({ apiKey: 'null', disableCooling: null }),
+      expect.not.objectContaining({ disableCooling: expect.anything() }),
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'gemini-api-key': [{ 'api-key': 'old', disable_cooling: true, 'unknown-field': 'keep' }],
+    });
+    mocks.put.mockResolvedValue({});
+    await providersApi.saveGeminiKeys([{ apiKey: 'old', disableCooling: null }]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/gemini-api-key', [
+      {
+        'api-key': 'old',
+        'disable-cooling': null,
+        'unknown-field': 'keep',
+      },
+    ]);
+  });
+
+  it('serializes Vertex cooling overrides, including explicit false', async () => {
+    mocks.get.mockResolvedValueOnce({ 'vertex-api-key': [] });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveVertexConfigs([
+      { apiKey: 'vertex-key', baseUrl: 'https://vertex.example.com', disableCooling: false },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/vertex-api-key', [
+      {
+        'api-key': 'vertex-key',
+        'base-url': 'https://vertex.example.com',
+        'disable-cooling': false,
+      },
+    ]);
+  });
+
   it('preserves model metadata by index when model names change', async () => {
     mocks.get.mockResolvedValueOnce({
       'openai-compatibility': [
@@ -731,6 +865,40 @@ describe('providersApi optimistic provider mutations', () => {
 
     expect(mocks.put).toHaveBeenCalledWith('/codex-api-key', [
       { 'raw-field': 'keep', 'auth-index': 'auth-1', prefix: 'updated' },
+      { 'api-key': 'concurrent-key', priority: 9 },
+    ]);
+  });
+
+  it('clears a Vertex cooling override through the update path without dropping raw fields', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'vertex-api-key': [
+        {
+          'api-key': 'vertex-key',
+          'base-url': 'https://vertex.example.com',
+          disable_cooling: true,
+          'raw-field': 'keep',
+        },
+        { 'api-key': 'concurrent-key', priority: 9 },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.updateVertexConfig(
+      { apiKey: 'vertex-key', baseUrl: 'https://vertex.example.com' },
+      {
+        apiKey: 'vertex-key',
+        baseUrl: 'https://vertex.example.com',
+        disableCooling: null,
+      }
+    );
+
+    expect(mocks.put).toHaveBeenCalledWith('/vertex-api-key', [
+      {
+        'api-key': 'vertex-key',
+        'base-url': 'https://vertex.example.com',
+        'disable-cooling': null,
+        'raw-field': 'keep',
+      },
       { 'api-key': 'concurrent-key', priority: 9 },
     ]);
   });

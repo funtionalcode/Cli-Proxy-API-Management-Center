@@ -8,12 +8,16 @@ import type {
   CredentialInspectionSnapshot,
   CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
+import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
 
 interface CredentialHealthInspectionWorkspaceProps {
   mode: CredentialHealthInspectionMode;
   onModeChange: (mode: CredentialHealthInspectionMode) => void;
   onSnapshotChange: (snapshot: CredentialInspectionSnapshot) => void;
-  onCredentialsChanged: () => void | Promise<void>;
+  onCredentialsChanged: (
+    target?: CodexReauthTarget | null,
+    snapshot?: CredentialInspectionSnapshot | null
+  ) => void | Promise<void>;
   onOpenCredential: (target: CredentialInspectionTarget) => void;
 }
 
@@ -34,12 +38,7 @@ export function CredentialHealthInspectionWorkspace({
     ) {
       onModeChange('local');
     }
-  }, [
-    availability.checking,
-    availability.serverCodexInspectionAvailable,
-    mode,
-    onModeChange,
-  ]);
+  }, [availability.checking, availability.serverCodexInspectionAvailable, mode, onModeChange]);
 
   const modeControl = (
     <CredentialHealthModeControl

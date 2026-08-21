@@ -174,6 +174,7 @@ const serializeResultItemForStorage = (
   error: item.error,
   planType: readNullableString(item.planType),
   quotaWindows: (item.quotaWindows ?? []).map(serializeQuotaWindow),
+  quotaInventoryObserved: item.quotaInventoryObserved === true,
   errorKind: readString(item.errorKind),
   errorDetail: sanitizeStoredText(item.errorDetail),
   actionHandled: item.actionHandled === true,
@@ -223,6 +224,7 @@ const hydrateStoredResultItem = (
           .map(hydrateQuotaWindow)
           .filter((item): item is CodexInspectionQuotaWindow => item !== null)
       : [],
+    quotaInventoryObserved: readBoolean(value.quotaInventoryObserved, false),
     errorKind: readString(value.errorKind),
     errorDetail: sanitizeStoredText(value.errorDetail),
     actionHandled: readBoolean(value.actionHandled, false),

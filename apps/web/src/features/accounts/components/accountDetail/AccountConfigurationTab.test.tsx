@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { Input } from '@/components/ui/Input';
+import { CoolingPolicySelect } from '@/components/providers/CoolingPolicySelect';
 import type { AccountRow } from '@/features/accounts/model/accountRows';
 import type { UseAuthFileConfigurationEditorResult } from '@/features/authFiles/hooks/useAuthFileConfigurationEditor';
 import type { AuthFileConfigurationDraft } from '@/features/authFiles/model/authFileConfiguration';
@@ -44,7 +45,8 @@ const makeDraft = (
   note: '',
   headersText: '',
   excludedModelsText: '',
-  disableCooling: false,
+  modelAliasesText: '',
+  disableCooling: 'inherit',
   requestRetry: '',
   websockets: false,
   xaiRoutingMode: 'grok-build',
@@ -175,6 +177,22 @@ describe('AccountConfigurationTab', () => {
     expect(text).not.toContain('auth_files.websockets_label');
   });
 
+  it('keeps per-account model aliases editable in the unified configuration tab', () => {
+    const editor = makeEditor(
+      'codex',
+      makeDraft({ modelAliasesText: '[{"name":"gpt-5","alias":"team-fast"}]' })
+    );
+    const renderer = renderTab(makeRow('codex'), editor);
+    const aliasesEditor = renderer.root
+      .findAllByType('textarea')
+      .find((node) => node.props['aria-label'] === 'auth_files.model_aliases_label');
+    if (!aliasesEditor) throw new Error('Per-account model aliases editor missing');
+
+    expect(aliasesEditor.props.value).toContain('team-fast');
+    act(() => aliasesEditor.props.onChange({ target: { value: '[]' } }));
+    expect(editor.updateField).toHaveBeenCalledWith('modelAliasesText', '[]');
+  });
+
   it('keeps primary save and reset actions at the top of the hierarchy', () => {
     const editor = makeEditor('codex');
     editor.dirty = true;
@@ -193,6 +211,38 @@ describe('AccountConfigurationTab', () => {
     expect(editor.reset).toHaveBeenCalledTimes(1);
     expect(editor.save).toHaveBeenCalledTimes(1);
   });
+
+  it('allows an administratively disabled credential to edit and save configuration', () => {
+    const editor = makeEditor('codex');
+    editor.dirty = true;
+    editor.canSave = true;
+    const renderer = renderTab(makeRow('codex', { disabled: true }), editor);
+    const saveButton = renderer.root
+      .findAllByType('button')
+      .find((button) => readText(button).includes('common.save'));
+    if (!saveButton) throw new Error('configuration save action missing');
+
+    expect(renderer.root.findAllByType(Input).every((input) => input.props.disabled !== true)).toBe(
+      true
+    );
+    expect(saveButton.props.disabled).toBe(false);
+    expect(readText(renderer.toJSON())).not.toContain('accounts.config_disabled_read_only');
+
+    act(() => saveButton.props.onClick());
+    expect(editor.save).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['enabled', 'inherit'] as const)(
+    'forwards the %s cooling policy selection to the credential editor',
+    (policy) => {
+      const editor = makeEditor('codex');
+      const renderer = renderTab(makeRow('codex'), editor);
+
+      act(() => renderer.root.findByType(CoolingPolicySelect).props.onChange(policy));
+
+      expect(editor.updateField).toHaveBeenCalledWith('disableCooling', policy);
+    }
+  );
 
   it('uses a compact hierarchy while keeping field-level guidance', () => {
     const renderer = renderTab(makeRow('codex'), makeEditor('codex'));

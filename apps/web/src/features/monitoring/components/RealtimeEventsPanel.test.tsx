@@ -33,6 +33,10 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'monitoring.filter_account': 'Account',
     'monitoring.filter_status_failed': 'Failed only',
     'monitoring.filter_provider': 'Provider',
+    'monitoring.client_ip': 'Client IP',
+    'monitoring.x_forwarded_for_unverified': 'Forwarded chain (unverified)',
+    'monitoring.user_agent': 'User-Agent',
+    'monitoring.request_metadata': 'Request metadata',
     'monitoring.cached_tokens': 'Cached Tokens',
     'monitoring.cache_read_tokens': 'Cache Read Tokens',
     'monitoring.cache_creation_tokens': 'Cache Creation Tokens',
@@ -103,6 +107,7 @@ type PanelOverrides = {
   eventsRetentionLimited?: boolean;
   eventsTotalCount?: number;
   eventsLoadedCount?: number;
+  hasPrices?: boolean;
 };
 
 const baseRow = (overrides: Partial<PanelRow> = {}): PanelRow => ({
@@ -176,7 +181,7 @@ const renderPanel = (row: PanelRow, overrides: PanelOverrides = {}) =>
       eventsTotalCount={overrides.eventsTotalCount ?? 1}
       eventsLoadedCount={overrides.eventsLoadedCount ?? 1}
       overallLoading={false}
-      hasPrices={false}
+      hasPrices={overrides.hasPrices ?? false}
       accountDisplayMode={overrides.accountDisplayMode ?? 'masked'}
       locale="en-US"
       emptyState={<span>empty</span>}
@@ -368,6 +373,12 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).not.toContain('HTTP');
   });
 
+  it('keeps realtime request estimated cost at three decimal places', () => {
+    const markup = renderPanel(baseRow({ totalCost: 0.1264 }), { hasPrices: true });
+
+    expect(markup).toContain('$0.126');
+  });
+
   it('renders API key alias inside the source cell without adding another column', () => {
     const markup = renderPanel(
       baseRow({
@@ -397,6 +408,39 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).toContain(longModel);
     expect(markup).toMatch(/class="[^"]*realtimeModelCell[^"]*"/);
     expect(markup).toMatch(/class="[^"]*realtimeModelText[^"]*"/);
+  });
+
+  it('renders the requested model first and the upstream resolved model second', () => {
+    const markup = renderPanel(
+      baseRow({
+        model: 'deepseek-v4-flash',
+        requestedModel: 'deepseek-v4-flash(max)',
+        resolvedModel: 'resolved-deepseek-v4-flash',
+      })
+    );
+
+    expect(markup).toContain(
+      'title="deepseek-v4-flash(max)\nresolved-deepseek-v4-flash"'
+    );
+    expect(markup.indexOf('>deepseek-v4-flash(max)</span>')).toBeLessThan(
+      markup.indexOf('>resolved-deepseek-v4-flash</small>')
+    );
+    expect(markup).not.toContain('>deepseek-v4-flash</span>');
+  });
+
+  it('does not duplicate an unchanged requested and resolved model', () => {
+    const model = 'deepseek-chat(region-us)';
+    const markup = renderPanel(
+      baseRow({
+        model,
+        requestedModel: model,
+        resolvedModel: model,
+      })
+    );
+
+    expect(markup).toContain(`title="${model}"`);
+    expect(markup).toContain(`>${model}</span>`);
+    expect(markup).not.toContain(`>${model}</small>`);
   });
 
   it('switches realtime source labels between masked and full display', () => {
@@ -439,6 +483,29 @@ describe('RealtimeEventsPanel', () => {
     expect(maskedMarkup).not.toContain('<small>Account: vis***@example.com</small>');
     expect(fullMarkup).toContain('>visible-user@example.com</span>');
     expect(fullMarkup).not.toContain('<small>Account: visible-user@example.com</small>');
+  });
+
+  it('exposes request metadata through a keyboard-expandable disclosure only in full mode', () => {
+    const row = baseRow({
+      clientIp: '192.0.2.10',
+      xForwardedFor: '203.0.113.5, 198.51.100.8',
+      userAgent: 'test-client/1.0',
+    });
+    const maskedMarkup = renderPanel(row);
+    const fullMarkup = renderPanel(row, { accountDisplayMode: 'full' });
+
+    for (const value of ['192.0.2.10', '203.0.113.5', 'test-client/1.0']) {
+      expect(maskedMarkup).not.toContain(value);
+      expect(fullMarkup).toContain(value);
+    }
+    expect(maskedMarkup).not.toContain('Request metadata');
+    expect(fullMarkup).toContain(`<details class="${styles.realtimeRequestMetadata}">`);
+    expect(fullMarkup).toContain('<summary>Request metadata</summary>');
+    expect(fullMarkup).toContain('Client IP: 192.0.2.10');
+    expect(fullMarkup).toContain(
+      'Forwarded chain (unverified): 203.0.113.5, 198.51.100.8'
+    );
+    expect(fullMarkup).toContain('User-Agent: test-client/1.0');
   });
 
   it('renders a ttft placeholder when ttft is missing', () => {

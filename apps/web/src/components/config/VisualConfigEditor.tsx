@@ -827,6 +827,13 @@ export function VisualConfigEditor({
                   onChange={(loggingToFile) => onChange({ loggingToFile })}
                 />
                 <ToggleRow
+                  title={t('basic_settings.request_log_enable')}
+                  description={t('basic_settings.request_log_warning')}
+                  checked={values.requestLog}
+                  disabled={disabled}
+                  onChange={(requestLog) => onChange({ requestLog })}
+                />
+                <ToggleRow
                   title={t('config_management.visual.sections.system.plugins_enabled')}
                   description={t('config_management.visual.sections.system.plugins_enabled_desc')}
                   checked={values.pluginsEnabled}
@@ -1074,6 +1081,12 @@ export function VisualConfigEditor({
                       {
                         value: 'round-robin',
                         label: t('config_management.visual.sections.network.strategy_round_robin'),
+                      },
+                      {
+                        value: 'weighted-round-robin',
+                        label: t(
+                          'config_management.visual.sections.network.strategy_weighted_round_robin'
+                        ),
                       },
                       {
                         value: 'fill-first',

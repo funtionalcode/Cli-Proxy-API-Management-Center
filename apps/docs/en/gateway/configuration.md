@@ -38,7 +38,7 @@ If the connection works but request data is missing, see [Monitoring Has No Data
 | Task                                 | Recommended page                            |
 | ------------------------------------ | ------------------------------------------- |
 | Add providers, models, or API keys   | [AI Providers](../manual/ai-providers.md)   |
-| Log in, import, or disable accounts  | [Auth Files](../manual/auth-files.md)       |
+| Log in, import, or disable accounts  | [Accounts](../manual/accounts.md)           |
 | Complete an OAuth login              | [OAuth Login](../manual/oauth.md)           |
 | Change CPA or CPAMP runtime settings | [Configuration](../manual/configuration.md) |
 

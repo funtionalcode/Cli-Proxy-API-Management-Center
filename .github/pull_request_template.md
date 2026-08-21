@@ -2,8 +2,10 @@
 
 <!-- What changed and why. Keep it short, 2-4 lines. -->
 
-> Community and maintenance PRs must target `dev`. `main` accepts only a
-> promotion PR whose source is this repository's `dev` branch.
+> Community and maintenance PRs must target `dev`. Repository automation
+> retargets other pull requests to `dev`; this can change the diff and make
+> existing review comments outdated. `main` accepts only a promotion PR whose
+> source is this repository's `dev` branch.
 
 ## Scope
 

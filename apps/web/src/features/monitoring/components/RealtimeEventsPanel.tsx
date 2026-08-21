@@ -733,7 +733,7 @@ const buildRealtimeTokenUsageDetails = (row: MonitoringEventRow, t: TFunction) =
     { label: t('monitoring.realtime_usage_output_label'), value: formatCompactNumber(row.outputTokens) },
     {
       label: t('monitoring.realtime_usage_reasoning_label'),
-      value: formatCompactNumber(row.reasoningTokens),
+      value: String(row.reasoningTokens),
     },
     { label: t('monitoring.realtime_usage_cached_label'), value: formatCompactNumber(row.cachedTokens) },
     {
@@ -1099,10 +1099,11 @@ export function RealtimeEventsPanel({
             {pagination.pageItems.map((row) => {
               const sourceDisplay = buildRealtimeSourceDisplay(row, t, accountDisplayMode);
               const apiKeyDisplay = buildRealtimeApiKeyDisplay(row, t);
-              const showResolvedModel =
-                row.resolvedModel &&
-                row.resolvedModel.trim() &&
-                row.resolvedModel.trim() !== row.model;
+              const requestedModel = row.requestedModel?.trim() || row.model;
+              const resolvedModel = row.resolvedModel?.trim() || '';
+              const showResolvedModel = Boolean(
+                resolvedModel && resolvedModel !== requestedModel
+              );
               const reasoningEffort = formatOptionalText(row.reasoningEffort);
               const serviceTier = formatOptionalText(row.serviceTier);
               const requestServiceTier = formatOptionalText(row.requestServiceTier);
@@ -1129,6 +1130,16 @@ export function RealtimeEventsPanel({
                       <div className={styles.primaryCell} title={sourceDisplay.title}>
                         <span>{sourceDisplay.primary}</span>
                         {sourceDisplay.meta ? <small>{sourceDisplay.meta}</small> : null}
+                        {sourceDisplay.requestMetadataTitle ? (
+                          <details className={styles.realtimeRequestMetadata}>
+                            <summary>{t('monitoring.request_metadata')}</summary>
+                            <small>
+                              {sourceDisplay.requestMetadataTitle.split('\n').map((line) => (
+                                <span key={line}>{line}</span>
+                              ))}
+                            </small>
+                          </details>
+                        ) : null}
                         {apiKeyDisplay ? (
                           <small className={styles.realtimeApiKeyLine} title={apiKeyDisplay.title}>
                             {`${t('monitoring.realtime_api_key_label')}: ${apiKeyDisplay.display}`}
@@ -1140,16 +1151,16 @@ export function RealtimeEventsPanel({
                   <td>
                     <div
                       className={`${styles.primaryCell} ${styles.realtimeModelCell}`}
-                      title={[row.model, showResolvedModel ? row.resolvedModel : '']
+                      title={[requestedModel, showResolvedModel ? resolvedModel : '']
                         .filter(Boolean)
                         .join('\n')}
                     >
                       <span className={`${styles.monoCell} ${styles.realtimeModelText}`}>
-                        {row.model}
+                        {requestedModel}
                       </span>
                       {showResolvedModel ? (
                         <small className={`${styles.monoCell} ${styles.realtimeModelText}`}>
-                          {row.resolvedModel}
+                          {resolvedModel}
                         </small>
                       ) : null}
                     </div>
@@ -1273,7 +1284,7 @@ export function RealtimeEventsPanel({
                       tooltipId={`${tooltipIdPrefix}-token-usage-tooltip-${row.id}`}
                     />
                   </td>
-                  <td>{hasPrices ? formatUsd(row.totalCost) : '--'}</td>
+                  <td>{hasPrices ? formatUsd(row.totalCost, 3) : '--'}</td>
                 </tr>
               );
             })}

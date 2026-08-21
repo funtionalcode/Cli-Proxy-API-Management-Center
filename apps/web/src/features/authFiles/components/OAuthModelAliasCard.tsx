@@ -9,7 +9,7 @@ import { ModelMappingDiagram, type ModelMappingDiagramRef } from '@/components/m
 import { IconChevronUp, IconMoreVertical, IconSearch, IconTrash2 } from '@/components/ui/icons';
 import type { OAuthModelAliasEntry } from '@/types';
 import type { AuthFileModelItem, OAuthConfigLoadState } from '@/features/authFiles/constants';
-import styles from '@/features/authFiles/AuthFilesPage.module.scss';
+import styles from './OAuthRuleCards.module.scss';
 type ViewMode = 'diagram' | 'list';
 
 const COLLAPSED_MAPPING_COUNT = 3;

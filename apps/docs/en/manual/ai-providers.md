@@ -1,6 +1,6 @@
 ---
 title: AI Provider Management
-description: Manage Gemini, Codex, Claude, Vertex, xAI, and OpenAI-compatible CPA providers with priorities, models, proxies, headers, and key testing.
+description: Manage Gemini, Codex, Claude, Vertex, xAI, and OpenAI-compatible CPA providers with priorities, weights, models, proxies, headers, and key testing.
 ---
 
 # AI Provider Management
@@ -27,7 +27,7 @@ Open the [AI Providers Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/ai
 - OpenAI-compatible
 - Other compatible configuration exposed by the current CPA version
 
-Fields vary by provider, but they generally cover the base URL, credential, models, headers, proxy, priority, and enabled state.
+Fields vary by provider, but they generally cover the base URL, credential, models, headers, proxy, priority, weight, and enabled state.
 
 ## Add Or Edit A Provider
 
@@ -44,14 +44,18 @@ The panel manages CPA `xai-api-key` entries, including:
 
 - API key, base URL, proxy, and custom headers.
 - Models, aliases, prefixes, and excluded models.
-- Provider priority and enabled state.
+- Provider priority, weight, and enabled state.
 - Provider test actions for credential and model access.
 
-An xAI API key is different from an xAI/Grok OAuth auth file. See [OAuth Login](./oauth.md), [Quota](./quota.md), and [Account Inspection](./codex-inspection.md) for OAuth, billing evidence, and account health.
+An xAI API key is different from an xAI/Grok OAuth credential. See [OAuth Login](./oauth.md), [Accounts](./accounts.md), and [Account Inspection](./codex-inspection.md) for OAuth, billing evidence, and account health.
 
-## Priority And Concurrent Saves
+## Priority, Weight, And Concurrent Saves
 
 Provider priority can be edited directly in the table. It affects routing order supported by CPA; it is not a health or cost priority.
+
+With `weighted-round-robin`, CPA first selects the highest currently available priority tier, then distributes requests by credential weight inside that tier. A credential with a larger weight cannot cross into a higher priority tier. An omitted weight defaults to `1`, the maximum is `1,000,000`, and a non-positive value excludes the credential while weighted round robin is active. Clearing the input removes the explicit weight and restores the default.
+
+Weights take effect only when Weighted Round Robin is enabled in Configuration and the CPA version supports weighted routing. Older CPA versions may ignore or reject the new strategy and weight fields.
 
 CPAMP uses targeted update APIs where available and refreshes configuration caches after saves. Reload before editing if another browser or process may have changed the same configuration.
 
@@ -67,7 +71,7 @@ CPAMP uses targeted update APIs where available and refreshes configuration cach
 1. Send a low-cost real request.
 2. Confirm provider, model, account, and status in Monitoring.
 3. If cost is missing, check [Model Prices](./model-prices.md).
-4. For credential or quota failures, check [Auth Files](./auth-files.md), [Quota](./quota.md), and the [Account Action Queue](./account-actions.md).
+4. For credential or quota failures, check [Accounts](./accounts.md) and the [Account Action Queue](./account-actions.md).
 5. If no event appears, troubleshoot collection before repeatedly changing the provider.
 
 ## Configuration Boundaries

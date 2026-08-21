@@ -23,6 +23,7 @@ import { buildMonitoringAuthMetaMap } from '@/features/monitoring/model/authMeta
 import { buildAuthFileMapFromMeta } from '@/features/monitoring/model/sourceDisplay';
 import type { MonitoringChannelMeta } from '@/features/monitoring/model/types';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
+import { normalizeRoutingStrategy } from '@/utils/routingStrategy';
 import type { AuthFileItem } from '@/types/authFile';
 import { VersionCard } from './components/VersionCard';
 import { UsageMetricsCard } from './components/UsageMetricsCard';
@@ -386,7 +387,7 @@ export function DashboardPage() {
         : undefined,
     },
     {
-      label: t('nav.auth_files'),
+      label: t('nav.accounts'),
       value: stats.authFiles ?? '-',
       icon: <IconFileText size={24} />,
       path: '/accounts',
@@ -404,20 +405,25 @@ export function DashboardPage() {
   ];
 
   const routingStrategyRaw = config?.routingStrategy?.trim() || '';
+  const routingStrategy = normalizeRoutingStrategy(routingStrategyRaw);
   const routingStrategyDisplay = !routingStrategyRaw
     ? '-'
-    : routingStrategyRaw === 'round-robin'
+    : routingStrategy === 'round-robin'
       ? t('basic_settings.routing_strategy_round_robin')
-      : routingStrategyRaw === 'fill-first'
-        ? t('basic_settings.routing_strategy_fill_first')
-        : routingStrategyRaw;
+      : routingStrategy === 'weighted-round-robin'
+        ? t('basic_settings.routing_strategy_weighted_round_robin')
+        : routingStrategy === 'fill-first'
+          ? t('basic_settings.routing_strategy_fill_first')
+          : routingStrategyRaw;
   const routingStrategyBadgeClass = !routingStrategyRaw
     ? styles.configBadgeUnknown
-    : routingStrategyRaw === 'round-robin'
+    : routingStrategy === 'round-robin'
       ? styles.configBadgeRoundRobin
-      : routingStrategyRaw === 'fill-first'
-        ? styles.configBadgeFillFirst
-        : styles.configBadgeUnknown;
+      : routingStrategy === 'weighted-round-robin'
+        ? styles.configBadgeWeightedRoundRobin
+        : routingStrategy === 'fill-first'
+          ? styles.configBadgeFillFirst
+          : styles.configBadgeUnknown;
 
   const formattedDate = currentTime.toLocaleDateString(i18n.language, {
     weekday: 'long',

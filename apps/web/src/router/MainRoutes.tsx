@@ -19,9 +19,6 @@ import { AiProvidersOpenAIEditPage } from '@/pages/AiProvidersOpenAIEditPage';
 import { AiProvidersOpenAIModelsPage } from '@/pages/AiProvidersOpenAIModelsPage';
 import { AiProvidersVertexEditPage } from '@/pages/AiProvidersVertexEditPage';
 import { ProxyConfigsPage } from '@/pages/ProxyConfigsPage';
-import { AuthFilesPage } from '@/pages/AuthFilesPage';
-import { AuthFilesOAuthExcludedEditPage } from '@/pages/AuthFilesOAuthExcludedEditPage';
-import { AuthFilesOAuthModelAliasEditPage } from '@/pages/AuthFilesOAuthModelAliasEditPage';
 import { OAuthPage } from '@/pages/OAuthPage';
 import { UsageAnalyticsPage } from '@/pages/UsageAnalyticsPage';
 import { MonitoringCenterPage } from '@/pages/MonitoringCenterPage';
@@ -34,34 +31,22 @@ import { PluginsPage } from '@/pages/PluginsPage';
 import { SystemPage } from '@/pages/SystemPage';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
-import { isLogsRouteAvailable } from '@/features/logs/logFeatureAvailability';
 import { ensureRouteBasePathname, isDemoMode } from '@/features/demo/demoMode';
 import { useAuthStore, useConfigStore } from '@/stores';
 
 type FeatureKey = 'requestMonitoring' | 'modelPrices';
 
 function LegacyAccountsRedirect({
-  view,
+  view = 'accounts',
   healthMode,
-  editor,
 }: {
-  view?: 'accounts' | 'health' | 'oauth';
+  view?: 'accounts' | 'oauth';
   healthMode?: 'local' | 'server';
-  editor?: 'excluded' | 'alias';
 }) {
   const location = useLocation();
   const params = new URLSearchParams(location.search);
-  if (view === 'accounts') params.delete('view');
-  else if (view) params.set('view', view);
-  if (view === 'health') params.set('healthMode', healthMode ?? 'local');
-  if (editor) {
-    params.set('editor', editor);
-    const provider = params.get('provider');
-    if (provider) {
-      params.set('editorProvider', provider);
-      params.delete('provider');
-    }
-  }
+  params.set('view', healthMode ? 'health' : view);
+  if (healthMode) params.set('healthMode', healthMode);
   const search = params.toString();
   return <Navigate to={{ pathname: '/accounts', search: search ? `?${search}` : '' }} replace />;
 }
@@ -104,7 +89,6 @@ function FeatureGate({
 }
 
 function LogsGate({ children }: { children: ReactElement }) {
-  const location = useLocation();
   const config = useConfigStore((state) => state.config);
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const requestedRef = useRef(false);
@@ -118,10 +102,6 @@ function LogsGate({ children }: { children: ReactElement }) {
 
   if (!config && !failed) {
     return <LoadingSpinner />;
-  }
-
-  if (!isLogsRouteAvailable(config, location.search)) {
-    return <Navigate to="/config" replace />;
   }
 
   return children;
@@ -174,11 +154,11 @@ const mainRoutes: RouteObject[] = [
   { path: '/ai-providers/*', element: <AiProvidersPage /> },
   { path: '/proxy-configs', element: <ProxyConfigsPage /> },
   { path: '/accounts', element: <AccountsPage /> },
-  { path: '/auth-files', element: <AuthFilesPage /> },
-  { path: '/auth-files/oauth-excluded', element: <AuthFilesOAuthExcludedEditPage /> },
-  { path: '/auth-files/oauth-model-alias', element: <AuthFilesOAuthModelAliasEditPage /> },
+  { path: '/auth-files', element: <LegacyAccountsRedirect /> },
+  { path: '/auth-files/oauth-excluded', element: <LegacyAccountsRedirect view="oauth" /> },
+  { path: '/auth-files/oauth-model-alias', element: <LegacyAccountsRedirect view="oauth" /> },
+  { path: '/quota', element: <LegacyAccountsRedirect /> },
   { path: '/oauth', element: <OAuthPage /> },
-  { path: '/quota', element: <LegacyAccountsRedirect view="accounts" /> },
   {
     path: '/usage-analytics',
     element: (
@@ -189,11 +169,11 @@ const mainRoutes: RouteObject[] = [
   },
   {
     path: '/codex-inspection',
-    element: <LegacyAccountsRedirect view="health" healthMode="local" />,
+    element: <LegacyAccountsRedirect healthMode="local" />,
   },
   {
     path: '/codex-inspection/server',
-    element: <LegacyAccountsRedirect view="health" healthMode="server" />,
+    element: <LegacyAccountsRedirect healthMode="server" />,
   },
   {
     path: '/model-prices',
@@ -229,11 +209,11 @@ const mainRoutes: RouteObject[] = [
   },
   {
     path: '/monitoring/codex-inspection',
-    element: <LegacyAccountsRedirect view="health" healthMode="local" />,
+    element: <LegacyAccountsRedirect healthMode="local" />,
   },
   {
     path: '/monitoring/codex-inspection/server',
-    element: <LegacyAccountsRedirect view="health" healthMode="server" />,
+    element: <LegacyAccountsRedirect healthMode="server" />,
   },
   {
     path: '/plugins',

@@ -2,7 +2,7 @@
 
 系统信息页面用于确认当前面板连接到什么运行时、可用哪些模型，以及排障时应提供哪些基础信息。
 
-日志内容请看 [日志查看](./logs.md)。请求、成本和账号状态请分别看 [请求监控](./monitoring.md)、[用量分析](./usage-analytics.md) 和 [认证文件](./auth-files.md)。
+日志内容请看 [日志查看](./logs.md)。请求、成本和账号状态请分别看 [请求监控](./monitoring.md)、[用量分析](./usage-analytics.md) 和 [凭证管理](./accounts.md)。
 
 ## 主要内容
 

@@ -7,7 +7,7 @@ description: Use the CPA Manager Plus dashboard to inspect CPA/Manager Server co
 
 The dashboard is the first page to check after opening CPAMP. It does not replace request details. It answers the first operational questions: is the runtime connected, are requests arriving, did failures increase, did cost jump, and are there account or runtime warnings.
 
-If you already know which account or request is involved, go directly to [Monitoring](./monitoring.md), [Auth Files](./auth-files.md), or [Codex Inspection](./codex-inspection.md).
+If you already know which account or request is involved, go directly to [Monitoring](./monitoring.md), [Accounts](./accounts.md), or [Codex Inspection](./codex-inspection.md).
 
 Open the [Dashboard Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo) to inspect fictional request, cost, failure, and provider state generated for the current date.
 
@@ -45,6 +45,6 @@ For the full sequence, see [Request Monitoring Troubleshooting](../troubleshooti
 
 - If success rate drops, open [Monitoring](./monitoring.md) and filter by status code, model, and account.
 - If cost spikes, open [Usage Analytics](./usage-analytics.md) and compare model and account breakdowns.
-- If one account looks unhealthy, open [Auth Files](./auth-files.md), [Quota](./quota.md), or [Codex Inspection](./codex-inspection.md).
-- If login or authorization looks wrong, open [OAuth Login](./oauth.md), then return to Auth Files.
+- If one account looks unhealthy, open [Accounts](./accounts.md) or [Codex Inspection](./codex-inspection.md).
+- If login or authorization looks wrong, open [OAuth Login](./oauth.md), then return to Accounts.
 - If system state looks wrong, open [Logs](./logs.md) and [System](./system.md) and collect version and log context.

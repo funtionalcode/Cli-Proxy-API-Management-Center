@@ -3,17 +3,23 @@ import {
   monitoringAnalyticsApi,
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api/usageService';
+import {
+  buildUsageHeaderSnapshotScopeKey,
+  useUsageHeaderSnapshotStore,
+} from '@/stores/useUsageHeaderSnapshotStore';
 
 interface UseHeaderSnapshotsLoaderOptions {
   serviceBase: string;
   managementKey: string;
-  onResponse: (response: UsageHeaderSnapshotsResponse) => void;
-  onReset: () => void;
+  requestGenerationRef?: { readonly current: number };
+  onResponse?: (response: UsageHeaderSnapshotsResponse) => void;
+  onReset?: () => void;
 }
 
 interface HeaderSnapshotsRequest {
   serviceBase: string;
   managementKey: string;
+  requestGeneration: number;
   controller: AbortController;
   promise: Promise<void>;
 }
@@ -21,47 +27,56 @@ interface HeaderSnapshotsRequest {
 export function useHeaderSnapshotsLoader({
   serviceBase,
   managementKey,
+  requestGenerationRef,
   onResponse,
   onReset,
 }: UseHeaderSnapshotsLoaderOptions) {
+  const scopeKey = buildUsageHeaderSnapshotScopeKey(serviceBase, managementKey);
   const inFlightRef = useRef<HeaderSnapshotsRequest | null>(null);
-  const onResponseRef = useRef(onResponse);
-  const onResetRef = useRef(onReset);
+  const onResponseRef = useRef(onResponse ?? null);
+  const onResetRef = useRef(onReset ?? null);
   const scopeVersionRef = useRef(0);
   const initializedScopeRef = useRef(false);
-  onResponseRef.current = onResponse;
-  onResetRef.current = onReset;
+  onResponseRef.current = onResponse ?? null;
+  onResetRef.current = onReset ?? null;
 
   useLayoutEffect(() => {
     scopeVersionRef.current += 1;
     inFlightRef.current?.controller.abort();
     inFlightRef.current = null;
-    if (initializedScopeRef.current) {
-      onResetRef.current();
-    } else {
-      initializedScopeRef.current = true;
+    const scopeChanged = useUsageHeaderSnapshotStore.getState().activateScope(scopeKey);
+    if (scopeChanged && initializedScopeRef.current) {
+      onResetRef.current?.();
     }
+    initializedScopeRef.current = true;
     return () => {
       scopeVersionRef.current += 1;
       inFlightRef.current?.controller.abort();
       inFlightRef.current = null;
     };
-  }, [managementKey, serviceBase]);
+  }, [scopeKey]);
 
   return useCallback(async () => {
     if (!serviceBase) {
       inFlightRef.current?.controller.abort();
       inFlightRef.current = null;
-      onResetRef.current();
+      useUsageHeaderSnapshotStore.getState().activateScope('');
+      onResetRef.current?.();
       return;
     }
+    const requestGeneration = requestGenerationRef?.current ?? 0;
     const currentRequest = inFlightRef.current;
     if (
       currentRequest?.serviceBase === serviceBase &&
-      currentRequest.managementKey === managementKey
+      currentRequest.managementKey === managementKey &&
+      currentRequest.requestGeneration === requestGeneration
     ) {
       await currentRequest.promise;
       return;
+    }
+    if (currentRequest) {
+      currentRequest.controller.abort();
+      inFlightRef.current = null;
     }
 
     const scopeVersion = scopeVersionRef.current;
@@ -69,6 +84,7 @@ export function useHeaderSnapshotsLoader({
     const inFlight: HeaderSnapshotsRequest = {
       serviceBase,
       managementKey,
+      requestGeneration,
       controller,
       promise: Promise.resolve(),
     };
@@ -83,9 +99,13 @@ export function useHeaderSnapshotsLoader({
         if (
           inFlightRef.current === inFlight &&
           scopeVersionRef.current === scopeVersion &&
+          (requestGenerationRef?.current ?? 0) === requestGeneration &&
           !controller.signal.aborted
         ) {
-          onResponseRef.current(response);
+          const committed = useUsageHeaderSnapshotStore
+            .getState()
+            .commitResponse(scopeKey, response);
+          if (committed) onResponseRef.current?.(response);
         }
       } catch {
         // Preserve the last successful snapshot when a refresh fails.
@@ -97,5 +117,5 @@ export function useHeaderSnapshotsLoader({
     })();
     inFlightRef.current = inFlight;
     await inFlight.promise;
-  }, [managementKey, serviceBase]);
+  }, [managementKey, requestGenerationRef, scopeKey, serviceBase]);
 }

@@ -2,6 +2,7 @@ package usagepricing_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -71,6 +72,94 @@ func TestPricingRollupBandsStrictThresholdsAndMergesRawDelta(t *testing.T) {
 	}
 	if !available || len(accountRows) != 3 {
 		t.Fatalf("account pricing rows available=%v rows=%#v", available, accountRows)
+	}
+}
+
+func TestPricingRollupDoesNotClassifyIncrementalBacklogAsRebuild(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": {Prompt: 1}}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{pricingEvent("pricing-prime", 3_600_001, 10)}); err != nil {
+		t.Fatalf("insert prime event: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("prime pricing revision: %v", err)
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{
+		pricingEvent("pricing-incremental-1", 3_600_002, 20),
+		pricingEvent("pricing-incremental-2", 3_600_003, 30),
+	}); err != nil {
+		t.Fatalf("insert incremental backlog: %v", err)
+	}
+	first, err := st.CatchUpUsagePricing(ctx, 1, 20_000)
+	if err != nil {
+		t.Fatalf("first incremental batch: %v", err)
+	}
+	if first.Rebuilt || !first.Pending || first.CoverageEventID != 2 {
+		t.Fatalf("first incremental batch = %#v", first)
+	}
+	second, err := st.CatchUpUsagePricing(ctx, 1, 21_000)
+	if err != nil {
+		t.Fatalf("second incremental batch: %v", err)
+	}
+	if second.Rebuilt || second.Pending || second.CoverageEventID != 3 {
+		t.Fatalf("second incremental batch = %#v", second)
+	}
+}
+
+func TestPricingRollupPreservesRebuildingStatusAcrossFailure(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": {Prompt: 1}}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{
+		pricingEvent("pricing-rebuild-resume-1", 3_600_001, 10),
+		pricingEvent("pricing-rebuild-resume-2", 3_600_002, 20),
+	}); err != nil {
+		t.Fatalf("insert rebuild events: %v", err)
+	}
+
+	first, err := st.CatchUpUsagePricing(ctx, 1, 10_000)
+	if err != nil {
+		t.Fatalf("run partial pricing rebuild: %v", err)
+	}
+	if !first.Rebuilt || !first.Pending || first.CoverageEventID != 1 {
+		t.Fatalf("partial pricing rebuild = %#v", first)
+	}
+	if err := st.RecordUsagePricingFailure(ctx, errors.New("interrupted pricing rebuild"), 11_000); err != nil {
+		t.Fatalf("record pricing rebuild failure: %v", err)
+	}
+	state, err := st.UsagePricingState(ctx)
+	if err != nil {
+		t.Fatalf("read interrupted pricing state: %v", err)
+	}
+	if state.Status != "rebuilding" || state.LastError != "interrupted pricing rebuild" {
+		t.Fatalf("interrupted pricing state = %#v", state)
+	}
+	hourlyRows, _, available, err := st.UsagePricingHourlyRows(ctx, store.UsagePricingHourlyFilter{
+		FromMS:        3_600_000,
+		ToMS:          7_200_000,
+		IncludeFailed: true,
+	})
+	if err != nil || !available || len(hourlyRows) != 1 || hourlyRows[0].Calls != 2 {
+		t.Fatalf("interrupted pricing hourly rows = available:%v err:%v rows:%#v", available, err, hourlyRows)
+	}
+	accountRows, _, available, err := st.UsagePricingAccountRows(ctx, []string{pricingAccountKey("team-a.json", "auth-team-a")})
+	if err != nil || !available || len(accountRows) != 1 || accountRows[0].Calls != 2 {
+		t.Fatalf("interrupted pricing account rows = available:%v err:%v rows:%#v", available, err, accountRows)
+	}
+
+	completed, err := st.CatchUpUsagePricing(ctx, 10, 12_000)
+	if err != nil {
+		t.Fatalf("resume pricing rebuild: %v", err)
+	}
+	if !completed.Rebuilt || completed.Pending || completed.CoverageEventID != 2 {
+		t.Fatalf("resumed pricing rebuild = %#v", completed)
 	}
 }
 
@@ -187,6 +276,195 @@ func TestPricingRollupRateUpdatesKeepRevisionAndThresholdUpdatesRebuild(t *testi
 	}
 }
 
+// TestPricingRollupRevisionRollbackDoesNotDoubleCount covers a deterministic
+// A-to-B-to-A rollback. Target-revision rows are cleared in bounded batches,
+// readers use raw events while clearing, and the restored revision is rebuilt
+// exactly once.
+func TestPricingRollupRevisionRollbackDoesNotDoubleCount(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	threshold := func(value int64) store.ModelPrice {
+		return store.ModelPrice{
+			Prompt:       1,
+			ContextTiers: []store.ModelPriceContextTier{{ThresholdTokens: value, Prompt: 2, PromptConfigured: true}},
+		}
+	}
+	accountKey := pricingAccountKey("team-a.json", "auth-team-a")
+	hourlyFilter := store.UsagePricingHourlyFilter{FromMS: 3_600_000, ToMS: 7_200_000, IncludeFailed: true}
+	assertSingleCall := func() {
+		t.Helper()
+		hourlyRows, _, available, err := st.UsagePricingHourlyRows(ctx, hourlyFilter)
+		if err != nil || !available || len(hourlyRows) != 1 || hourlyRows[0].Calls != 1 {
+			t.Fatalf("pricing hourly rows after rollback = available:%v err:%v %#v", available, err, hourlyRows)
+		}
+		accountRows, _, accountAvailable, err := st.UsagePricingAccountRows(ctx, []string{accountKey})
+		if err != nil || !accountAvailable || len(accountRows) != 1 || accountRows[0].Calls != 1 {
+			t.Fatalf("pricing account rows after rollback = available:%v err:%v %#v", accountAvailable, err, accountRows)
+		}
+	}
+
+	// Build revision A (threshold 100).
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": threshold(100)}); err != nil {
+		t.Fatalf("save prices A: %v", err)
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{pricingEvent("rollback", 3_600_001, 150)}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("initial catch up: %v", err)
+	}
+	assertSingleCall()
+	// Switch to revision B.
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": threshold(200)}); err != nil {
+		t.Fatalf("save prices B: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 20_000); err != nil {
+		t.Fatalf("catch up threshold update: %v", err)
+	}
+	assertSingleCall()
+	// Restore revision A. A limit of one clears only the hourly row in the first
+	// transaction, leaving the account row for the resumed transaction.
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"resolved-model": threshold(100)}); err != nil {
+		t.Fatalf("rollback to prices A: %v", err)
+	}
+	result, err := st.CatchUpUsagePricing(ctx, 1, 30_000)
+	if err != nil {
+		t.Fatalf("start bounded rollback clearing: %v", err)
+	}
+	if !result.Pending || !result.Rebuilt || result.Processed != 0 || !result.ContinueSoon {
+		t.Fatalf("first bounded rollback result = %#v", result)
+	}
+	state, err := st.UsagePricingState(ctx)
+	if err != nil {
+		t.Fatalf("read clearing state: %v", err)
+	}
+	if state.Status != "clearing" || state.CoverageEventID != 0 {
+		t.Fatalf("bounded clearing state = %#v", state)
+	}
+	assertSingleCall()
+	if err := st.RecordUsagePricingFailure(ctx, errors.New("interrupted clearing"), 31_000); err != nil {
+		t.Fatalf("record clearing interruption: %v", err)
+	}
+	state, err = st.UsagePricingState(ctx)
+	if err != nil {
+		t.Fatalf("read interrupted clearing state: %v", err)
+	}
+	if state.Status != "clearing" || state.LastError != "interrupted clearing" {
+		t.Fatalf("interrupted clearing state = %#v", state)
+	}
+	result, err = st.CatchUpUsagePricing(ctx, 1, 32_000)
+	if err != nil {
+		t.Fatalf("resume bounded rollback clearing: %v", err)
+	}
+	if result.Pending || result.Processed != 1 || result.ContinueSoon {
+		t.Fatalf("resumed bounded rollback result = %#v", result)
+	}
+	assertSingleCall()
+}
+
+func TestPricingRollupUsesResolvedThenAnalyticsThenRawModelPrices(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"resolved-model":               {Prompt: 1},
+		"deepseek-v4-flash":            {Prompt: 2},
+		"deepseek-v4-flash(max)":       {Prompt: 3},
+		"deepseek-v4-flash(region-us)": {Prompt: 4},
+	}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	events := []usage.Event{
+		pricingIdentityEvent("resolved-priority", 3_600_001, "deepseek-v4-flash(max)", "resolved-model"),
+		pricingIdentityEvent("analytics-priority", 3_600_002, "deepseek-v4-flash(max)", ""),
+		pricingIdentityEvent("raw-fallback", 3_600_003, "deepseek-v4-flash(region-us)", ""),
+	}
+	if _, err := st.UsageEvents.InsertBatch(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("catch up pricing: %v", err)
+	}
+	rows, _, available, err := st.UsagePricingHourlyRows(ctx, store.UsagePricingHourlyFilter{
+		FromMS:        3_600_000,
+		ToMS:          7_200_000,
+		IncludeFailed: true,
+	})
+	if err != nil || !available {
+		t.Fatalf("load pricing rows: available=%v err=%v", available, err)
+	}
+	byPricingModel := make(map[string]store.UsagePricingHourlyRow, len(rows))
+	for _, row := range rows {
+		byPricingModel[row.PricingModel] = row
+	}
+	if row := byPricingModel["resolved-model"]; row.Model != "deepseek-v4-flash" || row.BillingModel != "resolved-model" || row.Calls != 1 {
+		t.Fatalf("resolved-priority row = %#v", row)
+	}
+	if row := byPricingModel["deepseek-v4-flash"]; row.Model != "deepseek-v4-flash" || row.BillingModel != "deepseek-v4-flash" || row.Calls != 1 {
+		t.Fatalf("analytics-priority row = %#v", row)
+	}
+	if row := byPricingModel["deepseek-v4-flash(region-us)"]; row.Model != "deepseek-v4-flash(region-us)" || row.Calls != 1 {
+		t.Fatalf("raw-fallback row = %#v", row)
+	}
+	filtered, _, available, err := st.UsagePricingHourlyRows(ctx, store.UsagePricingHourlyFilter{
+		FromMS:        3_600_000,
+		ToMS:          7_200_000,
+		Models:        []string{"deepseek-v4-flash"},
+		IncludeFailed: true,
+	})
+	if err != nil || !available || len(filtered) != 2 {
+		t.Fatalf("canonical filtered rows available=%v err=%v rows=%#v", available, err, filtered)
+	}
+	suffixFiltered, _, available, err := st.UsagePricingHourlyRows(ctx, store.UsagePricingHourlyFilter{
+		FromMS:        3_600_000,
+		ToMS:          7_200_000,
+		Models:        []string{"deepseek-v4-flash(max)"},
+		IncludeFailed: true,
+	})
+	if err != nil || !available || len(suffixFiltered) != 2 {
+		t.Fatalf("suffix filtered rows available=%v err=%v rows=%#v", available, err, suffixFiltered)
+	}
+}
+
+func TestPricingAccountRollupSeparatesAnalyticsModelsSharingBillingModel(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"resolved-x": {Prompt: 1},
+	}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	first := pricingIdentityEvent("pricing-shared-billing-a", 3_600_001, "model-a", "resolved-x")
+	second := pricingIdentityEvent("pricing-shared-billing-b", 3_600_002, "model-b", "resolved-x")
+	second.InputTokens = 20
+	second.TotalTokens = 30
+	if _, err := st.UsageEvents.InsertBatch(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := st.CatchUpUsagePricing(ctx, 10, 10_000); err != nil {
+		t.Fatalf("catch up pricing: %v", err)
+	}
+	rows, _, available, err := st.UsagePricingAccountRows(ctx, []string{pricingAccountKey("team-a.json", "auth-team-a")})
+	if err != nil || !available {
+		t.Fatalf("load account rows: available=%v err=%v", available, err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("account rows = %#v, want one row per analytics model", rows)
+	}
+	byModel := make(map[string]store.UsagePricingAccountRow, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	if row := byModel["model-a"]; row.BillingModel != "resolved-x" || row.PricingModel != "resolved-x" || row.Calls != 1 || row.TotalTokens != 20 {
+		t.Fatalf("model-a row = %#v", row)
+	}
+	if row := byModel["model-b"]; row.BillingModel != "resolved-x" || row.PricingModel != "resolved-x" || row.Calls != 1 || row.TotalTokens != 30 {
+		t.Fatalf("model-b row = %#v", row)
+	}
+}
+
 func pricingEvent(hash string, timestampMS int64, inputTokens int64) usage.Event {
 	return usage.Event{
 		EventHash:            hash,
@@ -204,6 +482,13 @@ func pricingEvent(hash string, timestampMS int64, inputTokens int64) usage.Event
 		TotalTokens:          inputTokens + 10,
 		CreatedAtMS:          timestampMS,
 	}
+}
+
+func pricingIdentityEvent(hash string, timestampMS int64, requestedModel, resolvedModel string) usage.Event {
+	event := pricingEvent(hash, timestampMS, 10)
+	event.Model = requestedModel
+	event.ResolvedModel = resolvedModel
+	return event
 }
 
 func pricingAccountKey(authFileSnapshot, authIndex string) string {

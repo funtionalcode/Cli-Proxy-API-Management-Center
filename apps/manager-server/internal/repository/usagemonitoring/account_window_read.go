@@ -83,9 +83,9 @@ func mergeProjectedAccountWindowStats(
 		dailyAvailable,
 	)
 	query := fmt.Sprintf(`%s
-	select
-		request_index,
-		model,
+		select
+			request_index,
+			analytics_model,
 		billing_model_value,
 		pricing_model_value,
 		context_threshold_tokens_value,
@@ -106,7 +106,7 @@ func mergeProjectedAccountWindowStats(
 		coalesce(sum(total_tokens), 0),
 		max(timestamp_ms)
 	from banded_events
-	group by request_index, model, billing_model_value, pricing_model_value,
+		group by request_index, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`, monitoringBandedProjectedEventsCTE(source))
 	args = appendLongContextThresholdArgs(args)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -316,7 +316,7 @@ func accountWindowEventSourceSQL(
 		values ` + strings.Join(values, ",") + `
 	)
 	select
-		w.request_index, p.model, p.resolved_model, p.service_tier, p.failed,
+		w.request_index, p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
 		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
 		p.total_tokens, p.timestamp_ms
@@ -344,7 +344,7 @@ func accountWindowEventSourceSQL(
 	query += `
 	union all
 	select
-		w.request_index, coalesce(e.model, ''), coalesce(e.resolved_model, ''),
+		w.request_index, ` + usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model") + `, ` + usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model") + `, coalesce(e.resolved_model, ''),
 		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
 		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
 		coalesce(e.output_tokens, 0), coalesce(e.cached_tokens, 0),

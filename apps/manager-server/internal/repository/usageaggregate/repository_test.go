@@ -2,6 +2,7 @@ package usageaggregate
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -38,7 +39,7 @@ func TestCatchUpAndLoadRowsMergeCoverageDeltaAndLateEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first catch-up: %v", err)
 	}
-	if firstCatchUp.Processed != 1 || firstCatchUp.CoverageEventID != 1 || !firstCatchUp.Pending {
+	if firstCatchUp.Processed != 1 || firstCatchUp.CoverageEventID != 1 || !firstCatchUp.Pending || firstCatchUp.Rebuilt {
 		t.Fatalf("first catch-up = %#v", firstCatchUp)
 	}
 	rows, state, available, err := repo.LoadRows(ctx, Filter{
@@ -197,6 +198,255 @@ func TestCatchUpIsIdempotentWhenCheckpointIsReplayed(t *testing.T) {
 	}
 }
 
+// TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount covers a
+// migration-driven structure_revision switch. The migration parks the old
+// aggregate table and recreates an empty one, so rebuilding must produce one
+// call, update the ledger revision, and remain idempotent on replay.
+func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_800_000_000_000)
+	baseMS -= baseMS % hourMS
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		aggregateTestEvent("revision-event-1", baseMS+1000, "model-a", false, 1, 2, nil),
+		aggregateTestEvent("revision-event-2", baseMS+2000, "model-a", false, 1, 2, nil),
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := repo.CatchUp(ctx, 10, baseMS+hourMS); err != nil {
+		t.Fatalf("initial catch-up: %v", err)
+	}
+
+	// Simulate a migration-driven revision switch: the aggregate table has been
+	// recreated empty, state points at the new revision with a zero checkpoint,
+	// and the preserved ledger row still carries the prior revision.
+	if _, err := db.Exec(`delete from usage_hourly_aggregate_v1`); err != nil {
+		t.Fatalf("clear aggregate for revision switch: %v", err)
+	}
+	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+		structure_revision = 'schema-3:model-1:rebuild-test',
+		status = 'pending', backfill_last_event_id = 0,
+		coverage_event_id = 0, processed_events = 0
+		where aggregate_name = ?`, AggregateName); err != nil {
+		t.Fatalf("switch revision fixture: %v", err)
+	}
+
+	assertLoadedCalls := func(stage string, want int64) {
+		t.Helper()
+		rows, _, available, loadErr := repo.LoadRows(ctx, Filter{
+			FromMS:        baseMS,
+			ToMS:          baseMS + hourMS,
+			IncludeFailed: true,
+		})
+		if loadErr != nil || !available {
+			t.Fatalf("%s load rows: available=%v err=%v", stage, available, loadErr)
+		}
+		if calls := sumCalls(rows); calls != want {
+			t.Fatalf("%s loaded calls = %d, want %d: %#v", stage, calls, want, rows)
+		}
+	}
+	assertLoadedCalls("before cross-revision catch-up", 2)
+
+	result, err := repo.CatchUp(ctx, 1, baseMS+2*hourMS)
+	if err != nil {
+		t.Fatalf("cross-revision catch-up: %v", err)
+	}
+	if !result.Pending || result.CoverageEventID != 1 || !result.Rebuilt {
+		t.Fatalf("partial cross-revision catch-up = %#v", result)
+	}
+	assertLoadedCalls("during cross-revision catch-up", 2)
+	completed, err := repo.CatchUp(ctx, 10, baseMS+2*hourMS)
+	if err != nil {
+		t.Fatalf("finish cross-revision catch-up: %v", err)
+	}
+	if !completed.Rebuilt || completed.Pending || completed.CoverageEventID != completed.TargetEventID {
+		t.Fatalf("completed cross-revision catch-up = %#v", completed)
+	}
+	if err := assertAggregateCallsAndLedgerRevision(db, 2, "schema-3:model-1:rebuild-test"); err != nil {
+		t.Fatalf("after cross-revision catch-up: %v", err)
+	}
+
+	// Replaying the same new revision after rewinding the checkpoint remains
+	// idempotent instead of doubling the aggregate.
+	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0
+		where aggregate_name = ?`, AggregateName); err != nil {
+		t.Fatalf("rewind checkpoint for replay: %v", err)
+	}
+	if _, err := repo.CatchUp(ctx, 10, baseMS+3*hourMS); err != nil {
+		t.Fatalf("same-revision replay catch-up: %v", err)
+	}
+	if err := assertAggregateCallsAndLedgerRevision(db, 2, "schema-3:model-1:rebuild-test"); err != nil {
+		t.Fatalf("after same-revision replay: %v", err)
+	}
+}
+
+func TestCatchUpPreservesRebuildStateAcrossRecordedFailure(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_800_000_000_000)
+	baseMS -= baseMS % hourMS
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		aggregateTestEvent("rebuild-resume-1", baseMS+1_000, "model-a", false, 10, 5, nil),
+		aggregateTestEvent("rebuild-resume-2", baseMS+2_000, "model-a", false, 20, 7, nil),
+	}); err != nil {
+		t.Fatalf("insert rebuild events: %v", err)
+	}
+	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0,
+		target_event_id = 2, processed_events = 0, last_error = null
+		where aggregate_name = ?`, AggregateName); err != nil {
+		t.Fatalf("schedule aggregate rebuild: %v", err)
+	}
+	assertRawEquivalent := func(stage string) {
+		t.Helper()
+		rows, _, available, loadErr := repo.LoadRows(ctx, Filter{
+			FromMS:        baseMS,
+			ToMS:          baseMS + hourMS,
+			IncludeFailed: true,
+		})
+		if loadErr != nil || !available || sumCalls(rows) != 2 {
+			t.Fatalf("%s aggregate rows = available:%v err:%v rows:%#v", stage, available, loadErr, rows)
+		}
+	}
+
+	if err := repo.RecordFailure(ctx, errors.New("interrupted pending rebuild"), baseMS+hourMS); err != nil {
+		t.Fatalf("record pending rebuild failure: %v", err)
+	}
+	state, err := repo.State(ctx)
+	if err != nil {
+		t.Fatalf("read pending rebuild state: %v", err)
+	}
+	if state.Status != "pending" || state.LastError != "interrupted pending rebuild" {
+		t.Fatalf("pending rebuild state = %#v", state)
+	}
+	assertRawEquivalent("after pending failure")
+
+	first, err := repo.CatchUp(ctx, 1, baseMS+2*hourMS)
+	if err != nil {
+		t.Fatalf("run partial rebuild: %v", err)
+	}
+	if !first.Rebuilt || !first.Pending || first.CoverageEventID != 1 {
+		t.Fatalf("partial rebuild result = %#v", first)
+	}
+	if err := repo.RecordFailure(ctx, errors.New("interrupted active rebuild"), baseMS+2*hourMS+1); err != nil {
+		t.Fatalf("record active rebuild failure: %v", err)
+	}
+	state, err = repo.State(ctx)
+	if err != nil {
+		t.Fatalf("read active rebuild state: %v", err)
+	}
+	if state.Status != "backfilling" || state.LastError != "interrupted active rebuild" {
+		t.Fatalf("active rebuild state = %#v", state)
+	}
+	assertRawEquivalent("after active failure")
+
+	completed, err := repo.CatchUp(ctx, 10, baseMS+3*hourMS)
+	if err != nil {
+		t.Fatalf("resume aggregate rebuild: %v", err)
+	}
+	if !completed.Rebuilt || completed.Pending || completed.CoverageEventID != 2 {
+		t.Fatalf("resumed rebuild result = %#v", completed)
+	}
+	assertRawEquivalent("after rebuild completion")
+}
+
+func TestCatchUpWaitsForExternalClearingAndPreservesFallbackOnFailure(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_800_000_000_000)
+	baseMS -= baseMS % hourMS
+	if _, err := events.InsertBatch(ctx, []usage.Event{
+		aggregateTestEvent("external-clearing-event", baseMS+1_000, "model-a", false, 10, 5, nil),
+	}); err != nil {
+		t.Fatalf("insert clearing event: %v", err)
+	}
+	if _, err := db.Exec(`insert into usage_hourly_aggregate_v1 (
+		bucket_ms, model, billing_model, service_tier, failed, calls,
+		input_tokens, output_tokens, total_tokens, updated_at_ms
+	) values (?, 'stale-model', 'stale-model', '', 0, 99, 99, 99, 198, 1)`, baseMS); err != nil {
+		t.Fatalf("seed stale aggregate: %v", err)
+	}
+	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+		status = 'clearing', backfill_last_event_id = 0, coverage_event_id = 0,
+		target_event_id = 1, processed_events = 0, last_error = null
+		where aggregate_name = ?`, AggregateName); err != nil {
+		t.Fatalf("mark aggregate clearing: %v", err)
+	}
+
+	result, err := repo.CatchUp(ctx, 10, baseMS+hourMS)
+	if err != nil {
+		t.Fatalf("catch up while external clearing is active: %v", err)
+	}
+	if result.Processed != 0 || !result.Pending || !result.Rebuilt || result.CoverageEventID != 0 {
+		t.Fatalf("external clearing catch-up result = %#v", result)
+	}
+	var staleCalls int64
+	if err := db.QueryRow(`select calls from usage_hourly_aggregate_v1 where model = 'stale-model'`).Scan(&staleCalls); err != nil {
+		t.Fatalf("read retained stale aggregate: %v", err)
+	}
+	if staleCalls != 99 {
+		t.Fatalf("stale aggregate calls = %d, want 99 before clearing owner resumes", staleCalls)
+	}
+	if err := repo.RecordFailure(ctx, errors.New("interrupted external clearing"), baseMS+hourMS+1); err != nil {
+		t.Fatalf("record external clearing failure: %v", err)
+	}
+	state, err := repo.State(ctx)
+	if err != nil {
+		t.Fatalf("read external clearing state: %v", err)
+	}
+	if state.Status != "clearing" || state.LastError != "interrupted external clearing" {
+		t.Fatalf("external clearing state = %#v", state)
+	}
+	rows, _, available, err := repo.LoadRows(ctx, Filter{
+		FromMS:        baseMS,
+		ToMS:          baseMS + hourMS,
+		IncludeFailed: true,
+	})
+	if err != nil || !available || sumCalls(rows) != 1 {
+		t.Fatalf("raw fallback during external clearing = available:%v err:%v rows:%#v", available, err, rows)
+	}
+}
+
+func assertAggregateCallsAndLedgerRevision(db *sql.DB, wantCalls int64, wantRevision string) error {
+	var calls int64
+	if err := db.QueryRow(`select calls from usage_hourly_aggregate_v1`).Scan(&calls); err != nil {
+		return fmt.Errorf("read aggregate calls: %w", err)
+	}
+	if calls != wantCalls {
+		return fmt.Errorf("aggregate calls = %d, want %d", calls, wantCalls)
+	}
+	for _, eventHash := range []string{"revision-event-1", "revision-event-2"} {
+		var revision string
+		if err := db.QueryRow(`select aggregate_structure_revision
+			from usage_event_identity_ledger where event_hash = ?`, eventHash).Scan(&revision); err != nil {
+			return fmt.Errorf("read ledger revision for %s: %w", eventHash, err)
+		}
+		if revision != wantRevision {
+			return fmt.Errorf("ledger aggregate_structure_revision for %s = %q, want %q", eventHash, revision, wantRevision)
+		}
+	}
+	return nil
+}
+
 func TestCatchUpSerializesConcurrentCalls(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
@@ -256,7 +506,7 @@ func TestRawDeltaStatementUsesEventIDScanWhenCoverageIsCurrent(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	query, args := rawRowsStatement(Filter{IncludeFailed: true}, 0, 30*24*hourMS, 1_000_000, true, true)
+	query, args := rawRowsStatement(Filter{IncludeFailed: true}, 0, 30*24*hourMS, 1_000_000, "schema-3:model-1", true, true)
 	rows, err := db.Query(`explain query plan `+query, args...)
 	if err != nil {
 		t.Fatalf("explain raw delta query: %v", err)
@@ -363,7 +613,7 @@ func TestCatchUpRollsBackAggregateWhenLedgerCoverageFails(t *testing.T) {
 	}
 	if _, err := db.Exec(`create trigger reject_aggregate_ledger_coverage
 		before update of aggregate_schema_version on usage_event_identity_ledger
-		when new.aggregate_schema_version = 1
+		when new.aggregate_schema_version = 3
 		begin select raise(abort, 'blocked'); end`); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
@@ -401,7 +651,7 @@ func TestRepositoryRejectsUnknownAggregateSchema(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	repo := New(db)
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set schema_version = 2 where aggregate_name = ?`, AggregateName); err != nil {
+	if _, err := db.Exec(`update usage_hourly_aggregate_state set schema_version = 99 where aggregate_name = ?`, AggregateName); err != nil {
 		t.Fatalf("set future schema: %v", err)
 	}
 	if _, err := repo.CatchUp(ctx, 10, time.Now().UnixMilli()); !errors.Is(err, ErrUnsupportedSchema) {
@@ -415,7 +665,7 @@ func TestRepositoryRejectsUnknownAggregateSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load future schema rows: %v", err)
 	}
-	if available || state.SchemaVersion != 2 || rows != nil {
+	if available || state.SchemaVersion != 99 || rows != nil {
 		t.Fatalf("future schema load = available:%v state:%#v rows:%#v", available, state, rows)
 	}
 }
@@ -460,6 +710,52 @@ func TestLoadRowsAppliesModelOutcomeAndRawEdgeFilters(t *testing.T) {
 		if row.Model != "model-a" || row.Failed {
 			t.Fatalf("unexpected filtered row = %#v", row)
 		}
+	}
+}
+
+func TestLoadRowsCanonicalizesReasoningSuffixesAcrossStoredAndRawRows(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_800_000_000_000)
+	baseMS -= baseMS % hourMS
+	low := aggregateTestEvent("canonical-low", baseMS+1_000, "deepseek-v4-flash(low)", false, 1, 2, nil)
+	low.ResolvedModel = ""
+	max := aggregateTestEvent("canonical-max", baseMS+2_000, "deepseek-v4-flash(max)", false, 3, 4, nil)
+	max.ResolvedModel = ""
+	unknown := aggregateTestEvent("canonical-unknown", baseMS+3_000, "deepseek-v4-flash(region-us)", false, 5, 6, nil)
+	unknown.ResolvedModel = ""
+	if _, err := events.InsertBatch(ctx, []usage.Event{low, max, unknown}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := repo.CatchUp(ctx, 1, baseMS+hourMS); err != nil {
+		t.Fatalf("partial catch-up: %v", err)
+	}
+	rows, _, available, err := repo.LoadRows(ctx, Filter{
+		FromMS:        baseMS,
+		ToMS:          baseMS + hourMS,
+		Models:        []string{"deepseek-v4-flash"},
+		IncludeFailed: true,
+	})
+	if err != nil || !available {
+		t.Fatalf("load canonical rows: available=%v err=%v", available, err)
+	}
+	if len(rows) != 1 || rows[0].Model != "deepseek-v4-flash" || rows[0].Calls != 2 {
+		t.Fatalf("canonical rows = %#v", rows)
+	}
+	suffixRows, _, available, err := repo.LoadRows(ctx, Filter{
+		FromMS:        baseMS,
+		ToMS:          baseMS + hourMS,
+		Models:        []string{"deepseek-v4-flash(max)"},
+		IncludeFailed: true,
+	})
+	if err != nil || !available || len(suffixRows) != 1 || suffixRows[0].Calls != 2 {
+		t.Fatalf("suffix-filtered rows: available=%v err=%v rows=%#v", available, err, suffixRows)
 	}
 }
 

@@ -1,6 +1,7 @@
 package usageevent
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,9 @@ func TestTopModelsQueryUsesTimestampIndexBeforePricingMaterialization(t *testing
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+		t.Fatalf("prepare post-listen indexes: %v", err)
+	}
 
 	rows, err := db.Query(`explain query plan `+topModelsSQL, int64(1_000), int64(2_000), 5)
 	if err != nil {

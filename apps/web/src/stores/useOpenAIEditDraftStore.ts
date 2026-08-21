@@ -11,7 +11,9 @@
 import type { SetStateAction } from 'react';
 import { create } from 'zustand';
 import type { OpenAIFormState } from '@/components/providers/types';
+import type { CoolingPolicy } from '@/types';
 import { buildApiKeyEntry } from '@/components/providers/utils';
+import type { CredentialWeightComparisonValue } from '@/utils/credentialWeight';
 
 export type OpenAITestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -25,10 +27,11 @@ export type OpenAIEditBaseline = {
   priority: number | null;
   prefix: string;
   baseUrl: string;
-  disableCooling: boolean;
+  disableCooling: CoolingPolicy;
   headers: Array<{ key: string; value: string }>;
   apiKeyEntries: Array<{
     apiKey: string;
+    weight: CredentialWeightComparisonValue;
     proxyUrl: string;
     authIndex: string;
     headers: Array<{ key: string; value: string }>;
@@ -76,6 +79,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+  disableCooling: 'inherit',
 });
 
 const buildEmptyDraft = (): OpenAIEditDraft => ({

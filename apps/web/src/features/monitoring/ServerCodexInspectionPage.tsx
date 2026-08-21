@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -21,6 +29,7 @@ import {
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
 import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
 import {
+  createCodexInspectionConnectionFingerprint,
   type CodexInspectionAction,
   type CodexInspectionResultItem,
   type CodexInspectionRunResult,
@@ -52,6 +61,7 @@ import {
 } from '@/features/monitoring/model/codexInspectionPresentation';
 import {
   createServerCredentialInspectionSnapshot,
+  isCompletedCredentialInspectionRun,
   type CredentialInspectionSnapshot,
   type CredentialInspectionTarget,
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
@@ -165,6 +175,7 @@ const DEFAULT_SERVER_CODEX_CONFIG: NormalizedServerCodexInspectionConfig = {
 };
 
 const RUNS_LIMIT = 30;
+const EMPTY_CODEX_INSPECTION_RUNS: CodexInspectionRun[] = [];
 
 const COMMON_TIME_ZONES: ReadonlyArray<string> = [
   'UTC',
@@ -622,6 +633,7 @@ function toServerResultItem(
       resetLabel: window.resetLabel ?? '',
       limitWindowSeconds: window.limitWindowSeconds ?? null,
     })),
+    quotaInventoryObserved: item.quotaInventoryObserved,
     errorKind: item.errorKind,
     errorDetail: item.errorDetail || '',
     actionHandled: isHandledServerCodexInspectionResult(item),
@@ -675,7 +687,10 @@ interface ServerCodexInspectionPageProps {
   embedded?: boolean;
   modeControl?: ReactNode;
   onSnapshotChange?: (snapshot: CredentialInspectionSnapshot) => void;
-  onCredentialsChanged?: () => void | Promise<void>;
+  onCredentialsChanged?: (
+    target?: CodexReauthTarget | null,
+    snapshot?: CredentialInspectionSnapshot | null
+  ) => void | Promise<void>;
   onOpenCredential?: (target: CredentialInspectionTarget) => void;
 }
 
@@ -688,6 +703,7 @@ export function ServerCodexInspectionPage({
 }: ServerCodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
   const featureAvailability = usePanelFeatureAvailability();
   const showNotification = useNotificationStore((state) => state.showNotification);
@@ -720,6 +736,8 @@ export function ServerCodexInspectionPage({
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const refreshInFlightRef = useRef(false);
   const actionInFlightRef = useRef(false);
+  const runsContextRef = useRef<object | null>(null);
+  const detailContextRef = useRef<object | null>(null);
   const detailRequestGenerationRef = useRef(0);
   const runListMutationGenerationRef = useRef(0);
   const selectedRunIdRef = useRef<number | null>(null);
@@ -728,26 +746,83 @@ export function ServerCodexInspectionPage({
     runId: number | null;
     latestLogId: number | null;
   }>({ runId: null, latestLogId: null });
-  const serverLogEntries = useMemo(
-    () =>
-      (detail?.logs ?? []).map((entry) => toServerInspectionLogViewEntry(entry, detail?.run, t)),
-    [detail, t]
-  );
 
   const selectRunId = useCallback((id: number | null) => {
     selectedRunIdRef.current = id;
     detailRequestGenerationRef.current += 1;
+    detailContextRef.current = null;
+    setDetail(null);
     setSelectedRunId(id);
   }, []);
 
+  const managerConnectionScopeKey = useMemo(
+    () =>
+      [
+        featureAvailability.checking ? 'checking' : 'ready',
+        featureAvailability.serverCodexInspectionAvailable ? 'available' : 'unavailable',
+        createCodexInspectionConnectionFingerprint(
+          featureAvailability.managerServiceBase,
+          managementKey
+        ) ?? 'disconnected',
+        apiBase,
+      ].join('\u001f'),
+    [
+      apiBase,
+      featureAvailability.checking,
+      featureAvailability.managerServiceBase,
+      featureAvailability.serverCodexInspectionAvailable,
+      managementKey,
+    ]
+  );
+  const authFilesRequestScope = useMemo(
+    () => ({ apiBase, managementKey }),
+    [apiBase, managementKey]
+  );
+  const managerConnectionIdentity = useMemo<object>(
+    () => ({ scopeKey: managerConnectionScopeKey }),
+    [managerConnectionScopeKey]
+  );
+  const activeManagerConnectionIdentityRef = useRef(managerConnectionIdentity);
+  activeManagerConnectionIdentityRef.current = managerConnectionIdentity;
+
+  useLayoutEffect(() => {
+    detailRequestGenerationRef.current += 1;
+    runListMutationGenerationRef.current += 1;
+    refreshInFlightRef.current = false;
+    actionInFlightRef.current = false;
+    selectedRunIdRef.current = null;
+    runsContextRef.current = null;
+    detailContextRef.current = null;
+    setServiceBase('');
+    setManagerConfig(null);
+    setDraft(toDraft(null));
+    setRuns([]);
+    setDetail(null);
+    setHeaderSnapshots([]);
+    setSelectedRunId(null);
+    setExecutingResultIds(new Set());
+    setExecutingAllActions(false);
+    setSaving(false);
+    setRunning(false);
+    setCancelling(false);
+    setError('');
+    setConfigDrawerOpen(false);
+    setCodexReauthTarget(null);
+  }, [managerConnectionIdentity]);
+
   useEffect(() => {
-    if (!detail || !onSnapshotChange) return;
-    onSnapshotChange(createServerCredentialInspectionSnapshot(detail, runs));
-  }, [detail, onSnapshotChange, runs]);
+    if (!detail || !onSnapshotChange || !isCompletedCredentialInspectionRun(detail.run)) return;
+    if (detailContextRef.current !== managerConnectionIdentity) return;
+    if (runsContextRef.current !== managerConnectionIdentity) return;
+    const snapshot = createServerCredentialInspectionSnapshot(detail, runs);
+    if (snapshot) onSnapshotChange(snapshot);
+  }, [detail, managerConnectionIdentity, onSnapshotChange, runs]);
 
   const loadRunDetail = useCallback(
     async (base: string, id: number) => {
       if (selectedRunIdRef.current !== id) return null;
+      const connectionContext = managerConnectionIdentity;
+      if (activeManagerConnectionIdentityRef.current !== connectionContext) return null;
       const requestGeneration = ++detailRequestGenerationRef.current;
       let nextDetail: CodexInspectionRunDetail;
       try {
@@ -755,6 +830,7 @@ export function ServerCodexInspectionPage({
       } catch (error) {
         if (
           requestGeneration !== detailRequestGenerationRef.current ||
+          activeManagerConnectionIdentityRef.current !== connectionContext ||
           selectedRunIdRef.current !== id
         ) {
           return null;
@@ -763,21 +839,23 @@ export function ServerCodexInspectionPage({
       }
       if (
         requestGeneration !== detailRequestGenerationRef.current ||
+        activeManagerConnectionIdentityRef.current !== connectionContext ||
         selectedRunIdRef.current !== id
       ) {
         return null;
       }
+      detailContextRef.current = connectionContext;
       setDetail(nextDetail);
       return nextDetail;
     },
-    [managementKey]
+    [managementKey, managerConnectionIdentity]
   );
 
-  useEffect(() => {
-    setLogLevelFilter('all');
-  }, [detail?.run.id]);
-
   const loadPageData = useCallback(async () => {
+    const connectionContext = managerConnectionIdentity;
+    const isCurrentConnection = () =>
+      activeManagerConnectionIdentityRef.current === connectionContext;
+    if (!isCurrentConnection()) return;
     setLoading(true);
     setError('');
     try {
@@ -786,6 +864,7 @@ export function ServerCodexInspectionPage({
         throw new Error(t('monitoring.server_codex_inspection_service_unavailable'));
       }
       const response = await usageServiceApi.getManagerConfig(resolvedBase, managementKey);
+      if (!isCurrentConnection()) return;
       const responseConfig = response.config;
 
       setServiceBase(resolvedBase);
@@ -797,33 +876,41 @@ export function ServerCodexInspectionPage({
         managementKey,
         RUNS_LIMIT
       );
+      if (!isCurrentConnection()) return;
       const snapshotsResponse = await monitoringAnalyticsApi
         .getHeaderSnapshots(resolvedBase, managementKey, { days: 30, limit: 1000 })
         .catch(() => ({ items: [] as UsageHeaderSnapshot[] }));
+      if (!isCurrentConnection()) return;
       setHeaderSnapshots(snapshotsResponse.items ?? []);
+      runsContextRef.current = connectionContext;
       setRuns(runsResponse.items);
       const nextSelectedId = runsResponse.items[0]?.id;
       if (nextSelectedId) {
         selectRunId(nextSelectedId);
         await loadRunDetail(resolvedBase, nextSelectedId);
       } else {
+        detailContextRef.current = null;
         setDetail(null);
         selectRunId(null);
       }
     } catch (error: unknown) {
+      if (!isCurrentConnection()) return;
       setError(getUsageServiceDisplayError(error, t));
+      runsContextRef.current = null;
+      detailContextRef.current = null;
       setRuns([]);
       setDetail(null);
       setHeaderSnapshots([]);
       selectRunId(null);
     } finally {
-      setLoading(false);
+      if (isCurrentConnection()) setLoading(false);
     }
   }, [
     featureAvailability.managerServiceBase,
     featureAvailability.serverCodexInspectionAvailable,
     loadRunDetail,
     managementKey,
+    managerConnectionIdentity,
     selectRunId,
     t,
   ]);
@@ -865,15 +952,31 @@ export function ServerCodexInspectionPage({
     (!normalizedDraftConfig || !configsEquivalent(selectedConfig, normalizedDraftConfig))
   );
   const savedScheduleLabel = formatSchedule(selectedConfig, t);
-  const hasRunningRun = hasActiveRun(runs, detail?.run);
-  const latestRun = runs[0] ?? null;
-  const activeRun = detail?.run ?? latestRun;
-  const cancellableRun = findCancellableRun(runs, activeRun);
+  const currentRuns = useMemo(
+    () =>
+      runsContextRef.current === managerConnectionIdentity ? runs : EMPTY_CODEX_INSPECTION_RUNS,
+    [managerConnectionIdentity, runs]
+  );
+  const currentDetail = detailContextRef.current === managerConnectionIdentity ? detail : null;
+  const serverLogEntries = useMemo(
+    () =>
+      (currentDetail?.logs ?? []).map((entry) =>
+        toServerInspectionLogViewEntry(entry, currentDetail?.run, t)
+      ),
+    [currentDetail, t]
+  );
+  useEffect(() => {
+    setLogLevelFilter('all');
+  }, [currentDetail?.run.id]);
+  const hasRunningRun = hasActiveRun(currentRuns, currentDetail?.run);
+  const latestRun = currentRuns[0] ?? null;
+  const activeRun = currentDetail?.run ?? latestRun;
+  const cancellableRun = findCancellableRun(currentRuns, activeRun);
   const activeTone = getRunTone(activeRun);
 
-  const resultRows = useMemo(() => detail?.results ?? [], [detail?.results]);
+  const resultRows = useMemo(() => currentDetail?.results ?? [], [currentDetail?.results]);
   const headerSnapshotCutoffMs =
-    detail?.run.finishedAtMs ?? detail?.run.updatedAtMs ?? Number.POSITIVE_INFINITY;
+    currentDetail?.run.finishedAtMs ?? currentDetail?.run.updatedAtMs ?? Number.POSITIVE_INFINITY;
   const headerSnapshotLookup = useMemo(
     () =>
       buildUsageHeaderSnapshotLookup(
@@ -916,7 +1019,7 @@ export function ServerCodexInspectionPage({
 
   useEffect(() => {
     setResultPage(1);
-  }, [actionFilter, handlingFilter, detail?.run.id]);
+  }, [actionFilter, currentDetail?.run.id, handlingFilter]);
 
   useEffect(() => {
     if (resultPage === resultPagination.currentPage) return;
@@ -970,13 +1073,17 @@ export function ServerCodexInspectionPage({
   const refreshRuns = useCallback(
     async (options?: { silent?: boolean }) => {
       if (refreshInFlightRef.current) return;
+      const connectionContext = managerConnectionIdentity;
+      const isCurrentConnection = () =>
+        activeManagerConnectionIdentityRef.current === connectionContext;
+      if (!isCurrentConnection()) return;
       refreshInFlightRef.current = true;
       const silent = options?.silent ?? false;
       if (!serviceBase) {
         try {
           await loadPageData();
         } finally {
-          refreshInFlightRef.current = false;
+          if (isCurrentConnection()) refreshInFlightRef.current = false;
         }
         return;
       }
@@ -994,7 +1101,10 @@ export function ServerCodexInspectionPage({
         // A start/cancel response is newer than any list request that began
         // before that lifecycle mutation completed. Discard the stale snapshot
         // so it cannot resurrect a running action after cancellation.
-        if (mutationGeneration !== runListMutationGenerationRef.current) return;
+        if (!isCurrentConnection() || mutationGeneration !== runListMutationGenerationRef.current) {
+          return;
+        }
+        runsContextRef.current = connectionContext;
         setRuns(response.items);
         const currentSelectedRunId = selectedRunIdRef.current;
         const selectionStillValid =
@@ -1003,8 +1113,8 @@ export function ServerCodexInspectionPage({
         if (selectionStillValid) {
           // 静默轮询时保留用户正在查看的历史详情,避免每 30s 重建详情导致结果表/日志
           // 重渲染、打断操作;但正在运行的巡检或尚无详情时仍需刷新以获取最新进度。
-          const watchingRunning = isActiveRun(detail?.run);
-          if (!silent || !detail || watchingRunning) {
+          const watchingRunning = isActiveRun(currentDetail?.run);
+          if (!silent || !currentDetail || watchingRunning) {
             await loadRunDetail(serviceBase, currentSelectedRunId);
           }
         } else {
@@ -1013,18 +1123,30 @@ export function ServerCodexInspectionPage({
             selectRunId(fallbackId);
             await loadRunDetail(serviceBase, fallbackId);
           } else {
+            detailContextRef.current = null;
             setDetail(null);
             selectRunId(null);
           }
         }
       } catch (error: unknown) {
-        if (!silent) setError(getUsageServiceDisplayError(error, t));
+        if (isCurrentConnection() && !silent) setError(getUsageServiceDisplayError(error, t));
       } finally {
-        if (!silent) setLoading(false);
-        refreshInFlightRef.current = false;
+        if (isCurrentConnection()) {
+          if (!silent) setLoading(false);
+          refreshInFlightRef.current = false;
+        }
       }
     },
-    [detail, loadPageData, loadRunDetail, managementKey, selectRunId, serviceBase, t]
+    [
+      currentDetail,
+      loadPageData,
+      loadRunDetail,
+      managementKey,
+      managerConnectionIdentity,
+      selectRunId,
+      serviceBase,
+      t,
+    ]
   );
 
   useEffect(() => {
@@ -1050,6 +1172,10 @@ export function ServerCodexInspectionPage({
       showNotification(t('monitoring.server_codex_inspection_service_unavailable'), 'warning');
       return;
     }
+    const connectionContext = managerConnectionIdentity;
+    const isCurrentConnection = () =>
+      activeManagerConnectionIdentityRef.current === connectionContext;
+    if (!isCurrentConnection()) return;
     const codexInspection = createConfigFromDraft(draft, t);
     if (!codexInspection) {
       showNotification(t('monitoring.server_codex_inspection_config_invalid'), 'warning');
@@ -1065,22 +1191,25 @@ export function ServerCodexInspectionPage({
         },
         managementKey
       );
+      if (!isCurrentConnection()) return;
       setManagerConfig(response.config);
       setDraft(toDraft(response.config.codexInspection));
       showNotification(t('monitoring.server_codex_inspection_config_saved'), 'success');
       setConfigDrawerOpen(false);
     } catch (error: unknown) {
+      if (!isCurrentConnection()) return;
       showNotification(
         `${t('notification.save_failed')}: ${getUsageServiceDisplayError(error, t)}`,
         'error'
       );
     } finally {
-      setSaving(false);
+      if (isCurrentConnection()) setSaving(false);
     }
   };
 
   const handleCloseConfigDrawer = useCallback(() => {
     if (hasUnsavedChanges) {
+      const connectionContext = managerConnectionIdentity;
       showConfirmation({
         title: t('monitoring.server_codex_inspection_close_confirm_title'),
         message: t('monitoring.server_codex_inspection_close_unsaved_hint'),
@@ -1088,6 +1217,7 @@ export function ServerCodexInspectionPage({
         cancelText: t('common.cancel'),
         variant: 'danger',
         onConfirm: () => {
+          if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
           setDraft(toDraft(managerConfig?.codexInspection));
           setConfigDrawerOpen(false);
         },
@@ -1095,7 +1225,7 @@ export function ServerCodexInspectionPage({
       return;
     }
     setConfigDrawerOpen(false);
-  }, [hasUnsavedChanges, managerConfig, showConfirmation, t]);
+  }, [hasUnsavedChanges, managerConfig, managerConnectionIdentity, showConfirmation, t]);
 
   const openConfigDrawer = useCallback((field?: string) => {
     setConfigFocusField(field ?? null);
@@ -1107,12 +1237,18 @@ export function ServerCodexInspectionPage({
       showNotification(t('monitoring.server_codex_inspection_service_unavailable'), 'warning');
       return;
     }
+    const connectionContext = managerConnectionIdentity;
+    const isCurrentConnection = () =>
+      activeManagerConnectionIdentityRef.current === connectionContext;
+    if (!isCurrentConnection()) return;
     setRunning(true);
     setError('');
     try {
       const nextDetail = await usageServiceApi.runCodexInspection(serviceBase, managementKey);
+      if (!isCurrentConnection()) return;
       const mutationGeneration = ++runListMutationGenerationRef.current;
       selectRunId(nextDetail.run.id);
+      detailContextRef.current = connectionContext;
       setDetail(nextDetail);
       showNotification(t('monitoring.server_codex_inspection_run_started'), 'success');
       try {
@@ -1121,7 +1257,10 @@ export function ServerCodexInspectionPage({
           managementKey,
           RUNS_LIMIT
         );
-        if (mutationGeneration !== runListMutationGenerationRef.current) return;
+        if (!isCurrentConnection() || mutationGeneration !== runListMutationGenerationRef.current) {
+          return;
+        }
+        runsContextRef.current = connectionContext;
         setRuns(response.items);
         const refreshedRun = response.items.find((item) => item.id === nextDetail.run.id);
         if (refreshedRun) {
@@ -1138,6 +1277,7 @@ export function ServerCodexInspectionPage({
         // as a failed start; a later poll/manual refresh can retry it.
       }
     } catch (error: unknown) {
+      if (!isCurrentConnection()) return;
       const message = getUsageServiceDisplayError(error, t);
       showNotification(
         `${t('monitoring.server_codex_inspection_run_failed')}: ${message}`,
@@ -1145,23 +1285,40 @@ export function ServerCodexInspectionPage({
       );
       await refreshRuns();
     } finally {
-      setRunning(false);
+      if (isCurrentConnection()) setRunning(false);
     }
-  }, [loadRunDetail, managementKey, refreshRuns, selectRunId, serviceBase, showNotification, t]);
+  }, [
+    loadRunDetail,
+    managementKey,
+    managerConnectionIdentity,
+    refreshRuns,
+    selectRunId,
+    serviceBase,
+    showNotification,
+    t,
+  ]);
 
   const handleRunNow = () => {
+    const connectionContext = managerConnectionIdentity;
     showConfirmation({
       title: t('monitoring.server_codex_inspection_run_confirm_title'),
       message: t('monitoring.server_codex_inspection_run_confirm_body'),
       confirmText: t('monitoring.server_codex_inspection_run_now'),
       cancelText: t('common.cancel'),
       variant: selectedConfig.autoActionMode === 'delete' ? 'danger' : 'primary',
-      onConfirm: executeServerRun,
+      onConfirm: () => {
+        if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+        void executeServerRun();
+      },
     });
   };
 
   const executeServerCancel = useCallback(async () => {
     if (!serviceBase || !cancellableRun) return;
+    const connectionContext = managerConnectionIdentity;
+    const isCurrentConnection = () =>
+      activeManagerConnectionIdentityRef.current === connectionContext;
+    if (!isCurrentConnection()) return;
     const requestedRunId = cancellableRun.id;
     // Keep a user's history selection stable while the cancel request is in
     // flight. A response for the active run may update the detail view only
@@ -1174,7 +1331,9 @@ export function ServerCodexInspectionPage({
         managementKey,
         requestedRunId
       );
+      if (!isCurrentConnection()) return;
       ++runListMutationGenerationRef.current;
+      runsContextRef.current = connectionContext;
       setRuns((current) => {
         let found = false;
         const updated = current.map((item) => {
@@ -1186,11 +1345,13 @@ export function ServerCodexInspectionPage({
       });
       if (selectedRunIdRef.current === requestedRunId) {
         selectRunId(nextDetail.run.id);
+        detailContextRef.current = connectionContext;
         setDetail(nextDetail);
       }
       showNotification(t('monitoring.server_codex_inspection_cancel_requested'), 'success');
       await refreshRuns({ silent: true });
     } catch (error: unknown) {
+      if (!isCurrentConnection()) return;
       showNotification(
         `${t('monitoring.server_codex_inspection_cancel_failed')}: ${getUsageServiceDisplayError(error, t)}`,
         'error'
@@ -1205,7 +1366,8 @@ export function ServerCodexInspectionPage({
           managementKey,
           RUNS_LIMIT
         );
-        if (mutationGeneration === runListMutationGenerationRef.current) {
+        if (isCurrentConnection() && mutationGeneration === runListMutationGenerationRef.current) {
+          runsContextRef.current = connectionContext;
           setRuns(response.items);
         }
       } catch {
@@ -1220,12 +1382,13 @@ export function ServerCodexInspectionPage({
         }
       }
     } finally {
-      setCancelling(false);
+      if (isCurrentConnection()) setCancelling(false);
     }
   }, [
     cancellableRun,
     loadRunDetail,
     managementKey,
+    managerConnectionIdentity,
     refreshRuns,
     selectRunId,
     selectedRunIdRef,
@@ -1236,13 +1399,17 @@ export function ServerCodexInspectionPage({
 
   const handleCancelRun = () => {
     if (!cancellableRun || cancellableRun.status === 'cancelling') return;
+    const connectionContext = managerConnectionIdentity;
     showConfirmation({
       title: t('monitoring.server_codex_inspection_cancel_confirm_title'),
       message: t('monitoring.server_codex_inspection_cancel_confirm_body'),
       confirmText: t('monitoring.server_codex_inspection_stop'),
       cancelText: t('common.cancel'),
       variant: 'danger',
-      onConfirm: executeServerCancel,
+      onConfirm: () => {
+        if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+        void executeServerCancel();
+      },
     });
   };
 
@@ -1252,10 +1419,14 @@ export function ServerCodexInspectionPage({
       scope: 'single' | 'bulk',
       overrideAction?: 'delete'
     ) => {
-      if (!serviceBase || !detail) {
+      if (!serviceBase || !currentDetail) {
         showNotification(t('monitoring.server_codex_inspection_service_unavailable'), 'warning');
         return;
       }
+      const connectionContext = managerConnectionIdentity;
+      const isCurrentConnection = () =>
+        activeManagerConnectionIdentityRef.current === connectionContext;
+      if (!isCurrentConnection()) return;
       const resultIds = Array.from(
         new Set(
           targets
@@ -1278,22 +1449,43 @@ export function ServerCodexInspectionPage({
         const response = await usageServiceApi.executeCodexInspectionActions(
           serviceBase,
           managementKey,
-          detail.run.id,
+          currentDetail.run.id,
           resultIds,
           overrideAction === 'delete'
             ? resultIds.map((resultId) => ({ resultId, action: 'delete' as const }))
             : []
         );
+        if (!isCurrentConnection()) return;
         selectRunId(response.detail.run.id);
+        detailContextRef.current = connectionContext;
         setDetail(response.detail);
+        const actionSnapshot = createServerCredentialInspectionSnapshot(response.detail, [
+          response.detail.run,
+          ...currentRuns.filter((run) => run.id !== response.detail.run.id),
+        ]);
+        let synchronizationWarning = '';
+        try {
+          await onCredentialsChanged?.(undefined, actionSnapshot);
+        } catch (error: unknown) {
+          if (!isCurrentConnection()) return;
+          synchronizationWarning = `${t('notification.refresh_failed')}: ${getUsageServiceDisplayError(error, t)}`;
+        }
+        if (!isCurrentConnection()) return;
 
-        const runsResponse = await usageServiceApi.listCodexInspectionRuns(
-          serviceBase,
-          managementKey,
-          RUNS_LIMIT
-        );
-        setRuns(runsResponse.items);
-        void onCredentialsChanged?.();
+        try {
+          const runsResponse = await usageServiceApi.listCodexInspectionRuns(
+            serviceBase,
+            managementKey,
+            RUNS_LIMIT
+          );
+          if (!isCurrentConnection()) return;
+          runsContextRef.current = connectionContext;
+          setRuns(runsResponse.items);
+        } catch {
+          // The credential action already succeeded. A later poll or manual refresh can
+          // reconcile the history list without misreporting the mutation as failed.
+        }
+        if (!isCurrentConnection()) return;
 
         const outcomeSummary = response.outcomes.reduce(
           (summary, outcome) => {
@@ -1322,34 +1514,55 @@ export function ServerCodexInspectionPage({
           outcomeSummary.failed > 0 || outcomeSummary.skipped > 0 || outcomeSummary.needsReview > 0;
         if (hasNonSuccessOutcome) {
           showNotification(
-            t('monitoring.codex_inspection_log_manual_completed', {
-              success: outcomeSummary.success,
-              skipped: outcomeSummary.skipped,
-              review: outcomeSummary.needsReview,
-              failed: outcomeSummary.failed,
-            }),
+            [
+              t('monitoring.codex_inspection_log_manual_completed', {
+                success: outcomeSummary.success,
+                skipped: outcomeSummary.skipped,
+                review: outcomeSummary.needsReview,
+                failed: outcomeSummary.failed,
+              }),
+              synchronizationWarning,
+            ]
+              .filter(Boolean)
+              .join('；'),
             'warning'
           );
+        } else if (synchronizationWarning) {
+          showNotification(synchronizationWarning, 'warning');
         } else {
           showNotification(t('monitoring.server_codex_inspection_execute_success'), 'success');
         }
       } catch (error: unknown) {
+        if (!isCurrentConnection()) return;
         showNotification(
           `${t('monitoring.server_codex_inspection_execute_failed')}: ${getUsageServiceDisplayError(error, t)}`,
           'error'
         );
       } finally {
-        actionInFlightRef.current = false;
-        setExecutingResultIds(new Set());
-        setExecutingAllActions(false);
+        if (isCurrentConnection()) {
+          actionInFlightRef.current = false;
+          setExecutingResultIds(new Set());
+          setExecutingAllActions(false);
+        }
       }
     },
-    [detail, managementKey, onCredentialsChanged, selectRunId, serviceBase, showNotification, t]
+    [
+      currentDetail,
+      currentRuns,
+      managementKey,
+      managerConnectionIdentity,
+      onCredentialsChanged,
+      selectRunId,
+      serviceBase,
+      showNotification,
+      t,
+    ]
   );
 
   const handleExecuteServerActions = useCallback(
     (targets: CodexInspectionResult[], scope: 'single' | 'bulk') => {
       if (targets.length === 0) return;
+      const connectionContext = managerConnectionIdentity;
       const counts = countServerResultActions(targets);
       const hasDelete = targets.some((item) => item.action === 'delete');
       const first = targets[0];
@@ -1376,10 +1589,13 @@ export function ServerCodexInspectionPage({
             : resolveActionLabel(first.action, t),
         cancelText: t('common.cancel'),
         variant: hasDelete ? 'danger' : 'primary',
-        onConfirm: () => executeServerActions(targets, scope),
+        onConfirm: () => {
+          if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+          void executeServerActions(targets, scope);
+        },
       });
     },
-    [executeServerActions, showConfirmation, t]
+    [executeServerActions, managerConnectionIdentity, showConfirmation, t]
   );
 
   const handleOpenCodexReauth = useCallback(
@@ -1391,8 +1607,11 @@ export function ServerCodexInspectionPage({
       setCodexReauthTarget({
         account: item.displayAccount || item.accountId || item.fileName,
         fileName: item.fileName,
+        runtimeId: item.runtimeId ?? null,
+        provider: item.provider ?? 'codex',
         authIndex: item.authIndex ?? null,
         accountId: item.accountId ?? null,
+        accountSnapshot: item.accountSnapshot ?? null,
       });
     },
     [navigate]
@@ -1401,6 +1620,7 @@ export function ServerCodexInspectionPage({
   const handleDeleteServerReauth = useCallback(
     (targets: CodexInspectionResult[], scope: 'single' | 'bulk') => {
       if (targets.length === 0) return;
+      const connectionContext = managerConnectionIdentity;
       const first = targets[0];
       showConfirmation({
         title:
@@ -1419,24 +1639,41 @@ export function ServerCodexInspectionPage({
         confirmText: t('monitoring.codex_inspection_action_delete'),
         cancelText: t('common.cancel'),
         variant: 'danger',
-        onConfirm: () => executeServerActions(targets, scope, 'delete'),
+        onConfirm: () => {
+          if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+          void executeServerActions(targets, scope, 'delete');
+        },
       });
     },
-    [executeServerActions, showConfirmation, t]
+    [executeServerActions, managerConnectionIdentity, showConfirmation, t]
   );
 
   const handleCodexReauthSuccess = useCallback(async () => {
+    const connectionContext = managerConnectionIdentity;
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
     await refreshRuns({ silent: true });
-    await onCredentialsChanged?.();
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
+    await onCredentialsChanged?.(codexReauthTarget);
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
     showNotification(t('codex_reauth.rerun_hint'), 'success');
-  }, [onCredentialsChanged, refreshRuns, showNotification, t]);
+  }, [
+    codexReauthTarget,
+    managerConnectionIdentity,
+    onCredentialsChanged,
+    refreshRuns,
+    showNotification,
+    t,
+  ]);
 
   const handleSelectRun = async (runID: number) => {
     if (!serviceBase || runID === selectedRunId) return;
+    const connectionContext = managerConnectionIdentity;
+    if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
     selectRunId(runID);
     try {
       await loadRunDetail(serviceBase, runID);
     } catch (error: unknown) {
+      if (activeManagerConnectionIdentityRef.current !== connectionContext) return;
       showNotification(getUsageServiceDisplayError(error, t), 'error');
     }
   };
@@ -1789,13 +2026,13 @@ export function ServerCodexInspectionPage({
 
   const renderRunsPanel = () => (
     <Panel title={t('monitoring.server_codex_inspection_history_title')}>
-      {runs.length > 0 ? (
+      {currentRuns.length > 0 ? (
         <div
           className={styles.runHistoryList}
           role="tablist"
           aria-label={t('monitoring.server_codex_inspection_history_title')}
         >
-          {runs.map((run) => {
+          {currentRuns.map((run) => {
             const tone = getRunTone(run);
             const selected = run.id === selectedRunId;
             const ariaLabel = `${getRunStatusLabel(run, t)} · #${run.id} · ${formatTimestamp(run.startedAtMs, i18n.language)}`;
@@ -1877,8 +2114,8 @@ export function ServerCodexInspectionPage({
     const mixedActionIds = getMixedServerCodexInspectionActionIds(resultRows);
     const executableResults = resultRows.filter((item) => canonicalExecutableIds.has(item.id));
     const reauthResults = resultRows.filter(isPendingServerReauthResult);
-    const canExecuteActions = detail?.run.status === 'completed';
-    const resultsRun = detail?.run ?? null;
+    const canExecuteActions = currentDetail?.run.status === 'completed';
+    const resultsRun = currentDetail?.run ?? null;
     const resultsConfig = resolveServerCodexConfig(
       resultsRun?.settings ?? managerConfig?.codexInspection
     );
@@ -2100,14 +2337,14 @@ export function ServerCodexInspectionPage({
 
   useEffect(() => {
     if (logsCollapsed) return;
-    const runId = detail?.run.id ?? null;
-    const latestLogId = detail?.logs[detail.logs.length - 1]?.id ?? null;
+    const runId = currentDetail?.run.id ?? null;
+    const latestLogId = currentDetail?.logs[currentDetail.logs.length - 1]?.id ?? null;
     const previous = previousServerLogCursorRef.current;
     previousServerLogCursorRef.current = { runId, latestLogId };
     if (latestLogId === null) return;
     if (previous.runId === runId && previous.latestLogId === latestLogId) return;
     scrollLogsToBottom();
-  }, [detail?.logs, detail?.run.id, logsCollapsed, scrollLogsToBottom]);
+  }, [currentDetail?.logs, currentDetail?.run.id, logsCollapsed, scrollLogsToBottom]);
 
   const handleJumpToLatestLog = useCallback(() => {
     if (logsCollapsed) {
@@ -2149,9 +2386,9 @@ export function ServerCodexInspectionPage({
       <div className={styles.serverDetailGrid}>
         {renderRunsPanel()}
         <div className={styles.serverDetailPanels}>
-          {detail?.run.error ? (
+          {currentDetail?.run.error ? (
             <div className={styles.serverError} role="alert">
-              {detail.run.error}
+              {currentDetail.run.error}
             </div>
           ) : null}
           {renderResultsPanel()}
@@ -2173,6 +2410,7 @@ export function ServerCodexInspectionPage({
       <CodexReauthDialog
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
+        requestScope={authFilesRequestScope}
         onClose={() => setCodexReauthTarget(null)}
         onSuccess={handleCodexReauthSuccess}
       />

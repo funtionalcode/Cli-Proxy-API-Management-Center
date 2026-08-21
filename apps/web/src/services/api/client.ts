@@ -7,6 +7,7 @@ import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { ApiClientConfig, ApiError } from '@/types';
 import {
   BUILD_DATE_HEADER_KEYS,
+  COMMIT_HEADER_KEYS,
   CPA_SUPPORT_PLUGIN_HEADER_KEYS,
   REQUEST_TIMEOUT_MS,
   VERSION_HEADER_KEYS,
@@ -165,15 +166,20 @@ class ApiClient {
       (response) => {
         const headers = response.headers as Record<string, string | undefined>;
         const version = this.readHeader(headers, VERSION_HEADER_KEYS);
+        const commit = this.readHeader(headers, COMMIT_HEADER_KEYS);
         const buildDate = this.readHeader(headers, BUILD_DATE_HEADER_KEYS);
         const supportsPlugin = this.readBooleanHeader(headers, CPA_SUPPORT_PLUGIN_HEADER_KEYS);
         const targetsCurrentConfig = this.requestTargetsCurrentConfig(response.config);
 
         // 触发版本更新事件（后续通过 store 处理）
-        if (targetsCurrentConfig && (version || buildDate)) {
+        if (targetsCurrentConfig && (version || commit || buildDate)) {
           window.dispatchEvent(
             new CustomEvent('server-version-update', {
-              detail: { version: version || null, buildDate: buildDate || null },
+              detail: {
+                version: version || null,
+                commit: commit || null,
+                buildDate: buildDate || null,
+              },
             })
           );
         }

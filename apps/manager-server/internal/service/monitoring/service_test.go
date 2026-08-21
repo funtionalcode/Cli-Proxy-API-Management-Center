@@ -55,6 +55,22 @@ func TestAnalyticsQueryGroupBoundsConcurrency(t *testing.T) {
 	}
 }
 
+func TestBuildEventsIncludesRequestMetadata(t *testing.T) {
+	response := buildEvents(store.EventsPage{Items: []store.EventPageItem{{
+		EventHash:     "request-metadata",
+		ClientIP:      "192.0.2.10",
+		XForwardedFor: "203.0.113.5, 198.51.100.8",
+		UserAgent:     "test-client/1.0",
+	}}}, 1)
+	if response == nil || len(response.Items) != 1 {
+		t.Fatalf("events response = %#v", response)
+	}
+	item := response.Items[0]
+	if item.ClientIP != "192.0.2.10" || item.XForwardedFor != "203.0.113.5, 198.51.100.8" || item.UserAgent != "test-client/1.0" {
+		t.Fatalf("request metadata = client:%q forwarded:%q agent:%q", item.ClientIP, item.XForwardedFor, item.UserAgent)
+	}
+}
+
 func TestAnalyticsQueryGroupCancelsSiblingsOnError(t *testing.T) {
 	group := newAnalyticsQueryGroup(context.Background(), 2)
 	started := make(chan struct{})
@@ -2710,6 +2726,61 @@ func TestAccountWindowUsageSeparatesPeriodsAndAppliesModelScopeAcrossOverlapping
 	}
 	if resp.Items[4].RequestKey != "exact-unmatched" || resp.Items[4].Matched || resp.Items[4].ScopeMatchStatus != "unmatched" {
 		t.Fatalf("unmatched exact scope = %#v", resp.Items[4])
+	}
+}
+
+func TestAccountWindowUsageCanonicalizesReasoningSuffixScopeAndPreservesRawPriceFallback(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	baseMS := int64(1_700_101_000_000)
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"deepseek-v4-flash(max)": {Prompt: 3},
+		"deepseek-v4-flash(low)": {Prompt: 4},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+
+	events := []usage.Event{
+		monitoringEvent("scope-reasoning-max", baseMS+1_000, "deepseek-v4-flash(max)", "auth-1", "source-a", false, 1_000_000, 0, 0, 0, 1_000_000, nil),
+		monitoringEvent("scope-reasoning-low", baseMS+2_000, "deepseek-v4-flash(low)", "auth-1", "source-a", false, 1_000_000, 0, 0, 0, 1_000_000, nil),
+	}
+	for index := range events {
+		events[index].AccountSnapshot = "reasoning-scope@example.com"
+		events[index].AuthFileSnapshot = "reasoning-scope.json"
+		events[index].AuthProviderSnapshot = "openai"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	resp, err := New(db).AccountWindowUsage(ctx, AccountWindowUsageRequest{
+		Windows: []AccountWindowUsageTarget{{
+			RequestKey:           "reasoning-scope",
+			RowKey:               "reasoning-scope.json\x00auth-1",
+			ProviderWindowID:     "current",
+			Period:               "current",
+			FromMS:               baseMS,
+			ToMS:                 baseMS + 5_000,
+			ModelScope:           AccountWindowModelScope{Kind: "models", Models: []string{"DEEPSEEK-V4-FLASH(MAX)"}},
+			AccountSnapshot:      "reasoning-scope@example.com",
+			AuthFileSnapshot:     "reasoning-scope.json",
+			AuthProviderSnapshot: "openai",
+			AuthIndex:            "auth-1",
+			Source:               "reasoning-scope.json",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("account window usage: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("items = %#v", resp.Items)
+	}
+	item := resp.Items[0]
+	if !item.Matched || item.ScopeMatchStatus != "complete" || item.TotalRequests != 2 || item.TotalTokens != 2_000_000 {
+		t.Fatalf("canonical reasoning scope = %#v", item)
+	}
+	if math.Abs(item.TotalCost-7) > 0.000001 {
+		t.Fatalf("raw suffix price fallback cost = %v, want 7", item.TotalCost)
 	}
 }
 

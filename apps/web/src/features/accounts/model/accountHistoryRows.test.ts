@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountRow } from './accountRows';
 import {
+  ACCOUNT_HISTORY_TARGET_BATCH_SIZE,
   buildAccountHistoryByRowKey,
+  buildAccountHistoryTargetBatches,
   buildAccountHistoryTargetEntries,
+  retainAccountHistoryRowKeys,
 } from './accountHistoryRows';
 
 const makeRow = (overrides: Partial<AccountRow>): AccountRow =>
@@ -43,6 +46,32 @@ const makeRow = (overrides: Partial<AccountRow>): AccountRow =>
   }) as AccountRow;
 
 describe('accountHistoryRows', () => {
+  it('splits account-history targets at the server request limit', () => {
+    const entries = Array.from({ length: ACCOUNT_HISTORY_TARGET_BATCH_SIZE + 1 }, (_, index) => ({
+      rowKey: `row-${index}`,
+      target: { row_key: `row-${index}` },
+    }));
+
+    const batches = buildAccountHistoryTargetBatches(entries);
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toHaveLength(ACCOUNT_HISTORY_TARGET_BATCH_SIZE);
+    expect(batches[1]).toHaveLength(1);
+    expect(batches.flat()).toEqual(entries);
+  });
+
+  it('removes history state for rows that are no longer active', () => {
+    const current = new Map([
+      ['active-row', 'keep'],
+      ['deleted-row', 'remove'],
+    ]);
+
+    expect(retainAccountHistoryRowKeys(current, new Set(['active-row']))).toEqual(
+      new Map([['active-row', 'keep']])
+    );
+    expect(retainAccountHistoryRowKeys(current, new Set(current.keys()))).toBe(current);
+  });
+
   it('builds strict account-history targets from current account rows', () => {
     const entries = buildAccountHistoryTargetEntries([
       makeRow({}),

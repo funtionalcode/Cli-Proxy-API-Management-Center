@@ -34,7 +34,7 @@ Failure summaries are sanitized. Raw failure bodies stay in local SQLite and are
 3. Open Account Overview to see whether only a few accounts are unhealthy.
 4. Open API Key Summary to find abnormal callers.
 5. Open a realtime request row and inspect model, provider, account, latency, tokens, and failure summary.
-6. If the failure points to auth or quota, continue with [Auth Files](./auth-files.md), [Quota](./quota.md), or [Codex Inspection](./codex-inspection.md).
+6. If the failure points to auth or quota, continue with [Accounts](./accounts.md) or [Codex Inspection](./codex-inspection.md).
 
 ## Filters
 

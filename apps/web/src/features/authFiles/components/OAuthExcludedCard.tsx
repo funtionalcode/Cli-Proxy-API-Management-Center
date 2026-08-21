@@ -7,7 +7,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/Input';
 import { IconMoreVertical, IconSearch, IconTrash2 } from '@/components/ui/icons';
 import type { OAuthConfigLoadState } from '@/features/authFiles/constants';
-import styles from '@/features/authFiles/AuthFilesPage.module.scss';
+import styles from './OAuthRuleCards.module.scss';
 
 const COLLAPSED_MODEL_COUNT = 3;
 

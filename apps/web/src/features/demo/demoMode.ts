@@ -2,6 +2,7 @@ export const DEMO_ROUTE_BASE = '/demo';
 export const DEMO_API_BASE = 'http://demo.local';
 export const DEMO_MANAGEMENT_KEY = 'demo-management-key';
 export const DEMO_SERVER_VERSION = 'v7.1.18-demo';
+export const DEMO_SERVER_COMMIT = '5bffd1514fba2ca7cbfd13bb6530a6f7d9d72d43';
 
 export const formatDemoDate = (input = Date.now()): string => {
   const date = new Date(input);
@@ -40,10 +41,8 @@ export const prefixRouteBase = (path: string, routeBase = DEMO_ROUTE_BASE): stri
   return target === '/' ? base : `${base}${target}`;
 };
 
-export const ensureRouteBasePathname = (
-  pathname: string,
-  routeBase = DEMO_ROUTE_BASE
-): string => prefixRouteBase(stripRouteBase(pathname || '/', routeBase), routeBase);
+export const ensureRouteBasePathname = (pathname: string, routeBase = DEMO_ROUTE_BASE): string =>
+  prefixRouteBase(stripRouteBase(pathname || '/', routeBase), routeBase);
 
 export const getDemoLogoutPath = (routeBase = DEMO_ROUTE_BASE): string =>
   prefixRouteBase('/', routeBase || DEMO_ROUTE_BASE);
@@ -53,9 +52,8 @@ export const getDemoLogoutHash = (routeBase = DEMO_ROUTE_BASE): string =>
 
 const readCurrentHashPathname = (): string => {
   if (typeof window === 'undefined') return '/';
-  const hash = typeof window.location.hash === 'string'
-    ? window.location.hash.replace(/^#/, '')
-    : '';
+  const hash =
+    typeof window.location.hash === 'string' ? window.location.hash.replace(/^#/, '') : '';
   if (!hash) return '/';
   const [pathname = '/'] = hash.split(/[?#]/);
   return normalizePathname(pathname || '/');

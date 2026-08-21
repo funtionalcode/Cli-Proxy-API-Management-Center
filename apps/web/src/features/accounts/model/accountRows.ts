@@ -11,14 +11,17 @@ import {
   getAuthFileCodexInspectionKeyForFile,
   getAuthFileCodexInspectionKeyForIdentity,
   getAuthFileSelectionKey,
+  isAuthFileInspectionAuthenticationFailure,
+  hasActiveCodexInspectionAuthenticationFailure,
   type AuthFileCodexStatusSummary,
-} from '@/features/authFiles/model/authFilesPageModel';
+} from '@/features/authFiles/model/credentialStatus';
 import { resolveCodexPlanType } from '@/utils/quota/resolvers';
 import {
   compareQuotaResetLabels,
   compareQuotaResets,
   normalizeAccountProvider,
   readAuthFileCreatedAtMs,
+  readAuthFileCredentialRefreshAtMs,
   readAuthFileUpdatedAtMs,
   resolveAccountQuota,
   type AccountQuotaOverrides,
@@ -26,12 +29,33 @@ import {
   type AccountQuotaStores,
   type AccountQuotaSummary,
 } from '@/features/accounts/model/accountQuotaSummary';
+import {
+  getAccountRequestCredentialEvidence,
+  hasAccountQuotaLimitEvidence,
+  isAccountCredentialStatusProblemCurrent,
+  isAccountInspectionHealthyEvidence,
+  isAccountInspectionActionable,
+  isAccountObservedDiagnosticProblemCurrent,
+  isAccountQuotaRefreshProblemCurrent,
+  isAccountRequestCredentialEvidenceCurrent,
+  isAccountRequestHealthEvidenceCurrent,
+  resolveAccountAuthenticationProblemEvidence,
+  resolveAccountRequestHealthEvidence,
+  type AccountRequestEvidenceBySelectionKey,
+} from './accountHealthEvidence';
+import {
+  getAccountCredentialEvidenceCutoffs,
+  type AccountCredentialEvidenceBoundary,
+  type AccountInspectionSummary,
+} from '@/features/accounts/model/accountCredentialEvidence';
+import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 
 export {
   compareQuotaResetLabels,
   compareQuotaResets,
   normalizeAccountProvider,
   readAuthFileCreatedAtMs,
+  readAuthFileCredentialRefreshAtMs,
   readAuthFileUpdatedAtMs,
   resolveAccountQuota,
 };
@@ -81,21 +105,57 @@ export interface AccountRowSort {
   direction: AccountRowSortDirection;
 }
 
-export interface AccountInspectionSummary {
-  source: 'local' | 'server';
-  action: string;
-  actionReason: string;
-  actionStatus: string;
-  statusCode: number | null;
-  usedPercent: number | null;
-  isQuota?: boolean | null;
-  runId: number;
-  resultId: number;
-  createdAtMs: number;
-}
+export type { AccountInspectionSummary } from '@/features/accounts/model/accountCredentialEvidence';
 
 export type AccountInspectionResult = CodexInspectionResult & {
   inspectionSource?: 'local' | 'server';
+};
+
+export const getAccountInspectionResultSnapshotKey = (result: AccountInspectionResult): string => {
+  const identityKey = getAuthFileCodexInspectionKeyForIdentity(result);
+  if (result.inspectionSource === 'local' || result.runId <= 0 || result.id <= 0) {
+    return [identityKey, 'local', result.createdAtMs, result.id].join('\u001f');
+  }
+  return [identityKey, 'server', result.runId, result.id, result.createdAtMs].join('\u001f');
+};
+
+export const filterSuppressedAccountInspectionResults = (
+  results: AccountInspectionResult[],
+  suppressedResultKeys: ReadonlySet<string>
+): AccountInspectionResult[] => {
+  if (suppressedResultKeys.size === 0) return results;
+  const filtered = results.filter(
+    (result) => !suppressedResultKeys.has(getAccountInspectionResultSnapshotKey(result))
+  );
+  return filtered.length === results.length ? results : filtered;
+};
+
+export const getHandledAccountInspectionResultKeys = (
+  results: AccountInspectionResult[],
+  targetIdentityKey: string,
+  targetFileName: string,
+  files: AuthFileItem[]
+): string[] => {
+  const normalizedFileName = targetFileName.trim();
+  if (!normalizedFileName) return [];
+
+  const fileNameFallbackKey = getAuthFileCodexInspectionKey(normalizedFileName, null);
+  const targetHasStableIdentity = targetIdentityKey !== fileNameFallbackKey;
+  const hasUniqueFileName = files.filter((file) => file.name === normalizedFileName).length === 1;
+
+  return results
+    .filter((result) => {
+      if (
+        result.fileName.trim() !== normalizedFileName ||
+        !isAuthFileInspectionAuthenticationFailure(result)
+      ) {
+        return false;
+      }
+      const resultIdentityKey = getAuthFileCodexInspectionKeyForIdentity(result);
+      if (targetHasStableIdentity && resultIdentityKey === targetIdentityKey) return true;
+      return hasUniqueFileName && resultIdentityKey === fileNameFallbackKey;
+    })
+    .map(getAccountInspectionResultSnapshotKey);
 };
 
 export interface AccountUsageSummary {
@@ -119,6 +179,7 @@ export interface AccountRow {
   projectId: string;
   note?: string;
   priority: number | null;
+  weight?: number | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
   quota: AccountQuotaSummary;
@@ -149,6 +210,7 @@ export interface AccountMetrics {
 export interface AccountMetricOperationalContext {
   pendingActionsByRowKey?: ReadonlyMap<string, readonly unknown[]>;
   quotaCooldownsByRowKey?: ReadonlyMap<string, readonly unknown[]>;
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey;
 }
 
 export interface AccountRowFilters {
@@ -158,6 +220,7 @@ export interface AccountRowFilters {
   quotaBand: AccountQuotaBand;
   search: string;
   codexStatusBySelectionKey?: ReadonlyMap<string, AuthFileCodexStatusSummary>;
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey;
 }
 
 const QUOTA_LOW_THRESHOLD = 20;
@@ -245,18 +308,74 @@ const buildInspectionMap = (
     if (current && current.createdAtMs >= result.createdAtMs) return;
     map.set(key, {
       source: result.inspectionSource ?? 'server',
+      disabled: result.disabled,
       action: result.action || 'keep',
       actionReason: result.actionReason || '',
       actionStatus: result.actionStatus || 'none',
+      executedAction: result.executedAction || '',
       statusCode: result.statusCode ?? null,
       usedPercent: result.usedPercent ?? null,
       isQuota: result.isQuota ?? null,
+      planType: result.planType ?? null,
+      quotaWindows: result.quotaWindows ?? [],
+      quotaInventoryObserved: result.quotaInventoryObserved,
+      error: result.error ?? '',
+      errorKind: result.errorKind ?? '',
       runId: result.runId,
       resultId: result.id,
       createdAtMs: result.createdAtMs,
     });
   });
   return map;
+};
+
+export const buildAccountInspectionBySelectionKey = (
+  files: AuthFileItem[],
+  results: AccountInspectionResult[] | undefined,
+  evidenceBoundaryBySelectionKey?: ReadonlyMap<string, AccountCredentialEvidenceBoundary>
+): Map<string, AccountInspectionSummary> => {
+  const inspectionByIdentity = buildInspectionMap(results);
+  const fileNameCounts = files.reduce((counts, file) => {
+    counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const inspections = new Map<string, AccountInspectionSummary>();
+  files.forEach((file) => {
+    const selectionKey = getAuthFileSelectionKey(file);
+    const exactInspection = inspectionByIdentity.get(getAuthFileCodexInspectionKeyForFile(file));
+    const fallbackInspection =
+      fileNameCounts.get(file.name) === 1
+        ? inspectionByIdentity.get(getAuthFileCodexInspectionKey(file.name, null))
+        : undefined;
+    const inspection =
+      exactInspection && fallbackInspection
+        ? fallbackInspection.createdAtMs > exactInspection.createdAtMs
+          ? fallbackInspection
+          : exactInspection
+        : (exactInspection ?? fallbackInspection);
+    if (!inspection) return;
+    const boundary = evidenceBoundaryBySelectionKey?.get(selectionKey);
+    const usesExactInspection = inspection === exactInspection;
+    const boundaryAtMs = Math.max(
+      boundary?.inspectionAtMs ?? 0,
+      usesExactInspection ? 0 : (boundary?.fallbackInspectionAtMs ?? 0)
+    );
+    const inspectionBaselinePending = usesExactInspection
+      ? boundary?.inspectionBaselinePending === true
+      : boundary?.fallbackInspectionBaselinePending === true;
+    if (inspectionBaselinePending) return;
+    if (inspection.createdAtMs <= boundaryAtMs) return;
+    const credentialRefreshAtMs = readAuthFileCredentialRefreshAtMs(file) ?? 0;
+    if (
+      credentialRefreshAtMs > 0 &&
+      inspection.createdAtMs <= credentialRefreshAtMs &&
+      hasActiveCodexInspectionAuthenticationFailure(inspection)
+    ) {
+      return;
+    }
+    inspections.set(selectionKey, inspection);
+  });
+  return inspections;
 };
 
 const buildUsageSummary = (file: AuthFileItem): AccountUsageSummary => {
@@ -275,18 +394,59 @@ export const buildAccountRows = (
   files: AuthFileItem[],
   stores: AccountQuotaStores,
   inspectionResults?: AccountInspectionResult[],
-  overrides?: AccountQuotaOverrides
+  overrides?: AccountQuotaOverrides,
+  inspectionBySelectionKey?: ReadonlyMap<string, AccountInspectionSummary>,
+  evidenceBoundaryBySelectionKey?: ReadonlyMap<string, AccountCredentialEvidenceBoundary>,
+  statusBoundaryBySelectionKey?: ReadonlyMap<string, AccountCredentialEvidenceBoundary>
 ): AccountRow[] => {
-  const inspectionByFile = buildInspectionMap(inspectionResults);
-  const fileNameCounts = files.reduce((counts, file) => {
-    counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
-    return counts;
-  }, new Map<string, number>());
+  const resolvedInspectionBySelectionKey =
+    inspectionBySelectionKey ?? buildAccountInspectionBySelectionKey(files, inspectionResults);
   return files.map((file) => {
     const provider = normalizeAccountProvider(file);
     const authIndex = readAuthIndex(file);
     const selectionKey = getAuthFileSelectionKey(file);
-    const quota = resolveAccountQuota(file, stores, overrides);
+    const resolvedInspection = resolvedInspectionBySelectionKey.get(selectionKey) ?? null;
+    const evidenceBoundary = evidenceBoundaryBySelectionKey?.get(selectionKey);
+    const statusBoundary = statusBoundaryBySelectionKey?.get(selectionKey);
+    const statusBoundaryAtMs = statusBoundary?.inspectionAtMs ?? 0;
+    const inspection =
+      resolvedInspection && resolvedInspection.createdAtMs <= statusBoundaryAtMs
+        ? null
+        : resolvedInspection;
+    const updatedAtMs = readAuthFileUpdatedAtMs(file);
+    const inspectionSupersedesRawDisabled =
+      typeof inspection?.disabled === 'boolean' &&
+      inspection.createdAtMs > 0 &&
+      (updatedAtMs === null || inspection.createdAtMs >= updatedAtMs);
+    const effectiveFile = inspectionSupersedesRawDisabled
+      ? { ...file, disabled: inspection.disabled }
+      : file;
+    const codexQuota =
+      provider === 'codex'
+        ? (overrides?.codexQuotaBySelectionKey?.get(selectionKey) ??
+          getCredentialScopedQuotaState(stores.codexQuota, file))
+        : undefined;
+    const authenticationAtMs = getAccountCredentialEvidenceCutoffs({
+      providerQuota: codexQuota,
+      inspection,
+      credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(file) ?? 0,
+    }).authenticationAtMs;
+    const rawStatusMessage = resolveStatusMessage(file);
+    const boundarySupersedesRawStatus = (
+      boundary: AccountCredentialEvidenceBoundary | undefined
+    ): boolean => {
+      if (!boundary || boundary.localAtMs <= 0) return false;
+      if (rawStatusMessage === '' || !boundary.rawStatusMessages.includes(rawStatusMessage)) {
+        return false;
+      }
+      if (updatedAtMs === null) return true;
+      return updatedAtMs <= Math.max(boundary.rawStatusAtMs, boundary.localAtMs);
+    };
+    const rawStatusSuperseded =
+      boundarySupersedesRawStatus(evidenceBoundary) ||
+      boundarySupersedesRawStatus(statusBoundary) ||
+      (authenticationAtMs > 0 && updatedAtMs !== null && authenticationAtMs >= updatedAtMs);
+    const quota = resolveAccountQuota(effectiveFile, stores, overrides);
     return {
       key: file.name,
       selectionKey,
@@ -294,24 +454,20 @@ export const buildAccountRows = (
       accountLabel: resolveAccountLabel(file),
       provider,
       planType: quota.planType ?? readPlanType(file),
-      disabled: file.disabled === true,
+      disabled: effectiveFile.disabled === true,
       runtimeOnly:
         file.runtimeOnly === true || file.runtimeOnly === 'true' || file.runtime_only === true,
-      statusMessage: resolveStatusMessage(file),
+      statusMessage: rawStatusSuperseded ? '' : rawStatusMessage,
       authIndex,
       projectId: readProjectId(file),
       note: readString(file.note),
       priority: readNumber(file.priority),
+      weight: readNumber(file.weight),
       createdAtMs: readAuthFileCreatedAtMs(file),
-      updatedAtMs: readAuthFileUpdatedAtMs(file),
+      updatedAtMs,
       quota,
       usage: buildUsageSummary(file),
-      inspection:
-        inspectionByFile.get(getAuthFileCodexInspectionKeyForFile(file)) ??
-        (fileNameCounts.get(file.name) === 1
-          ? inspectionByFile.get(getAuthFileCodexInspectionKey(file.name, null))
-          : undefined) ??
-        null,
+      inspection,
       raw: file,
     };
   });
@@ -355,29 +511,71 @@ const hasOperationalItems = (
 const hasPartialGroupedQuota = (row: AccountRow): boolean =>
   row.quota.groupedAvailabilityState === 'partial';
 
+const getRowRequestHealthEvidence = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => resolveAccountRequestHealthEvidence(requestEvidenceBySelectionKey?.get(row.selectionKey));
+
+const getRowRequestEvidenceInput = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => requestEvidenceBySelectionKey?.get(row.selectionKey);
+
+const getRowRequestCredentialEvidence = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => {
+  const requestEvidence = getRowRequestHealthEvidence(row, requestEvidenceBySelectionKey);
+  return isAccountRequestCredentialEvidenceCurrent(row, requestEvidence)
+    ? getAccountRequestCredentialEvidence(requestEvidence)
+    : null;
+};
+
 const needsAccountAttention = (
   row: AccountRow,
   context: AccountMetricOperationalContext
-): boolean =>
-  Boolean(
-    (row.statusMessage && !hasPartialGroupedQuota(row)) ||
-    row.quota.status === 'error' ||
-    row.quota.error ||
-    (row.inspection && row.inspection.action !== 'keep') ||
+): boolean => {
+  const requestEvidenceInput = getRowRequestEvidenceInput(
+    row,
+    context.requestEvidenceBySelectionKey
+  );
+  const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const currentRequestEvidence = isAccountRequestHealthEvidenceCurrent(row, requestEvidence)
+    ? requestEvidence
+    : null;
+  return Boolean(
+    resolveAccountAuthenticationProblemEvidence(row, requestEvidence) ||
+    isAccountQuotaRefreshProblemCurrent(row, requestEvidence) ||
+    (isAccountObservedDiagnosticProblemCurrent(row, requestEvidence) &&
+      !hasAccountQuotaLimitEvidence(row, requestEvidenceInput)) ||
+    isAccountInspectionActionable(row, requestEvidence) ||
+    currentRequestEvidence?.direction === 'negative' ||
     hasOperationalItems(context.pendingActionsByRowKey, row.selectionKey)
   );
+};
 
 const hasAccountQuotaRisk = (row: AccountRow, context: AccountMetricOperationalContext): boolean =>
   row.quota.status === 'low' ||
   row.quota.status === 'exhausted' ||
+  hasAccountQuotaLimitEvidence(
+    row,
+    getRowRequestEvidenceInput(row, context.requestEvidenceBySelectionKey)
+  ) ||
   hasPartialGroupedQuota(row) ||
   hasOperationalItems(context.quotaCooldownsByRowKey, row.selectionKey);
 
-const hasConfirmedAvailableEvidence = (row: AccountRow): boolean =>
-  row.quota.status === 'ok' || row.inspection?.action === 'keep';
-
-const hasAccountDiagnosticException = (row: AccountRow): boolean =>
-  Boolean(row.quota.observedErrorKind || row.quota.observedErrorCode);
+const hasConfirmedAvailableEvidence = (
+  row: AccountRow,
+  context: AccountMetricOperationalContext
+): boolean => {
+  const requestEvidence = getRowRequestHealthEvidence(row, context.requestEvidenceBySelectionKey);
+  return (
+    row.quota.status === 'ok' ||
+    isAccountInspectionHealthyEvidence(row) ||
+    (isAccountRequestHealthEvidenceCurrent(row, requestEvidence) &&
+      requestEvidence?.direction === 'positive')
+  );
+};
 
 const classifyAccountMetricStatus = (
   row: AccountRow,
@@ -386,8 +584,7 @@ const classifyAccountMetricStatus = (
   if (row.disabled || row.quota.status === 'disabled') return 'disabled';
   if (needsAccountAttention(row, context)) return 'needsAttention';
   if (hasAccountQuotaRisk(row, context)) return 'quotaRisk';
-  if (hasAccountDiagnosticException(row)) return 'needsAttention';
-  if (!hasConfirmedAvailableEvidence(row)) return 'unconfirmed';
+  if (!hasConfirmedAvailableEvidence(row, context)) return 'unconfirmed';
   return 'available';
 };
 
@@ -408,7 +605,9 @@ export const buildAccountMetrics = (
   rows.forEach((row) => {
     const status = classifyAccountMetricStatus(row, context);
     metrics[status] += 1;
+    const requestEvidence = getRowRequestHealthEvidence(row, context.requestEvidenceBySelectionKey);
     if (
+      isAccountInspectionActionable(row, requestEvidence) &&
       row.inspection &&
       ['delete', 'disable', 'enable', 'reauth'].includes(row.inspection.action)
     ) {
@@ -419,13 +618,27 @@ export const buildAccountMetrics = (
   return metrics;
 };
 
-const isAccountRowAvailable = (row: AccountRow): boolean =>
-  !row.disabled &&
-  (!row.statusMessage || hasPartialGroupedQuota(row)) &&
-  !row.quota.error &&
-  row.quota.status !== 'error' &&
-  row.quota.status !== 'exhausted' &&
-  (!row.inspection || row.inspection.action === 'keep');
+const isAccountRowAvailable = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+): boolean => {
+  const requestEvidenceInput = getRowRequestEvidenceInput(row, requestEvidenceBySelectionKey);
+  const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const currentRequestEvidence = isAccountRequestHealthEvidenceCurrent(row, requestEvidence)
+    ? requestEvidence
+    : null;
+  return (
+    !row.disabled &&
+    !resolveAccountAuthenticationProblemEvidence(row, requestEvidence) &&
+    !hasAccountQuotaLimitEvidence(row, requestEvidenceInput) &&
+    !isAccountQuotaRefreshProblemCurrent(row, requestEvidence) &&
+    row.quota.status !== 'exhausted' &&
+    !isAccountObservedDiagnosticProblemCurrent(row, requestEvidence) &&
+    !isAccountInspectionActionable(row, requestEvidence) &&
+    currentRequestEvidence?.direction !== 'negative' &&
+    hasConfirmedAvailableEvidence(row, { requestEvidenceBySelectionKey })
+  );
+};
 
 export const filterAccountRows = (rows: AccountRow[], filters: AccountRowFilters): AccountRow[] => {
   const search = filters.search.trim().toLowerCase();
@@ -443,7 +656,16 @@ export const filterAccountRows = (rows: AccountRow[], filters: AccountRowFilters
     if (filters.plan !== 'all' && getAccountPlanFilterValue(row.planType) !== filters.plan) {
       return false;
     }
-    if (!matchesStatusFilter(row, filters.status, filters.codexStatusBySelectionKey)) return false;
+    if (
+      !matchesStatusFilter(
+        row,
+        filters.status,
+        filters.codexStatusBySelectionKey,
+        filters.requestEvidenceBySelectionKey
+      )
+    ) {
+      return false;
+    }
     if (!matchesQuotaBand(row, filters.quotaBand)) return false;
     if (!search) return true;
     const values = [
@@ -477,13 +699,21 @@ export const filterAccountRows = (rows: AccountRow[], filters: AccountRowFilters
   });
 };
 
-export const sortAccountRows = (rows: AccountRow[], sort?: AccountRowSort): AccountRow[] => {
-  const defaultSorted = [...rows].sort(compareDefaultAccountRows);
+export const sortAccountRows = (
+  rows: AccountRow[],
+  sort?: AccountRowSort,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+): AccountRow[] => {
+  const defaultSorted = [...rows].sort((left, right) =>
+    compareDefaultAccountRows(left, right, requestEvidenceBySelectionKey)
+  );
   if (!sort || sort.key === 'default') return defaultSorted;
 
   return defaultSorted.sort((left, right) => {
     const byColumn = compareAccountRowsBySort(left, right, sort);
-    return byColumn === 0 ? compareDefaultAccountRows(left, right) : byColumn;
+    return byColumn === 0
+      ? compareDefaultAccountRows(left, right, requestEvidenceBySelectionKey)
+      : byColumn;
   });
 };
 
@@ -514,24 +744,44 @@ export const getPlanOptions = (rows: AccountRow[]) => {
 const matchesStatusFilter = (
   row: AccountRow,
   status: AccountStatusFilter,
-  codexStatusBySelectionKey?: ReadonlyMap<string, AuthFileCodexStatusSummary>
+  codexStatusBySelectionKey?: ReadonlyMap<string, AuthFileCodexStatusSummary>,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
 ) => {
   if (status === 'all') return true;
   if (isAccountCodexStatusFilter(status)) {
     const codexStatus = codexStatusBySelectionKey?.get(row.selectionKey);
-    return codexStatus ? authFileMatchesCodexStatusFilter(codexStatus, status) : false;
+    if (!codexStatus || !authFileMatchesCodexStatusFilter(codexStatus, status)) return false;
+    if (status !== 'reauth') return true;
+    return (
+      getRowRequestCredentialEvidence(row, requestEvidenceBySelectionKey)?.direction !== 'positive'
+    );
   }
-  if (status === 'available') return isAccountRowAvailable(row);
+  if (status === 'available') {
+    return isAccountRowAvailable(row, requestEvidenceBySelectionKey);
+  }
   if (status === 'disabled') return row.disabled;
   if (status === 'problem') {
+    const requestEvidenceInput = getRowRequestEvidenceInput(row, requestEvidenceBySelectionKey);
+    const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+    const currentRequestEvidence = isAccountRequestHealthEvidenceCurrent(row, requestEvidence)
+      ? requestEvidence
+      : null;
     return (
-      Boolean((row.statusMessage && !hasPartialGroupedQuota(row)) || row.quota.error) ||
-      row.quota.status === 'error'
+      Boolean(resolveAccountAuthenticationProblemEvidence(row, requestEvidence)) ||
+      isAccountQuotaRefreshProblemCurrent(row, requestEvidence) ||
+      (isAccountObservedDiagnosticProblemCurrent(row, requestEvidence) &&
+        !hasAccountQuotaLimitEvidence(row, requestEvidenceInput)) ||
+      currentRequestEvidence?.direction === 'negative'
     );
   }
   if (status === 'low') return row.quota.status === 'low';
   if (status === 'exhausted') return row.quota.status === 'exhausted';
-  if (status === 'inspection') return Boolean(row.inspection && row.inspection.action !== 'keep');
+  if (status === 'inspection') {
+    return isAccountInspectionActionable(
+      row,
+      getRowRequestHealthEvidence(row, requestEvidenceBySelectionKey)
+    );
+  }
   return true;
 };
 
@@ -548,20 +798,37 @@ const matchesQuotaBand = (row: AccountRow, band: AccountQuotaBand) => {
   return true;
 };
 
-const getRiskRank = (row: AccountRow) => {
-  if (row.inspection && row.inspection.action !== 'keep') return 7;
+const getRiskRank = (
+  row: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => {
+  const requestEvidenceInput = getRowRequestEvidenceInput(row, requestEvidenceBySelectionKey);
+  const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
+  const currentRequestEvidence = isAccountRequestHealthEvidenceCurrent(row, requestEvidence)
+    ? requestEvidence
+    : null;
+  const authenticationProblem = resolveAccountAuthenticationProblemEvidence(row, requestEvidence);
+  if (authenticationProblem) return 7;
+  if (isAccountInspectionActionable(row, requestEvidence)) return 7;
   if (row.quota.status === 'exhausted') return 6;
   if (row.quota.status === 'low') return 5;
-  if (row.quota.status === 'error' || row.quota.error) return 4;
+  if (hasAccountQuotaLimitEvidence(row, requestEvidenceInput)) return 5;
+  if (currentRequestEvidence?.kind === 'transient_failure') return 4;
+  if (isAccountQuotaRefreshProblemCurrent(row, requestEvidence)) return 4;
+  if (isAccountObservedDiagnosticProblemCurrent(row, requestEvidence)) return 4;
   if (hasPartialGroupedQuota(row)) return 3;
   if (row.disabled) return 2;
-  if (row.statusMessage) return 1;
+  if (isAccountCredentialStatusProblemCurrent(row, requestEvidence)) return 1;
   return 0;
 };
 
-const compareDefaultAccountRows = (left: AccountRow, right: AccountRow) => {
-  const leftRisk = getRiskRank(left);
-  const rightRisk = getRiskRank(right);
+const compareDefaultAccountRows = (
+  left: AccountRow,
+  right: AccountRow,
+  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+) => {
+  const leftRisk = getRiskRank(left, requestEvidenceBySelectionKey);
+  const rightRisk = getRiskRank(right, requestEvidenceBySelectionKey);
   if (leftRisk !== rightRisk) return rightRisk - leftRisk;
   if (left.provider !== right.provider) return left.provider.localeCompare(right.provider);
   return left.fileName.localeCompare(right.fileName, undefined, {

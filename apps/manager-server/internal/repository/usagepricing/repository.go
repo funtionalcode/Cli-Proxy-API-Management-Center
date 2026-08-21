@@ -56,6 +56,7 @@ type CatchUpResult struct {
 	TargetEventID   int64
 	Pending         bool
 	Rebuilt         bool
+	ContinueSoon    bool
 }
 
 type HourlyFilter struct {
@@ -128,6 +129,7 @@ type hourlyKey struct {
 
 type accountKey struct {
 	accountKey             string
+	model                  string
 	billingModel           string
 	pricingModel           string
 	serviceTier            string
@@ -181,7 +183,8 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 	if err != nil {
 		return CatchUpResult{}, err
 	}
-	rebuilt := false
+	rebuilt := (state.Status == "pending" || state.Status == "rebuilding" || state.Status == "clearing") &&
+		state.CoverageEventID < state.TargetEventID
 	if state.StructureRevision != revision {
 		if err := resetForRevision(ctx, tx, revision, latestID, nowMS); err != nil {
 			return CatchUpResult{}, err
@@ -190,27 +193,77 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 			RollupName:        RollupName,
 			SchemaVersion:     SchemaVersion,
 			StructureRevision: revision,
-			Status:            "rebuilding",
+			Status:            "clearing",
 			TargetEventID:     latestID,
 			UpdatedAtMS:       nowMS,
 		}
 		rebuilt = true
 	}
+	if state.Status == "clearing" {
+		pending, err := clearRevisionRowsBatch(ctx, tx, revision, limit)
+		if err != nil {
+			return CatchUpResult{}, err
+		}
+		if pending {
+			if err := tx.Commit(); err != nil {
+				return CatchUpResult{}, err
+			}
+			return CatchUpResult{
+				TargetEventID: state.TargetEventID,
+				Pending:       true,
+				Rebuilt:       true,
+				ContinueSoon:  true,
+			}, nil
+		}
+		if _, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
+			status = 'rebuilding', updated_at_ms = ?, last_error = null
+			where rollup_name = ? and structure_revision = ?`,
+			nowMS, RollupName, revision); err != nil {
+			return CatchUpResult{}, err
+		}
+		state.Status = "rebuilding"
+	}
 
-	ids, err := eventIDsAfter(ctx, tx, state.BackfillLastEventID, limit)
+	targetEventID := state.TargetEventID
+	if targetEventID < state.CoverageEventID {
+		targetEventID = state.CoverageEventID
+	}
+	if !rebuilt && state.CoverageEventID >= targetEventID && latestID > state.CoverageEventID {
+		targetEventID = latestID
+		if _, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
+			status = 'catching_up', target_event_id = ?, finished_at_ms = null
+			where rollup_name = ? and structure_revision = ?`, targetEventID, RollupName, revision); err != nil {
+			return CatchUpResult{}, err
+		}
+	}
+	ids, err := eventIDsThrough(ctx, tx, state.BackfillLastEventID, targetEventID, limit)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
 	if len(ids) == 0 {
+		coverageEventID := state.CoverageEventID
+		if targetEventID > coverageEventID {
+			coverageEventID = targetEventID
+		}
+		pending := latestID > coverageEventID
+		status := "ready"
+		finishedAt := any(nowMS)
+		if pending {
+			status = "catching_up"
+			finishedAt = nil
+		}
 		if _, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
-			status = 'ready',
-			target_event_id = max(target_event_id, ?),
+			status = ?,
+			backfill_last_event_id = ?,
+			coverage_event_id = ?,
+			target_event_id = ?,
 			last_run_started_at_ms = ?,
 			updated_at_ms = ?,
 			finished_at_ms = ?,
 			last_error = null
 			where rollup_name = ? and structure_revision = ?`,
-			latestID, nowMS, nowMS, nowMS, RollupName, revision,
+			status, coverageEventID, coverageEventID, targetEventID,
+			nowMS, nowMS, finishedAt, RollupName, revision,
 		); err != nil {
 			return CatchUpResult{}, err
 		}
@@ -218,9 +271,10 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 			return CatchUpResult{}, err
 		}
 		return CatchUpResult{
-			LastEventID:     state.BackfillLastEventID,
-			CoverageEventID: state.CoverageEventID,
-			TargetEventID:   max(state.TargetEventID, latestID),
+			LastEventID:     coverageEventID,
+			CoverageEventID: coverageEventID,
+			TargetEventID:   targetEventID,
+			Pending:         pending,
 			Rebuilt:         rebuilt,
 		}, nil
 	}
@@ -236,16 +290,18 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 	if err != nil {
 		return CatchUpResult{}, err
 	}
-	pending := latestID > lastEventID
+	pending := lastEventID < targetEventID || latestID > lastEventID
 	status := "ready"
-	if pending {
+	if lastEventID < targetEventID && rebuilt {
 		status = "rebuilding"
+	} else if pending {
+		status = "catching_up"
 	}
 	if _, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
 		status = ?,
 		backfill_last_event_id = ?,
 		coverage_event_id = ?,
-		target_event_id = max(target_event_id, ?),
+		target_event_id = ?,
 		processed_events = processed_events + ?,
 		min_bucket_ms = case
 			when ? is null then min_bucket_ms
@@ -265,7 +321,7 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 		status,
 		lastEventID,
 		lastEventID,
-		latestID,
+		targetEventID,
 		len(ids),
 		nullInt64(minBucket), nullInt64(minBucket), nullInt64(minBucket),
 		nullInt64(maxBucket), nullInt64(maxBucket), nullInt64(maxBucket),
@@ -285,7 +341,7 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 		Processed:       len(ids),
 		LastEventID:     lastEventID,
 		CoverageEventID: lastEventID,
-		TargetEventID:   max(state.TargetEventID, latestID),
+		TargetEventID:   targetEventID,
 		Pending:         pending,
 		Rebuilt:         rebuilt,
 	}, nil
@@ -296,7 +352,12 @@ func (r *repository) RecordFailure(ctx context.Context, rollupErr error, nowMS i
 		return nil
 	}
 	_, err := r.db.ExecContext(ctx, `update usage_pricing_rollup_state set
-		status = 'failed', updated_at_ms = ?, finished_at_ms = ?, last_error = ?
+		status = case
+			when status in ('clearing', 'rebuilding') then status
+			when status = 'pending' and target_event_id > coverage_event_id then status
+			else 'failed'
+		end,
+		updated_at_ms = ?, finished_at_ms = ?, last_error = ?
 		where rollup_name = ?`, nowMS, nowMS, rollupErr.Error(), RollupName)
 	return err
 }
@@ -306,17 +367,9 @@ func (r *repository) State(ctx context.Context) (State, error) {
 }
 
 func resetForRevision(ctx context.Context, tx *sql.Tx, revision string, latestID, nowMS int64) error {
-	for _, statement := range []string{
-		`delete from usage_pricing_hourly_rollups_v1`,
-		`delete from usage_pricing_account_rollups_v1`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	_, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
+	if _, err := tx.ExecContext(ctx, `update usage_pricing_rollup_state set
 		structure_revision = ?,
-		status = 'rebuilding',
+		status = 'clearing',
 		backfill_last_event_id = 0,
 		coverage_event_id = 0,
 		target_event_id = ?,
@@ -327,8 +380,42 @@ func resetForRevision(ctx context.Context, tx *sql.Tx, revision string, latestID
 		updated_at_ms = ?,
 		finished_at_ms = null,
 		last_error = null
-		where rollup_name = ?`, revision, latestID, nowMS, nowMS, RollupName)
-	return err
+		where rollup_name = ?`, revision, latestID, nowMS, nowMS, RollupName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func clearRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision string, limit int) (bool, error) {
+	remaining := limit
+	for _, tableName := range []string{
+		"usage_pricing_hourly_rollups_v1",
+		"usage_pricing_account_rollups_v1",
+	} {
+		if remaining > 0 {
+			result, err := tx.ExecContext(ctx, `delete from `+tableName+` where rowid in (
+				select rowid from `+tableName+` where structure_revision = ? limit ?
+			)`, revision, remaining)
+			if err != nil {
+				return false, fmt.Errorf("clear pricing revision rows %s: %w", tableName, err)
+			}
+			deleted, err := result.RowsAffected()
+			if err != nil {
+				return false, fmt.Errorf("count cleared pricing revision rows %s: %w", tableName, err)
+			}
+			remaining -= int(deleted)
+		}
+		var pending int
+		if err := tx.QueryRowContext(ctx, `select exists(
+			select 1 from `+tableName+` where structure_revision = ? limit 1
+		)`, revision).Scan(&pending); err != nil {
+			return false, fmt.Errorf("inspect remaining pricing revision rows %s: %w", tableName, err)
+		}
+		if pending != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type stateQuerier interface {
@@ -406,8 +493,11 @@ func latestEventID(ctx context.Context, tx *sql.Tx) (int64, error) {
 	return id, nil
 }
 
-func eventIDsAfter(ctx context.Context, tx *sql.Tx, lastEventID int64, limit int) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, `select id from usage_events where id > ? order by id limit ?`, lastEventID, limit)
+func eventIDsThrough(ctx context.Context, tx *sql.Tx, lastEventID, targetEventID int64, limit int) ([]int64, error) {
+	if targetEventID <= lastEventID {
+		return []int64{}, nil
+	}
+	rows, err := tx.QueryContext(ctx, `select id from usage_events where id > ? and id <= ? order by id limit ?`, lastEventID, targetEventID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -434,10 +524,14 @@ func batchBucketRange(ctx context.Context, tx *sql.Tx, afterID, throughID int64)
 
 func bandedEventsCTE(whereClause string) string {
 	accountKeyExpression := usageidentity.SQLAccountKeyExpression("e")
+	requestedModelExpression := usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")
+	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
 	return fmt.Sprintf(`with base_events as (
 		select
 			e.*,
-			coalesce(nullif(e.resolved_model, ''), e.model) as billing_model_value,
+			%s as requested_model_value,
+			%s as analytics_model_value,
+			coalesce(nullif(e.resolved_model, ''), %s) as billing_model_value,
 			coalesce(e.normalized_total_input_tokens, e.input_tokens, 0) as normalized_input_tokens_value,
 			max(
 				max(coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0)) -
@@ -453,12 +547,14 @@ func bandedEventsCTE(whereClause string) string {
 			base_events.*,
 			case
 				when billing_price.model is not null then billing_model_value
-				when display_price.model is not null then base_events.model
+				when analytics_price.model is not null then base_events.analytics_model_value
+				when display_price.model is not null then base_events.requested_model_value
 				else billing_model_value
 			end as pricing_model_value
 		from base_events
 		left join model_prices billing_price on billing_price.model = base_events.billing_model_value
-		left join model_prices display_price on display_price.model = base_events.model
+		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model_value
+		left join model_prices display_price on display_price.model = base_events.requested_model_value
 	), banded_events as (
 		select
 			priced_events.*,
@@ -469,7 +565,7 @@ func bandedEventsCTE(whereClause string) string {
 					and priced_events.normalized_input_tokens_value > tier.threshold_tokens
 			), %d) as context_threshold_tokens_value
 		from priced_events
-		)`, accountKeyExpression, whereClause, model.ModelPriceBaseContextThreshold)
+		)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, accountKeyExpression, whereClause, model.ModelPriceBaseContextThreshold)
 }
 
 func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, nowMS int64) error {
@@ -486,7 +582,7 @@ func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, revision string, afterID
 	select
 		?,
 		timestamp_ms - (timestamp_ms %% %d),
-		model,
+		analytics_model_value,
 		billing_model_value,
 		pricing_model_value,
 		coalesce(service_tier, ''),
@@ -564,7 +660,7 @@ func upsertAccountBatch(ctx context.Context, tx *sql.Tx, revision string, afterI
 		max(nullif(auth_index, '')),
 		max(nullif(source, '')),
 		max(nullif(source_hash, '')),
-		min(model),
+		min(analytics_model_value),
 		billing_model_value,
 		pricing_model_value,
 		coalesce(service_tier, ''),
@@ -589,11 +685,11 @@ func upsertAccountBatch(ctx context.Context, tx *sql.Tx, revision string, afterI
 			?
 		from banded_events
 		where account_key_value <> ''
-		group by account_key_value, billing_model_value, pricing_model_value,
+		group by account_key_value, analytics_model_value, billing_model_value, pricing_model_value,
 		coalesce(service_tier, ''), context_threshold_tokens_value
-	on conflict(
-		structure_revision, account_key, billing_model, pricing_model,
-		service_tier, context_threshold_tokens
+		on conflict(
+			structure_revision, account_key, model, billing_model, pricing_model,
+			service_tier, context_threshold_tokens
 	) do update set
 		account_snapshot = coalesce(nullif(excluded.account_snapshot, ''), usage_pricing_account_rollups_v1.account_snapshot),
 		auth_label_snapshot = coalesce(nullif(excluded.auth_label_snapshot, ''), usage_pricing_account_rollups_v1.auth_label_snapshot),
@@ -662,7 +758,7 @@ func (r *repository) LoadHourlyRowsTx(ctx context.Context, tx *sql.Tx, filter Ho
 	if err != nil {
 		return nil, State{}, false, err
 	}
-	if state.StructureRevision != revision {
+	if state.StructureRevision != revision || state.Status == "clearing" {
 		grouped := map[hourlyKey]*HourlyRow{}
 		if err := mergeRawHourlyRows(ctx, tx, filter, filter.FromMS, filter.ToMS, 0, false, grouped); err != nil {
 			return nil, State{}, false, err
@@ -753,10 +849,10 @@ func rawHourlyStatement(filter HourlyFilter, fromMS, toMS, afterID int64, useAft
 		conditions = append(conditions, "e.id > ?")
 		args = append(args, afterID)
 	}
-	models := normalizeValues(filter.Models)
+	models := normalizeModelValues(filter.Models)
 	if len(models) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(models)), ",")
-		conditions = append(conditions, "e.model in ("+placeholders+")")
+		conditions = append(conditions, usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+" in ("+placeholders+")")
 		for _, modelID := range models {
 			args = append(args, modelID)
 		}
@@ -774,7 +870,7 @@ func rawHourlyStatement(filter HourlyFilter, fromMS, toMS, afterID int64, useAft
 	query := bandedEventsCTE(strings.Join(conditions, " and ")) + fmt.Sprintf(`
 	select
 		%s,
-		model, billing_model_value, pricing_model_value, coalesce(service_tier, ''),
+			analytics_model_value, billing_model_value, pricing_model_value, coalesce(service_tier, ''),
 		context_threshold_tokens_value, failed, count(*),
 		coalesce(sum(normalized_input_tokens_value), 0),
 		coalesce(sum(output_tokens), 0),
@@ -938,7 +1034,7 @@ func (r *repository) LoadAccountRowsTx(ctx context.Context, tx *sql.Tx, accountK
 	if err != nil {
 		return nil, State{}, false, err
 	}
-	if state.StructureRevision != revision {
+	if state.StructureRevision != revision || state.Status == "clearing" {
 		grouped := map[accountKey]*AccountRow{}
 		if err := mergeRawAccountRows(ctx, tx, 0, keys, grouped); err != nil {
 			return nil, State{}, false, err
@@ -1011,7 +1107,7 @@ func mergeRawAccountRows(
 		coalesce(max(nullif(auth_index, '')), ''),
 		coalesce(max(nullif(source, '')), ''),
 		coalesce(max(nullif(source_hash, '')), ''),
-		min(model), billing_model_value, pricing_model_value, coalesce(service_tier, ''),
+			min(analytics_model_value), billing_model_value, pricing_model_value, coalesce(service_tier, ''),
 		context_threshold_tokens_value,
 		count(*),
 		coalesce(sum(case when failed = 0 then 1 else 0 end), 0),
@@ -1030,7 +1126,7 @@ func mergeRawAccountRows(
 		coalesce(sum(total_tokens), 0), min(timestamp_ms), max(timestamp_ms), 0
 	from banded_events
 	where account_key_value in (%s)
-	group by account_key_value, billing_model_value, pricing_model_value,
+		group by account_key_value, analytics_model_value, billing_model_value, pricing_model_value,
 		coalesce(service_tier, ''), context_threshold_tokens_value
 	order by account_key_value, max(timestamp_ms) desc`,
 		usage.LongContextInputTokenThreshold,
@@ -1098,6 +1194,7 @@ func scanAndMergeAccountRows(rows *sql.Rows, grouped map[accountKey]*AccountRow)
 func mergeAccountRow(grouped map[accountKey]*AccountRow, row AccountRow) {
 	key := accountKey{
 		accountKey:             row.AccountKey,
+		model:                  row.Model,
 		billingModel:           row.BillingModel,
 		pricingModel:           row.PricingModel,
 		serviceTier:            row.ServiceTier,
@@ -1173,6 +1270,9 @@ func sortedAccountRows(grouped map[accountKey]*AccountRow) []AccountRow {
 		if left.LastSeenMS != right.LastSeenMS {
 			return left.LastSeenMS > right.LastSeenMS
 		}
+		if left.Model != right.Model {
+			return left.Model < right.Model
+		}
 		if left.BillingModel != right.BillingModel {
 			return left.BillingModel < right.BillingModel
 		}
@@ -1190,7 +1290,7 @@ func sortedAccountRows(grouped map[accountKey]*AccountRow) []AccountRow {
 func storedHourlyConditions(revision string, filter HourlyFilter, fromMS, toMS int64) ([]string, []any) {
 	conditions := []string{"structure_revision = ?", "bucket_ms >= ?", "bucket_ms < ?"}
 	args := []any{revision, fromMS, toMS}
-	models := normalizeValues(filter.Models)
+	models := normalizeModelValues(filter.Models)
 	if len(models) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(models)), ",")
 		conditions = append(conditions, "model in ("+placeholders+")")
@@ -1222,6 +1322,18 @@ func normalizeValues(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func normalizeModelValues(values []string) []string {
+	models := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		models = append(models, usageidentity.AnalyticsModel(trimmed))
+	}
+	return normalizeValues(models)
 }
 
 func ceilHourMS(value int64) int64 {
