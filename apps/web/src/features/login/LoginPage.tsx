@@ -47,6 +47,7 @@ import {
   CPAMP_VERTICAL_LOGO_URL,
 } from '@/assets/brand';
 import type { ApiError } from '@/types';
+import { resolvePersistedPanelHostMode } from '@/hooks/usePanelFeatureAvailability';
 import { resolveUsageServiceLoginMode } from './loginMode';
 import styles from './LoginPage.module.scss';
 
@@ -136,6 +137,8 @@ export function LoginPage() {
   const storedKey = useAuthStore((state) => state.managementKey);
   const storedRememberPassword = useAuthStore((state) => state.rememberPassword);
   const setUsageServiceConfig = useUsageServiceStore((state) => state.setUsageServiceConfig);
+  const persistedPanelBase = useUsageServiceStore((state) => state.panelBase);
+  const persistedPanelHostMode = useUsageServiceStore((state) => state.panelHostMode);
   const languageMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [apiBase, setApiBase] = useState('');
@@ -244,22 +247,36 @@ export function LoginPage() {
       try {
         let detectedUsageService = false;
         let detectedUsageServiceConfigured = false;
-        try {
-          const info = await usageServiceApi.getInfo(detectedBase);
-          const mode = resolveUsageServiceLoginMode(info);
-          detectedUsageService = mode.hostedByUsageService;
-          detectedUsageServiceConfigured = detectedUsageService && !mode.usageServiceNeedsSetup;
-          setHostedByUsageService(mode.hostedByUsageService);
-          setUsageServiceNeedsSetup(mode.usageServiceNeedsSetup);
-          setHasHistoricalData(Boolean(info.hasHistoricalData));
-          setMigrationStatus(info.migrationStatus || '');
-        } catch {
-          detectedUsageService = false;
-          detectedUsageServiceConfigured = false;
-          setHostedByUsageService(false);
+        const knownPanelHostMode = resolvePersistedPanelHostMode({
+          detectedPanelBase: detectedBase,
+          persistedPanelBase,
+          persistedPanelHostMode,
+        });
+        if (knownPanelHostMode) {
+          detectedUsageService = knownPanelHostMode === 'manager_embedded';
+          detectedUsageServiceConfigured = detectedUsageService;
+          setHostedByUsageService(detectedUsageService);
           setUsageServiceNeedsSetup(false);
           setHasHistoricalData(false);
           setMigrationStatus('');
+        } else {
+          try {
+            const info = await usageServiceApi.getInfo(detectedBase);
+            const mode = resolveUsageServiceLoginMode(info);
+            detectedUsageService = mode.hostedByUsageService;
+            detectedUsageServiceConfigured = detectedUsageService && !mode.usageServiceNeedsSetup;
+            setHostedByUsageService(mode.hostedByUsageService);
+            setUsageServiceNeedsSetup(mode.usageServiceNeedsSetup);
+            setHasHistoricalData(Boolean(info.hasHistoricalData));
+            setMigrationStatus(info.migrationStatus || '');
+          } catch {
+            detectedUsageService = false;
+            detectedUsageServiceConfigured = false;
+            setHostedByUsageService(false);
+            setUsageServiceNeedsSetup(false);
+            setHasHistoricalData(false);
+            setMigrationStatus('');
+          }
         }
 
         const hostedManagementPage =

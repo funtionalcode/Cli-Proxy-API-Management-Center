@@ -7,6 +7,7 @@ import { useAuthStore, useUsageServiceStore } from '@/stores';
 import {
   buildPanelManagerServiceCandidates,
   managerConfigMatchesPanel,
+  resolvePersistedPanelHostMode,
   resolvePanelFeatureAvailability,
   usePanelFeatureAvailability,
 } from './usePanelFeatureAvailability';
@@ -58,7 +59,7 @@ describe('panel feature availability', () => {
     ).toEqual(['http://manager.local:18317']);
   });
 
-  it('builds external Manager Server candidates for CPA-hosted panels', () => {
+  it('uses the configured external Manager Server as the authoritative CPA-panel candidate', () => {
     expect(
       buildPanelManagerServiceCandidates({
         panelHostedByUsageService: false,
@@ -67,7 +68,49 @@ describe('panel feature availability', () => {
         usageServiceEnabled: true,
         usageServiceBase: 'http://manager.local:18317',
       })
-    ).toEqual(['http://manager.local:18317', 'http://cpa.local:8317', 'http://panel.local:5174']);
+    ).toEqual(['http://manager.local:18317']);
+  });
+
+  it('falls back to CPA and panel candidates when no external Manager is configured', () => {
+    expect(
+      buildPanelManagerServiceCandidates({
+        panelHostedByUsageService: false,
+        panelBase: 'http://panel.local:5174',
+        apiBase: 'http://cpa.local:8317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toEqual(['http://cpa.local:8317', 'http://panel.local:5174']);
+  });
+
+  it('does not probe CPA routes when persisted context already identifies an external panel', () => {
+    expect(
+      buildPanelManagerServiceCandidates({
+        panelHostedByUsageService: false,
+        panelHostModeKnown: true,
+        panelBase: 'http://panel.local:8317',
+        apiBase: 'http://panel.local:8317',
+        usageServiceEnabled: false,
+        usageServiceBase: '',
+      })
+    ).toEqual([]);
+  });
+
+  it('only trusts a persisted panel mode scoped to the current panel base', () => {
+    expect(
+      resolvePersistedPanelHostMode({
+        detectedPanelBase: 'http://panel.local:5174/',
+        persistedPanelBase: 'http://panel.local:5174',
+        persistedPanelHostMode: 'external_panel',
+      })
+    ).toBe('external_panel');
+    expect(
+      resolvePersistedPanelHostMode({
+        detectedPanelBase: 'http://other.local:5174',
+        persistedPanelBase: 'http://panel.local:5174',
+        persistedPanelHostMode: 'external_panel',
+      })
+    ).toBe('');
   });
 
   it('only accepts Manager config for same-origin Manager Server panels', () => {
@@ -213,9 +256,10 @@ describe('panel feature availability', () => {
         );
       });
 
-      expect(getInfoSpy).toHaveBeenCalledTimes(2);
-      expect(getInfoSpy).toHaveBeenNthCalledWith(1, 'http://panel.local:5174');
-      expect(getInfoSpy).toHaveBeenNthCalledWith(2, 'http://manager.local:18317');
+      expect(getInfoSpy).toHaveBeenCalledTimes(1);
+      expect(getInfoSpy).toHaveBeenCalledWith('http://manager.local:18317');
+      expect(getInfoSpy).not.toHaveBeenCalledWith('http://panel.local:5174');
+      expect(getInfoSpy).not.toHaveBeenCalledWith('http://cpa.local:8317');
       expect(getManagerConfigSpy).toHaveBeenCalledWith(
         'http://manager.local:18317',
         'management-key'

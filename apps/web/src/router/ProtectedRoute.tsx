@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { useAuthStore } from '@/stores';
+import { useAuthStore, useUsageServiceStore } from '@/stores';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { isUsageServiceId, usageServiceApi } from '@/services/api/usageService';
 import { detectApiBaseFromLocation } from '@/utils/connection';
+import { resolvePersistedPanelHostMode } from '@/hooks/usePanelFeatureAvailability';
 
 export function ProtectedRoute({ children }: { children: ReactElement }) {
   const location = useLocation();
@@ -12,6 +13,8 @@ export function ProtectedRoute({ children }: { children: ReactElement }) {
   const managementKey = useAuthStore((state) => state.managementKey);
   const apiBase = useAuthStore((state) => state.apiBase);
   const restoreSession = useAuthStore((state) => state.restoreSession);
+  const persistedPanelBase = useUsageServiceStore((state) => state.panelBase);
+  const persistedPanelHostMode = useUsageServiceStore((state) => state.panelHostMode);
   const [checking, setChecking] = useState(false);
 
   useEffect(() => {
@@ -20,12 +23,19 @@ export function ProtectedRoute({ children }: { children: ReactElement }) {
         setChecking(true);
         try {
           const detectedBase = detectApiBaseFromLocation();
-          let detectedUsageService = false;
-          try {
-            const info = await usageServiceApi.getInfo(detectedBase);
-            detectedUsageService = isUsageServiceId(info.service);
-          } catch {
-            detectedUsageService = false;
+          const knownPanelHostMode = resolvePersistedPanelHostMode({
+            detectedPanelBase: detectedBase,
+            persistedPanelBase,
+            persistedPanelHostMode,
+          });
+          let detectedUsageService = knownPanelHostMode === 'manager_embedded';
+          if (!knownPanelHostMode) {
+            try {
+              const info = await usageServiceApi.getInfo(detectedBase);
+              detectedUsageService = isUsageServiceId(info.service);
+            } catch {
+              detectedUsageService = false;
+            }
           }
           const hostedManagementPage =
             typeof window !== 'undefined' &&
@@ -45,7 +55,15 @@ export function ProtectedRoute({ children }: { children: ReactElement }) {
       }
     };
     tryRestore();
-  }, [apiBase, isAuthenticated, managementKey, navigate, restoreSession]);
+  }, [
+    apiBase,
+    isAuthenticated,
+    managementKey,
+    navigate,
+    persistedPanelBase,
+    persistedPanelHostMode,
+    restoreSession,
+  ]);
 
   if (checking) {
     return (

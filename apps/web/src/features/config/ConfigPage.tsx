@@ -36,6 +36,7 @@ import {
   type ManagerConfigResponse,
 } from '@/services/api/usageService';
 import { detectApiBaseFromLocation } from '@/utils/connection';
+import { resolvePersistedPanelHostMode } from '@/hooks/usePanelFeatureAvailability';
 import { ManagerConfigPanel } from './components/ManagerConfigPanel';
 import styles from './ConfigPage.module.scss';
 
@@ -247,6 +248,8 @@ export function ConfigPage() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
   const usageServiceBase = useUsageServiceStore((state) => state.serviceBase);
+  const persistedPanelBase = useUsageServiceStore((state) => state.panelBase);
+  const persistedPanelHostMode = useUsageServiceStore((state) => state.panelHostMode);
   const setUsageServiceConfig = useUsageServiceStore((state) => state.setUsageServiceConfig);
   const isMobile = useMediaQuery('(max-width: 768px)');
 
@@ -398,6 +401,15 @@ export function ConfigPage() {
   useEffect(() => {
     let cancelled = false;
     const detectUsageServiceHost = async () => {
+      const knownPanelHostMode = resolvePersistedPanelHostMode({
+        detectedPanelBase,
+        persistedPanelBase,
+        persistedPanelHostMode,
+      });
+      if (knownPanelHostMode) {
+        setPanelHostedByUsageService(knownPanelHostMode === 'manager_embedded');
+        return;
+      }
       try {
         const info = await usageServiceApi.getInfo(detectedPanelBase);
         if (!cancelled) {
@@ -413,7 +425,7 @@ export function ConfigPage() {
     return () => {
       cancelled = true;
     };
-  }, [detectedPanelBase]);
+  }, [detectedPanelBase, persistedPanelBase, persistedPanelHostMode]);
 
   useEffect(() => {
     if (

@@ -104,6 +104,7 @@ export function resolvePanelFeatureAvailability(
 
 export interface BuildPanelManagerServiceCandidatesInput {
   panelHostedByUsageService: boolean;
+  panelHostModeKnown?: boolean;
   panelBase: string;
   apiBase?: string;
   usageServiceEnabled?: boolean;
@@ -112,6 +113,7 @@ export interface BuildPanelManagerServiceCandidatesInput {
 
 export function buildPanelManagerServiceCandidates({
   panelHostedByUsageService,
+  panelHostModeKnown,
   panelBase,
   apiBase,
   usageServiceEnabled,
@@ -122,17 +124,31 @@ export function buildPanelManagerServiceCandidates({
     return normalizedPanelBase ? [normalizedPanelBase] : [];
   }
 
-  return Array.from(
-    new Set(
-      [
-        usageServiceEnabled && usageServiceBase ? usageServiceBase : '',
-        apiBase,
-        normalizedPanelBase,
-      ]
-        .map(normalizeBase)
-        .filter(Boolean)
-    )
-  );
+  const configuredManagerBase =
+    usageServiceEnabled && usageServiceBase ? normalizeBase(usageServiceBase) : '';
+  if (configuredManagerBase) {
+    return [configuredManagerBase];
+  }
+  if (panelHostModeKnown) {
+    return [];
+  }
+
+  return Array.from(new Set([apiBase, normalizedPanelBase].map(normalizeBase).filter(Boolean)));
+}
+
+export function resolvePersistedPanelHostMode({
+  detectedPanelBase,
+  persistedPanelBase,
+  persistedPanelHostMode,
+}: {
+  detectedPanelBase: string;
+  persistedPanelBase?: string;
+  persistedPanelHostMode?: PanelHostMode | '';
+}): PanelHostMode | '' {
+  if (!persistedPanelHostMode) return '';
+  const detectedBase = normalizeBase(detectedPanelBase);
+  const storedBase = normalizeBase(persistedPanelBase);
+  return detectedBase && storedBase === detectedBase ? persistedPanelHostMode : '';
 }
 
 export function managerConfigMatchesPanel({
@@ -173,6 +189,8 @@ type PanelFeatureAvailabilityRequestInput = {
   usageServiceEnabled: boolean;
   usageServiceBase: string;
   panelBase: string;
+  persistedPanelBase: string;
+  persistedPanelHostMode: PanelHostMode | '';
 };
 
 type PanelFeatureAvailabilityRequest = {
@@ -220,12 +238,16 @@ const buildAvailabilityRequestKey = ({
   usageServiceEnabled,
   usageServiceBase,
   panelBase,
+  persistedPanelBase,
+  persistedPanelHostMode,
 }: PanelFeatureAvailabilityRequestInput): string =>
   [
     normalizeBase(panelBase),
     normalizeBase(apiBase),
     usageServiceEnabled ? '1' : '0',
     normalizeBase(usageServiceBase),
+    normalizeBase(persistedPanelBase),
+    persistedPanelHostMode,
     managementKey,
     String(usageServiceRevision),
   ].join('\u001f');
@@ -236,6 +258,8 @@ async function detectPanelFeatureAvailability({
   panelBase,
   usageServiceEnabled,
   usageServiceBase,
+  persistedPanelBase,
+  persistedPanelHostMode,
 }: PanelFeatureAvailabilityRequestInput): Promise<PanelFeatureAvailability> {
   const normalizedPanelBase = normalizeBase(panelBase);
   if (!managementKey) {
@@ -250,16 +274,24 @@ async function detectPanelFeatureAvailability({
     });
   }
 
-  let panelHostedByUsageService = false;
-  try {
-    const info = await usageServiceApi.getInfo(normalizedPanelBase);
-    panelHostedByUsageService = isUsageServiceId(info.service);
-  } catch {
-    panelHostedByUsageService = false;
+  const knownPanelHostMode = resolvePersistedPanelHostMode({
+    detectedPanelBase: normalizedPanelBase,
+    persistedPanelBase,
+    persistedPanelHostMode,
+  });
+  let panelHostedByUsageService = knownPanelHostMode === 'manager_embedded';
+  if (!knownPanelHostMode) {
+    try {
+      const info = await usageServiceApi.getInfo(normalizedPanelBase);
+      panelHostedByUsageService = isUsageServiceId(info.service);
+    } catch {
+      panelHostedByUsageService = false;
+    }
   }
 
   const candidates = buildPanelManagerServiceCandidates({
     panelHostedByUsageService,
+    panelHostModeKnown: Boolean(knownPanelHostMode),
     panelBase: normalizedPanelBase,
     apiBase,
     usageServiceEnabled,
@@ -342,6 +374,8 @@ export function usePanelFeatureAvailability(): PanelFeatureAvailability {
   const managementKey = useAuthStore((state) => state.managementKey);
   const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
   const usageServiceBase = useUsageServiceStore((state) => state.serviceBase);
+  const persistedPanelBase = useUsageServiceStore((state) => state.panelBase);
+  const persistedPanelHostMode = useUsageServiceStore((state) => state.panelHostMode);
   const usageServiceRevision = useUsageServiceStore((state) => state.revision);
   const panelBase = useMemo(() => detectApiBaseFromLocation(), []);
   const requestInput = useMemo(
@@ -352,11 +386,15 @@ export function usePanelFeatureAvailability(): PanelFeatureAvailability {
       usageServiceBase,
       usageServiceRevision,
       panelBase,
+      persistedPanelBase,
+      persistedPanelHostMode,
     }),
     [
       apiBase,
       managementKey,
       panelBase,
+      persistedPanelBase,
+      persistedPanelHostMode,
       usageServiceBase,
       usageServiceEnabled,
       usageServiceRevision,
