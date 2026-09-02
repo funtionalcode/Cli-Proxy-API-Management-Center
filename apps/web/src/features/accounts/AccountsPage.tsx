@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
-import type { TFunction } from 'i18next';
 import { useLocation, useNavigate, type BlockerFunction } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -45,7 +44,9 @@ import {
   KIMI_CONFIG,
   XAI_CONFIG,
   buildObservedCodexQuotaState,
+  refreshQuotaWithConfig,
   type QuotaConfig,
+  type QuotaSetter,
 } from '@/components/quota';
 import { buildQuotaFailureState, getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
@@ -82,9 +83,11 @@ import {
 import { OAuthModelAliasCard } from '@/features/authFiles/components/OAuthModelAliasCard';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
 import {
+  CodexReauthReconciliationError,
   createCodexReauthTargetFromAuthFile,
   type CodexReauthTarget,
 } from '@/features/oauth/codexReauthModel';
+import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
   buildAccountInspectionBySelectionKey,
@@ -94,6 +97,8 @@ import {
   findAccountRowForInspectionTarget,
   filterAccountRows,
   getHandledAccountInspectionResultKeys,
+  getPlanOptionLabel,
+  getPlanOptionValue,
   getPlanOptions,
   getProviderOptions,
   isAccountCodexStatusFilter,
@@ -123,16 +128,20 @@ import {
 } from '@/features/accounts/model/accountCredentialEvidenceStorage';
 import {
   acknowledgeAccountCredentialMutationMarkers,
+  createAccountCredentialMutationBaseline,
+  hasAccountCredentialMutationEvidence,
   listAccountCredentialMutationMarkers,
   type AccountCredentialMutationMarker,
 } from '@/features/accounts/model/accountCredentialMutationMarker';
 import {
   acknowledgePendingAccountDirectReauths,
-  confirmAccountDirectReauth,
   createAccountDirectReauthBaseline,
   listPendingAccountDirectReauths,
+  reconcileAccountDirectReauth,
   recordPendingAccountDirectReauth,
   type AccountDirectReauthBaseline,
+  type AccountDirectReauthReconciliation,
+  type PendingAccountDirectReauth,
 } from '@/features/accounts/model/accountDirectReauth';
 import { buildAccountRecommendations } from '@/features/accounts/model/quotaRecommendations';
 import {
@@ -262,9 +271,9 @@ import {
 } from '@/features/accounts/components';
 import {
   accountQuotaSnapshotApi,
+  consumeCodexRateLimitResetCredit,
   monitoringAnalyticsApi,
   usageServiceApi,
-  type AuthFilesApiRequestScope,
   type AccountActionCandidate,
   type AccountQuotaSnapshotObservationInput,
   type AccountQuotaSnapshotWriteEntry,
@@ -280,6 +289,7 @@ import {
   type UsageHeaderSnapshotsResponse,
 } from '@/services/api';
 import type { AuthFileItem, CodexQuotaState, XaiQuotaState } from '@/types';
+import type { CodexQuotaData } from '@/utils/quota';
 import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
 import {
   maskQuotaAccountText,
@@ -288,6 +298,7 @@ import {
 import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
+  publishAccountCredentialMutationRevision,
   useAuthStore,
   useNotificationStore,
   useQuotaStore,
@@ -320,9 +331,6 @@ import type {
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import { getServerCredentialMutationSyncKey } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import styles from './AccountsPage.module.scss';
-
-type QuotaUpdater<T> = T | ((prev: T) => T);
-type QuotaSetter<T> = (updater: QuotaUpdater<Record<string, T>>) => void;
 
 const MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER = 1;
 const MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS = 3;
@@ -865,59 +873,6 @@ const getRemainingBarClass = (row: AccountRow) => {
   return styles.quotaBarNeutral;
 };
 
-async function refreshQuotaWithConfig<TState, TData>({
-  config,
-  file,
-  setQuota,
-  t,
-  isCurrent,
-  requestScope,
-}: {
-  config: QuotaConfig<TState, TData>;
-  file: AuthFileItem;
-  setQuota: QuotaSetter<TState>;
-  t: TFunction;
-  isCurrent: () => boolean;
-  requestScope?: AuthFilesApiRequestScope;
-}) {
-  const storeKey = config.getStoreKey?.(file) ?? file.name;
-  const cacheGeneration = captureQuotaCacheGeneration();
-  try {
-    const data = await config.fetchQuota(file, t, requestScope);
-    if (!isCurrent()) return null;
-    const committed = commitIfQuotaCacheCurrent(cacheGeneration, () => {
-      setQuota((prev) => ({
-        ...prev,
-        [storeKey]: config.buildSuccessState(data, file),
-      }));
-    });
-    return committed ? data : null;
-  } catch (error: unknown) {
-    if (!isCurrent()) return null;
-    const message = error instanceof Error ? error.message : t('common.unknown_error');
-    const status =
-      typeof error === 'object' && error !== null && 'status' in error
-        ? Number((error as { status?: unknown }).status)
-        : undefined;
-    commitIfQuotaCacheCurrent(cacheGeneration, () => {
-      setQuota((prev) => {
-        const previousState = getScopedQuotaState(config, prev, file);
-        return {
-          ...prev,
-          [storeKey]: buildQuotaFailureState(
-            config,
-            message,
-            Number.isFinite(status) ? status : undefined,
-            file,
-            previousState
-          ),
-        };
-      });
-    });
-    return null;
-  }
-}
-
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -1136,6 +1091,9 @@ export function AccountsPage() {
   const [quotaSnapshotWindowsByRowKey, setQuotaSnapshotWindowsByRowKey] = useState<
     Map<string, AccountQuotaSnapshotWindow[]>
   >(() => new Map());
+  const [resettingQuotaKeys, setResettingQuotaKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const [accountActionCandidates, setAccountActionCandidates] = useState<AccountActionCandidate[]>(
     []
   );
@@ -1159,6 +1117,12 @@ export function AccountsPage() {
   const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
+  const codexReauthBaselineRef = useRef<AccountDirectReauthBaseline | null>(null);
+  const inspectionCodexReauthBaselineRef = useRef<{
+    scopeKey: string;
+    target: CodexReauthTarget;
+    baseline: AccountDirectReauthBaseline;
+  } | null>(null);
   const [detailEventsRowKey, setDetailEventsRowKey] = useState<string | null>(null);
   const [detailEvents, setDetailEvents] = useState<MonitoringAnalyticsEventRow[]>([]);
   const [detailEventsSummary, setDetailEventsSummary] = useState<MonitoringAnalyticsSummary | null>(
@@ -1293,9 +1257,12 @@ export function AccountsPage() {
   const accountActionCandidatesLoadedRef = useRef(false);
   const quotaCooldownsLoadedRef = useRef(false);
   const consumedCredentialMutationMarkerIdsRef = useRef<Set<string>>(new Set());
+  const credentialMutationMarkerAttemptsRef = useRef<Map<string, string>>(new Map());
+  const credentialMutationMarkerExhaustedRef = useRef<Map<string, string>>(new Map());
   const credentialMutationMarkerSynchronizationsRef = useRef<Map<string, Promise<boolean>>>(
     new Map()
   );
+  const isMountedRef = useRef(true);
   const directReauthSynchronizationsRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const synchronizePendingAccountDirectReauthsRef = useRef<
     (options?: { reload?: boolean }) => Promise<boolean>
@@ -1335,6 +1302,7 @@ export function AccountsPage() {
   );
   const pendingExternalHashNavigationRef = useRef('');
   const quotaRequestVersionsRef = useRef<Map<string, number>>(new Map());
+  const resettingQuotaKeysRef = useRef<Set<string>>(new Set());
   const identityCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountSortDropdownRef = useRef<HTMLDivElement | null>(null);
   const accountSortTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -1351,6 +1319,13 @@ export function AccountsPage() {
     requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
   });
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   useLayoutEffect(() => {
     const previousConnectionFingerprint = oauthEditorConnectionFingerprintRef.current;
     oauthEditorConnectionFingerprintRef.current = connectionFingerprint;
@@ -1359,6 +1334,10 @@ export function AccountsPage() {
     setOauthModelAliasEditorProvider(null);
     setAuthJsonPasteOpen(false);
     setCodexReauthTarget(null);
+    codexReauthBaselineRef.current = null;
+    inspectionCodexReauthBaselineRef.current = null;
+    credentialMutationMarkerAttemptsRef.current.clear();
+    credentialMutationMarkerExhaustedRef.current.clear();
     quotaRefreshGenerationRef.current += 1;
     quotaRefreshBatchRef.current = null;
     quotaRequestVersionsRef.current.forEach((version, key) => {
@@ -1543,66 +1522,130 @@ export function AccountsPage() {
     [loadAccountActionCandidates, loadFiles, loadQuotaCooldowns]
   );
 
-  const synchronizeExternalCredentialMutationMarkers = useCallback(async () => {
-    const markers = listAccountCredentialMutationMarkers(connectionFingerprint).filter(
-      (marker) => !consumedCredentialMutationMarkerIdsRef.current.has(marker.id)
-    );
-    if (markers.length === 0) return false;
-    const pendingSynchronization = credentialMutationMarkerSynchronizationsRef.current.get(
-      credentialEvidenceScopeKey
-    );
-    if (pendingSynchronization) return pendingSynchronization;
-
-    const synchronizationScopeKey = credentialEvidenceScopeKey;
-    const synchronization = (async () => {
-      try {
-        const markersByProvider = new Map<string, AccountCredentialMutationMarker[]>();
-        markers.forEach((marker) => {
-          const providerMarkers = markersByProvider.get(marker.provider) ?? [];
-          providerMarkers.push(marker);
-          markersByProvider.set(marker.provider, providerMarkers);
-        });
-        markersByProvider.forEach((providerMarkers, provider) => {
-          const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
-          invalidateProviderCredentialEvidenceRef.current(provider, markerAtMs);
-        });
-        const reloadedFiles = await reloadInspectionCredentialArtifacts({
-          requireSuccessfulReload: true,
-          loadCredentialsLast: true,
-        });
-        if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) return false;
-        if (!reloadedFiles) return false;
-        const consumedIds: string[] = [];
-        markersByProvider.forEach((providerMarkers, provider) => {
-          const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
-          const targetFiles = invalidateProviderCredentialEvidenceRef.current(
-            provider,
-            markerAtMs,
-            {
-              credentialFiles: reloadedFiles,
-              supersedeRequests: false,
-            }
+  const synchronizeExternalCredentialMutationMarkers = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      const force = options.force === true;
+      const synchronizationScopeKey = credentialEvidenceScopeKey;
+      const markers = listAccountCredentialMutationMarkers(connectionFingerprint).filter(
+        (marker) => {
+          if (consumedCredentialMutationMarkerIdsRef.current.has(marker.id)) return false;
+          if (force) return true;
+          const currentEvidence = JSON.stringify(
+            createAccountCredentialMutationBaseline(files, marker.provider)
           );
-          if (targetFiles.length === 0) return;
-          providerMarkers.forEach((marker) => consumedIds.push(marker.id));
-        });
-        if (consumedIds.length === 0) return false;
-        consumedIds.forEach((id) => consumedCredentialMutationMarkerIdsRef.current.add(id));
-        acknowledgeAccountCredentialMutationMarkers(consumedIds);
-        return true;
-      } catch {
-        // Keep the marker for the next Accounts refresh when any required reload fails.
-        return false;
-      } finally {
-        credentialMutationMarkerSynchronizationsRef.current.delete(synchronizationScopeKey);
-      }
-    })();
-    credentialMutationMarkerSynchronizationsRef.current.set(
-      synchronizationScopeKey,
-      synchronization
-    );
-    return synchronization;
-  }, [connectionFingerprint, credentialEvidenceScopeKey, reloadInspectionCredentialArtifacts]);
+          const exhaustedEvidence = credentialMutationMarkerExhaustedRef.current.get(marker.id);
+          return exhaustedEvidence !== `${synchronizationScopeKey}\u001e${currentEvidence}`;
+        }
+      );
+      if (markers.length === 0) return false;
+      const pendingSynchronization =
+        credentialMutationMarkerSynchronizationsRef.current.get(synchronizationScopeKey);
+      if (pendingSynchronization) return pendingSynchronization;
+
+      const synchronization = (async () => {
+        try {
+          const markersByProvider = new Map<string, AccountCredentialMutationMarker[]>();
+          markers.forEach((marker) => {
+            const providerMarkers = markersByProvider.get(marker.provider) ?? [];
+            providerMarkers.push(marker);
+            markersByProvider.set(marker.provider, providerMarkers);
+          });
+          markersByProvider.forEach((providerMarkers, provider) => {
+            const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
+            invalidateProviderCredentialEvidenceRef.current(provider, markerAtMs);
+          });
+
+          const retry = await runCredentialVisibilityRetry<AuthFileItem[]>({
+            load: async () => {
+              const reloadedFiles = await reloadInspectionCredentialArtifacts({
+                requireSuccessfulReload: true,
+                loadCredentialsLast: true,
+              });
+              if (!reloadedFiles) throw new Error(t('notification.refresh_failed'));
+              return reloadedFiles;
+            },
+            isUnconfirmed: (reloadedFiles) =>
+              markers.some(
+                (marker) => !hasAccountCredentialMutationEvidence(marker, reloadedFiles)
+              ),
+            isActive: () =>
+              isMountedRef.current &&
+              activeCredentialEvidenceScopeKeyRef.current === synchronizationScopeKey,
+          });
+          if (
+            retry.cancelled ||
+            activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey ||
+            !retry.value
+          ) {
+            return false;
+          }
+          const reloadedFiles = retry.value;
+          const consumedIds: string[] = [];
+          markersByProvider.forEach((providerMarkers, provider) => {
+            const observedEvidence = JSON.stringify(
+              createAccountCredentialMutationBaseline(reloadedFiles, provider)
+            );
+            const evidencedMarkers = providerMarkers.filter((marker) =>
+              hasAccountCredentialMutationEvidence(marker, reloadedFiles)
+            );
+            providerMarkers
+              .filter((marker) => !evidencedMarkers.includes(marker))
+              .forEach((marker) => {
+                credentialMutationMarkerAttemptsRef.current.set(marker.id, observedEvidence);
+                if (retry.exhausted) {
+                  credentialMutationMarkerExhaustedRef.current.set(
+                    marker.id,
+                    `${synchronizationScopeKey}\u001e${observedEvidence}`
+                  );
+                }
+              });
+            if (evidencedMarkers.length === 0) return;
+            const markerAtMs = Math.max(...providerMarkers.map((marker) => marker.createdAtMs));
+            const targetFiles = invalidateProviderCredentialEvidenceRef.current(
+              provider,
+              markerAtMs,
+              {
+                credentialFiles: reloadedFiles,
+                supersedeRequests: false,
+              }
+            );
+            if (targetFiles.length === 0) return;
+            evidencedMarkers.forEach((marker) => {
+              consumedIds.push(marker.id);
+              credentialMutationMarkerAttemptsRef.current.delete(marker.id);
+              credentialMutationMarkerExhaustedRef.current.delete(marker.id);
+            });
+            publishAccountCredentialMutationRevision({
+              connectionFingerprint,
+              provider,
+              kind: 'oauth',
+            });
+          });
+          if (consumedIds.length === 0) return false;
+          consumedIds.forEach((id) => consumedCredentialMutationMarkerIdsRef.current.add(id));
+          acknowledgeAccountCredentialMutationMarkers(consumedIds);
+          return true;
+        } catch {
+          // Keep the marker for a future explicit refresh when auth-files is unavailable.
+          return false;
+        } finally {
+          credentialMutationMarkerSynchronizationsRef.current.delete(synchronizationScopeKey);
+        }
+      })();
+      credentialMutationMarkerSynchronizationsRef.current.set(
+        synchronizationScopeKey,
+        synchronization
+      );
+      return synchronization;
+    },
+    [
+      connectionFingerprint,
+      credentialEvidenceScopeKey,
+      files,
+      reloadInspectionCredentialArtifacts,
+      t,
+    ]
+  );
 
   const getInspectionCredentialMutationScopedKey = useCallback(
     (
@@ -1799,7 +1842,9 @@ export function AccountsPage() {
     const refreshScopeKey = credentialEvidenceScopeKey;
     const synchronizedDirectReauth = await synchronizePendingAccountDirectReauthsRef.current();
     if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
-    const synchronizedExternalArtifacts = await synchronizeExternalCredentialMutationMarkers();
+    const synchronizedExternalArtifacts = await synchronizeExternalCredentialMutationMarkers({
+      force: true,
+    });
     if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
     const snapshot = await loadInspectionSummary();
     if (activeCredentialEvidenceScopeKeyRef.current !== refreshScopeKey) return;
@@ -2676,6 +2721,12 @@ export function AccountsPage() {
     }
     if (mutation.kind === 'credential-refreshed') {
       invalidateCodexCredentialEvidenceForSelectionKeys(mutation.selectionKeys);
+      publishAccountCredentialMutationRevision({
+        connectionFingerprint,
+        provider: 'codex',
+        kind: 'credential',
+        credentialIdentity: mutation.selectionKeys[0],
+      });
       return;
     }
     invalidateCodexCredentialStatusForSelectionKeys(mutation.selectionKeys);
@@ -2829,12 +2880,72 @@ export function AccountsPage() {
       captureReloadedCodexOperationalEvidence(
         invalidation ?? { file: confirmedFile, invalidatedAtMs: Date.now() }
       );
+      publishAccountCredentialMutationRevision({
+        connectionFingerprint,
+        provider: 'codex',
+        kind: 'reauth',
+        credentialIdentity: getAuthFileSelectionKey(confirmedFile),
+      });
     },
     [
       captureReloadedCodexOperationalEvidence,
       connectionFingerprint,
       invalidateCodexCredentialEvidence,
     ]
+  );
+
+  const reconcilePendingAccountDirectReauthsWithRetry = useCallback(
+    async (
+      pendingItems: readonly PendingAccountDirectReauth[],
+      options: { reload?: boolean } = {}
+    ): Promise<Map<string, AccountDirectReauthReconciliation> | null> => {
+      if (pendingItems.length === 0) return new Map();
+      const synchronizationScopeKey = credentialEvidenceScopeKey;
+      let firstAttempt = true;
+      const retry = await runCredentialVisibilityRetry<AuthFileItem[]>({
+        load: async () => {
+          const loadedFiles =
+            firstAttempt && options.reload === false
+              ? files
+              : firstAttempt
+                ? await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true })
+                : await loadFiles({ throwOnError: true });
+          firstAttempt = false;
+          if (!loadedFiles) throw new Error(t('notification.refresh_failed'));
+          return loadedFiles;
+        },
+        isUnconfirmed: (loadedFiles) =>
+          pendingItems.some(
+            (pending) =>
+              Boolean(pending.target.accountId) &&
+              reconcileAccountDirectReauth(pending, loadedFiles).status === 'unconfirmed'
+          ),
+        isActive: () =>
+          isMountedRef.current &&
+          activeCredentialEvidenceScopeKeyRef.current === synchronizationScopeKey,
+      });
+      if (
+        retry.cancelled ||
+        !isMountedRef.current ||
+        activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey
+      ) {
+        return null;
+      }
+      if (retry.error) {
+        throw retry.error;
+      }
+      const result = new Map<string, AccountDirectReauthReconciliation>();
+      pendingItems.forEach((pending) => {
+        result.set(
+          pending.id,
+          retry.value
+            ? reconcileAccountDirectReauth(pending, retry.value)
+            : { status: 'unconfirmed' }
+        );
+      });
+      return result;
+    },
+    [credentialEvidenceScopeKey, files, loadFiles, reloadInspectionCredentialArtifacts, t]
   );
 
   const synchronizePendingAccountDirectReauths = useCallback(
@@ -2847,19 +2958,34 @@ export function AccountsPage() {
 
       const synchronization = (async () => {
         try {
-          const reloadedFiles =
-            options.reload === false
-              ? files
-              : await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true });
-          if (activeCredentialEvidenceScopeKeyRef.current !== synchronizationScopeKey) return false;
-          if (!reloadedFiles) return false;
+          const reconciliations = await reconcilePendingAccountDirectReauthsWithRetry(
+            pendingItems,
+            options
+          );
+          if (!reconciliations) return false;
 
           let synchronized = false;
           pendingItems.forEach((pending) => {
-            const confirmedFile = confirmAccountDirectReauth(pending, reloadedFiles);
-            if (!confirmedFile) return;
-            completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
-            synchronized = true;
+            const reconciliation = reconciliations.get(pending.id) ?? { status: 'unconfirmed' };
+            if (reconciliation.status === 'confirmed') {
+              completeConfirmedAccountDirectReauth(pending, reconciliation.file, pending.id);
+              synchronized = true;
+              return;
+            }
+            if (
+              reconciliation.status === 'identity-changed' ||
+              reconciliation.status === 'ambiguous'
+            ) {
+              acknowledgePendingAccountDirectReauths([pending.id]);
+              showNotification(
+                t(
+                  reconciliation.status === 'identity-changed'
+                    ? 'codex_reauth.identity_changed'
+                    : 'codex_reauth.identity_ambiguous'
+                ),
+                'warning'
+              );
+            }
           });
           return synchronized;
         } catch {
@@ -2875,56 +3001,41 @@ export function AccountsPage() {
       completeConfirmedAccountDirectReauth,
       connectionFingerprint,
       credentialEvidenceScopeKey,
-      files,
-      reloadInspectionCredentialArtifacts,
+      reconcilePendingAccountDirectReauthsWithRetry,
+      showNotification,
+      t,
     ]
   );
   synchronizePendingAccountDirectReauthsRef.current = synchronizePendingAccountDirectReauths;
 
   const handleCodexReauthSuccess = useCallback(async () => {
-    const target = codexReauthTarget;
-    if (!target?.fileName) return;
-    const targetIdentityKey = getAuthFileCodexInspectionKeyForIdentity({
-      fileName: target.fileName,
-      runtimeId: target.runtimeId,
-      provider: target.provider,
-      authIndex: target.authIndex ?? null,
-      accountId: target.accountId,
-      accountSnapshot: target.accountSnapshot,
-    });
-    const targetFile = files.find(
-      (file) => getAuthFileCodexInspectionKeyForFile(file) === targetIdentityKey
-    );
-    if (!targetFile) throw new Error(t('notification.refresh_failed'));
-    const baseline = createAccountDirectReauthBaseline({
-      target,
-      file: targetFile,
-      resultKeys: getHandledAccountInspectionResultKeys(
-        inspectionResults,
-        targetIdentityKey,
-        target.fileName,
-        files
-      ),
-    });
+    const baseline = codexReauthBaselineRef.current;
     if (!baseline) throw new Error(t('notification.refresh_failed'));
     const pending = recordPendingAccountDirectReauth({ connectionFingerprint, baseline });
     if (!pending) throw new Error(t('notification.refresh_failed'));
-    const reauthScopeKey = credentialEvidenceScopeKey;
-    const reloadedFiles = await reloadInspectionCredentialArtifacts({
-      requireSuccessfulReload: true,
+    const reconciliations = await reconcilePendingAccountDirectReauthsWithRetry([pending], {
+      reload: true,
     });
-    if (activeCredentialEvidenceScopeKeyRef.current !== reauthScopeKey) return;
-    const confirmedFile = reloadedFiles ? confirmAccountDirectReauth(pending, reloadedFiles) : null;
-    if (!confirmedFile) throw new Error(t('notification.refresh_failed'));
-    completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
+    if (!reconciliations) return;
+    const reconciliation = reconciliations.get(pending.id) ?? { status: 'unconfirmed' as const };
+    if (reconciliation.status === 'confirmed') {
+      completeConfirmedAccountDirectReauth(pending, reconciliation.file, pending.id);
+      return;
+    }
+    if (reconciliation.status !== 'unconfirmed') {
+      acknowledgePendingAccountDirectReauths([pending.id]);
+    }
+    const code =
+      reconciliation.status === 'identity-changed'
+        ? 'identity_changed'
+        : reconciliation.status === 'ambiguous'
+          ? 'identity_ambiguous'
+          : 'identity_unconfirmed';
+    throw new CodexReauthReconciliationError(code, t(`codex_reauth.${code}`));
   }, [
-    codexReauthTarget,
     completeConfirmedAccountDirectReauth,
     connectionFingerprint,
-    credentialEvidenceScopeKey,
-    files,
-    inspectionResults,
-    reloadInspectionCredentialArtifacts,
+    reconcilePendingAccountDirectReauthsWithRetry,
     t,
   ]);
 
@@ -2932,7 +3043,25 @@ export function AccountsPage() {
     (file: AuthFileItem) => {
       const action = resolveAccountReauthAction(file);
       if (action.kind === 'codex-dialog') {
-        setCodexReauthTarget(createCodexReauthTargetFromAuthFile(file));
+        const target = createCodexReauthTargetFromAuthFile(file);
+        const targetIdentityKey = getAuthFileCodexInspectionKeyForFile(file);
+        const baseline = createAccountDirectReauthBaseline({
+          target,
+          file,
+          files,
+          resultKeys: getHandledAccountInspectionResultKeys(
+            inspectionResults,
+            targetIdentityKey,
+            file.name,
+            files
+          ),
+        });
+        if (!baseline) {
+          showNotification(t('notification.refresh_failed'), 'error');
+          return;
+        }
+        codexReauthBaselineRef.current = baseline;
+        setCodexReauthTarget(target);
         return;
       }
       if (action.kind === 'navigate') {
@@ -3151,6 +3280,14 @@ export function AccountsPage() {
       getCredentialEvidenceBoundary,
       getFreshCodexHeaderQuota,
     ]
+  );
+  const getDisplayCodexResetEvidenceQuota = useCallback(
+    (row: AccountRow): CodexQuotaState | undefined =>
+      mergeCodexResetCreditsFromQuotaSnapshots(
+        getDisplayCodexQuota(row.raw),
+        quotaSnapshotWindowsByRowKey.get(row.selectionKey) ?? []
+      ),
+    [getDisplayCodexQuota, quotaSnapshotWindowsByRowKey]
   );
   const getQuotaSnapshotObservation = useCallback(
     (row: AccountRow): AccountQuotaSnapshotObservationInput | undefined => {
@@ -3561,7 +3698,27 @@ export function AccountsPage() {
     [actionCandidatesByRowKey, quotaCooldownsByRowKey, requestEvidenceBySelectionKey, rows]
   );
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
-  const planOptions = useMemo(() => getPlanOptions(rows), [rows]);
+  const planOptions = useMemo(() => getPlanOptions(rows, t), [rows, t]);
+  const planFilterValue = useMemo(
+    () => getPlanOptionValue(rows, planFilter, t),
+    [planFilter, rows, t]
+  );
+  const effectivePlanOptions = useMemo(() => {
+    if (
+      planFilterValue === 'all' ||
+      planOptions.some((option) => option.value === planFilterValue)
+    ) {
+      return planOptions;
+    }
+
+    return [
+      ...planOptions,
+      {
+        value: planFilterValue,
+        label: getPlanOptionLabel(rows, planFilterValue, t),
+      },
+    ];
+  }, [planFilterValue, planOptions, rows, t]);
   const recommendations = useMemo(
     () => buildAccountRecommendations(rows, requestEvidenceBySelectionKey),
     [requestEvidenceBySelectionKey, rows]
@@ -3575,16 +3732,20 @@ export function AccountsPage() {
       filterAccountRows(rows, {
         provider: providerFilter,
         status: statusFilter,
-        plan: planFilter,
+        plan: planFilterValue,
         quotaBand: quotaBandFilter,
         search,
         codexStatusBySelectionKey,
+        pendingActionsByRowKey: actionCandidatesByRowKey,
+        quotaCooldownsByRowKey,
         requestEvidenceBySelectionKey,
       }),
     [
+      actionCandidatesByRowKey,
       codexStatusBySelectionKey,
-      planFilter,
+      planFilterValue,
       providerFilter,
+      quotaCooldownsByRowKey,
       quotaBandFilter,
       requestEvidenceBySelectionKey,
       rows,
@@ -4467,45 +4628,85 @@ export function AccountsPage() {
     [location.pathname, location.search, navigate, workspaceUrlState]
   );
 
+  const handleInspectionCodexReauthStart = useCallback(
+    (target: CodexReauthTarget): boolean => {
+      const targetIdentityKey = getAuthFileCodexInspectionKeyForIdentity({
+        fileName: target.fileName ?? '',
+        runtimeId: target.runtimeId,
+        provider: target.provider,
+        authIndex: target.authIndex ?? null,
+        accountId: target.accountId,
+        accountSnapshot: target.accountSnapshot,
+      });
+      const targetFile = files.find(
+        (file) => getAuthFileCodexInspectionKeyForFile(file) === targetIdentityKey
+      );
+      if (!targetFile) {
+        inspectionCodexReauthBaselineRef.current = null;
+        showNotification(t('notification.refresh_failed'), 'error');
+        return false;
+      }
+      const baseline = createAccountDirectReauthBaseline({
+        target,
+        file: targetFile,
+        files,
+        resultKeys: getHandledAccountInspectionResultKeys(
+          inspectionResults,
+          targetIdentityKey,
+          target.fileName ?? '',
+          files
+        ),
+      });
+      if (!baseline) {
+        inspectionCodexReauthBaselineRef.current = null;
+        showNotification(t('notification.refresh_failed'), 'error');
+        return false;
+      }
+      inspectionCodexReauthBaselineRef.current = {
+        scopeKey: credentialEvidenceScopeKey,
+        target,
+        baseline,
+      };
+      return true;
+    },
+    [credentialEvidenceScopeKey, files, inspectionResults, showNotification, t]
+  );
+
   const handleInspectionCredentialsChanged = useCallback(
     async (target?: CodexReauthTarget | null, snapshot?: CredentialInspectionSnapshot | null) => {
       const callbackScopeKey = credentialEvidenceScopeKey;
       if (activeCredentialEvidenceScopeKeyRef.current !== callbackScopeKey) return;
       if (target) {
-        const targetIdentityKey = getAuthFileCodexInspectionKeyForIdentity({
-          fileName: target.fileName ?? '',
-          runtimeId: target.runtimeId,
-          provider: target.provider,
-          authIndex: target.authIndex ?? null,
-          accountId: target.accountId,
-          accountSnapshot: target.accountSnapshot,
+        const captured = inspectionCodexReauthBaselineRef.current;
+        if (!captured || captured.scopeKey !== callbackScopeKey || captured.target !== target) {
+          throw new Error(t('notification.refresh_failed'));
+        }
+        inspectionCodexReauthBaselineRef.current = null;
+        const pending = recordPendingAccountDirectReauth({
+          connectionFingerprint,
+          baseline: captured.baseline,
         });
-        const targetFile = files.find(
-          (file) => getAuthFileCodexInspectionKeyForFile(file) === targetIdentityKey
-        );
-        if (!targetFile) throw new Error(t('notification.refresh_failed'));
-        const baseline = createAccountDirectReauthBaseline({
-          target,
-          file: targetFile,
-          resultKeys: getHandledAccountInspectionResultKeys(
-            inspectionResults,
-            targetIdentityKey,
-            target.fileName ?? '',
-            files
-          ),
-        });
-        if (!baseline) throw new Error(t('notification.refresh_failed'));
-        const pending = recordPendingAccountDirectReauth({ connectionFingerprint, baseline });
         if (!pending) throw new Error(t('notification.refresh_failed'));
-        const reloadedFiles = await reloadInspectionCredentialArtifacts({
-          requireSuccessfulReload: true,
+        const reconciliations = await reconcilePendingAccountDirectReauthsWithRetry([pending], {
+          reload: true,
         });
-        if (activeCredentialEvidenceScopeKeyRef.current !== callbackScopeKey) return;
-        const confirmedFile = reloadedFiles
-          ? confirmAccountDirectReauth(pending, reloadedFiles)
-          : null;
-        if (!confirmedFile) throw new Error(t('notification.refresh_failed'));
-        completeConfirmedAccountDirectReauth(pending, confirmedFile, pending.id);
+        if (!reconciliations) return;
+        const reconciliation =
+          reconciliations.get(pending.id) ?? ({ status: 'unconfirmed' } as const);
+        if (reconciliation.status === 'confirmed') {
+          completeConfirmedAccountDirectReauth(pending, reconciliation.file, pending.id);
+          return;
+        }
+        if (reconciliation.status !== 'unconfirmed') {
+          acknowledgePendingAccountDirectReauths([pending.id]);
+        }
+        const code =
+          reconciliation.status === 'identity-changed'
+            ? 'identity_changed'
+            : reconciliation.status === 'ambiguous'
+              ? 'identity_ambiguous'
+              : 'identity_unconfirmed';
+        throw new CodexReauthReconciliationError(code, t(`codex_reauth.${code}`));
         return;
       }
       if (snapshot) {
@@ -4525,10 +4726,9 @@ export function AccountsPage() {
       completeConfirmedAccountDirectReauth,
       connectionFingerprint,
       credentialEvidenceScopeKey,
-      files,
       getInspectionCredentialMutationScopedKey,
-      inspectionResults,
       reloadInspectionCredentialArtifacts,
+      reconcilePendingAccountDirectReauthsWithRetry,
       synchronizeInspectionCredentialMutations,
       t,
     ]
@@ -5200,7 +5400,8 @@ export function AccountsPage() {
       if (row.runtimeOnly) return false;
       const refreshWithConfig = <TState, TData>(
         config: QuotaConfig<TState, TData>,
-        setQuota: QuotaSetter<TState>
+        setQuota: QuotaSetter<TState>,
+        currentState?: TState
       ) => {
         const storeKey = config.getStoreKey?.(row.raw) ?? row.fileName;
         return refreshQuotaWithConfig({
@@ -5213,13 +5414,18 @@ export function AccountsPage() {
             `${config.type}:${storeKey}`
           ),
           requestScope: authFilesRequestScope,
+          currentState,
         });
       };
       switch (row.provider) {
         case CODEX_CONFIG.type: {
-          const data = await refreshWithConfig(CODEX_CONFIG, setCodexQuota);
-          if (!data) return false;
-          const refreshedQuota = CODEX_CONFIG.buildSuccessState(data, row.raw);
+          const result = await refreshWithConfig(
+            CODEX_CONFIG,
+            setCodexQuota,
+            getScopedQuotaState(CODEX_CONFIG, baseQuotaStores.codexQuota, row.raw)
+          );
+          if (!result || result.status !== 'success') return false;
+          const refreshedQuota = result.state;
           const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
           invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
             supersedeAuthenticationActionEvidence: true,
@@ -5229,17 +5435,44 @@ export function AccountsPage() {
           return true;
         }
         case CLAUDE_CONFIG.type:
-          return Boolean(await refreshWithConfig(CLAUDE_CONFIG, setClaudeQuota));
+          return (
+            (
+              await refreshWithConfig(
+                CLAUDE_CONFIG,
+                setClaudeQuota,
+                getScopedQuotaState(CLAUDE_CONFIG, baseQuotaStores.claudeQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case ANTIGRAVITY_CONFIG.type:
-          return Boolean(await refreshWithConfig(ANTIGRAVITY_CONFIG, setAntigravityQuota));
+          return (
+            (
+              await refreshWithConfig(
+                ANTIGRAVITY_CONFIG,
+                setAntigravityQuota,
+                getScopedQuotaState(ANTIGRAVITY_CONFIG, baseQuotaStores.antigravityQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case KIMI_CONFIG.type:
-          return Boolean(await refreshWithConfig(KIMI_CONFIG, setKimiQuota));
+          return (
+            (
+              await refreshWithConfig(
+                KIMI_CONFIG,
+                setKimiQuota,
+                getScopedQuotaState(KIMI_CONFIG, baseQuotaStores.kimiQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case XAI_CONFIG.type:
-          return Boolean(
-            await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
-              XAI_CONFIG,
-              setXaiQuota
-            )
+          return (
+            (
+              await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
+                XAI_CONFIG,
+                setXaiQuota,
+                getScopedQuotaState(XAI_CONFIG, baseQuotaStores.xaiQuota, row.raw)
+              )
+            )?.status === 'success'
           );
         default:
           return false;
@@ -5254,6 +5487,7 @@ export function AccountsPage() {
       setXaiQuota,
       t,
       authFilesRequestScope,
+      baseQuotaStores,
     ]
   );
 
@@ -5418,84 +5652,183 @@ export function AccountsPage() {
 
   const canResetCodexQuota = useCallback(
     (row: AccountRow) => {
-      if (row.provider !== CODEX_CONFIG.type || row.disabled || row.runtimeOnly) return false;
-      return CODEX_CONFIG.canResetQuota?.(row.raw, getDisplayCodexQuota(row.raw)) === true;
+      if (row.provider !== CODEX_CONFIG.type || row.runtimeOnly) return false;
+      if (normalizeAuthIndex(row.raw['auth_index'] ?? row.raw.authIndex) === null) return false;
+      const evidence = getDisplayCodexResetEvidenceQuota(row);
+      return (
+        (evidence?.rateLimitResetCreditsAvailableCount ?? 0) > 0 ||
+        (evidence?.rateLimitResetCredits?.length ?? 0) > 0
+      );
     },
-    [getDisplayCodexQuota]
+    [getDisplayCodexResetEvidenceQuota]
   );
 
   const resetCodexQuotaForRow = useCallback(
     (row: AccountRow) => {
-      if (!canResetCodexQuota(row) || !CODEX_CONFIG.resetQuota) return;
-      const quota = getDisplayCodexQuota(row.raw);
+      if (!canResetCodexQuota(row)) return;
       const storeKey = CODEX_CONFIG.getStoreKey?.(row.raw) ?? row.fileName;
-      const resetCount = quota?.rateLimitResetCreditsAvailableCount ?? 0;
+      const requestKey = `${CODEX_CONFIG.type}:${storeKey}`;
+      if (resettingQuotaKeysRef.current.has(requestKey)) return;
+      resettingQuotaKeysRef.current.add(requestKey);
+      setResettingQuotaKeys((prev) => new Set(prev).add(requestKey));
+      const endResetTransaction = () => {
+        if (!resettingQuotaKeysRef.current.delete(requestKey)) return;
+        setResettingQuotaKeys((prev) => {
+          if (!prev.has(requestKey)) return prev;
+          const next = new Set(prev);
+          next.delete(requestKey);
+          return next;
+        });
+      };
       const displayName = getDisplayAccount(row);
+      // Bumping the per-credential request version invalidates quota requests
+      // started before this transaction, so their responses cannot overwrite
+      // post-reset state.
+      const cacheGeneration = captureQuotaCacheGeneration();
+      const isCurrent = beginAccountQuotaRequest(quotaRequestVersionsRef.current, requestKey);
 
-      showConfirmation({
-        title: t('codex_quota.reset_confirm_title'),
-        message: t('codex_quota.reset_confirm_message', {
-          name: displayName,
-          count: resetCount,
-        }),
-        confirmText: t('codex_quota.reset_button', { count: resetCount }),
-        cancelText: t('common.cancel'),
-        variant: 'primary',
-        onConfirm: async () => {
-          const cacheGeneration = captureQuotaCacheGeneration();
-          const isCurrent = beginAccountQuotaRequest(
-            quotaRequestVersionsRef.current,
-            `${CODEX_CONFIG.type}:${storeKey}`
+      const runResetTransaction = async () => {
+        let fresh: CodexQuotaData;
+        try {
+          fresh = await CODEX_CONFIG.fetchQuota(row.raw, t, authFilesRequestScope);
+        } catch (err: unknown) {
+          endResetTransaction();
+          if (!isCurrent()) return;
+          const message = err instanceof Error ? err.message : t('common.unknown_error');
+          const status =
+            typeof err === 'object' && err !== null && 'status' in err
+              ? Number((err as { status?: unknown }).status)
+              : undefined;
+          commitIfQuotaCacheCurrent(cacheGeneration, () => {
+            setCodexQuota((prev) => ({
+              ...prev,
+              [storeKey]: buildQuotaFailureState(
+                CODEX_CONFIG,
+                message,
+                Number.isFinite(status) ? status : undefined,
+                row.raw,
+                getScopedQuotaState(CODEX_CONFIG, prev, row.raw)
+              ),
+            }));
+          });
+          showNotification(
+            t('codex_quota.reset_verify_failed', { name: displayName, message }),
+            'error'
           );
-          try {
-            const data = await CODEX_CONFIG.resetQuota?.(row.raw, t, authFilesRequestScope);
-            if (data === undefined) {
-              throw new Error(t('common.unknown_error'));
+          return;
+        }
+        if (!isCurrent()) {
+          endResetTransaction();
+          return;
+        }
+        if (
+          fresh.rateLimitResetCreditsAvailableCount === null &&
+          fresh.rateLimitResetCredits.length === 0 &&
+          fresh.rateLimitResetCreditsError
+        ) {
+          endResetTransaction();
+          showNotification(
+            t('codex_quota.reset_verify_failed', {
+              name: displayName,
+              message: fresh.rateLimitResetCreditsError,
+            }),
+            'error'
+          );
+          return;
+        }
+        const verifiedCount =
+          fresh.rateLimitResetCreditsAvailableCount ?? fresh.rateLimitResetCredits.length;
+        const verifiedState = CODEX_CONFIG.buildSuccessState(fresh, row.raw);
+        commitIfQuotaCacheCurrent(cacheGeneration, () => {
+          setCodexQuota((prev) => ({ ...prev, [storeKey]: verifiedState }));
+        });
+        if (verifiedCount <= 0) {
+          endResetTransaction();
+          showNotification(t('codex_quota.reset_no_credits', { name: displayName }), 'info');
+          return;
+        }
+        let confirmed = false;
+        showConfirmation({
+          title: t('codex_quota.reset_confirm_title'),
+          message: t('codex_quota.reset_confirm_message', {
+            name: displayName,
+            count: verifiedCount,
+          }),
+          confirmText: t('codex_quota.reset_button', { count: verifiedCount }),
+          cancelText: t('common.cancel'),
+          variant: 'primary',
+          onCancel: endResetTransaction,
+          onConfirm: async () => {
+            if (confirmed) return;
+            confirmed = true;
+            try {
+              await consumeCodexRateLimitResetCredit(row.raw, t, authFilesRequestScope);
+            } catch (err: unknown) {
+              endResetTransaction();
+              const message = err instanceof Error ? err.message : t('common.unknown_error');
+              showNotification(
+                t('codex_quota.reset_failed', { name: displayName, message }),
+                'error'
+              );
+              return;
             }
-            if (!isCurrent()) return;
-            const committed = commitIfQuotaCacheCurrent(cacheGeneration, () => {
+            const postMutationIsCurrent = beginAccountQuotaRequest(
+              quotaRequestVersionsRef.current,
+              requestKey
+            );
+            // The reset mutation has happened; drop the pre-reset evidence so
+            // the UI cannot keep offering it until the refreshed quota lands.
+            commitIfQuotaCacheCurrent(cacheGeneration, () => {
               setCodexQuota((prev) => ({
                 ...prev,
-                [storeKey]: CODEX_CONFIG.buildSuccessState(data, row.raw),
+                [storeKey]: {
+                  ...(getScopedQuotaState(CODEX_CONFIG, prev, row.raw) ?? verifiedState),
+                  rateLimitResetCreditsAvailableCount: null,
+                  rateLimitResetCredits: [],
+                },
               }));
             });
-            if (!committed) return;
-            showNotification(t('codex_quota.reset_success', { name: displayName }), 'success');
-          } catch (err: unknown) {
-            if (!isCurrent()) return;
-            const message = err instanceof Error ? err.message : t('common.unknown_error');
-            const status =
-              typeof err === 'object' && err !== null && 'status' in err
-                ? Number((err as { status?: unknown }).status)
-                : undefined;
-            const committed = commitIfQuotaCacheCurrent(cacheGeneration, () => {
-              setCodexQuota((prev) => {
-                const previousState = getScopedQuotaState(CODEX_CONFIG, prev, row.raw);
-                return {
-                  ...prev,
-                  [storeKey]: buildQuotaFailureState(
-                    CODEX_CONFIG,
-                    message,
-                    Number.isFinite(status) ? status : undefined,
-                    row.raw,
-                    previousState
-                  ),
-                };
-              });
+            setQuotaSnapshotWindowsByRowKey((current) => {
+              const windows = current.get(row.selectionKey);
+              if (!windows) return current;
+              const next = new Map(current);
+              next.set(
+                row.selectionKey,
+                windows.map((window) => ({
+                  ...window,
+                  reset_credits_available: undefined,
+                  reset_credits: undefined,
+                }))
+              );
+              return next;
             });
-            if (!committed) return;
-            showNotification(
-              t('codex_quota.reset_failed', { name: displayName, message }),
-              'error'
-            );
-          }
-        },
-      });
+            try {
+              const data = await CODEX_CONFIG.fetchQuota(row.raw, t, authFilesRequestScope);
+              endResetTransaction();
+              if (postMutationIsCurrent()) {
+                commitIfQuotaCacheCurrent(cacheGeneration, () => {
+                  setCodexQuota((prev) => ({
+                    ...prev,
+                    [storeKey]: CODEX_CONFIG.buildSuccessState(data, row.raw),
+                  }));
+                });
+              }
+              showNotification(t('codex_quota.reset_success', { name: displayName }), 'success');
+            } catch {
+              endResetTransaction();
+              showNotification(
+                t('codex_quota.reset_partial_success', { name: displayName }),
+                'warning'
+              );
+            }
+          },
+        });
+      };
+      void runResetTransaction();
     },
     [
       canResetCodexQuota,
       getDisplayAccount,
-      getDisplayCodexQuota,
       setCodexQuota,
       showConfirmation,
       showNotification,
@@ -5651,13 +5984,11 @@ export function AccountsPage() {
       ? t('accounts.status_all')
       : isAccountCodexStatusFilter(statusFilter)
         ? t(`auth_files.codex_status_filter_${statusFilter}`)
-        : t(`accounts.status_${statusFilter}`);
+        : statusFilter === 'unconfirmed'
+          ? t('accounts.metric_unconfirmed')
+          : t(`accounts.status_${statusFilter}`);
   const selectedPlanFilterLabel =
-    planFilter === 'all'
-      ? t('accounts.plan_all')
-      : planFilter === 'unknown'
-        ? t('auth_files.codex_plan_filter_unknown')
-        : planFilter;
+    planFilter === 'all' ? t('accounts.plan_all') : getPlanOptionLabel(rows, planFilter, t);
   const selectedQuotaFilterLabel =
     quotaBandFilter === 'all' ? t('accounts.quota_all') : t(`accounts.quota_${quotaBandFilter}`);
   const selectedOperationalFilterLabel = t(`accounts.operational_${effectiveOperationalFilter}`);
@@ -5921,6 +6252,7 @@ export function AccountsPage() {
           options={[
             { value: 'all', label: t('accounts.status_all') },
             { value: 'available', label: t('accounts.status_available') },
+            { value: 'unconfirmed', label: t('accounts.metric_unconfirmed') },
             { value: 'low', label: t('accounts.status_low') },
             { value: 'exhausted', label: t('accounts.status_exhausted') },
             { value: 'disabled', label: t('accounts.status_disabled') },
@@ -5957,14 +6289,8 @@ export function AccountsPage() {
       </div>
       <div className={styles.filterField}>
         <Select
-          value={planFilter}
-          options={[
-            { value: 'all', label: t('accounts.plan_all') },
-            ...planOptions.map((plan) => ({
-              value: plan,
-              label: plan === 'unknown' ? t('auth_files.codex_plan_filter_unknown') : plan,
-            })),
-          ]}
+          value={planFilterValue}
+          options={[{ value: 'all', label: t('accounts.plan_all') }, ...effectivePlanOptions]}
           onChange={setPlanFilter}
           ariaLabel={t('accounts.plan_filter')}
           triggerClassName={styles.toolbarSelectTrigger}
@@ -6527,6 +6853,7 @@ export function AccountsPage() {
             const quotaCooldown = quotaCooldownsByRowKey.get(row.selectionKey)?.[0] ?? null;
             const codexStatus = codexStatusBySelectionKey.get(row.selectionKey) ?? null;
             const item = buildAccountListItem(row, {
+              t,
               recommendation,
               quotaCooldown,
               codexStatus,
@@ -6614,8 +6941,13 @@ export function AccountsPage() {
                     <span className={styles.providerPill}>
                       {getProviderLabel(item.identity.provider, t)}
                     </span>
-                    {item.identity.planType ? (
-                      <span className={styles.accountMetaPill}>{item.identity.planType}</span>
+                    {item.identity.planPresentation ? (
+                      <span
+                        className={styles.accountMetaPill}
+                        title={item.identity.planPresentation.fullLabel}
+                      >
+                        {item.identity.planPresentation.shortLabel}
+                      </span>
                     ) : null}
                   </div>
                   <div className={styles.accountIdentityCopyLine}>
@@ -6916,11 +7248,13 @@ export function AccountsPage() {
     const selectedQuotaCooldown = quotaCooldownsByRowKey.get(selectedRow.selectionKey)?.[0] ?? null;
     const selectedCodexQuota =
       selectedRow.provider === CODEX_CONFIG.type
-        ? mergeCodexResetCreditsFromQuotaSnapshots(
-            getDisplayCodexQuota(selectedRow.raw),
-            quotaSnapshotWindowsByRowKey.get(selectedRow.selectionKey) ?? []
-          )
+        ? getDisplayCodexResetEvidenceQuota(selectedRow)
         : undefined;
+    const resettingSelectedQuota =
+      selectedRow.provider === CODEX_CONFIG.type &&
+      resettingQuotaKeys.has(
+        `${CODEX_CONFIG.type}:${CODEX_CONFIG.getStoreKey?.(selectedRow.raw) ?? selectedRow.fileName}`
+      );
     const selectedCodexStatus = codexStatusBySelectionKey.get(selectedRow.selectionKey) ?? null;
     const hasMatchingDetailEvents = detailEventsRowKey === selectedRow.selectionKey;
     const rowEvents = hasMatchingDetailEvents ? detailEvents : [];
@@ -6928,6 +7262,7 @@ export function AccountsPage() {
     const rowEventsRecentFailure = hasMatchingDetailEvents ? detailEventsRecentFailure : null;
     const rowEventsTotalCount = hasMatchingDetailEvents ? detailEventsTotalCount : 0;
     const detailView = buildAccountDetailViewModel(selectedRow, {
+      t,
       recommendation: recommendationBySelectionKey.get(selectedRow.selectionKey) ?? null,
       quotaCooldown: selectedQuotaCooldown,
       codexStatus: selectedCodexStatus,
@@ -6963,7 +7298,9 @@ export function AccountsPage() {
             historyRefreshing={historyRefreshing}
             onRefreshHistory={() => void refreshAccountHistory(selectedRow)}
             onResetQuota={() => resetCodexQuotaForRow(selectedRow)}
-            resetQuotaDisabled={!canResetCodexQuota(selectedRow) || configurationSaving}
+            resetQuotaDisabled={
+              !canResetCodexQuota(selectedRow) || resettingSelectedQuota || configurationSaving
+            }
           />
         );
       }
@@ -7083,7 +7420,7 @@ export function AccountsPage() {
               label: t('codex_quota.reset_action_button'),
               icon: <IconRefreshCw size={15} />,
               onClick: () => resetCodexQuotaForRow(selectedRow),
-              disabled: configurationSaving,
+              disabled: configurationSaving || resettingSelectedQuota,
             } satisfies DropdownMenuItem,
           ]
         : []),
@@ -7125,7 +7462,11 @@ export function AccountsPage() {
                 {getDisplayAccount(selectedRow)}
               </strong>
               <span className={styles.drawerTitleMeta}>
-                {getProviderLabel(selectedRow.provider, t)} · {selectedRow.planType ?? '-'} ·{' '}
+                {getProviderLabel(selectedRow.provider, t)} ·{' '}
+                <span title={detailView.identity.planPresentation?.fullLabel}>
+                  {detailView.identity.planPresentation?.shortLabel ?? '-'}
+                </span>{' '}
+                ·{' '}
                 <button
                   type="button"
                   className={styles.drawerFileNameCopy}
@@ -7249,6 +7590,7 @@ export function AccountsPage() {
       onModeChange={changeHealthMode}
       onSnapshotChange={handleInspectionSnapshotChange}
       onCredentialsChanged={handleInspectionCredentialsChanged}
+      onCodexReauthStart={handleInspectionCodexReauthStart}
       onOpenCredential={handleOpenInspectionCredential}
     />
   );
@@ -7599,7 +7941,10 @@ export function AccountsPage() {
         open={Boolean(codexReauthTarget)}
         target={codexReauthTarget}
         requestScope={authFilesRequestScope}
-        onClose={() => setCodexReauthTarget(null)}
+        onClose={() => {
+          codexReauthBaselineRef.current = null;
+          setCodexReauthTarget(null);
+        }}
         onSuccess={handleCodexReauthSuccess}
       />
     </div>

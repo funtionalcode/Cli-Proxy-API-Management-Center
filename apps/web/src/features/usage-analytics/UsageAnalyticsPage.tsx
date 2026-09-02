@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/icons';
 import { useNotificationStore, useThemeStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
+import { getPlanPresentation } from '@/utils/plans';
 import {
   buildUsageHeatmapChartData,
   buildModelKeyDistribution,
@@ -310,8 +311,13 @@ const formatDrilldownDiagnostics = (row: UsageDrilldownEvent, locale: string, t:
   if (row.headerTraceId) {
     parts.push(`${t('monitoring.header_trace')}: ${row.headerTraceId}`);
   }
+  const planLabel = getPlanPresentation({
+    provider: row.provider,
+    planType: row.headerQuotaPlanType,
+    t,
+  })?.fullLabel;
   const quotaParts = [
-    row.headerQuotaPlanType,
+    planLabel,
     typeof row.headerQuotaUsedPercent === 'number'
       ? formatPercent(row.headerQuotaUsedPercent / 100)
       : '',
@@ -1039,11 +1045,17 @@ const buildHealthChartOption = (
       const point = typeof first?.dataIndex === 'number' ? timeline[first.dataIndex] : undefined;
       const rows = items
         .map((item) => {
-          const entry = item as { marker?: string; seriesName?: string; data?: number };
+          const entry = item as {
+            marker?: string;
+            seriesName?: string;
+            data?: number | null;
+          };
           const value =
-            entry.seriesName === t('usage_analytics.metric_average_latency')
-              ? formatUsageDurationMs(Number(entry.data ?? 0))
-              : formatPercent(Number(entry.data ?? 0));
+            entry.data === null || entry.data === undefined
+              ? '-'
+              : entry.seriesName === t('usage_analytics.metric_average_latency')
+                ? formatUsageDurationMs(entry.data)
+                : formatPercent(entry.data);
           return tooltipRowHtml(
             chartTheme,
             `${entry.marker ?? ''}${escapeHtml(entry.seriesName)}`,
@@ -1092,7 +1104,7 @@ const buildHealthChartOption = (
   ],
   series: [
     {
-      data: timeline.map((point) => point.successRate),
+      data: timeline.map((point) => (point.requestCount > 0 ? point.successRate : null)),
       lineStyle: { width: 2.5 },
       name: t('usage_analytics.success_rate'),
       showSymbol: timeline.length <= 36,
@@ -1101,7 +1113,7 @@ const buildHealthChartOption = (
       yAxisIndex: 0,
     },
     {
-      data: timeline.map((point) => point.failureRate),
+      data: timeline.map((point) => (point.requestCount > 0 ? point.failureRate : null)),
       lineStyle: { width: 2.5 },
       name: t('usage_analytics.failure_rate'),
       showSymbol: timeline.length <= 36,
@@ -1111,7 +1123,7 @@ const buildHealthChartOption = (
     },
     {
       barMaxWidth: 16,
-      data: timeline.map((point) => point.averageLatencyMs ?? 0),
+      data: timeline.map((point) => (point.requestCount > 0 ? point.averageLatencyMs : null)),
       name: t('usage_analytics.metric_average_latency'),
       type: 'bar',
       yAxisIndex: 1,
@@ -2516,8 +2528,17 @@ function UsageAnalyticsPageInner() {
   const noData = !usage.loading && !usage.error && !hasUsageData(usage.summary, usage.timeline);
   const rankRowLimit = 8;
   const credentialRankRowLimit = 10;
+  const apiKeyRankContext =
+    usage.apiKeyRows.length > rankRowLimit
+      ? t('usage_analytics.api_key_rank_context_top', {
+          limit: rankRowLimit,
+          total: usage.apiKeyRows.length,
+        })
+      : t('usage_analytics.api_key_rank_context_total', {
+          total: usage.apiKeyRows.length,
+        });
   const visibleModelRows = showAllModels ? usage.modelRows : usage.modelRows.slice(0, rankRowLimit);
-  const visibleApiKeyRows = usage.apiKeyRows.slice(0, 8);
+  const visibleApiKeyRows = usage.apiKeyRows.slice(0, rankRowLimit);
   const visibleCredentialRows = usage.credentialRows.slice(0, credentialRankRowLimit);
   const selectedModelKeyDistribution = useMemo(
     () =>
@@ -3187,7 +3208,10 @@ function UsageAnalyticsPageInner() {
           <section className={styles.apiKeyAnalysisGrid}>
             <div className={styles.tablePanel}>
               <div className={styles.panelHeader}>
-                <h2>{t('usage_analytics.api_key_rank_title')}</h2>
+                <div>
+                  <h2>{t('usage_analytics.api_key_rank_title')}</h2>
+                  <p>{apiKeyRankContext}</p>
+                </div>
                 <div className={styles.apiSearchBar}>
                   <IconSearch size={16} />
                   <input

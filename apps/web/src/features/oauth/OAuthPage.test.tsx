@@ -26,8 +26,10 @@ const { pageMocks } = vi.hoisted(() => {
       startAuth: vi.fn(),
       getAuthStatus: vi.fn(),
       submitCallback: vi.fn(),
+      authFilesList: vi.fn(),
       showNotification: vi.fn(),
       completeReauth: vi.fn(),
+      publishMutationRevision: vi.fn(),
     },
   };
 });
@@ -54,6 +56,7 @@ vi.mock('@/stores', () => {
   );
 
   return {
+    publishAccountCredentialMutationRevision: pageMocks.publishMutationRevision,
     useAuthStore,
     useNotificationStore: () => ({ showNotification: pageMocks.showNotification }),
     useThemeStore: (selector: (state: { resolvedTheme: 'light' }) => unknown) =>
@@ -66,6 +69,9 @@ vi.mock('@/services/api', () => ({
     startAuth: pageMocks.startAuth,
     getAuthStatus: pageMocks.getAuthStatus,
     submitCallback: pageMocks.submitCallback,
+  },
+  authFilesApi: {
+    list: pageMocks.authFilesList,
   },
   pluginsApi: {
     list: vi.fn(async () => ({ plugins: [] })),
@@ -143,13 +149,28 @@ describe('OAuthPage request lifecycle', () => {
     pageMocks.startAuth.mockReset();
     pageMocks.getAuthStatus.mockReset();
     pageMocks.submitCallback.mockReset();
+    pageMocks.authFilesList.mockReset();
+    pageMocks.authFilesList.mockResolvedValue({ files: [] });
     pageMocks.showNotification.mockReset();
     pageMocks.completeReauth.mockReset();
+    pageMocks.publishMutationRevision.mockReset();
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
     });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+      cancelAnimationFrame: vi.fn(),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 1),
+      clearTimeout: vi.fn(),
+      open: vi.fn(),
+    });
   });
 
   afterEach(async () => {
@@ -219,10 +240,14 @@ describe('OAuthPage request lifecycle', () => {
       });
       await Promise.resolve();
     });
+    let callbackPromise!: Promise<void>;
+    act(() => {
+      callbackPromise = Promise.resolve(findCallbackButton(renderer!).props.onClick());
+    });
     await act(async () => {
-      void findCallbackButton(renderer!).props.onClick();
       await Promise.resolve();
     });
+    expect(pageMocks.submitCallback).toHaveBeenCalledTimes(1);
     expect(findCallbackButton(renderer!).props.loading).toBe(true);
 
     pageMocks.apiBase = 'http://cpa-b.local:8317';
@@ -238,6 +263,7 @@ describe('OAuthPage request lifecycle', () => {
 
     await act(async () => {
       callbackDeferred.resolve();
+      await callbackPromise;
       await Promise.resolve();
       await Promise.resolve();
     });

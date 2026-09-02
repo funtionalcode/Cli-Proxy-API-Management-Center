@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
@@ -20,14 +21,16 @@ type Result struct {
 	State             store.BootstrapState
 }
 
+// currentConnectionStorageMigrationVersion is the version of the
+// manager_config/setup normalization migration. Version 1 is the legacy
+// MigratedLegacy boolean; version 2 adds authoritative reconciliation,
+// partial-manager repair, and encrypted rewrites. Databases migrated by older
+// releases carry no version field and decode as 0, so the migration runs once
+// more under this release.
+const currentConnectionStorageMigrationVersion = 2
+
 func Run(ctx context.Context, cfg config.Config, st *store.Store, dataKeyCreated bool) (Result, error) {
 	result := Result{DataKeyCreated: dataKeyCreated}
-	adminCreated, generatedAdminKey, err := ensureAdminCredential(ctx, cfg, st)
-	if err != nil {
-		return Result{}, err
-	}
-	result.AdminCreated = adminCreated
-	result.GeneratedAdminKey = generatedAdminKey
 
 	historical, err := st.HasHistoricalData(ctx)
 	if err != nil {
@@ -39,12 +42,26 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, dataKeyCreated
 	if err != nil {
 		return Result{}, err
 	}
-	if !stateFound || !previousState.MigratedLegacy {
+	connectionStorageMigrationVersion := 0
+	if stateFound {
+		connectionStorageMigrationVersion = previousState.ConnectionStorageMigrationVersion
+	}
+	// The version gate, not MigratedLegacy, decides whether the connection
+	// normalization runs: older releases already set MigratedLegacy=true
+	// without performing it. The version is only persisted after the
+	// migration succeeds, so a failed normalization retries on the next boot.
+	needsConnectionStorageMigration := !stateFound ||
+		!previousState.MigratedLegacy ||
+		previousState.ConnectionStorageMigrationVersion < currentConnectionStorageMigrationVersion
+	if needsConnectionStorageMigration {
 		migrated, err := migrateLegacyConfig(ctx, cfg, st)
 		if err != nil {
 			return Result{}, err
 		}
-		result.MigratedLegacy = migrated
+		if migrated || (stateFound && previousState.MigratedLegacy) {
+			result.MigratedLegacy = true
+		}
+		connectionStorageMigrationVersion = currentConnectionStorageMigrationVersion
 	} else {
 		result.MigratedLegacy = previousState.MigratedLegacy
 	}
@@ -54,19 +71,33 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, dataKeyCreated
 		return Result{}, err
 	}
 	state := store.BootstrapState{
-		Version:            1,
-		Status:             bootstrapStatus(projectInitialized, historical),
-		AdminReady:         true,
-		ProjectInitialized: projectInitialized,
-		DataKeyReady:       true,
-		MigratedLegacy:     result.MigratedLegacy,
-		HasHistoricalData:  historical,
+		Version:                           1,
+		Status:                            bootstrapStatus(projectInitialized, historical),
+		AdminReady:                        true,
+		ProjectInitialized:                projectInitialized,
+		DataKeyReady:                      true,
+		MigratedLegacy:                    result.MigratedLegacy,
+		HasHistoricalData:                 historical,
+		ConnectionStorageMigrationVersion: connectionStorageMigrationVersion,
 	}
 	if err := st.SaveBootstrapState(ctx, state); err != nil {
 		return Result{}, err
 	}
 	state, _, _ = st.LoadBootstrapState(ctx)
 	result.State = state
+
+	// Admin credential persistence is deliberately the last fallible write of
+	// bootstrap: a randomly generated key must never be persisted unless every
+	// earlier step succeeded, so its plaintext can always be disclosed by the
+	// caller instead of locking the operator out with an unknown credential.
+	// A crash between the state write and this write self-heals on the next
+	// boot, which simply generates and discloses a fresh key.
+	adminCreated, generatedAdminKey, err := ensureAdminCredential(ctx, cfg, st)
+	if err != nil {
+		return Result{}, err
+	}
+	result.AdminCreated = adminCreated
+	result.GeneratedAdminKey = generatedAdminKey
 	return result, nil
 }
 
@@ -98,7 +129,6 @@ func ensureAdminCredential(ctx context.Context, cfg config.Config, st *store.Sto
 }
 
 func migrateLegacyConfig(ctx context.Context, cfg config.Config, st *store.Store) (bool, error) {
-	migrated := false
 	managerCfg, managerOK, err := st.LoadManagerConfig(ctx)
 	if err != nil {
 		return false, err
@@ -107,25 +137,70 @@ func migrateLegacyConfig(ctx context.Context, cfg config.Config, st *store.Store
 	if err != nil {
 		return false, err
 	}
-	if !managerOK && setupOK && setup.CPAUpstreamURL != "" && setup.ManagementKey != "" {
-		managerCfg = managerConfigFromSetup(cfg, setup)
-		if err := st.SaveManagerConfig(ctx, managerCfg); err != nil {
-			return false, err
+
+	resolution, resolveErr := managerconfig.ResolveLegacyConnectionAuthority(
+		managerCfg,
+		managerOK,
+		setup,
+		setupOK,
+	)
+
+	// Secret-at-rest normalization is deliberately independent from authority
+	// resolution. Even a conflicting or otherwise unusable historical pair is
+	// rewritten through the migration-only transactional path before the
+	// authority error is returned. This prevents a failed migration from
+	// preserving plaintext keys while still refusing to guess a connection.
+	if resolveErr != nil {
+		if err := st.NormalizeLegacyConnectionStorage(ctx, managerCfg, managerOK, setup, setupOK); err != nil {
+			return false, fmt.Errorf("normalize legacy CPA connection storage: %w", err)
 		}
-		migrated = true
-	} else if managerOK {
-		if err := st.SaveManagerConfig(ctx, managerCfg); err != nil {
-			return false, err
-		}
-		migrated = true
+		return false, fmt.Errorf("%w%s", resolveErr, managerconfig.LegacyConnectionConflictRepairHint)
 	}
-	if setupOK && setup.CPAUpstreamURL != "" && setup.ManagementKey != "" {
-		if err := st.SaveSetup(ctx, setup); err != nil {
-			return false, err
+
+	var normalizedManager store.ManagerConfig
+	managerPresent := managerOK
+	var normalizedSetup store.Setup
+	setupPresent := setupOK
+	switch resolution.Authority {
+	case managerconfig.LegacyConnectionAuthorityManager:
+		// The complete manager row is authoritative. A stale or partial setup
+		// is canonicalized from it, while its collector fields are retained.
+		normalizedManager = managerCfg
+		managerconfig.MergeLegacyCollectorSettings(&normalizedManager, setup, setupOK)
+		normalizedSetup = managerconfig.CanonicalSetupFromManagerConfig(normalizedManager, setup, setupOK)
+		setupPresent = true
+	case managerconfig.LegacyConnectionAuthoritySetup:
+		// A complete setup can repair a partial manager only after the shared
+		// resolver has confirmed every existing manager side matches it.
+		if !managerOK {
+			normalizedManager = managerConfigFromSetup(cfg, setup)
+		} else {
+			normalizedManager = managerCfg
+			normalizedManager.CPAConnection.CPABaseURL = resolution.Connection.BaseURL
+			normalizedManager.CPAConnection.ManagementKey = resolution.Connection.ManagementKey
+			managerconfig.MergeLegacyCollectorSettings(&normalizedManager, setup, setupOK)
 		}
-		migrated = true
+		managerPresent = true
+		normalizedSetup = managerconfig.CanonicalSetupFromManagerConfig(normalizedManager, setup, setupOK)
+		setupPresent = true
+	default:
+		// No complete authority exists. Preserve each partial historical row
+		// independently; in particular, never combine a manager URL with a
+		// setup-only key during bootstrap.
+		normalizedManager = managerCfg
+		normalizedSetup = setup
 	}
-	return migrated, nil
+
+	if err := st.NormalizeLegacyConnectionStorage(
+		ctx,
+		normalizedManager,
+		managerPresent,
+		normalizedSetup,
+		setupPresent,
+	); err != nil {
+		return false, fmt.Errorf("normalize legacy CPA connection storage: %w", err)
+	}
+	return managerPresent || setupPresent, nil
 }
 
 func managerConfigFromSetup(cfg config.Config, setup store.Setup) store.ManagerConfig {

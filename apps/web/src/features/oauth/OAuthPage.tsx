@@ -12,9 +12,15 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { useAuthStore, useNotificationStore, useThemeStore } from '@/stores';
+import {
+  publishAccountCredentialMutationRevision,
+  useAuthStore,
+  useNotificationStore,
+  useThemeStore,
+} from '@/stores';
 import {
   oauthApi,
+  authFilesApi,
   pluginsApi,
   type BuiltInOAuthProvider,
   type OAuthProvider,
@@ -24,7 +30,11 @@ import { copyToClipboard } from '@/utils/clipboard';
 import type { PluginListEntry } from '@/types';
 import { getPluginTitle, resolvePluginAssetURL } from '@/features/plugins/pluginResources';
 import { createCodexInspectionConnectionFingerprint } from '@/features/monitoring/codexInspection';
-import { recordAccountCredentialMutationMarker } from '@/features/accounts/model/accountCredentialMutationMarker';
+import {
+  createAccountCredentialMutationBaseline,
+  recordAccountCredentialMutationMarker,
+  type AccountCredentialMutationBaseline,
+} from '@/features/accounts/model/accountCredentialMutationMarker';
 import type { ApiClientRequestScope } from '@/services/api/client';
 import {
   completeAccountOAuthReauthSessionFromSearch,
@@ -62,6 +72,7 @@ interface ProviderState {
 
 interface ScopedOAuthProviderAttempt extends OAuthProviderAttempt {
   requestScope: ApiClientRequestScope;
+  credentialBaseline?: AccountCredentialMutationBaseline;
 }
 
 interface VertexImportResult {
@@ -269,6 +280,9 @@ export function OAuthPage() {
   const pollingTimers = useRef<Partial<Record<string, number>>>({});
   const successResetTimers = useRef<Partial<Record<string, number>>>({});
   const providerAttemptVersions = useRef<Partial<Record<string, number>>>({});
+  const providerCredentialBaselines = useRef<
+    Partial<Record<string, { version: number; baseline: AccountCredentialMutationBaseline }>>
+  >({});
   const callbackAttemptVersions = useRef<Partial<Record<string, number>>>({});
   const oauthPollingScopeRef = useRef(oauthPollingScope);
   const connectionFingerprintRef = useRef(connectionFingerprint);
@@ -292,6 +306,7 @@ export function OAuthPage() {
     oauthPollingScopeRef.current = oauthPollingScope;
     if (isOAuthPollingScopeCurrent(previousScope, oauthPollingScope)) return;
     providerAttemptVersions.current = {};
+    providerCredentialBaselines.current = {};
     callbackAttemptVersions.current = {};
     vertexImportGenerationRef.current += 1;
     clearTimers();
@@ -342,6 +357,7 @@ export function OAuthPage() {
   useEffect(() => {
     return () => {
       providerAttemptVersions.current = {};
+      providerCredentialBaselines.current = {};
       callbackAttemptVersions.current = {};
       vertexImportGenerationRef.current += 1;
       clearTimers();
@@ -424,6 +440,7 @@ export function OAuthPage() {
   const finishProviderAttempt = (provider: OAuthProvider, attempt: OAuthProviderAttempt) => {
     if (providerAttemptVersions.current[provider] === attempt.version) {
       delete providerAttemptVersions.current[provider];
+      delete providerCredentialBaselines.current[provider];
     }
   };
 
@@ -483,6 +500,7 @@ export function OAuthPage() {
 
   const resetProviderAttempt = (provider: OAuthProvider) => {
     delete providerAttemptVersions.current[provider];
+    delete providerCredentialBaselines.current[provider];
     delete callbackAttemptVersions.current[provider];
     clearProviderTimers(provider);
     setStates((prev) => {
@@ -514,6 +532,13 @@ export function OAuthPage() {
     recordAccountCredentialMutationMarker({
       connectionFingerprint: completionConnectionFingerprint,
       provider,
+      baseline: attempt.credentialBaseline,
+      requireObservedMutation: true,
+    });
+    publishAccountCredentialMutationRevision({
+      connectionFingerprint: completionConnectionFingerprint,
+      provider,
+      kind: 'oauth',
     });
     clearPollingTimer(provider);
     clearSuccessResetTimer(provider);
@@ -536,6 +561,39 @@ export function OAuthPage() {
     }, SUCCESS_RESET_DELAY_MS);
     successResetTimers.current[provider] = timer;
     return true;
+  };
+
+  const handleProviderAuthStatus = (
+    provider: OAuthProvider,
+    response: Awaited<ReturnType<typeof oauthApi.getAuthStatus>>,
+    attempt: ScopedOAuthProviderAttempt,
+    successMessage: string
+  ): 'completed' | 'waiting' | 'error' | 'stale' => {
+    if (!isProviderAttemptCurrent(provider, attempt)) return 'stale';
+    if (response.status === 'ok') {
+      if (!completeProviderAuth(provider, attempt)) return 'stale';
+      showNotification(successMessage, 'success');
+      return 'completed';
+    }
+    if (response.status === 'error') {
+      finishProviderAttempt(provider, attempt);
+      delete callbackAttemptVersions.current[provider];
+      clearPollingTimer(provider);
+      updateProviderState(provider, {
+        status: 'error',
+        error: response.error,
+        polling: false,
+        callbackSubmitting: false,
+        callbackStatus: 'error',
+        callbackError: response.error,
+      });
+      showNotification(
+        `${getProviderActionText(provider, 'oauth_status_error')} ${response.error || ''}`,
+        'error'
+      );
+      return 'error';
+    }
+    return 'waiting';
   };
 
   const startPolling = (
@@ -566,17 +624,13 @@ export function OAuthPage() {
           stopAttempt();
           return;
         }
-        if (res.status === 'ok') {
-          if (completeProviderAuth(provider, attempt)) {
-            showNotification(getProviderActionText(provider, 'oauth_status_success'), 'success');
-          }
-        } else if (res.status === 'error') {
-          finishProviderAttempt(provider, attempt);
-          updateProviderState(provider, { status: 'error', error: res.error, polling: false });
-          showNotification(
-            `${getProviderActionText(provider, 'oauth_status_error')} ${res.error || ''}`,
-            'error'
-          );
+        const result = handleProviderAuthStatus(
+          provider,
+          res,
+          attempt,
+          getProviderActionText(provider, 'oauth_status_success')
+        );
+        if (result === 'error' || result === 'completed') {
           stopAttempt();
         }
       } catch (err: unknown) {
@@ -601,6 +655,7 @@ export function OAuthPage() {
   const startAuth = async (provider: OAuthProvider) => {
     clearProviderTimers(provider);
     delete callbackAttemptVersions.current[provider];
+    delete providerCredentialBaselines.current[provider];
     const attempt = beginProviderAttempt(provider);
     updateProviderState(provider, {
       url: undefined,
@@ -614,6 +669,21 @@ export function OAuthPage() {
       callbackUrl: '',
     });
     try {
+      try {
+        const response = await authFilesApi.list(attempt.requestScope);
+        if (!isProviderAttemptCurrent(provider, attempt)) return;
+        attempt.credentialBaseline =
+          createAccountCredentialMutationBaseline(response.files, provider) ?? undefined;
+        if (attempt.credentialBaseline) {
+          providerCredentialBaselines.current[provider] = {
+            version: attempt.version,
+            baseline: attempt.credentialBaseline,
+          };
+        }
+      } catch {
+        if (!isProviderAttemptCurrent(provider, attempt)) return;
+        // OAuth remains available, but completion will fail closed without a mutation marker.
+      }
       const res = await oauthApi.startAuth(provider, attempt.requestScope);
       if (!isProviderAttemptCurrent(provider, attempt)) return;
       if (!res.state) {
@@ -658,7 +728,8 @@ export function OAuthPage() {
   };
 
   const submitCallback = async (provider: OAuthProvider) => {
-    const callbackInput = (states[provider]?.callbackUrl || '').trim();
+    const providerState = states[provider];
+    const callbackInput = (providerState?.callbackUrl || '').trim();
     if (!callbackInput) {
       showNotification(
         t(
@@ -670,7 +741,9 @@ export function OAuthPage() {
       );
       return;
     }
-    const redirectUrl = resolveCallbackUrl(provider, callbackInput, states[provider]?.state);
+    const state = providerState?.state;
+    const providerVersion = providerAttemptVersions.current[provider];
+    const redirectUrl = resolveCallbackUrl(provider, callbackInput, state);
     if (!redirectUrl) {
       showNotification(
         t(
@@ -680,26 +753,81 @@ export function OAuthPage() {
       );
       return;
     }
+    if (!state || providerVersion === undefined) {
+      showNotification(t('auth_login.missing_state'), 'warning');
+      return;
+    }
+    const providerAttempt: ScopedOAuthProviderAttempt = {
+      scope: oauthPollingScopeRef.current,
+      version: providerVersion,
+      requestScope,
+      credentialBaseline:
+        providerCredentialBaselines.current[provider]?.version === providerVersion
+          ? providerCredentialBaselines.current[provider]?.baseline
+          : undefined,
+    };
+    if (!isProviderAttemptCurrent(provider, providerAttempt)) return;
     const callbackAttempt = beginCallbackAttempt(provider);
     updateProviderState(provider, {
       callbackSubmitting: true,
       callbackStatus: undefined,
       callbackError: undefined,
     });
+    const probeStatus = async () => {
+      const response = await oauthApi.getAuthStatus(state, providerAttempt.requestScope);
+      if (
+        !isCallbackAttemptCurrent(provider, callbackAttempt) ||
+        !isProviderAttemptCurrent(provider, providerAttempt)
+      ) {
+        return;
+      }
+      finishCallbackAttempt(provider, callbackAttempt);
+      handleProviderAuthStatus(
+        provider,
+        response,
+        providerAttempt,
+        getProviderActionText(provider, 'oauth_status_success')
+      );
+    };
     try {
       await oauthApi.submitCallback(provider, redirectUrl, callbackAttempt.requestScope);
       if (!isCallbackAttemptCurrent(provider, callbackAttempt)) return;
-      const providerAttempt: ScopedOAuthProviderAttempt = {
-        scope: callbackAttempt.scope,
-        version: providerAttemptVersions.current[provider] ?? 0,
-        requestScope: callbackAttempt.requestScope,
-      };
-      if (completeProviderAuth(provider, providerAttempt)) {
-        showNotification(t('auth_login.oauth_callback_success'), 'success');
+      if (!isProviderAttemptCurrent(provider, providerAttempt)) return;
+      updateProviderState(provider, {
+        callbackSubmitting: false,
+        callbackStatus: 'success',
+        callbackError: undefined,
+      });
+      showNotification(t('auth_login.oauth_callback_success'), 'success');
+      try {
+        await probeStatus();
+      } catch {
+        if (isCallbackAttemptCurrent(provider, callbackAttempt)) {
+          finishCallbackAttempt(provider, callbackAttempt);
+        }
       }
     } catch (err: unknown) {
       if (!isCallbackAttemptCurrent(provider, callbackAttempt)) return;
       const status = getErrorStatus(err);
+      if (status === 409 && isProviderAttemptCurrent(provider, providerAttempt)) {
+        updateProviderState(provider, {
+          callbackSubmitting: false,
+          callbackStatus: 'success',
+          callbackError: undefined,
+        });
+        try {
+          await probeStatus();
+        } catch (probeError: unknown) {
+          if (!isCallbackAttemptCurrent(provider, callbackAttempt)) return;
+          finishCallbackAttempt(provider, callbackAttempt);
+          updateProviderState(provider, {
+            callbackSubmitting: false,
+            callbackStatus: 'error',
+            callbackError: getErrorMessage(probeError) || undefined,
+          });
+        }
+        return;
+      }
       const message = getErrorMessage(err);
       const errorMessage =
         status === 404
@@ -775,6 +903,11 @@ export function OAuthPage() {
       recordAccountCredentialMutationMarker({
         connectionFingerprint: importConnectionFingerprint,
         provider: 'vertex',
+      });
+      publishAccountCredentialMutationRevision({
+        connectionFingerprint: importConnectionFingerprint,
+        provider: 'vertex',
+        kind: 'credential',
       });
       setVertexState((prev) => ({ ...prev, loading: false, result }));
       showNotification(t('vertex_import.success'), 'success');

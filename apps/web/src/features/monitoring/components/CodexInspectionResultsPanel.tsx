@@ -23,11 +23,11 @@ import {
   type InspectionProbeSource,
   type InspectionProbeState,
 } from '@/features/monitoring/model/codexInspectionPresentation';
-import { getCodexPlanLabel } from '@/features/monitoring/components/accountOverviewPresentation';
 import { CodexInspectionQuotaWindows } from '@/features/monitoring/components/CodexInspectionQuotaWindows';
 import { Panel } from '@/features/monitoring/components/CodexInspectionPanels';
 import { useNotificationStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
+import { getPlanPresentation } from '@/utils/plans';
 import styles from '../CodexInspectionPage.module.scss';
 
 type CodexInspectionResultsPanelProps = {
@@ -230,7 +230,11 @@ export function CodexInspectionResultsPanel({
             {filteredResults.length > 0 ? (
               filteredResults.map((item) => {
                 const isXai = item.provider.trim().toLowerCase() === 'xai';
-                const planLabel = isXai ? null : getCodexPlanLabel(item.planType, t);
+                const planLabel = getPlanPresentation({
+                  provider: item.provider,
+                  planType: item.planType,
+                  t,
+                })?.shortLabel;
                 const quotaWindows = item.quotaWindows ?? [];
                 const errorText = item.errorDetail || item.error;
                 const errorSummary = summarizeInspectionError(item, t, {

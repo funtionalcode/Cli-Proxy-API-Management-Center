@@ -100,6 +100,55 @@ func TestStoreReadsLegacyPlaintextSecretsAndRewritesEncrypted(t *testing.T) {
 	}
 }
 
+func TestStoreEncryptsPrefixCollidingManagementKeys(t *testing.T) {
+	protector := newTestProtector(t)
+	db, err := Open(t.TempDir()+"/usage.sqlite", protector)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	const prefixCollidingKey = "enc:v1:real-cpa-management-key"
+	setup := Setup{
+		CPAUpstreamURL: "http://cpa.local:8317",
+		ManagementKey:  prefixCollidingKey,
+		Queue:          "usage",
+		PopSide:        "right",
+	}
+	if err := db.SaveSetup(context.Background(), setup); err != nil {
+		t.Fatalf("save prefix-colliding setup: %v", err)
+	}
+	managerCfg := ManagerConfig{
+		CPAConnection: ManagerCPAConnectionConfig{
+			CPABaseURL:    setup.CPAUpstreamURL,
+			ManagementKey: prefixCollidingKey,
+		},
+	}
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save prefix-colliding manager config: %v", err)
+	}
+
+	for _, key := range []string{"setup", "manager_config_v1"} {
+		raw := rawSettingValue(t, db, key)
+		if strings.Contains(raw, prefixCollidingKey) {
+			t.Fatalf("%s persisted the plaintext prefix-colliding key: %s", key, raw)
+		}
+		if !strings.Contains(raw, "enc:v1:") {
+			t.Fatalf("%s does not contain an encrypted envelope: %s", key, raw)
+		}
+	}
+	loadedSetup, ok, err := db.LoadSetup(context.Background())
+	if err != nil || !ok || loadedSetup.ManagementKey != prefixCollidingKey {
+		t.Fatalf("loaded prefix-colliding setup = %#v ok=%v err=%v", loadedSetup, ok, err)
+	}
+	loadedManager, ok, err := db.LoadManagerConfig(context.Background())
+	if err != nil || !ok || loadedManager.CPAConnection.ManagementKey != prefixCollidingKey {
+		t.Fatalf("loaded prefix-colliding manager config = %#v ok=%v err=%v", loadedManager, ok, err)
+	}
+}
+
 func newTestProtector(t testing.TB) *security.Protector {
 	t.Helper()
 	protector, err := security.NewProtector([]byte("0123456789abcdef0123456789abcdef"))

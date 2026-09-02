@@ -549,6 +549,10 @@ func (m *Manager) enrichAccountSnapshots(ctx context.Context, cfg RuntimeConfig,
 			events[i].AuthProviderSnapshot = snapshot.Provider
 			updated = true
 		}
+		if events[i].AuthAccountIDSnapshot == "" && snapshot.AccountID != "" {
+			events[i].AuthAccountIDSnapshot = snapshot.AccountID
+			updated = true
+		}
 		if events[i].AuthProjectIDSnapshot == "" && snapshot.ProjectID != "" {
 			events[i].AuthProjectIDSnapshot = snapshot.ProjectID
 			updated = true
@@ -560,7 +564,13 @@ func (m *Manager) enrichAccountSnapshots(ctx context.Context, cfg RuntimeConfig,
 }
 
 func needsAccountSnapshotEnrichment(event usage.Event) bool {
+	provider := strings.TrimSpace(event.AuthProviderSnapshot)
+	if provider == "" {
+		provider = strings.TrimSpace(event.Provider)
+	}
+	isCodex := strings.EqualFold(provider, "codex")
 	return event.AccountSnapshot == "" ||
+		(isCodex && event.AuthAccountIDSnapshot == "") ||
 		event.AuthProjectIDSnapshot == ""
 }
 

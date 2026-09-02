@@ -1,5 +1,7 @@
 import type { TFunction } from 'i18next';
+import type { CodexInspectionQuotaWindow } from '@/features/monitoring/codexInspection';
 import { formatInspectionQuotaResetLabel } from '@/features/monitoring/model/codexInspectionPresentation';
+import { formatQuotaResetTime, isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import styles from '../CodexInspectionPage.module.scss';
 
 export type CodexInspectionQuotaWindowView = {
@@ -8,6 +10,8 @@ export type CodexInspectionQuotaWindowView = {
   labelParams?: Record<string, string | number>;
   usedPercent?: number | null;
   resetLabel?: string;
+  resetAtMs?: number | null;
+  resetAccuracy?: CodexInspectionQuotaWindow['resetAccuracy'];
 };
 
 type CodexInspectionQuotaWindowsProps = {
@@ -51,6 +55,8 @@ export function CodexInspectionQuotaWindows({
             id: window.id,
             label: formatQuotaLabel(window, t),
             resetLabel: window.resetLabel,
+            resetAtMs: window.resetAtMs,
+            resetAccuracy: window.resetAccuracy,
             usedPercent,
           },
         ];
@@ -65,6 +71,8 @@ export function CodexInspectionQuotaWindows({
               id: 'overall',
               label: t('monitoring.codex_inspection_used_percent'),
               resetLabel: '',
+              resetAtMs: null,
+              resetAccuracy: undefined,
               usedPercent: normalizedFallbackUsedPercent,
             },
           ];
@@ -85,7 +93,9 @@ export function CodexInspectionQuotaWindows({
       {rows.map((row) => {
         const usedPercent = normalizePercent(row.usedPercent);
         const remainingPercent = usedPercent === null ? null : clampPercent(100 - usedPercent);
-        const resetTime = formatInspectionQuotaResetLabel(row.resetLabel);
+        const resetTime = isValidQuotaResetAtMs(row.resetAtMs)
+          ? formatQuotaResetTime(row.resetAtMs)
+          : formatInspectionQuotaResetLabel(row.resetLabel);
         const resetLabel = resetTime
           ? t('monitoring.codex_inspection_quota_reset', { time: resetTime })
           : '';

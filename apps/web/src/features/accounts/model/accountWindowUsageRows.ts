@@ -33,6 +33,7 @@ const modelScopeRequestPart = (scope: MonitoringAccountWindowModelScope | undefi
   JSON.stringify([
     (scope?.kind ?? 'all').trim().toLowerCase(),
     scope?.key?.trim().toLowerCase() ?? '',
+    scope?.complete !== false,
     ...Array.from(
       new Set((scope?.models ?? []).map((model) => model.trim().toLowerCase()).filter(Boolean))
     ).sort(),
@@ -63,6 +64,7 @@ type AccountWindowCredentialTarget = Pick<
   | 'auth_label_snapshot'
   | 'auth_file_snapshot'
   | 'auth_provider_snapshot'
+  | 'auth_account_id_snapshot'
   | 'auth_project_id_snapshot'
   | 'auth_index'
   | 'source'
@@ -77,7 +79,11 @@ const hasCredentialIdentity = (target: AccountWindowCredentialTarget): boolean =
   if (authFile || (source && source !== account && source !== label)) return Boolean(provider);
   if (!provider) return false;
   return Boolean(
-    target.auth_index?.trim() || target.auth_project_id_snapshot?.trim() || account || label
+    target.auth_index?.trim() ||
+    target.auth_account_id_snapshot?.trim() ||
+    target.auth_project_id_snapshot?.trim() ||
+    account ||
+    label
   );
 };
 
@@ -105,8 +111,9 @@ export const buildAccountWindowUsageTargetEntries = (
             kind: window.modelScope.kind,
             key: window.modelScope.key,
             models: window.modelScope.models,
+            complete: window.modelScope.complete !== false,
           }
-        : (window.modelScope ?? { kind: 'all' });
+        : (window.modelScope ?? { kind: 'all', complete: true });
       const ranges = isQuotaWindowDefinition(window)
         ? buildAccountQuotaUsageRanges(window, nowMs)
         : window.fromMs && window.toMs && window.fromMs < window.toMs
@@ -144,6 +151,7 @@ export const buildAccountWindowUsageTargetEntries = (
             auth_label_snapshot: accountTarget.auth_label_snapshot,
             auth_file_snapshot: accountTarget.auth_file_snapshot,
             auth_provider_snapshot: accountTarget.auth_provider_snapshot,
+            auth_account_id_snapshot: accountTarget.auth_account_id_snapshot,
             auth_project_id_snapshot: accountTarget.auth_project_id_snapshot,
             auth_index: accountTarget.auth_index,
             source: accountTarget.source,

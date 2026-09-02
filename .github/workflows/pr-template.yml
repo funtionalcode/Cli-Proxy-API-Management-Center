@@ -22,6 +22,7 @@ concurrency:
 jobs:
   pr-template:
     name: PR Template
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:

@@ -3,12 +3,19 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 )
 
 func TestDataSourceNameEncodesWindowsDrivePath(t *testing.T) {
@@ -144,6 +151,154 @@ func TestOpenWithOptionsBeginsWriteTransactionsImmediately(t *testing.T) {
 	}
 }
 
+func TestRequireExistingDataKeyRejectsMissingKeyForEncryptedCPAConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	protector, err := security.NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	if err != nil {
+		t.Fatalf("open fixture sqlite: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate fixture sqlite: %v", err)
+	}
+	// Keep this fixture at the raw storage boundary: the guard must recognize
+	// the encrypted envelope without opening the normal protected Store.
+	protected, err := protector.ProtectString("cpa-management-key")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("protect fixture key: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"manager_config_v1",
+		`{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"`+protected+`"}}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write encrypted fixture setting: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"bootstrap_state_v1",
+		`{"connectionStorageMigrationVersion":2}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write migrated bootstrap state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture sqlite: %v", err)
+	}
+
+	dataKeyPath := filepath.Join(t.TempDir(), "missing-data.key")
+	err = RequireExistingDataKeyForEncryptedCPAConnection(
+		context.Background(),
+		dbPath,
+		"",
+		dataKeyPath,
+	)
+	if err == nil || !strings.Contains(err.Error(), "data key is missing") {
+		t.Fatalf("missing data key guard error = %v", err)
+	}
+	if _, statErr := os.Stat(dataKeyPath); !os.IsNotExist(statErr) {
+		t.Fatalf("guard unexpectedly created data key: %v", statErr)
+	}
+}
+
+func TestRequireExistingDataKeyAllowsLegacyPrefixPlaintext(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	if err != nil {
+		t.Fatalf("open fixture sqlite: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate fixture sqlite: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"manager_config_v1",
+		`{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:legacy-real-key"}}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write legacy fixture setting: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture sqlite: %v", err)
+	}
+
+	if err := RequireExistingDataKeyForEncryptedCPAConnection(
+		context.Background(),
+		dbPath,
+		"",
+		filepath.Join(t.TempDir(), "new-data.key"),
+	); err != nil {
+		t.Fatalf("legacy prefix plaintext incorrectly rejected: %v", err)
+	}
+}
+
+func TestInspectPersistedCPAConnectionStorageRejectsInvalidPostV2ManagementKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{
+			name:  "setup malformed envelope",
+			key:   "setup",
+			value: `{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:broken"}`,
+		},
+		{
+			name:  "manager config malformed envelope",
+			key:   "manager_config_v1",
+			value: `{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:broken"}}`,
+		},
+		{
+			name:  "setup plaintext",
+			key:   "setup",
+			value: `{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"plain-old-key"}`,
+		},
+		{
+			name:  "manager config plaintext",
+			key:   "manager_config_v1",
+			value: `{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"plain-old-key"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+			db, err := sql.Open("sqlite", dataSourceName(dbPath))
+			if err != nil {
+				t.Fatalf("open fixture sqlite: %v", err)
+			}
+			if err := Migrate(db); err != nil {
+				_ = db.Close()
+				t.Fatalf("migrate fixture sqlite: %v", err)
+			}
+			for _, setting := range []struct {
+				key   string
+				value string
+			}{
+				{key: "bootstrap_state_v1", value: `{"connectionStorageMigrationVersion":2}`},
+				{key: tt.key, value: tt.value},
+			} {
+				if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`, setting.key, setting.value); err != nil {
+					_ = db.Close()
+					t.Fatalf("write fixture setting %s: %v", setting.key, err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close fixture sqlite: %v", err)
+			}
+
+			_, err = InspectPersistedCPAConnectionStorage(context.Background(), dbPath)
+			if err == nil || !strings.Contains(err.Error(), "corrupted persisted CPA connection") {
+				t.Fatalf("inspection error = %v, want corrupted persisted CPA connection", err)
+			}
+		})
+	}
+}
+
 func assertConnectionPragmas(t *testing.T, conn *sql.Conn) {
 	t.Helper()
 	for _, test := range []struct {
@@ -162,5 +317,73 @@ func assertConnectionPragmas(t *testing.T, conn *sql.Conn) {
 		if got != test.want {
 			t.Fatalf("%s = %d, want %d", test.name, got, test.want)
 		}
+	}
+}
+
+func TestOpenDiagnosticForGetTempPath(t *testing.T) {
+	message := openDiagnostic(sqlite3.SQLITE_IOERR_GETTEMPPATH, "/data/usage.sqlite")
+	for _, want := range []string{"temporary directory", "writable"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("diagnostic %q does not mention %q", message, want)
+		}
+	}
+	for _, platformSpecific := range []string{"/tmp", "SQLITE_TMPDIR"} {
+		if strings.Contains(message, platformSpecific) {
+			t.Fatalf("diagnostic %q must not hard-code platform-specific guidance %q", message, platformSpecific)
+		}
+	}
+}
+
+func TestOpenDiagnosticForReadonly(t *testing.T) {
+	message := openDiagnostic(sqlite3.SQLITE_READONLY, "/data/usage.sqlite")
+	for _, want := range []string{"not writable", "/data/usage.sqlite", "ownership", "permissions"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("diagnostic %q does not mention %q", message, want)
+		}
+	}
+}
+
+func TestOpenDiagnosticForUnrecognizedCodes(t *testing.T) {
+	for _, code := range []int{
+		sqlite3.SQLITE_CANTOPEN,
+		sqlite3.SQLITE_BUSY,
+		sqlite3.SQLITE_IOERR,
+		sqlite3.SQLITE_NOTADB,
+		sqlite3.SQLITE_READONLY_DIRECTORY,
+		sqlite3.SQLITE_READONLY_DBMOVED,
+	} {
+		if message := openDiagnostic(code, "/data/usage.sqlite"); message != "" {
+			t.Fatalf("diagnostic %q returned for code %d, want no diagnostic", message, code)
+		}
+	}
+}
+
+func TestEnrichOpenErrorPassesUnknownErrorsThrough(t *testing.T) {
+	plainErr := errors.New("boom")
+	err := enrichOpenError("/data/usage.sqlite", plainErr)
+	if err != plainErr || !errors.Is(err, plainErr) {
+		t.Fatalf("enrichOpenError(plain error) = %v (%T), want the original error", err, err)
+	}
+}
+
+func TestOpenWithOptionsPreservesUnrecognizedSQLiteError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	if err := os.WriteFile(dbPath, []byte("this is not a sqlite database"), 0o644); err != nil {
+		t.Fatalf("write fixture sqlite: %v", err)
+	}
+	db, err := OpenWithOptions(Options{Path: dbPath})
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("open garbage sqlite: expected error")
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		t.Fatalf("error %q (%T) does not carry a *sqlite.Error", err, err)
+	}
+	if code := sqliteErr.Code(); code != sqlite3.SQLITE_NOTADB {
+		t.Fatalf("fixture error code = %d, want SQLITE_NOTADB (%d)", code, sqlite3.SQLITE_NOTADB)
+	}
+	if message := err.Error(); strings.Contains(message, "temporary directory") || strings.Contains(message, "not writable") {
+		t.Fatalf("unrecognized SQLite error was misclassified: %q", message)
 	}
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildApiKeyEntry, buildCodexResponsesEndpoint } from './utils';
+import {
+  buildApiKeyEntry,
+  buildCodexResponsesEndpoint,
+  resolveClaudeFingerprintSelection,
+} from './utils';
 
 describe('provider utils', () => {
   it('builds Codex responses endpoints from common base URL forms', () => {
@@ -23,5 +27,20 @@ describe('provider utils', () => {
       weight: 0,
     });
     expect(buildApiKeyEntry()).toHaveProperty('weight', undefined);
+  });
+});
+
+describe('resolveClaudeFingerprintSelection', () => {
+  it('keeps an untouched fingerprint untouched when Default is re-picked', () => {
+    expect(resolveClaudeFingerprintSelection(undefined, '')).toBeUndefined();
+    expect(resolveClaudeFingerprintSelection(undefined, 'claude-code-cli')).toBe('claude-code-cli');
+  });
+
+  it('only reaches an explicit Default through Claude Code CLI first', () => {
+    expect(resolveClaudeFingerprintSelection('claude-code-cli', '')).toBe('');
+    expect(resolveClaudeFingerprintSelection('', '')).toBe('');
+    expect(resolveClaudeFingerprintSelection('claude-code-cli', 'claude-code-cli')).toBe(
+      'claude-code-cli'
+    );
   });
 });

@@ -21,6 +21,8 @@ import (
 )
 
 const encryptedPrefix = "enc:v1:"
+const encryptedNonceSize = 12
+const encryptedTagSize = 16
 const adminKeyPrefix = "cpamp_"
 const generatedAdminKeyLength = 32
 const generatedSecretAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -134,9 +136,13 @@ func NewProtector(key []byte) (*Protector, error) {
 	return &Protector{key: derived}, nil
 }
 
+// ProtectString encrypts a non-empty plaintext domain value. It always
+// encrypts, even when the plaintext happens to start with the encrypted-value
+// prefix, so a real CPA Management Key whose value coincidentally resembles a
+// ciphertext envelope cannot be persisted as plaintext.
 func (p *Protector) ProtectString(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	if value == "" || IsProtected(value) {
+	if value == "" {
 		return value, nil
 	}
 	nonce, err := randomBytes(12)
@@ -153,16 +159,23 @@ func (p *Protector) ProtectString(value string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(ciphertext), nil
 }
 
+// UnprotectString decrypts a persisted encrypted envelope. Values that are not
+// structurally valid envelopes (including empty values and legacy plaintext
+// domain values from older releases) are returned as-is so reads from an
+// unencrypted historical database keep working while migration re-encrypts them.
+// A structurally valid envelope that fails authenticated decryption always
+// returns an error so wrong data keys or corrupted ciphertext fail closed
+// rather than being mistaken for plaintext.
 func (p *Protector) UnprotectString(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	if value == "" || !IsProtected(value) {
+	if value == "" {
+		return value, nil
+	}
+	if !IsValidProtectedEnvelope(value) {
 		return value, nil
 	}
 	payload := strings.TrimPrefix(value, encryptedPrefix)
 	parts := strings.Split(payload, ":")
-	if len(parts) != 2 {
-		return "", errors.New("invalid encrypted secret format")
-	}
 	nonce, err := base64.RawStdEncoding.DecodeString(parts[0])
 	if err != nil {
 		return "", err
@@ -182,8 +195,63 @@ func (p *Protector) UnprotectString(value string) (string, error) {
 	return string(plaintext), nil
 }
 
+// IsProtected reports whether value has the complete encrypted envelope shape.
+// A prefix alone is not enough: legacy plaintext values may legitimately start
+// with enc:v1:, and treating them as ciphertext would either leak them at rest
+// or make them unreadable on the next load.
 func IsProtected(value string) bool {
-	return strings.HasPrefix(strings.TrimSpace(value), encryptedPrefix)
+	return IsValidProtectedEnvelope(value)
+}
+
+// IsValidProtectedEnvelope reports whether value has the full structural shape
+// of an encrypted envelope: the enc:v1: prefix followed by exactly two
+// non-empty base64.RawStdEncoding segments separated by a colon, with the
+// nonce and ciphertext lengths required by the AES-GCM format. It performs no
+// decryption, so a structurally valid envelope with the wrong data key still
+// returns true and must be rejected by UnprotectString/MigrateLegacyValue.
+func IsValidProtectedEnvelope(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, encryptedPrefix) {
+		return false
+	}
+	payload := strings.TrimPrefix(value, encryptedPrefix)
+	parts := strings.Split(payload, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	nonce, err := base64.RawStdEncoding.DecodeString(parts[0])
+	if err != nil || len(nonce) != encryptedNonceSize {
+		return false
+	}
+	ciphertext, err := base64.RawStdEncoding.DecodeString(parts[1])
+	if err != nil || len(ciphertext) < encryptedTagSize {
+		return false
+	}
+	return true
+}
+
+// MigrateLegacyValue is the storage-boundary helper used when reading a
+// persisted setting that may be either a legacy plaintext domain value or a
+// real encrypted envelope. It distinguishes the two without ever treating a
+// broken envelope as plaintext:
+//
+//   - An empty value stays empty.
+//   - A value that is not a structurally valid envelope is legacy plaintext and
+//     is re-encrypted so the caller can persist a real ciphertext.
+//   - A structurally valid envelope is authenticated and returned as its
+//     decrypted plaintext so the caller can use (and, if needed, re-save) it.
+//   - A structurally valid envelope that fails authenticated decryption
+//     (wrong data key or corrupted ciphertext) returns an error so callers
+//     fail closed rather than silently accepting plaintext.
+func MigrateLegacyValue(p *Protector, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value, nil
+	}
+	if !IsValidProtectedEnvelope(value) {
+		return p.ProtectString(value)
+	}
+	return p.UnprotectString(value)
 }
 
 func (p *Protector) aead() (cipher.AEAD, error) {

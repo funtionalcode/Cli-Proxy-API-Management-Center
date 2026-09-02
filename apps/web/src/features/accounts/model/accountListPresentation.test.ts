@@ -7,6 +7,8 @@ import { buildAccountListItem, buildRecommendationBySelectionKey } from './accou
 import { summarizeGroupedQuotaAvailability } from './accountQuotaSummary';
 import type { AccountRecommendation } from './quotaRecommendations';
 
+const CODEX_MAIN_SCOPE = { kind: 'family', key: 'codex_main', complete: true } as const;
+
 type AccountRowOverrides = Omit<Partial<AccountRow>, 'quota'> & {
   quota?: Partial<AccountRow['quota']>;
 };
@@ -92,6 +94,23 @@ const makeCodexStatus = (
 });
 
 describe('accountListPresentation', () => {
+  it('attaches compact and full plan presentation to account list identity', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        provider: 'codex',
+        planType: 'self_serve_business_prolite',
+      })
+    );
+
+    expect(item.identity.planPresentation).toMatchObject({
+      rawPlanType: 'self_serve_business_prolite',
+      canonicalPlanType: 'business_premium_5x',
+      shortLabel: 'Business 5x',
+      fullLabel: 'Business Premium 5x',
+      known: true,
+    });
+  });
+
   it('prioritizes re-authentication over quota state', () => {
     const row = makeRow({
       quota: {
@@ -128,6 +147,25 @@ describe('accountListPresentation', () => {
     expect(item.health.reasonParams).toEqual({ detail: 'HTTP 401' });
     expect(item.health.reasonTone).toBe('danger');
     expect(item.recommendation.actionLabelKey).toBe('accounts.recommend_action_reauth');
+  });
+
+  it('uses Codex status reset timestamps when quota windows are unavailable', () => {
+    const resetAtMs = Date.parse('2026-08-20T03:40:00Z');
+    const item = buildAccountListItem(makeRow(), {
+      codexStatus: makeCodexStatus({
+        isFiveHourLimited: true,
+        isQuotaLimited: true,
+        fiveHourResetLabel: '08/20 03:40',
+        fiveHourResetAtMs: resetAtMs,
+        fiveHourResetAccuracy: 'exact',
+      }),
+    });
+
+    expect(item.health).toMatchObject({
+      status: 'five_hour_exhausted',
+      resetAtMs,
+    });
+    expect(item.health.tooltipParams.resetAt).toBe('08/20 03:40');
   });
 
   it('lets a newer successful request clear stale inspection health and advice', () => {
@@ -872,6 +910,7 @@ describe('accountListPresentation', () => {
             remainingPercent: 0,
             usedPercent: 100,
             resetLabel: '-',
+            modelScope: CODEX_MAIN_SCOPE,
           },
         ],
       }
@@ -900,6 +939,7 @@ describe('accountListPresentation', () => {
             remainingPercent: 0,
             usedPercent: 100,
             resetLabel: 'month-end',
+            modelScope: CODEX_MAIN_SCOPE,
           },
         ],
       }
@@ -1064,6 +1104,7 @@ describe('accountListPresentation', () => {
             resetLabel: '2026-07-30T04:00:00Z',
             resetAtMs: earlierResetAtMs,
             resetAccuracy: 'exact',
+            modelScope: CODEX_MAIN_SCOPE,
           },
           {
             key: 'weekly-model',
@@ -1074,6 +1115,7 @@ describe('accountListPresentation', () => {
             resetLabel: '2026-07-30T06:00:00Z',
             resetAtMs: laterResetAtMs,
             resetAccuracy: 'exact',
+            modelScope: CODEX_MAIN_SCOPE,
           },
         ],
       }
@@ -1107,6 +1149,7 @@ describe('accountListPresentation', () => {
             resetLabel: '2026-07-30T04:00:00Z',
             resetAtMs: Date.parse('2026-07-30T04:00:00Z'),
             resetAccuracy: 'exact',
+            modelScope: CODEX_MAIN_SCOPE,
           },
           {
             key: 'weekly-unknown',
@@ -1117,6 +1160,7 @@ describe('accountListPresentation', () => {
             resetLabel: '-',
             resetAtMs: null,
             resetAccuracy: 'unknown',
+            modelScope: CODEX_MAIN_SCOPE,
           },
         ],
       }

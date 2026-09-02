@@ -7,7 +7,9 @@ import type { ModelPrice } from '@/utils/usage';
 vi.mock('../services/monitoringMetaService', () => ({
   loadMonitoringMetaPayload: vi.fn(async () => ({
     authFiles: [],
+    authFilesLoaded: true,
     channels: [],
+    channelsLoaded: true,
     error: '',
   })),
 }));

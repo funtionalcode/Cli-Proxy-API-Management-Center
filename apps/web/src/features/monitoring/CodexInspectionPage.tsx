@@ -85,6 +85,7 @@ interface CodexInspectionPageProps {
     target?: CodexReauthTarget | null,
     snapshot?: CredentialInspectionSnapshot | null
   ) => void | Promise<void>;
+  onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
   onOpenCredential?: (target: CredentialInspectionTarget) => void;
 }
 
@@ -93,6 +94,7 @@ export function CodexInspectionPage({
   modeControl,
   onSnapshotChange,
   onCredentialsChanged,
+  onCodexReauthStart,
   onOpenCredential,
 }: CodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
@@ -953,7 +955,7 @@ export function CodexInspectionPage({
         navigate('/oauth#oauth-provider-xai');
         return;
       }
-      setCodexReauthTarget({
+      const target: CodexReauthTarget = {
         account: item.displayAccount || item.accountId || item.fileName,
         fileName: item.fileName,
         runtimeId: item.runtimeId ?? null,
@@ -961,9 +963,11 @@ export function CodexInspectionPage({
         authIndex: item.authIndex ?? null,
         accountId: item.accountId ?? null,
         accountSnapshot: item.accountSnapshot ?? null,
-      });
+      };
+      if (onCodexReauthStart?.(target) === false) return;
+      setCodexReauthTarget(target);
     },
-    [navigate]
+    [navigate, onCodexReauthStart]
   );
 
   const handleCodexReauthSuccess = useCallback(async () => {

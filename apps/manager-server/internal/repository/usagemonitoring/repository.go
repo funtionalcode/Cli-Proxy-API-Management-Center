@@ -143,6 +143,8 @@ func (r *repository) catchUp(
 		(state.Status == "pending" || state.Status == "rebuilding" || state.Status == "clearing")
 	if rollupName == StatsRollupName {
 		revision, err = currentStructureRevision(ctx, tx)
+	} else if rollupName == ProjectionRollupName {
+		revision = usageidentity.MonitoringProjectionStructureRevision()
 	} else {
 		revision = usageidentity.ModelFormatVersion
 	}

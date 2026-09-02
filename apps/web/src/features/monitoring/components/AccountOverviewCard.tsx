@@ -25,11 +25,13 @@ import type {
 } from '@/features/monitoring/hooks/useMonitoringData';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import type { StatusBarData } from '@/utils/recentRequests';
+import { getPlanPresentation } from '@/utils/plans';
 import { MonitoringHealthStatusBar } from './MonitoringHealthStatusBar';
 import {
   buildAccountSecondaryText,
   buildAccountSummaryMetrics,
   buildCacheTokenPresentation,
+  formatAccountQuotaResetDisplay,
   formatPercent,
   getAccountStatusDotClassName,
   getAccountStatusLabel,
@@ -81,6 +83,7 @@ export function AccountSummaryPrimary({
   expanded,
   onToggle,
   accountDisplayMode,
+  t,
   statusTone = 'enabled',
   showSecondary = true,
 }: {
@@ -88,12 +91,38 @@ export function AccountSummaryPrimary({
   expanded: boolean;
   onToggle: () => void;
   accountDisplayMode: AccountDisplayMode;
+  t: TFunction;
   statusTone?: string;
   showSecondary?: boolean;
 }) {
   const accountDisplay = resolveAccountDisplayText(row, accountDisplayMode);
   const secondaryText = buildAccountSecondaryText(row);
   const accountSecondaryText = accountDisplay.secondary || secondaryText;
+  const planPresentations = Array.from(
+    new Map(
+      (row.planTypes ?? [])
+        .map((planType) =>
+          getPlanPresentation({
+            provider: row.provider,
+            planType,
+            t,
+          })
+        )
+        .filter(
+          (presentation): presentation is NonNullable<typeof presentation> => presentation !== null
+        )
+        .map((presentation) => [
+          presentation.canonicalPlanType ?? presentation.rawPlanType,
+          presentation,
+        ])
+    ).values()
+  );
+  const planShortLabels = planPresentations.map((presentation) => presentation.shortLabel);
+  const planShortLabel =
+    planShortLabels.length <= 2
+      ? planShortLabels.join(', ')
+      : `${planShortLabels.slice(0, 2).join(', ')} +${planShortLabels.length - 2}`;
+  const planFullLabel = planPresentations.map((presentation) => presentation.fullLabel).join(', ');
 
   return (
     <button
@@ -122,6 +151,11 @@ export function AccountSummaryPrimary({
         <span className={styles.accountButtonLabel}>{accountDisplay.primary}</span>
       </span>
       {showSecondary && accountSecondaryText ? <small>{accountSecondaryText}</small> : null}
+      {planShortLabel ? (
+        <small title={planFullLabel}>
+          {t('accounts.col_plan')}: {planShortLabel}
+        </small>
+      ) : null}
     </button>
   );
 }
@@ -144,6 +178,13 @@ function AccountQuotaPanel({
       ? quotaState.lastRefreshedAt
       : undefined;
   const singleQuotaEntry = quotaEntries.length === 1 ? quotaEntries[0] : null;
+  const singlePlanPresentation = singleQuotaEntry
+    ? getPlanPresentation({
+        provider: singleQuotaEntry.provider,
+        planType: singleQuotaEntry.planType,
+        t,
+      })
+    : null;
 
   const buildQuotaInfoRows = (entry: AccountQuotaEntry) => {
     const fromUsageHeaders = entry.observedFromUsageHeaders === true;
@@ -180,12 +221,7 @@ function AccountQuotaPanel({
         tabIndex={0}
         aria-label={t('codex_quota.tooltip_label', { label: windowLabel })}
       >
-        <IconInfo
-          size={14}
-          className={styles.quotaInfoIcon}
-          aria-hidden="true"
-          focusable={false}
-        />
+        <IconInfo size={14} className={styles.quotaInfoIcon} aria-hidden="true" focusable={false} />
         <span className={styles.quotaInfoTooltip} role="tooltip">
           {rows.map((row) => (
             <span key={row.key} className={styles.quotaInfoTooltipRow}>
@@ -221,7 +257,7 @@ function AccountQuotaPanel({
               <span className={styles.quotaProgressBar} style={barStyle} />
             </div>
             <div className={styles.quotaWindowMeta}>
-              <small>{`${t('monitoring.account_quota_reset_at')}: ${window.resetLabel}`}</small>
+              <small>{`${t('monitoring.account_quota_reset_at')}: ${formatAccountQuotaResetDisplay(window.resetAtMs, window.resetLabel)}`}</small>
               {window.usageLabel ? <small>{window.usageLabel}</small> : null}
             </div>
           </div>
@@ -271,6 +307,11 @@ function AccountQuotaPanel({
       <div className={styles.quotaSectionHeader}>
         <div className={styles.quotaSectionTitleGroup}>
           <strong>{t('monitoring.account_quota_title')}</strong>
+          {singlePlanPresentation ? (
+            <small title={singlePlanPresentation.fullLabel}>
+              {t('accounts.col_plan')}: {singlePlanPresentation.shortLabel}
+            </small>
+          ) : null}
         </div>
         {renderRefreshButton()}
       </div>
@@ -321,13 +362,26 @@ function AccountQuotaPanel({
       ) : quotaEntries.length > 0 ? (
         <div className={styles.quotaEntryGrid}>
           {quotaEntries.map((entry) => {
-            const entryMetaText = `${entry.providerLabel} · ${entry.fileName}`;
+            const entryPlanPresentation = getPlanPresentation({
+              provider: entry.provider,
+              planType: entry.planType,
+              t,
+            });
+            const entryMetaText = [
+              entry.providerLabel,
+              entry.fileName,
+              entryPlanPresentation
+                ? `${t('accounts.col_plan')}: ${entryPlanPresentation.shortLabel}`
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' · ');
             return (
               <div key={entry.key} className={styles.quotaEntryCard}>
                 <div className={styles.quotaEntryHeader}>
                   <div className={styles.quotaEntryMain}>
                     <strong>{entry.authLabel}</strong>
-                    <small>{entryMetaText}</small>
+                    <small title={entryPlanPresentation?.fullLabel}>{entryMetaText}</small>
                   </div>
                 </div>
 
@@ -889,6 +943,7 @@ export function AccountOverviewCard({
             expanded={isExpanded}
             onToggle={onToggle}
             accountDisplayMode={accountDisplayMode}
+            t={t}
             statusTone={statusTone}
             showSecondary={false}
           />

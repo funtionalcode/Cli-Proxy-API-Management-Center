@@ -583,11 +583,16 @@ func TestNormalizeRawReadsCPA7118UsageFields(t *testing.T) {
 	}
 	if !event.Failed || event.FailStatusCode != 429 ||
 		!strings.Contains(event.FailBody, "rate limit exceeded") ||
-		!strings.Contains(event.FailBody, "Retry-After") {
+		strings.Contains(event.FailBody, "Retry-After") {
 		t.Fatalf("event failure = %#v", event)
 	}
-	if !strings.Contains(event.FailSummary, "rate limit exceeded") || !strings.Contains(event.FailSummary, "Retry-After") {
+	if !strings.Contains(event.FailSummary, "rate limit exceeded") || strings.Contains(event.FailSummary, "Retry-After") {
 		t.Fatalf("fail summary = %q", event.FailSummary)
+	}
+	if event.ResponseMetadata == nil || event.ResponseMetadata.Errors == nil ||
+		event.ResponseMetadata.Errors.RetryAfterSeconds == nil ||
+		*event.ResponseMetadata.Errors.RetryAfterSeconds != 30 {
+		t.Fatalf("response metadata = %#v", event.ResponseMetadata)
 	}
 	if event.LatencyMS == nil || *event.LatencyMS != 1500 {
 		t.Fatalf("latency = %#v", event.LatencyMS)
@@ -611,9 +616,48 @@ func TestNormalizeRawReadsCPA7118UsageFields(t *testing.T) {
 		detail.Tokens.CacheCreationTokens != 1 || detail.FailStatusCode != 429 ||
 		detail.Tokens.CachedTokens != 0 || detail.Tokens.CacheTokens != 0 ||
 		!strings.Contains(detail.FailSummary, "rate limit exceeded") ||
-		!strings.Contains(detail.FailSummary, "Retry-After") || detail.TTFTMS == nil ||
+		strings.Contains(detail.FailSummary, "Retry-After") || detail.ResponseMetadata == nil ||
+		detail.ResponseMetadata.Errors == nil || detail.TTFTMS == nil ||
 		*detail.TTFTMS != 450 {
 		t.Fatalf("detail = %#v", detail)
+	}
+}
+
+func TestNormalizeRawKeepsSuccessfulResponseHeadersOutOfFailureFields(t *testing.T) {
+	marker := strings.Repeat("large-success-header-marker-", 256)
+	payload, err := json.Marshal(map[string]any{
+		"timestamp": "2026-04-25T00:00:00Z",
+		"source":    "user@example.com",
+		"tokens": map[string]any{
+			"input_tokens": 1,
+			"total_tokens": 1,
+		},
+		"failed":   false,
+		"provider": "openai",
+		"model":    "gpt-5.4",
+		"endpoint": "POST /v1/chat/completions",
+		"response_headers": map[string]any{
+			"Content-Type":                 []any{"application/json"},
+			"X-CPAMP-Unindexed-Diagnostic": []any{marker},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	event, err := NormalizeRaw(payload)
+	if err != nil {
+		t.Fatalf("normalize successful response: %v", err)
+	}
+	if event.Failed || event.FailBody != "" || event.FailSummary != "" {
+		t.Fatalf("successful failure fields = failed:%v body:%q summary:%q", event.Failed, event.FailBody, event.FailSummary)
+	}
+	if event.ResponseMetadata == nil || event.ResponseMetadata.Response == nil ||
+		event.ResponseMetadata.Response.ContentType != "application/json" || event.ResponseMetadataJSON == "" {
+		t.Fatalf("response metadata = %#v json=%q", event.ResponseMetadata, event.ResponseMetadataJSON)
+	}
+	if !strings.Contains(event.RawJSON, marker) {
+		t.Fatalf("raw json did not preserve response headers")
 	}
 }
 

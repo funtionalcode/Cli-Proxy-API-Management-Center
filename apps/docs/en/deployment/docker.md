@@ -61,6 +61,8 @@ usage-statistics-enabled: true
 
 CPAMP can also enable this during first setup or config save.
 
+The environment-variable examples on this page are for manual Docker deployments and legacy compatibility. The one-click installer does not leave the CPA URL or CPA Management Key in the final Compose environment; it runs `store-cpa-connection` once and encrypts the connection into SQLite with `/data/data.key`. The configuration API also returns only `managementKeyConfigured`, never the saved CPA Key.
+
 ## Deploy CPA And CPAMP Together
 
 If CPA is not running yet, start CPA and CPAMP with this Compose file:
@@ -233,7 +235,27 @@ Why `data.key` matters:
 - `usage.sqlite` stores usage data and encrypted CPAMP configuration.
 - `data.key` decrypts CPA Management Keys saved to SQLite through setup or the panel.
 - If `data.key` is lost, CPA Management Keys saved to SQLite cannot be recovered; save the CPA connection again.
-- If the installer manages the connection through env/secrets, also back up `secrets/` in the install directory.
+- If this is a manual env/secret deployment, or the installer has not completed/skipped the CPA connection import, also back up `secrets/` in the install directory.
+
+## Read-Only Root Filesystem
+
+Standard CPAMP Docker/Compose deployments use a writable root filesystem and require no additional temporary-volume configuration.
+
+If you harden the Manager Server container with `readOnlyRootFilesystem: true`, SQLite still needs a writable temporary directory. For Kubernetes, mount a writable ephemeral volume at `/tmp`:
+
+```yaml
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+volumes:
+  - name: tmp
+    emptyDir: {}
+```
+
+If you set an `emptyDir.sizeLimit`, size it for your database size and workload. On Unix-like environments you can alternatively point `SQLITE_TMPDIR` at a writable ephemeral path.
+
+The database file and its WAL/SHM sidecars must also be writable by the Manager Server process. CPAMP does not automatically change file ownership or permissions, and does not relocate SQLite temporary files.
 
 ::: details Advanced: collection protocols and network requirements
 
@@ -276,6 +298,26 @@ docker run -d \
   seakee/cpa-manager-plus:latest
 ```
 
+### Database Maintenance Is Pending After Upgrade
+
+To keep HTTP startup bounded on large historical databases, Manager Server does not run unbounded `CREATE INDEX` or derived cleanup before listening. If the global warning, System Info, or `/status.databaseMaintenance.required` reports pending maintenance, collection and HTTP remain available, but historical request queries can become noticeably slower or time out.
+
+Run these commands from the Compose directory:
+
+```bash
+docker compose stop cpa-manager-plus
+
+docker compose run --rm --no-deps \
+  cpa-manager-plus \
+  cleanup-derived --db-path /data/usage.sqlite
+
+docker compose start cpa-manager-plus
+```
+
+Replace `cpa-manager-plus` if your Compose service uses another name. Do not run cleanup while Manager Server is still active, and do not trigger it from the web UI; the command requires the exclusive SQLite process lock. After restart, Manager Server derives the state from database metadata again, so the warning disappears automatically when maintenance is clean.
+
+`cleanup-derived` handles derived cleanup, deferred indexes, and legacy index replacement only. It never deletes, rebuilds, or rewrites authoritative `usage_events`. Back up `/data` and `data.key` first.
+
 ## Verification
 
 Basic health checks:
@@ -300,7 +342,12 @@ collector.lastError
 lastConsumedAt
 lastInsertedAt
 eventCount
+databaseMaintenance.required
+databaseMaintenance.deferredIndexes
+databaseMaintenance.offlineJobs
 ```
+
+`databaseMaintenance.required=true` means the service is running but query performance may be degraded. Follow the offline steps above. After maintenance and restart, it should be `false`, with both counts at `0`.
 
 If the monitoring page is empty, continue with [Request Monitoring Troubleshooting](../troubleshooting/request-monitoring.md).
 
@@ -311,5 +358,5 @@ Old CPA-Manager Docker docs used `seakee/cpa-manager` and described an external 
 - Image is `seakee/cpa-manager-plus`.
 - Container is usually named `cpa-manager-plus`.
 - Full Docker / Manager Server mode login uses the CPAMP Admin Key, not the CPA Management Key.
-- Setup/panel-saved CPA Management Keys are encrypted with `/data/data.key`; installer env/secret mode reads the key from the install directory.
+- Setup/panel-saved CPA Management Keys are encrypted with `/data/data.key`; installer env/secret input is one-time import data and is removed from the final runtime configuration after success.
 - The CPAMP Lightweight Panel does not configure or attach external Manager Server analytics.

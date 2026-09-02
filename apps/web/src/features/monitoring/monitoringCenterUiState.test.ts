@@ -67,6 +67,7 @@ describe('monitoringCenterUiState', () => {
 
   it('normalizes persisted filter fields', () => {
     expect(normalizeMonitoringTimeRange('30d')).toBe('30d');
+    expect(normalizeMonitoringTimeRange('yesterday')).toBe('yesterday');
     expect(normalizeMonitoringTimeRange('bad')).toBe('today');
     expect(normalizeMonitoringStatusFilter('failed')).toBe('failed');
     expect(normalizeMonitoringStatusFilter('bad')).toBe('all');
@@ -119,18 +120,21 @@ describe('monitoringCenterUiState', () => {
   it('persists and reads ui state via localStorage', () => {
     writeMonitoringCenterUiState({
       activeDataTab: 'apiKeys',
+      timeRange: 'yesterday',
       selectedProvider: 'claude',
       apiKeyPageSize: 20,
     });
     expect(JSON.parse(storage.getItem(MONITORING_CENTER_UI_STATE_STORAGE_KEY) ?? '{}')).toEqual({
       ...getDefaultMonitoringCenterUiState(),
       activeDataTab: 'apiKeys',
+      timeRange: 'yesterday',
       selectedProvider: 'claude',
       apiKeyPageSize: 20,
     });
     expect(readMonitoringCenterUiState()).toEqual({
       ...getDefaultMonitoringCenterUiState(),
       activeDataTab: 'apiKeys',
+      timeRange: 'yesterday',
       selectedProvider: 'claude',
       apiKeyPageSize: 20,
     });

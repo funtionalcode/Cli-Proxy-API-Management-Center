@@ -15,7 +15,7 @@ import {
 const buildManagerConfig = (overrides: Partial<ManagerConfig> = {}): ManagerConfig => ({
   cpaConnection: {
     cpaBaseUrl: 'http://cpa.local:8317',
-    managementKey: 'management-key',
+    managementKeyConfigured: true,
   },
   collector: {
     enabled: true,
@@ -49,51 +49,115 @@ const createMemoryStorage = () => {
   };
 };
 
+const renderDetectedAvailability = async (
+  managementKey: string
+): Promise<ReturnType<typeof usePanelFeatureAvailability>> => {
+  const originalAuthState = useAuthStore.getState();
+  const originalUsageState = useUsageServiceStore.getState();
+  let renderer: ReactTestRenderer | null = null;
+  let latestAvailability: ReturnType<typeof usePanelFeatureAvailability> | null = null;
+
+  vi.stubGlobal('window', {
+    location: {
+      protocol: 'http:',
+      hostname: 'probe-manager.local',
+      host: 'probe-manager.local:18317',
+      port: '18317',
+    },
+  });
+  vi.stubGlobal('navigator', { userAgent: 'vitest' });
+  vi.stubGlobal('localStorage', createMemoryStorage());
+
+  function HookConsumer() {
+    const availability = usePanelFeatureAvailability();
+    useLayoutEffect(() => {
+      latestAvailability = availability;
+    }, [availability]);
+    return null;
+  }
+
+  try {
+    useUsageServiceStore.setState({
+      enabled: false,
+      serviceBase: '',
+      panelBase: '',
+      panelHostMode: '',
+    });
+    useAuthStore.setState({
+      apiBase: 'http://probe-cpa.local:8317',
+      managementKey,
+    });
+
+    await act(async () => {
+      renderer = create(createElement(HookConsumer));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    if (!latestAvailability) {
+      throw new Error('Panel feature availability was not rendered');
+    }
+    return latestAvailability;
+  } finally {
+    act(() => {
+      renderer?.unmount();
+    });
+    useAuthStore.setState({
+      apiBase: originalAuthState.apiBase,
+      managementKey: originalAuthState.managementKey,
+    });
+    useUsageServiceStore.setState({
+      enabled: originalUsageState.enabled,
+      serviceBase: originalUsageState.serviceBase,
+      panelBase: originalUsageState.panelBase,
+      panelHostMode: originalUsageState.panelHostMode,
+      revision: originalUsageState.revision,
+    });
+    vi.unstubAllGlobals();
+  }
+};
+
 describe('panel feature availability', () => {
   it('uses the current embedded Manager Server as the only Docker-mode candidate', () => {
     expect(
       buildPanelManagerServiceCandidates({
+        panelHostConfirmed: true,
         panelHostedByUsageService: true,
         panelBase: 'http://manager.local:18317',
       })
     ).toEqual(['http://manager.local:18317']);
-  });
 
-  it('uses the configured external Manager Server as the authoritative CPA-panel candidate', () => {
     expect(
       buildPanelManagerServiceCandidates({
+        panelHostConfirmed: false,
+        panelHostedByUsageService: true,
+        panelBase: 'http://manager.local:18317',
+      })
+    ).toEqual([]);
+  });
+
+  it('does not build Manager Server candidates for CPA-hosted panels', () => {
+    expect(
+      buildPanelManagerServiceCandidates({
+        panelHostConfirmed: true,
         panelHostedByUsageService: false,
-        panelBase: 'http://panel.local:5174',
-        apiBase: 'http://cpa.local:8317',
+        panelBase: 'http://cpa.local:8317',
+      })
+    ).toEqual([]);
+  });
+
+  it('uses the configured external Manager as the only CPA-panel candidate', () => {
+    expect(
+      buildPanelManagerServiceCandidates({
+        panelHostConfirmed: true,
+        panelHostedByUsageService: false,
+        panelBase: 'http://cpa.local:8317',
         usageServiceEnabled: true,
         usageServiceBase: 'http://manager.local:18317',
       })
     ).toEqual(['http://manager.local:18317']);
-  });
-
-  it('falls back to CPA and panel candidates when no external Manager is configured', () => {
-    expect(
-      buildPanelManagerServiceCandidates({
-        panelHostedByUsageService: false,
-        panelBase: 'http://panel.local:5174',
-        apiBase: 'http://cpa.local:8317',
-        usageServiceEnabled: false,
-        usageServiceBase: '',
-      })
-    ).toEqual(['http://cpa.local:8317', 'http://panel.local:5174']);
-  });
-
-  it('does not probe CPA routes when persisted context already identifies an external panel', () => {
-    expect(
-      buildPanelManagerServiceCandidates({
-        panelHostedByUsageService: false,
-        panelHostModeKnown: true,
-        panelBase: 'http://panel.local:8317',
-        apiBase: 'http://panel.local:8317',
-        usageServiceEnabled: false,
-        usageServiceBase: '',
-      })
-    ).toEqual([]);
   });
 
   it('only trusts a persisted panel mode scoped to the current panel base', () => {
@@ -153,6 +217,7 @@ describe('panel feature availability', () => {
 
   it('marks Manager-only features available while separately gating request monitoring', () => {
     const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: true,
       panelHostedByUsageService: true,
       panelBase: 'http://manager.local:18317',
       managerServiceBase: 'http://manager.local:18317',
@@ -175,13 +240,14 @@ describe('panel feature availability', () => {
 
   it('requires a configured CPA connection for server inspection', () => {
     const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: true,
       panelHostedByUsageService: true,
       panelBase: 'http://manager.local:18317',
       managerServiceBase: 'http://manager.local:18317',
       managerConfig: buildManagerConfig({
         cpaConnection: {
           cpaBaseUrl: '',
-          managementKey: '',
+          managementKeyConfigured: false,
         },
       }),
       hasManagerCandidate: true,
@@ -194,8 +260,51 @@ describe('panel feature availability', () => {
     expect(availability.reason).toBe('service_not_configured');
   });
 
-  it('enables Manager features for CPA-hosted panels with matching external Manager config', () => {
+  it('keeps compatibility with older Manager responses that still include the CPA key', () => {
     const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: true,
+      panelHostedByUsageService: true,
+      panelBase: 'http://manager.local:18317',
+      managerServiceBase: 'http://manager.local:18317',
+      managerConfig: buildManagerConfig({
+        cpaConnection: {
+          cpaBaseUrl: 'http://cpa.local:8317',
+          managementKey: 'legacy-management-key',
+        },
+      }),
+      hasManagerCandidate: true,
+      managementKey: 'manager-key',
+    });
+
+    expect(availability.serverCodexInspectionAvailable).toBe(true);
+    expect(availability.requestMonitoringAvailable).toBe(true);
+    expect(availability.reason).toBe('');
+  });
+
+  it('treats a CPA URL without a configured key as unconfigured', () => {
+    const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: true,
+      panelHostedByUsageService: true,
+      panelBase: 'http://manager.local:18317',
+      managerServiceBase: 'http://manager.local:18317',
+      managerConfig: buildManagerConfig({
+        cpaConnection: {
+          cpaBaseUrl: 'http://cpa.local:8317',
+          managementKeyConfigured: false,
+        },
+      }),
+      hasManagerCandidate: true,
+      managementKey: 'manager-key',
+    });
+
+    expect(availability.serverCodexInspectionAvailable).toBe(false);
+    expect(availability.requestMonitoringAvailable).toBe(false);
+    expect(availability.reason).toBe('service_not_configured');
+  });
+
+  it('enables Manager features for a confirmed CPA panel with a matching external Manager', () => {
+    const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: true,
       panelHostedByUsageService: false,
       panelBase: 'http://cpa.local:8317',
       managerServiceBase: 'http://manager.local:18317',
@@ -211,6 +320,26 @@ describe('panel feature availability', () => {
     expect(availability.externalManagerConfigAvailable).toBe(true);
     expect(availability.managerServiceBase).toBe('http://manager.local:18317');
     expect(availability.reason).toBe('');
+  });
+
+  it('keeps an unconfirmed panel host unavailable instead of treating it as external', () => {
+    const availability = resolvePanelFeatureAvailability({
+      panelHostConfirmed: false,
+      panelHostedByUsageService: false,
+      panelBase: 'http://manager.local:18317',
+      managerServiceBase: '',
+      managerConfig: null,
+      hasManagerCandidate: false,
+      managementKey: 'management-key',
+    });
+
+    expect(availability).toMatchObject({
+      checking: false,
+      panelHostConfirmed: false,
+      panelHostMode: 'external_panel',
+      managerServiceAvailable: false,
+      reason: 'service_unavailable',
+    });
   });
 
   it('shares one feature detection request across concurrent hook consumers', async () => {
@@ -237,13 +366,6 @@ describe('panel feature availability', () => {
         apiBase: 'http://cpa.local:8317',
         managementKey: 'management-key',
       });
-      useUsageServiceStore.setState({
-        enabled: true,
-        serviceBase: 'http://manager.local:18317',
-        panelBase: 'http://panel.local:5174',
-        panelHostMode: 'external_panel',
-        revision: 1,
-      });
 
       function HookConsumer() {
         usePanelFeatureAvailability();
@@ -257,27 +379,195 @@ describe('panel feature availability', () => {
       });
 
       expect(getInfoSpy).toHaveBeenCalledTimes(1);
-      expect(getInfoSpy).toHaveBeenCalledWith('http://manager.local:18317');
-      expect(getInfoSpy).not.toHaveBeenCalledWith('http://panel.local:5174');
-      expect(getInfoSpy).not.toHaveBeenCalledWith('http://cpa.local:8317');
-      expect(getManagerConfigSpy).toHaveBeenCalledWith(
-        'http://manager.local:18317',
-        'management-key'
-      );
+      expect(getInfoSpy).toHaveBeenNthCalledWith(1, 'http://panel.local:5174');
+      expect(getManagerConfigSpy).not.toHaveBeenCalled();
     } finally {
       act(() => {
         renderer?.unmount();
       });
       getInfoSpy.mockRestore();
       getManagerConfigSpy.mockRestore();
-      useUsageServiceStore.setState({
-        enabled: false,
-        serviceBase: '',
-        panelBase: '',
-        panelHostMode: '',
-        revision: 0,
-      });
       vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses persisted external Manager context without probing CPA or panel routes', async () => {
+    const originalUsageState = useUsageServiceStore.getState();
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockImplementation(async (base) => ({
+      service: base === 'http://manager.local:18317' ? 'cpa-manager-plus' : 'cli-proxy-api',
+    }));
+    const getManagerConfigSpy = vi
+      .spyOn(usageServiceApi, 'getManagerConfig')
+      .mockResolvedValue({ config: buildManagerConfig(), source: 'db' });
+    let renderer: ReactTestRenderer | null = null;
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'http:',
+        hostname: 'panel.local',
+        host: 'panel.local:5174',
+        port: '5174',
+      },
+    });
+    vi.stubGlobal('navigator', { userAgent: 'vitest' });
+    vi.stubGlobal('localStorage', createMemoryStorage());
+
+    try {
+      useAuthStore.setState({
+        apiBase: 'http://cpa.local:8317',
+        managementKey: 'external-manager-key',
+      });
+      useUsageServiceStore.setState({
+        enabled: true,
+        serviceBase: 'http://manager.local:18317',
+        panelBase: 'http://panel.local:5174',
+        panelHostMode: 'external_panel',
+        revision: originalUsageState.revision + 1,
+      });
+
+      await act(async () => {
+        renderer = create(
+          createElement(() => {
+            usePanelFeatureAvailability();
+            return null;
+          })
+        );
+      });
+
+      expect(getInfoSpy).toHaveBeenCalledTimes(1);
+      expect(getInfoSpy).toHaveBeenCalledWith('http://manager.local:18317');
+      expect(getInfoSpy).not.toHaveBeenCalledWith('http://panel.local:5174');
+      expect(getInfoSpy).not.toHaveBeenCalledWith('http://cpa.local:8317');
+      expect(getManagerConfigSpy).toHaveBeenCalledWith(
+        'http://manager.local:18317',
+        'external-manager-key'
+      );
+    } finally {
+      act(() => {
+        renderer?.unmount();
+      });
+      useUsageServiceStore.setState({
+        enabled: originalUsageState.enabled,
+        serviceBase: originalUsageState.serviceBase,
+        panelBase: originalUsageState.panelBase,
+        panelHostMode: originalUsageState.panelHostMode,
+        revision: originalUsageState.revision,
+      });
+      getInfoSpy.mockRestore();
+      getManagerConfigSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('confirms a Manager-hosted panel after a successful Manager probe', async () => {
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockResolvedValue({
+      service: 'cpa-manager-plus',
+    });
+    const getManagerConfigSpy = vi
+      .spyOn(usageServiceApi, 'getManagerConfig')
+      .mockResolvedValue({ config: buildManagerConfig(), source: 'db' });
+
+    try {
+      const availability = await renderDetectedAvailability('probe-manager-success-key');
+
+      expect(availability).toMatchObject({
+        checking: false,
+        panelHostConfirmed: true,
+        panelHostMode: 'manager_embedded',
+        managerServiceAvailable: true,
+      });
+      expect(getManagerConfigSpy).toHaveBeenCalledWith(
+        'http://probe-manager.local:18317',
+        'probe-manager-success-key'
+      );
+    } finally {
+      getInfoSpy.mockRestore();
+      getManagerConfigSpy.mockRestore();
+    }
+  });
+
+  it('confirms an external panel after a successful non-Manager probe', async () => {
+    const getInfoSpy = vi
+      .spyOn(usageServiceApi, 'getInfo')
+      .mockResolvedValue({ service: 'cli-proxy-api' });
+    const getManagerConfigSpy = vi.spyOn(usageServiceApi, 'getManagerConfig');
+
+    try {
+      const availability = await renderDetectedAvailability('probe-external-success-key');
+
+      expect(availability).toMatchObject({
+        checking: false,
+        panelHostConfirmed: true,
+        panelHostMode: 'external_panel',
+        managerServiceAvailable: false,
+      });
+      expect(getManagerConfigSpy).not.toHaveBeenCalled();
+    } finally {
+      getInfoSpy.mockRestore();
+      getManagerConfigSpy.mockRestore();
+    }
+  });
+
+  it('confirms an external panel only for a 404 Manager probe', async () => {
+    const notFound = Object.assign(new Error('not found'), { status: 404 });
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockRejectedValue(notFound);
+
+    try {
+      const availability = await renderDetectedAvailability('probe-404-key');
+
+      expect(availability).toMatchObject({
+        checking: false,
+        panelHostConfirmed: true,
+        panelHostMode: 'external_panel',
+        managerServiceAvailable: false,
+      });
+    } finally {
+      getInfoSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['timeout', Object.assign(new Error('timeout'), { code: 'ECONNABORTED' })],
+    ['network error', new Error('network error')],
+    ['500', Object.assign(new Error('server error'), { status: 500 })],
+    ['502', Object.assign(new Error('bad gateway'), { status: 502 })],
+    ['503', Object.assign(new Error('service unavailable'), { status: 503 })],
+    ['504', Object.assign(new Error('gateway timeout'), { status: 504 })],
+  ])('keeps a %s probe failure unconfirmed', async (label, probeError) => {
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockRejectedValue(probeError);
+
+    try {
+      const availability = await renderDetectedAvailability(
+        `probe-uncertain-${String(label).replace(/\s+/g, '-')}-key`
+      );
+
+      expect(availability).toMatchObject({
+        checking: false,
+        panelHostConfirmed: false,
+        panelHostMode: 'external_panel',
+        managerServiceAvailable: false,
+      });
+    } finally {
+      getInfoSpy.mockRestore();
+    }
+  });
+
+  it('does not cache an uncertain probe as a confirmed external panel', async () => {
+    const probeError = Object.assign(new Error('temporary failure'), { status: 502 });
+    const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockRejectedValue(probeError);
+
+    try {
+      const first = await renderDetectedAvailability('probe-cache-uncertain-key');
+      getInfoSpy.mockResolvedValue({ service: 'cli-proxy-api' });
+      const second = await renderDetectedAvailability('probe-cache-uncertain-key');
+
+      expect(first).toMatchObject({ panelHostConfirmed: false, panelHostMode: 'external_panel' });
+      expect(second).toMatchObject({
+        panelHostConfirmed: false,
+        panelHostMode: 'external_panel',
+      });
+      expect(getInfoSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      getInfoSpy.mockRestore();
     }
   });
 

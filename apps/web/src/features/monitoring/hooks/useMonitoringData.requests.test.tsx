@@ -5,16 +5,13 @@ import type { MonitoringAnalyticsResponse } from '@/services/api/usageService';
 import type { MonitoringDataTab } from '../monitoringCenterUiState';
 import type { UseMonitoringAnalyticsParams } from './useMonitoringAnalytics';
 
-const { useMonitoringAnalyticsMock } = vi.hoisted(() => ({
+const { loadMonitoringMetaPayloadMock, useMonitoringAnalyticsMock } = vi.hoisted(() => ({
+  loadMonitoringMetaPayloadMock: vi.fn(),
   useMonitoringAnalyticsMock: vi.fn(),
 }));
 
 vi.mock('../services/monitoringMetaService', () => ({
-  loadMonitoringMetaPayload: vi.fn(async () => ({
-    authFiles: [],
-    channels: [],
-    error: '',
-  })),
+  loadMonitoringMetaPayload: loadMonitoringMetaPayloadMock,
 }));
 
 vi.mock('./useMonitoringAnalytics', () => ({
@@ -22,6 +19,7 @@ vi.mock('./useMonitoringAnalytics', () => ({
 }));
 
 import { useMonitoringData, type UseMonitoringDataReturn } from './useMonitoringData';
+import type { MonitoringMetaPayload } from '../model/types';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -246,9 +244,16 @@ describe('useMonitoringData analytics requests', () => {
     return calls[calls.length - 1];
   };
 
-  function Harness({ activeDataTab }: { activeDataTab: MonitoringDataTab }) {
+  function Harness({
+    activeDataTab,
+    connectionScopeKey = null,
+  }: {
+    activeDataTab: MonitoringDataTab;
+    connectionScopeKey?: string | null;
+  }) {
     const result = useMonitoringData({
       config: null,
+      connectionScopeKey,
       modelPrices,
       timeRange: 'today',
       searchQuery: '',
@@ -267,6 +272,14 @@ describe('useMonitoringData analytics requests', () => {
     currentSelectorResponse = selectorResponse;
     currentSelectorError = '';
     refresh.mockClear();
+    loadMonitoringMetaPayloadMock.mockReset();
+    loadMonitoringMetaPayloadMock.mockResolvedValue({
+      authFiles: [],
+      authFilesLoaded: true,
+      channels: [],
+      channelsLoaded: true,
+      error: '',
+    });
     useMonitoringAnalyticsMock.mockReset();
     useMonitoringAnalyticsMock.mockImplementation(resultFor);
   });
@@ -277,12 +290,19 @@ describe('useMonitoringData analytics requests', () => {
     vi.restoreAllMocks();
   });
 
-  const renderTab = async (activeDataTab: MonitoringDataTab) => {
+  const renderTab = async (
+    activeDataTab: MonitoringDataTab,
+    connectionScopeKey: string | null = null
+  ) => {
     await act(async () => {
       if (renderer) {
-        renderer.update(<Harness activeDataTab={activeDataTab} />);
+        renderer.update(
+          <Harness activeDataTab={activeDataTab} connectionScopeKey={connectionScopeKey} />
+        );
       } else {
-        renderer = create(<Harness activeDataTab={activeDataTab} />);
+        renderer = create(
+          <Harness activeDataTab={activeDataTab} connectionScopeKey={connectionScopeKey} />
+        );
       }
       await Promise.resolve();
       await Promise.resolve();
@@ -395,5 +415,136 @@ describe('useMonitoringData analytics requests', () => {
     expect(latestResult?.loading).toBe(false);
     expect(latestResult?.summary.totalCalls).toBe(2);
     expect(latestResult?.error).toBe('selector timeout');
+  });
+
+  it('does not let metadata from a previous connection scope overwrite the active scope', async () => {
+    const pendingResponses: Array<(payload: MonitoringMetaPayload) => void> = [];
+    loadMonitoringMetaPayloadMock.mockImplementation(
+      () => new Promise<MonitoringMetaPayload>((resolve) => pendingResponses.push(resolve))
+    );
+
+    const payloadFor = (scope: 'a' | 'b'): MonitoringMetaPayload => ({
+      authFiles: [
+        {
+          name: `${scope}-auth.json`,
+          auth_index: `${scope}-auth`,
+          provider: 'codex',
+        },
+      ],
+      channels: [
+        {
+          key: `${scope}-channel`,
+          name: `${scope}-channel`,
+          baseUrl: `https://${scope}.example.test`,
+          host: `${scope}.example.test`,
+          disabled: false,
+          authIndices: [`${scope}-auth`],
+          modelNames: [],
+        },
+      ],
+      authFilesLoaded: true,
+      channelsLoaded: true,
+      error: `${scope}-error`,
+    });
+
+    await renderTab('accounts', 'scope-a');
+    expect(pendingResponses).toHaveLength(1);
+
+    await renderTab('accounts', 'scope-b');
+    expect(pendingResponses).toHaveLength(2);
+
+    await act(async () => {
+      pendingResponses[1](payloadFor('b'));
+      await Promise.resolve();
+    });
+    expect(latestResult?.authFiles[0]?.name).toBe('b-auth.json');
+    expect(latestResult?.channels[0]?.key).toBe('b-channel');
+    expect(latestResult?.error).toBe('b-error');
+
+    await act(async () => {
+      pendingResponses[0](payloadFor('a'));
+      await Promise.resolve();
+    });
+    expect(latestResult?.authFiles[0]?.name).toBe('b-auth.json');
+    expect(latestResult?.channels[0]?.key).toBe('b-channel');
+    expect(latestResult?.error).toBe('b-error');
+  });
+
+  it('fences an explicit metadata refresh started before a connection switch', async () => {
+    const pendingResponses: Array<(payload: MonitoringMetaPayload) => void> = [];
+    loadMonitoringMetaPayloadMock.mockImplementation(
+      () => new Promise<MonitoringMetaPayload>((resolve) => pendingResponses.push(resolve))
+    );
+    const payload = (scope: 'a' | 'b'): MonitoringMetaPayload => ({
+      authFiles: [{ name: `${scope}-auth.json`, auth_index: `${scope}-auth` }],
+      authFilesLoaded: true,
+      channels: [],
+      channelsLoaded: true,
+      error: `${scope}-error`,
+    });
+
+    await renderTab('accounts', 'scope-a');
+    await act(async () => {
+      pendingResponses[0](payload('a'));
+      await Promise.resolve();
+    });
+
+    const staleRefresh = latestResult?.refreshMeta(false);
+    expect(staleRefresh).toBeDefined();
+    expect(pendingResponses).toHaveLength(2);
+
+    await renderTab('accounts', 'scope-b');
+    expect(pendingResponses).toHaveLength(3);
+    await act(async () => {
+      pendingResponses[2](payload('b'));
+      await Promise.resolve();
+    });
+    expect(latestResult?.authFiles[0]?.name).toBe('b-auth.json');
+    expect(latestResult?.error).toBe('b-error');
+
+    await act(async () => {
+      pendingResponses[1](payload('a'));
+      await staleRefresh;
+    });
+    expect(latestResult?.authFiles[0]?.name).toBe('b-auth.json');
+    expect(latestResult?.error).toBe('b-error');
+  });
+
+  it('keeps the newest metadata request within the same connection scope', async () => {
+    const pendingResponses: Array<(payload: MonitoringMetaPayload) => void> = [];
+    loadMonitoringMetaPayloadMock.mockImplementation(
+      () => new Promise<MonitoringMetaPayload>((resolve) => pendingResponses.push(resolve))
+    );
+    const payloadFor = (authIndex: string): MonitoringMetaPayload => ({
+      authFiles: [{ name: `${authIndex}.json`, auth_index: authIndex }],
+      authFilesLoaded: true,
+      channels: [],
+      channelsLoaded: true,
+      error: authIndex,
+    });
+
+    await renderTab('accounts', 'scope-a');
+    await act(async () => {
+      pendingResponses[0](payloadFor('auth-0'));
+      await Promise.resolve();
+    });
+
+    const oldRefresh = latestResult?.refreshMeta(false);
+    const newRefresh = latestResult?.refreshMeta(false);
+    expect(oldRefresh).toBeDefined();
+    expect(newRefresh).toBeDefined();
+    expect(pendingResponses).toHaveLength(3);
+
+    await act(async () => {
+      pendingResponses[2](payloadFor('auth-2'));
+      await newRefresh;
+    });
+    await act(async () => {
+      pendingResponses[1](payloadFor('auth-1'));
+      await oldRefresh;
+    });
+
+    expect(latestResult?.authFiles[0]?.auth_index).toBe('auth-2');
+    expect(latestResult?.error).toBe('auth-2');
   });
 });

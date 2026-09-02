@@ -11,11 +11,13 @@ const { mocks } = vi.hoisted(() => ({
     startAuth: vi.fn(),
     getAuthStatus: vi.fn(),
     submitCallback: vi.fn(),
+    authFilesList: vi.fn(async () => ({ files: [] })),
     pluginList: vi.fn(async () => ({ plugins: [] })),
     vertexImport: vi.fn(),
     showNotification: vi.fn(),
     navigate: vi.fn(),
     recordMutationMarker: vi.fn(),
+    publishMutationRevision: vi.fn(),
     intervalCallbacks: [] as Array<() => void | Promise<void>>,
   },
 }));
@@ -38,6 +40,7 @@ vi.mock('@/stores', () => {
     supportsPlugin: false,
   });
   return {
+    publishAccountCredentialMutationRevision: mocks.publishMutationRevision,
     useAuthStore: Object.assign(
       (selector: (state: Record<string, unknown>) => unknown) => selector(readAuthState()),
       { getState: readAuthState }
@@ -59,6 +62,9 @@ vi.mock('@/services/api', () => ({
     getAuthStatus: mocks.getAuthStatus,
     submitCallback: mocks.submitCallback,
   },
+  authFilesApi: {
+    list: mocks.authFilesList,
+  },
   pluginsApi: {
     list: mocks.pluginList,
   },
@@ -76,6 +82,10 @@ vi.mock('@/features/monitoring/codexInspection', () => ({
 }));
 
 vi.mock('@/features/accounts/model/accountCredentialMutationMarker', () => ({
+  createAccountCredentialMutationBaseline: (_files: unknown[], provider: string) => ({
+    provider,
+    credentials: [],
+  }),
   recordAccountCredentialMutationMarker: mocks.recordMutationMarker,
 }));
 
@@ -142,6 +152,8 @@ describe('OAuthPage connection lifecycle', () => {
     mocks.apiBase = 'http://cpa-a.local:8317';
     mocks.managementKey = 'key-a';
     mocks.intervalCallbacks = [];
+    mocks.authFilesList.mockReset();
+    mocks.authFilesList.mockResolvedValue({ files: [] });
     vi.stubGlobal('window', {
       requestAnimationFrame: vi.fn(() => 1),
       cancelAnimationFrame: vi.fn(),
@@ -285,9 +297,12 @@ describe('OAuthPage connection lifecycle', () => {
 
   it('records one scoped mutation marker when callback success races with polling success', async () => {
     const polling = deferred<{ status: 'ok' }>();
+    const callbackStatus = deferred<{ status: 'ok' }>();
     const callback = deferred<{ status: 'ok' }>();
     mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-a' });
-    mocks.getAuthStatus.mockReturnValue(polling.promise);
+    mocks.getAuthStatus
+      .mockReturnValueOnce(polling.promise)
+      .mockReturnValueOnce(callbackStatus.promise);
     mocks.submitCallback.mockReturnValue(callback.promise);
     const renderer = await renderOAuthPage();
     const authPromise = startCodexAuth(renderer);
@@ -315,12 +330,19 @@ describe('OAuthPage connection lifecycle', () => {
 
     await act(async () => {
       callback.resolve({ status: 'ok' });
+      await Promise.resolve();
+    });
+    expect(mocks.recordMutationMarker).not.toHaveBeenCalled();
+    await act(async () => {
+      callbackStatus.resolve({ status: 'ok' });
       await callbackPromise;
     });
     expect(mocks.recordMutationMarker).toHaveBeenCalledTimes(1);
     expect(mocks.recordMutationMarker).toHaveBeenCalledWith({
       connectionFingerprint: 'http://cpa-a.local:8317:key-a',
       provider: 'codex',
+      baseline: { provider: 'codex', credentials: [] },
+      requireObservedMutation: true,
     });
     expect(mocks.showNotification).toHaveBeenCalledWith(
       'auth_login.oauth_callback_success',
@@ -332,9 +354,67 @@ describe('OAuthPage connection lifecycle', () => {
       await pollingPromise;
     });
     expect(mocks.recordMutationMarker).toHaveBeenCalledTimes(1);
-    expect(mocks.showNotification).not.toHaveBeenCalledWith(
-      'auth_login.codex_oauth_status_success',
-      'success'
+    expect(
+      mocks.showNotification.mock.calls.filter(
+        ([message, level]) =>
+          message === 'auth_login.codex_oauth_status_success' && level === 'success'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('keeps the provider attempt pending after an accepted callback', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-a' });
+    mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'wait' });
+    const renderer = await renderOAuthPage();
+    const authPromise = startCodexAuth(renderer);
+    await act(async () => {
+      await authPromise;
+    });
+
+    const callbackInput = renderer.root
+      .findAllByType('input')
+      .find((input) => input.props.placeholder === 'auth_login.oauth_callback_placeholder');
+    if (!callbackInput) throw new Error('Callback input not found');
+    act(() => callbackInput.props.onChange({ target: { value: 'http://callback?code=1' } }));
+    await act(async () => {
+      await findButton(renderer, 'auth_login.oauth_callback_button').props.onClick();
+    });
+
+    expect(mocks.getAuthStatus).toHaveBeenCalledWith('state-a', {
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'key-a',
+    });
+    expect(mocks.recordMutationMarker).not.toHaveBeenCalled();
+    expect(treeText(renderer)).toContain('auth_login.oauth_callback_status_success');
+    expect(treeText(renderer)).toContain('auth_login.codex_oauth_status_waiting');
+  });
+
+  it('confirms an already-completed callback only through provider status', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-a' });
+    mocks.submitCallback.mockRejectedValue(
+      Object.assign(new Error('oauth flow is already completed'), { status: 409 })
     );
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const renderer = await renderOAuthPage();
+    const authPromise = startCodexAuth(renderer);
+    await act(async () => {
+      await authPromise;
+    });
+
+    const callbackInput = renderer.root
+      .findAllByType('input')
+      .find((input) => input.props.placeholder === 'auth_login.oauth_callback_placeholder');
+    if (!callbackInput) throw new Error('Callback input not found');
+    act(() => callbackInput.props.onChange({ target: { value: 'http://callback?code=1' } }));
+    await act(async () => {
+      await findButton(renderer, 'auth_login.oauth_callback_button').props.onClick();
+    });
+
+    expect(mocks.getAuthStatus).toHaveBeenCalledWith('state-a', {
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'key-a',
+    });
+    expect(mocks.recordMutationMarker).toHaveBeenCalledTimes(1);
   });
 });

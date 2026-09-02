@@ -13,16 +13,17 @@ import (
 )
 
 type accountStatKey struct {
-	accountSnapshot      string
-	authLabelSnapshot    string
-	authProviderSnapshot string
-	authIndex            string
-	sourceHash           string
-	model                string
-	billingModel         string
-	pricingModel         string
-	contextThreshold     int64
-	serviceTier          string
+	accountSnapshot       string
+	authLabelSnapshot     string
+	authProviderSnapshot  string
+	authAccountIDSnapshot string
+	authIndex             string
+	sourceHash            string
+	model                 string
+	billingModel          string
+	pricingModel          string
+	contextThreshold      int64
+	serviceTier           string
 }
 
 type accountStatAccumulator struct {
@@ -31,17 +32,18 @@ type accountStatAccumulator struct {
 }
 
 type apiKeyStatKey struct {
-	apiKeyHash           string
-	accountSnapshot      string
-	authLabelSnapshot    string
-	authProviderSnapshot string
-	authIndex            string
-	sourceHash           string
-	model                string
-	billingModel         string
-	pricingModel         string
-	contextThreshold     int64
-	serviceTier          string
+	apiKeyHash            string
+	accountSnapshot       string
+	authLabelSnapshot     string
+	authProviderSnapshot  string
+	authAccountIDSnapshot string
+	authIndex             string
+	sourceHash            string
+	model                 string
+	billingModel          string
+	pricingModel          string
+	contextThreshold      int64
+	serviceTier           string
 }
 
 type apiKeyStatAccumulator struct {
@@ -265,6 +267,7 @@ func mergeStoredAccountStats(
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
 		coalesce(max(provider), ''),
 		coalesce(max(auth_provider_snapshot), ''),
+		coalesce(max(auth_account_id_snapshot), ''),
 		auth_index,
 		max(source),
 		source_hash,
@@ -293,7 +296,7 @@ func mergeStoredAccountStats(
 	from usage_monitoring_account_daily_rollups_v1
 	where `+strings.Join(conditions, " and ")+`
 	group by account_snapshot, auth_label_snapshot,
-		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
+		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 		source_hash, model, billing_model, pricing_model,
 		context_threshold_tokens, service_tier`, args...)
 	if err != nil {
@@ -320,13 +323,13 @@ func mergeProjectedAccountStats(
 		filter,
 		projectionCoverageEventID,
 		`p.timestamp_ms, p.account_snapshot, p.auth_label_snapshot, p.provider,
-		p.auth_provider_snapshot, p.auth_index, p.source, p.source_hash,
+		p.auth_provider_snapshot, p.auth_account_id_snapshot, p.auth_index, p.source, p.source_hash,
 		p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
 		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
 		p.total_tokens, p.latency_ms`,
 		`e.timestamp_ms, coalesce(e.account_snapshot, ''), coalesce(e.auth_label_snapshot, ''),
-		coalesce(e.provider, ''), coalesce(e.auth_provider_snapshot, ''),
+		coalesce(e.provider, ''), coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_account_id_snapshot, ''),
 		coalesce(e.auth_index, ''), coalesce(e.source, ''),
 		coalesce(e.source_hash, ''), `+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`,
 		`+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`,
@@ -350,6 +353,7 @@ func mergeProjectedAccountStats(
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
 		coalesce(max(provider), ''),
 		coalesce(max(auth_provider_snapshot), ''),
+		coalesce(max(auth_account_id_snapshot), ''),
 		coalesce(auth_index, ''),
 		coalesce(max(source), ''),
 		coalesce(source_hash, ''),
@@ -377,7 +381,7 @@ func mergeProjectedAccountStats(
 		count(nullif(latency_ms, 0))
 	from banded_events
 	group by account_snapshot, auth_label_snapshot,
-		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
+		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
 	args = appendLongContextThresholdArgs(args)
@@ -403,6 +407,7 @@ func mergeStoredAPIKeyStats(
 		account_snapshot,
 		auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+		coalesce(max(auth_account_id_snapshot), ''),
 		auth_index,
 		max(source),
 		source_hash,
@@ -431,7 +436,7 @@ func mergeStoredAPIKeyStats(
 	from usage_monitoring_api_key_daily_rollups_v1
 	where `+strings.Join(conditions, " and ")+`
 	group by api_key_hash, account_snapshot, auth_label_snapshot,
-		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
+		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 		source_hash, model, billing_model, pricing_model,
 		context_threshold_tokens, service_tier`, args...)
 	if err != nil {
@@ -458,14 +463,14 @@ func mergeProjectedAPIKeyStats(
 		filter,
 		projectionCoverageEventID,
 		`p.timestamp_ms, p.api_key_hash, p.account_snapshot, p.auth_label_snapshot,
-		p.provider, p.auth_provider_snapshot, p.auth_index, p.source,
+		p.provider, p.auth_provider_snapshot, p.auth_account_id_snapshot, p.auth_index, p.source,
 		p.source_hash, p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
 		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
 		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
 		p.total_tokens, p.latency_ms`,
 		`e.timestamp_ms, coalesce(e.api_key_hash, ''), coalesce(e.account_snapshot, ''),
 		coalesce(e.auth_label_snapshot, ''), coalesce(e.provider, ''),
-		coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_index, ''),
+		coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_account_id_snapshot, ''), coalesce(e.auth_index, ''),
 		coalesce(e.source, ''), coalesce(e.source_hash, ''),
 		`+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
 		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
@@ -486,6 +491,7 @@ func mergeProjectedAPIKeyStats(
 		coalesce(account_snapshot, ''),
 		coalesce(auth_label_snapshot, ''),
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+		coalesce(max(auth_account_id_snapshot), ''),
 		coalesce(auth_index, ''),
 		coalesce(max(source), ''),
 		coalesce(source_hash, ''),
@@ -513,7 +519,7 @@ func mergeProjectedAPIKeyStats(
 		count(nullif(latency_ms, 0))
 	from banded_events
 	group by api_key_hash, account_snapshot, auth_label_snapshot,
-		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index,
+		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
 	args = appendLongContextThresholdArgs(args)
@@ -540,6 +546,7 @@ func scanAccountStats(rows *sql.Rows, grouped map[accountStatKey]*accountStatAcc
 			&row.AuthProviderSnapshot,
 			&row.Provider,
 			&row.ExplicitAuthProviderSnapshot,
+			&row.AuthAccountIDSnapshot,
 			&row.AuthIndex,
 			&row.Source,
 			&row.SourceHash,
@@ -583,6 +590,7 @@ func scanAPIKeyStats(rows *sql.Rows, grouped map[apiKeyStatKey]*apiKeyStatAccumu
 			&row.AccountSnapshot,
 			&row.AuthLabelSnapshot,
 			&row.AuthProviderSnapshot,
+			&row.AuthAccountIDSnapshot,
 			&row.AuthIndex,
 			&row.Source,
 			&row.SourceHash,
@@ -618,16 +626,17 @@ func scanAPIKeyStats(rows *sql.Rows, grouped map[apiKeyStatKey]*apiKeyStatAccumu
 
 func mergeAccountStat(grouped map[accountStatKey]*accountStatAccumulator, row AccountModelStat, latencySumMS int64) {
 	key := accountStatKey{
-		accountSnapshot:      row.AccountSnapshot,
-		authLabelSnapshot:    row.AuthLabelSnapshot,
-		authProviderSnapshot: row.AuthProviderSnapshot,
-		authIndex:            row.AuthIndex,
-		sourceHash:           row.SourceHash,
-		model:                row.Model,
-		billingModel:         row.BillingModel,
-		pricingModel:         row.PricingModel,
-		contextThreshold:     row.ContextThresholdTokens,
-		serviceTier:          row.ServiceTier,
+		accountSnapshot:       row.AccountSnapshot,
+		authLabelSnapshot:     row.AuthLabelSnapshot,
+		authProviderSnapshot:  row.AuthProviderSnapshot,
+		authAccountIDSnapshot: row.AuthAccountIDSnapshot,
+		authIndex:             row.AuthIndex,
+		sourceHash:            row.SourceHash,
+		model:                 row.Model,
+		billingModel:          row.BillingModel,
+		pricingModel:          row.PricingModel,
+		contextThreshold:      row.ContextThresholdTokens,
+		serviceTier:           row.ServiceTier,
 	}
 	entry := grouped[key]
 	if entry == nil {
@@ -640,17 +649,18 @@ func mergeAccountStat(grouped map[accountStatKey]*accountStatAccumulator, row Ac
 
 func mergeAPIKeyStat(grouped map[apiKeyStatKey]*apiKeyStatAccumulator, row APIKeyModelStat, latencySumMS int64) {
 	key := apiKeyStatKey{
-		apiKeyHash:           row.APIKeyHash,
-		accountSnapshot:      row.AccountSnapshot,
-		authLabelSnapshot:    row.AuthLabelSnapshot,
-		authProviderSnapshot: row.AuthProviderSnapshot,
-		authIndex:            row.AuthIndex,
-		sourceHash:           row.SourceHash,
-		model:                row.Model,
-		billingModel:         row.BillingModel,
-		pricingModel:         row.PricingModel,
-		contextThreshold:     row.ContextThresholdTokens,
-		serviceTier:          row.ServiceTier,
+		apiKeyHash:            row.APIKeyHash,
+		accountSnapshot:       row.AccountSnapshot,
+		authLabelSnapshot:     row.AuthLabelSnapshot,
+		authProviderSnapshot:  row.AuthProviderSnapshot,
+		authAccountIDSnapshot: row.AuthAccountIDSnapshot,
+		authIndex:             row.AuthIndex,
+		sourceHash:            row.SourceHash,
+		model:                 row.Model,
+		billingModel:          row.BillingModel,
+		pricingModel:          row.PricingModel,
+		contextThreshold:      row.ContextThresholdTokens,
+		serviceTier:           row.ServiceTier,
 	}
 	entry := grouped[key]
 	if entry == nil {
@@ -670,6 +680,9 @@ func mergeAccountValues(target *AccountModelStat, row AccountModelStat) {
 	}
 	if row.ExplicitAuthProviderSnapshot > target.ExplicitAuthProviderSnapshot {
 		target.ExplicitAuthProviderSnapshot = row.ExplicitAuthProviderSnapshot
+	}
+	if row.AuthAccountIDSnapshot > target.AuthAccountIDSnapshot {
+		target.AuthAccountIDSnapshot = row.AuthAccountIDSnapshot
 	}
 	target.Calls += row.Calls
 	target.SuccessCalls += row.SuccessCalls
@@ -695,6 +708,9 @@ func mergeAccountValues(target *AccountModelStat, row AccountModelStat) {
 func mergeAPIKeyValues(target *APIKeyModelStat, row APIKeyModelStat) {
 	if row.Source > target.Source {
 		target.Source = row.Source
+	}
+	if row.AuthAccountIDSnapshot > target.AuthAccountIDSnapshot {
+		target.AuthAccountIDSnapshot = row.AuthAccountIDSnapshot
 	}
 	target.Calls += row.Calls
 	target.SuccessCalls += row.SuccessCalls

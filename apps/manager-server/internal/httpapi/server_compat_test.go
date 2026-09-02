@@ -165,23 +165,55 @@ func TestServerCompatSetupConfigAndEnvLock(t *testing.T) {
 	testutil.RequireStatus(t, configRR, http.StatusOK)
 	if !strings.Contains(configRR.Body.String(), `"source":"db"`) ||
 		!strings.Contains(configRR.Body.String(), `"cpaBaseUrl":"`+cpa.URL()+`"`) ||
+		!strings.Contains(configRR.Body.String(), `"managementKeyConfigured":true`) ||
 		!strings.Contains(configRR.Body.String(), `"cpaUsage"`) {
 		t.Fatalf("config body = %s", configRR.Body.String())
 	}
+	if strings.Contains(configRR.Body.String(), `"managementKey"`) ||
+		strings.Contains(configRR.Body.String(), "management-key") {
+		t.Fatalf("config response leaked CPA management key: %s", configRR.Body.String())
+	}
 
-	updateBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"management-key"},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000},"externalUsageService":{"enabled":true,"serviceBase":"http://usage.local"}}}`
+	updateBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `"},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000},"externalUsageService":{"enabled":true,"serviceBase":"http://usage.local"}}}`
 	updateRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", updateBody, testutil.AdminKey)
 	testutil.RequireStatus(t, updateRR, http.StatusOK)
 	if !strings.Contains(updateRR.Body.String(), `"externalUsageService":{"enabled":false}`) ||
-		strings.Contains(updateRR.Body.String(), "http://usage.local") {
+		!strings.Contains(updateRR.Body.String(), `"managementKeyConfigured":true`) ||
+		strings.Contains(updateRR.Body.String(), "http://usage.local") ||
+		strings.Contains(updateRR.Body.String(), `"managementKey"`) ||
+		strings.Contains(updateRR.Body.String(), "management-key") {
 		t.Fatalf("updated config body = %s", updateRR.Body.String())
+	}
+	preservedSetup, ok, err := db.LoadSetup(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load preserved setup ok=%v err=%v", ok, err)
+	}
+	if preservedSetup.ManagementKey != "management-key" {
+		t.Fatalf("management key changed when omitted: %#v", preservedSetup)
+	}
+
+	blankKeyBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"   "},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000}}}`
+	blankKeyRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", blankKeyBody, testutil.AdminKey)
+	testutil.RequireStatus(t, blankKeyRR, http.StatusOK)
+	if strings.Contains(blankKeyRR.Body.String(), `"managementKey"`) ||
+		strings.Contains(blankKeyRR.Body.String(), "management-key") {
+		t.Fatalf("blank-key response leaked CPA management key: %s", blankKeyRR.Body.String())
+	}
+	blankPreservedSetup, ok, err := db.LoadSetup(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("load blank-key setup ok=%v err=%v", ok, err)
+	}
+	if blankPreservedSetup.ManagementKey != "management-key" {
+		t.Fatalf("blank management key replaced saved key: %#v", blankPreservedSetup)
 	}
 
 	cpa.ManagementKey = "rotated-management-key"
 	rotateKeyBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"rotated-management-key"},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000}}}`
 	rotateKeyRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", rotateKeyBody, testutil.AdminKey)
 	testutil.RequireStatus(t, rotateKeyRR, http.StatusOK)
-	if !strings.Contains(rotateKeyRR.Body.String(), `"cpaBaseUrl":"`+cpa.URL()+`"`) {
+	if !strings.Contains(rotateKeyRR.Body.String(), `"cpaBaseUrl":"`+cpa.URL()+`"`) ||
+		!strings.Contains(rotateKeyRR.Body.String(), `"managementKeyConfigured":true`) ||
+		strings.Contains(rotateKeyRR.Body.String(), "rotated-management-key") {
 		t.Fatalf("rotated key config body = %s", rotateKeyRR.Body.String())
 	}
 	rotatedSetup, ok, err := db.LoadSetup(context.Background())
@@ -412,6 +444,76 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 		strings.Contains(statusRR.Body.String(), `"lastError"`) ||
 		strings.Contains(statusRR.Body.String(), "secret migration detail") {
 		t.Fatalf("status body = %s", statusRR.Body.String())
+	}
+}
+
+func TestServerCompatStatusIncludesSanitizedDerivedMaintenanceState(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	handler, db := newCompatHandler(t, cfg, nil)
+
+	cleanRR := testutil.Request(t, handler, http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, cleanRR, http.StatusOK)
+	var cleanPayload struct {
+		DatabaseMaintenance struct {
+			Required            bool     `json:"required"`
+			PerformanceDegraded bool     `json:"performanceDegraded"`
+			DeferredIndexes     int      `json:"deferredIndexes"`
+			OfflineJobs         int      `json:"offlineJobs"`
+			Reasons             []string `json:"reasons"`
+			Command             string   `json:"command"`
+		} `json:"databaseMaintenance"`
+	}
+	testutil.DecodeJSON(t, cleanRR, &cleanPayload)
+	if cleanPayload.DatabaseMaintenance.Required ||
+		cleanPayload.DatabaseMaintenance.PerformanceDegraded ||
+		cleanPayload.DatabaseMaintenance.DeferredIndexes != 0 ||
+		cleanPayload.DatabaseMaintenance.OfflineJobs != 0 ||
+		len(cleanPayload.DatabaseMaintenance.Reasons) != 0 ||
+		cleanPayload.DatabaseMaintenance.Command != "" {
+		t.Fatalf("clean maintenance payload = %#v", cleanPayload.DatabaseMaintenance)
+	}
+
+	if _, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("maintenance-status-event", 2)}); err != nil {
+		t.Fatalf("insert maintenance status event: %v", err)
+	}
+	degradedRR := testutil.Request(t, handler, http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, degradedRR, http.StatusOK)
+	var degradedPayload struct {
+		DatabaseMaintenance json.RawMessage `json:"databaseMaintenance"`
+	}
+	testutil.DecodeJSON(t, degradedRR, &degradedPayload)
+	var degraded struct {
+		Required            bool     `json:"required"`
+		PerformanceDegraded bool     `json:"performanceDegraded"`
+		DeferredIndexes     int      `json:"deferredIndexes"`
+		OfflineJobs         int      `json:"offlineJobs"`
+		Reasons             []string `json:"reasons"`
+		Command             string   `json:"command"`
+	}
+	if err := json.Unmarshal(degradedPayload.DatabaseMaintenance, &degraded); err != nil {
+		t.Fatalf("decode maintenance payload: %v", err)
+	}
+	if !degraded.Required || !degraded.PerformanceDegraded || degraded.DeferredIndexes == 0 || degraded.Command != "cleanup-derived" {
+		t.Fatalf("degraded maintenance payload = %#v", degraded)
+	}
+	maintenanceJSON := strings.ToLower(string(degradedPayload.DatabaseMaintenance))
+	for _, forbidden := range []string{"idx_", "create index", "usage_monitoring_event_projection", strings.ToLower(cfg.DBPath)} {
+		if forbidden != "" && strings.Contains(maintenanceJSON, forbidden) {
+			t.Fatalf("maintenance payload leaks %q: %s", forbidden, maintenanceJSON)
+		}
+	}
+
+	boundedRR := testutil.Request(t, handler, http.MethodGet, "/status?scope=database-maintenance", "", testutil.AdminKey)
+	testutil.RequireStatus(t, boundedRR, http.StatusOK)
+	var boundedPayload map[string]json.RawMessage
+	testutil.DecodeJSON(t, boundedRR, &boundedPayload)
+	if len(boundedPayload) != 1 || boundedPayload["databaseMaintenance"] == nil {
+		t.Fatalf("bounded maintenance payload = %s", boundedRR.Body.String())
+	}
+	for _, forbidden := range []string{"dbPath", "events", "deadLetters", "dataMigration", "database"} {
+		if _, found := boundedPayload[forbidden]; found {
+			t.Fatalf("bounded maintenance payload includes %q: %s", forbidden, boundedRR.Body.String())
+		}
 	}
 }
 
@@ -835,13 +937,22 @@ func TestServerCompatPluginProxyRoutes(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	setup := &store.Setup{
-		CPAUpstreamURL: upstream.URL,
-		ManagementKey:  "management-key",
-		Queue:          "usage",
-		PopSide:        "right",
+	handler, db := newCompatHandler(t, testutil.NewConfig(t), nil)
+	collectorDisabled := false
+	if err := db.SaveManagerConfig(context.Background(), store.ManagerConfig{
+		CPAConnection: store.ManagerCPAConnectionConfig{
+			CPABaseURL:    upstream.URL,
+			ManagementKey: "management-key",
+		},
+		Collector: store.ManagerCollectorConfig{
+			Enabled:       &collectorDisabled,
+			CollectorMode: "auto",
+			Queue:         "usage",
+			PopSide:       "right",
+		},
+	}); err != nil {
+		t.Fatalf("save DB-only manager config: %v", err)
 	}
-	handler, _ := newCompatHandler(t, testutil.NewConfig(t), setup)
 
 	assertObserved := func(path string, want observedRequest) {
 		t.Helper()
@@ -1108,4 +1219,163 @@ func compatEvent(hash string, offset int64) usage.Event {
 
 func osWriteFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
+}
+
+// TestServerCompatCPAConnectionValidation exercises the strict server-side CPA
+// connection validation endpoint (POST /v0/management/cpa-connection/validate).
+// Unlike GET /usage-service/config, which tolerantly returns 200 even when CPA
+// is unreachable, this endpoint must propagate CPA auth/network/5xx failures
+// as non-2xx so the installer fails closed. See P0-1 in PR #585.
+func TestServerCompatCPAConnectionValidation(t *testing.T) {
+	cpa := testutil.NewCPAMock(t)
+	cpa.ManagementKey = "management-key"
+
+	t.Run("succeeds when CPA is reachable and key matches", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		body := rr.Body.String()
+		if !strings.Contains(body, `"configured":true`) || !strings.Contains(body, cpa.URL()) {
+			t.Fatalf("validation body = %s", body)
+		}
+	})
+
+	t.Run("fails non-2xx when CPA Management Key is wrong", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "wrong-management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("validation with wrong key returned 200: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("wrong-key validation status = %d, want %d (body: %s)", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+	})
+
+	t.Run("fails non-2xx when CPA is unreachable", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		// Point at a port that is not listening. The mock is closed immediately
+		// so its URL is guaranteed to be unreachable.
+		unreachable := testutil.NewCPAMock(t)
+		unreachableURL := unreachable.URL()
+		unreachable.Close()
+
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: unreachableURL,
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("validation against unreachable CPA returned 200: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("usage-service/config stays tolerant while validate is strict", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "wrong-management-key",
+		})
+
+		// The tolerant config read returns 200 even though CPA auth will fail.
+		configRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", testutil.AdminKey)
+		testutil.RequireStatus(t, configRR, http.StatusOK)
+
+		// The strict validation endpoint must not return 200.
+		validateRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if validateRR.Code == http.StatusOK {
+			t.Fatalf("strict validation returned 200 while config was tolerant: %s", validateRR.Body.String())
+		}
+	})
+
+	t.Run("valid environment connection cannot mask a wrong persisted connection", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		cfg.CPAUpstreamURL = cpa.URL()
+		cfg.ManagementKey = cpa.ManagementKey
+		handler, db := newCompatHandler(t, cfg, nil)
+		if err := db.SaveManagerConfig(context.Background(), store.ManagerConfig{
+			CPAConnection: store.ManagerCPAConnectionConfig{
+				CPABaseURL:    cpa.URL(),
+				ManagementKey: "wrong-management-key",
+			},
+		}); err != nil {
+			t.Fatalf("save wrong persisted connection: %v", err)
+		}
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("strict validation used the valid environment connection: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("persisted wrong-key validation status = %d, want %d (body: %s)", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+	})
+
+	t.Run("rejects unauthenticated requests", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", "")
+		testutil.RequireStatus(t, rr, http.StatusUnauthorized)
+	})
+
+	t.Run("is POST-only", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodGet, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusMethodNotAllowed)
+	})
+
+	t.Run("fails when CPA connection is not configured", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, nil)
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusConflict)
+	})
+
+	t.Run("does not leak management key in response", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		if strings.Contains(rr.Body.String(), "management-key") {
+			t.Fatalf("validation response leaked management key: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("ignores client-supplied CPA Management Key in body", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		// Submitting a wrong key in the request body must not influence the
+		// validation, which must use the persisted connection only.
+		body := `{"managementKey":"attacker-supplied-key"}`
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", body, testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+	})
 }

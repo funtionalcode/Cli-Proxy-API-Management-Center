@@ -105,6 +105,7 @@ type RecentFailure struct {
 	AccountSnapshot        string
 	AuthLabelSnapshot      string
 	AuthProviderSnapshot   string
+	AuthAccountIDSnapshot  string
 	AuthProjectIDSnapshot  string
 	FailStatusCode         sql.NullInt64
 	FailSummary            string
@@ -323,6 +324,7 @@ var recentFailuresSQL = `select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(auth_provider_snapshot, ''),
+	coalesce(auth_account_id_snapshot, ''),
 	coalesce(auth_project_id_snapshot, ''),
 	fail_status_code,
 	coalesce(fail_summary, ''),
@@ -365,6 +367,7 @@ func (r *repository) RecentFailuresBetween(ctx context.Context, fromMs, toMs int
 			&rf.AccountSnapshot,
 			&rf.AuthLabelSnapshot,
 			&rf.AuthProviderSnapshot,
+			&rf.AuthAccountIDSnapshot,
 			&rf.AuthProjectIDSnapshot,
 			&rf.FailStatusCode,
 			&rf.FailSummary,
@@ -379,6 +382,10 @@ func (r *repository) RecentFailuresBetween(ctx context.Context, fromMs, toMs int
 			return nil, err
 		}
 		rf.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
+		rf.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(
+			rf.AuthProviderSnapshot,
+			rf.AuthProjectIDSnapshot,
+		)
 		results = append(results, rf)
 	}
 	return results, rows.Err()

@@ -17,8 +17,11 @@ export const loadMonitoringMetaPayload = async (
     authResult.status === 'fulfilled' && Array.isArray(authResult.value.files)
       ? authResult.value.files
       : [];
+  const authFilesLoaded =
+    authResult.status === 'fulfilled' && Array.isArray(authResult.value.files);
 
   let channels: MonitoringChannelMeta[] = [];
+  const channelsLoaded = channelResult.status === 'fulfilled';
 
   if (channelResult.status === 'fulfilled') {
     channels = extractArrayPayload(channelResult.value, 'openai-compatibility')
@@ -47,5 +50,5 @@ export const loadMonitoringMetaPayload = async (
     .map((err) => (err instanceof Error ? err.message : String(err)))
     .join('；');
 
-  return { authFiles, channels, error };
+  return { authFiles, authFilesLoaded, channels, channelsLoaded, error };
 };

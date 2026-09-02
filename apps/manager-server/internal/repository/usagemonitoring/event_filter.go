@@ -105,6 +105,8 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 				expression := column(searchColumn)
 				if searchColumn == "analytics_model" {
 					expression = usageidentity.SQLRequestAnalyticsModelExpression(column("model"), column("requested_model"))
+				} else if searchColumn == "auth_project_id_snapshot" {
+					expression = usageidentity.SQLProjectIDSnapshotExpression(prefix)
 				}
 				searchConditions = append(searchConditions, fmt.Sprintf("lower(coalesce(%s, '')) like ?", expression))
 				args = append(args, like)
@@ -141,7 +143,7 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 	addInCondition(column("auth_index"), filter.AuthIndices)
 	addInCondition(column("api_key_hash"), filter.APIKeyHashes)
 	addInCondition(column("source_hash"), filter.SourceHashes)
-	addInCondition(column("auth_project_id_snapshot"), filter.ProjectIDs)
+	addInCondition(usageidentity.SQLProjectIDSnapshotExpression(prefix), filter.ProjectIDs)
 	addInCondition(column("executor_type"), filter.RequestTypes)
 	addInCondition(column("header_error_kind"), filter.HeaderErrorKinds)
 	addInCondition(column("header_error_code"), filter.HeaderErrorCodes)

@@ -21,7 +21,7 @@ import {
 } from '@/features/demo/demoFixtures';
 import { isDemoMode } from '@/features/demo/demoMode';
 import { hasCodexInspectionStableIdentity } from '@/features/monitoring/model/codexInspectionOwnership';
-import type { AuthFileItem } from '@/types';
+import type { AuthFileItem, QuotaModelScope } from '@/types';
 import { normalizeApiBase } from '@/utils/connection';
 import {
   getAuthFileStatusIdentityKey,
@@ -115,6 +115,22 @@ export interface UsageServiceDatabaseStatus {
   checkpoint?: UsageServiceCheckpointStatus;
 }
 
+export type UsageServiceDatabaseMaintenanceReason =
+  | 'deferred_indexes'
+  | 'offline_derived_cleanup'
+  | 'offline_quota_snapshot_migration'
+  | 'legacy_index_replacement'
+  | string;
+
+export interface UsageServiceDatabaseMaintenanceStatus {
+  required: boolean;
+  performanceDegraded: boolean;
+  deferredIndexes: number;
+  offlineJobs: number;
+  reasons: UsageServiceDatabaseMaintenanceReason[];
+  command?: string;
+}
+
 export interface UsageServiceStatus {
   service?: string;
   dbPath?: string;
@@ -122,7 +138,10 @@ export interface UsageServiceStatus {
   deadLetters?: number;
   collector?: UsageServiceCollectorStatus;
   database?: UsageServiceDatabaseStatus;
+  databaseMaintenance?: UsageServiceDatabaseMaintenanceStatus;
 }
+
+export type UsageServiceStatusScope = 'database-maintenance';
 
 export interface AccountPolicyCapability {
   enabled: boolean;
@@ -183,6 +202,8 @@ export interface UsageServiceSetupRequest {
 
 export interface ManagerCPAConnectionConfig {
   cpaBaseUrl: string;
+  managementKeyConfigured?: boolean;
+  /** Write-only. Responses never include the saved CPA Management Key. */
   managementKey?: string;
 }
 
@@ -286,6 +307,8 @@ export interface CodexInspectionQuotaWindow {
   resetAtMs?: number | null;
   resetAccuracy?: 'exact' | 'derived' | 'estimated' | 'unknown';
   limitWindowSeconds?: number | null;
+  modelScope?: QuotaModelScope;
+  providerWindowAliases?: string[];
 }
 
 export interface CodexInspectionResult {
@@ -708,6 +731,7 @@ export interface DashboardRecentFailure {
   account_snapshot?: string;
   auth_label_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   endpoint: string;
   duration_ms: number | null;
@@ -823,6 +847,7 @@ export interface MonitoringAccountHistoryTarget {
   auth_label_snapshot?: string;
   auth_file_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   auth_index?: string;
   source?: string;
@@ -887,6 +912,7 @@ export interface MonitoringAccountWindowUsageTarget {
   auth_label_snapshot?: string;
   auth_file_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   auth_index?: string;
   source?: string;
@@ -896,6 +922,7 @@ export interface MonitoringAccountWindowModelScope {
   kind: 'all' | 'family' | 'models' | 'product' | 'feature';
   key?: string;
   models?: string[];
+  complete?: boolean;
 }
 
 export interface MonitoringAccountWindowUsageRequest {
@@ -947,6 +974,7 @@ export interface AccountQuotaSnapshotTarget {
   auth_label_snapshot?: string;
   auth_file_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   auth_index?: string;
   source?: string;
@@ -967,6 +995,7 @@ export interface AccountQuotaSnapshotObservationInput {
 
 export interface AccountQuotaSnapshotRemovedWindowInput {
   provider_window_id: string;
+  window_kind?: string;
   model_scope_kind?: MonitoringAccountWindowModelScope['kind'];
   model_scope_key?: string;
   model_ids?: string[];
@@ -974,6 +1003,7 @@ export interface AccountQuotaSnapshotRemovedWindowInput {
 
 export interface AccountQuotaSnapshotWindowInput {
   provider_window_id: string;
+  provider_window_aliases?: string[];
   window_kind: string;
   window_mode: AccountQuotaSnapshotWindowMode;
   model_scope_kind: MonitoringAccountWindowModelScope['kind'];
@@ -1442,6 +1472,7 @@ export interface MonitoringAnalyticsCredentialStatRow {
   account_snapshot?: string;
   auth_label_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   calls: number;
   success_calls: number;
@@ -1469,6 +1500,7 @@ export interface MonitoringAnalyticsCredentialTimelinePoint {
   account_snapshot?: string;
   auth_label_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   bucket_ms: number;
   bucket_label?: string;
@@ -1723,11 +1755,16 @@ export interface ResponseHeaderMetadata {
 export interface UsageHeaderSnapshot {
   event_hash: string;
   timestamp_ms: number;
+  model?: string;
+  analytics_model?: string;
+  requested_model?: string;
+  resolved_model?: string;
   auth_file_snapshot?: string;
   auth_index?: string;
   account_snapshot?: string;
   auth_label_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   source?: string;
   source_hash?: string;
@@ -1757,6 +1794,7 @@ export interface MonitoringAnalyticsRecentFailure {
   account_snapshot?: string;
   auth_label_snapshot?: string;
   auth_provider_snapshot?: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   endpoint: string;
   duration_ms: number | null;
@@ -1792,6 +1830,7 @@ export interface MonitoringAnalyticsEventRow {
   auth_label_snapshot: string;
   auth_file_snapshot?: string;
   auth_provider_snapshot: string;
+  auth_account_id_snapshot?: string;
   auth_project_id_snapshot?: string;
   resolved_model?: string;
   reasoning_effort?: string;
@@ -2599,7 +2638,20 @@ export const usageServiceApi = {
     managementKey?: string
   ): Promise<ManagerConfigResponse> => {
     if (__DEMO_SITE__ && isDemoMode()) {
-      return { ...getDemoManagerConfig(), config, source: 'db' };
+      const submittedKey = config.cpaConnection.managementKey?.trim();
+      return {
+        ...getDemoManagerConfig(),
+        config: {
+          ...config,
+          cpaConnection: {
+            cpaBaseUrl: config.cpaConnection.cpaBaseUrl,
+            managementKeyConfigured: Boolean(
+              submittedKey || config.cpaConnection.managementKeyConfigured
+            ),
+          },
+        },
+        source: 'db',
+      };
     }
 
     return withUsageServiceError(async () => {
@@ -2755,13 +2807,19 @@ export const usageServiceApi = {
     });
   },
 
-  getStatus: async (base: string, managementKey?: string): Promise<UsageServiceStatus> => {
+  getStatus: async (
+    base: string,
+    managementKey?: string,
+    scope?: UsageServiceStatusScope
+  ): Promise<UsageServiceStatus> => {
     if (__DEMO_SITE__ && isDemoMode()) {
       return getDemoUsageServiceStatus();
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.get<UsageServiceStatus>(buildUrl(base, '/status'), {
+      const statusPath =
+        scope === 'database-maintenance' ? '/status?scope=database-maintenance' : '/status';
+      const response = await axios.get<UsageServiceStatus>(buildUrl(base, statusPath), {
         timeout: USAGE_SERVICE_TIMEOUT_MS,
         headers: authHeaders(managementKey),
       });

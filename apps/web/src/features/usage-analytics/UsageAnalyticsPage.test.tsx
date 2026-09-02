@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import {
   USAGE_ANALYTICS_DEFAULT_FILTERS,
+  type UsageDrilldownEvent,
   type UsageRankRow,
   type UsageTimelinePoint,
 } from './usageAnalyticsModel';
@@ -15,6 +16,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     navigate: vi.fn(),
     copyToClipboard: vi.fn(async () => true),
+    translationCalls: [] as Array<[string, Record<string, unknown> | undefined]>,
     usageState: null as unknown,
   },
 }));
@@ -28,6 +30,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en' },
     t: (key: string, options?: Record<string, unknown>) => {
+      mocks.translationCalls.push([key, options]);
       if (!options) return key;
       return Object.entries(options).reduce(
         (value, [name, replacement]) => value.replace(`{{${name}}}`, String(replacement)),
@@ -117,6 +120,50 @@ const createRankRow = (overrides: Partial<UsageRankRow> = {}): UsageRankRow => (
   estimatedCost: 1.25,
   averageLatencyMs: null,
   share: 1,
+  ...overrides,
+});
+
+const createApiKeyRows = (count: number): UsageRankRow[] =>
+  Array.from({ length: count }, (_, index) =>
+    createRankRow({
+      id: `api-key-${index + 1}`,
+      label: `client-key-${index + 1}`,
+      apiKeyHash: `api-key-${index + 1}`,
+      apiKeyCopyValue: undefined,
+      model: undefined,
+      provider: 'codex',
+      requestCount: count - index,
+      contexts: [],
+      models: [],
+    })
+  );
+
+const createDrilldownEvent = (
+  overrides: Partial<UsageDrilldownEvent> = {}
+): UsageDrilldownEvent => ({
+  requestId: 'request-1',
+  eventHash: 'event-1',
+  timestampMs: 1_780_000_000_000,
+  model: 'gpt-4o',
+  apiKeyHash: 'abcdef1234567890',
+  apiKeyLabel: 'sk-****7890',
+  source: 'codex',
+  authIndex: 'auth-1',
+  provider: 'codex',
+  endpoint: 'POST /v1/chat/completions',
+  totalTokens: 100,
+  estimatedCost: 0,
+  latencyMs: 250,
+  ttftMs: 80,
+  failed: false,
+  failStatusCode: null,
+  failSummary: '',
+  headerErrorKind: '',
+  headerErrorCode: '',
+  headerTraceId: '',
+  headerQuotaPlanType: 'pro',
+  headerQuotaUsedPercent: 25,
+  headerQuotaRecoverAtMs: null,
   ...overrides,
 });
 
@@ -493,6 +540,7 @@ beforeEach(() => {
   mocks.navigate.mockReset();
   mocks.copyToClipboard.mockReset();
   mocks.copyToClipboard.mockResolvedValue(true);
+  mocks.translationCalls.length = 0;
   mocks.usageState = createUsageState();
 });
 
@@ -519,6 +567,17 @@ describe('UsageAnalyticsPage', () => {
     expect(text).not.toContain('usage_analytics.favorite_views_title');
     expect(text).not.toContain('usage_analytics.recent_views_title');
     expect(text).not.toContain('usage_analytics.model_rank_title');
+  });
+
+  it('uses the unified full plan label in drilldown diagnostics', () => {
+    mocks.usageState = createUsageState({
+      drilldownPreview: [createDrilldownEvent()],
+    });
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+
+    expect(text).toContain('Pro 20x');
+    expect(text).not.toContain('self_serve_business_prolite');
   });
 
   it('renders trends as a focused time-series workspace', () => {
@@ -567,6 +626,96 @@ describe('UsageAnalyticsPage', () => {
       .find((series) => series.name === 'usage_analytics.metric_cached_tokens');
 
     expect(cacheSeries?.data).toEqual([100]);
+  });
+
+  it('keeps zero-request health buckets unavailable in charts and tooltips', () => {
+    const firstPoint = createTimelinePoint({
+      successRate: 0.9,
+      failureRate: 0.1,
+      averageLatencyMs: 500,
+    });
+    const emptyPoint = createTimelinePoint({
+      bucketMs: firstPoint.bucketMs + 60 * 60 * 1000,
+      bucketEndMs: firstPoint.bucketEndMs + 60 * 60 * 1000,
+      label: '06/04 13:00',
+      requestCount: 0,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      successCount: 0,
+      failureCount: 0,
+      successRate: 0,
+      failureRate: 0,
+      averageLatencyMs: null,
+      p95LatencyMs: null,
+      p95TtftMs: null,
+      cacheHitRate: 0,
+      averageTokensPerRequest: 0,
+    });
+    const lastPoint = createTimelinePoint({
+      bucketMs: firstPoint.bucketMs + 2 * 60 * 60 * 1000,
+      bucketEndMs: firstPoint.bucketEndMs + 2 * 60 * 60 * 1000,
+      label: '06/04 14:00',
+      successCount: 10,
+      failureCount: 0,
+      successRate: 1,
+      failureRate: 0,
+      averageLatencyMs: 400,
+    });
+    mocks.usageState = createUsageState({
+      activeTab: 'trends',
+      timeline: [firstPoint, emptyPoint, lastPoint],
+      selectedBucket: null,
+      anomalyAnalysis: null,
+    });
+
+    const renderer = renderPage();
+    const healthChart = renderer.root.findAllByType(EChartsView).find((node) => {
+      const series = (node.props.option?.series ?? []) as Array<{ name?: string }>;
+      return series.some((item) => item.name === 'usage_analytics.success_rate');
+    });
+    const healthOption = healthChart?.props.option as
+      | {
+          series?: Array<{ name?: string; data?: Array<number | null> }>;
+          tooltip?: { formatter?: (params: unknown) => string };
+        }
+      | undefined;
+
+    expect(healthOption).toBeDefined();
+    const findSeriesData = (name: string) =>
+      healthOption?.series?.find((series) => series.name === name)?.data;
+    expect(findSeriesData('usage_analytics.success_rate')).toEqual([0.9, null, 1]);
+    expect(findSeriesData('usage_analytics.failure_rate')).toEqual([0.1, null, 0]);
+    expect(findSeriesData('usage_analytics.metric_average_latency')).toEqual([500, null, 400]);
+
+    const formatter = healthOption?.tooltip?.formatter;
+    if (!formatter) throw new Error('Health chart tooltip formatter not found');
+    const tooltip = formatter([
+      {
+        dataIndex: 1,
+        seriesName: 'usage_analytics.success_rate',
+        data: null,
+        marker: '',
+      },
+      {
+        dataIndex: 1,
+        seriesName: 'usage_analytics.failure_rate',
+        data: null,
+        marker: '',
+      },
+      {
+        dataIndex: 1,
+        seriesName: 'usage_analytics.metric_average_latency',
+        data: null,
+        marker: '',
+      },
+    ]);
+    expect(tooltip.match(/>-<\/strong>/g)).toHaveLength(3);
+    expect(tooltip).not.toContain('0.00%');
+    expect(tooltip).not.toContain('0ms');
   });
 
   it('renders fine-grained cache buckets in rank tables', () => {
@@ -789,6 +938,79 @@ describe('UsageAnalyticsPage', () => {
       apiKeyHash: 'abcdef1234567890',
     });
     expect(usageState.setActiveTab).toHaveBeenCalledWith('heatmap');
+  });
+
+  it('caps API key ranking at the shared limit and exposes the filtered total', () => {
+    const apiKeyRows = createApiKeyRows(23);
+    mocks.usageState = createUsageState({
+      activeTab: 'apiKeys',
+      apiKeyRows,
+      keyAnomalies: [],
+      selectedApiKey: apiKeyRows[0],
+      selectedApiKeyTrendSeries: [],
+    });
+    const renderer = renderPage();
+    const rankSection = renderer.root.findAllByType('section').find((section) =>
+      section
+        .findAllByType('h2')
+        .some((heading) => getText(heading) === 'usage_analytics.api_key_rank_title')
+    );
+    if (!rankSection) throw new Error('API key rank section not found');
+    const rankBody = rankSection.findAllByType('tbody')[0];
+    if (!rankBody) throw new Error('API key rank body not found');
+
+    const rankRows = rankBody.findAllByType('tr');
+    const text = getText(renderer.root);
+    expect(rankRows).toHaveLength(8);
+    expect(getText(rankRows[7])).toContain('client-key-8');
+    expect(getText(rankRows[7])).not.toContain('client-key-9');
+    expect(text).toContain('usage_analytics.api_key_rank_context_top');
+    expect(mocks.translationCalls).toContainEqual([
+      'usage_analytics.api_key_rank_context_top',
+      { limit: 8, total: 23 },
+    ]);
+    expect(text).not.toContain('usage_analytics.rank_show_all');
+    expect(text).not.toContain('usage_analytics.rank_collapse');
+  });
+
+  it.each([5, 8])('shows all %s API keys without a misleading Top-8 label', (total) => {
+    const apiKeyRows = createApiKeyRows(total);
+    mocks.usageState = createUsageState({
+      activeTab: 'apiKeys',
+      filters: {
+        ...USAGE_ANALYTICS_DEFAULT_FILTERS,
+        apiKeyKeyword: 'client-key',
+      },
+      apiKeyRows,
+      filterOptions: {
+        models: ['gpt-4o'],
+        api_key_hashes: createApiKeyRows(23).map((row) => row.apiKeyHash || row.id),
+        providers: ['codex'],
+        auth_files: ['auth.json'],
+      },
+      keyAnomalies: [],
+      selectedApiKey: apiKeyRows[0],
+      selectedApiKeyTrendSeries: [],
+    });
+    const renderer = renderPage();
+    const rankSection = renderer.root.findAllByType('section').find((section) =>
+      section
+        .findAllByType('h2')
+        .some((heading) => getText(heading) === 'usage_analytics.api_key_rank_title')
+    );
+    if (!rankSection) throw new Error('API key rank section not found');
+    const rankBody = rankSection.findAllByType('tbody')[0];
+    if (!rankBody) throw new Error('API key rank body not found');
+
+    const text = getText(renderer.root);
+    expect(rankBody.findAllByType('tr')).toHaveLength(total);
+    expect(text).toContain('usage_analytics.api_key_rank_context_total');
+    expect(text).not.toContain('usage_analytics.api_key_rank_context_top');
+    expect(mocks.translationCalls).toContainEqual([
+      'usage_analytics.api_key_rank_context_total',
+      { total },
+    ]);
+    expect(text).not.toContain('usage_analytics.rank_show_all');
   });
 
   it('renders the models tab with unit-economics columns and no insights panel', () => {

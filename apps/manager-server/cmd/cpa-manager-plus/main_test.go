@@ -174,6 +174,30 @@ func TestCleanupDerivedCommandUsesSignalContext(t *testing.T) {
 	}
 }
 
+func TestManagerDataSnapshotCommandUsesSignalContext(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	commandAt := strings.Index(source, `case "manager-data-snapshot":`)
+	if commandAt < 0 {
+		t.Fatal("manager-data-snapshot command entry not found")
+	}
+	commandSource := source[commandAt:]
+	runAt := strings.Index(commandSource, "runManagerDataSnapshotCommand(os.Args[2:], os.Stdout, os.Stderr)")
+	contextAt := strings.Index(source, "func runManagerDataSnapshotCommand")
+	if runAt < 0 || contextAt < 0 {
+		t.Fatalf("manager-data-snapshot command/helper wiring invalid: run=%d helper=%d", runAt, contextAt)
+	}
+	helpersource := source[contextAt:]
+	notifyAt := strings.Index(helpersource, "signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)")
+	snapshotAt := strings.Index(helpersource, "managerdatasnapshot.Run(ctx, args, stdout, stderr)")
+	if notifyAt < 0 || snapshotAt < notifyAt {
+		t.Fatalf("manager-data-snapshot signal wiring invalid: run=%d helper=%d notify=%d snapshot=%d", runAt, contextAt, notifyAt, snapshotAt)
+	}
+}
+
 func TestLargeDerivedMigrationServesHTTPAndResumesAfterRestart(t *testing.T) {
 	if raceDetectorEnabled {
 		t.Skip("external-process availability test is covered by the normal suite; race instrumentation makes the 100k index phase exceed its operational timing budget")

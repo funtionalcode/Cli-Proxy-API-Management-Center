@@ -25,6 +25,7 @@ import type { AccountDisplayMode } from '@/features/monitoring/accountOverviewSt
 import { useNotificationStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
 import { maskSensitiveText, truncateText } from '@/utils/format';
+import { getPlanLabel, getPlanPresentation, type PlanDisplayMode } from '@/utils/plans';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import styles from '../MonitoringCenterPage.module.scss';
 
@@ -334,7 +335,8 @@ const formatHeaderRecoverAt = (value: number | null | undefined, locale: string)
 const buildHeaderDiagnosticParts = (
   row: MonitoringEventRow,
   t: TFunction,
-  locale: string
+  locale: string,
+  planDisplayMode: PlanDisplayMode = 'compact'
 ): string[] => {
   const parts: string[] = [];
   const formatCount = (value: number): string =>
@@ -412,7 +414,13 @@ const buildHeaderDiagnosticParts = (
     row.responseMetadata?.quota?.plan_type ||
     row.responseMetadata?.quota?.active_limit ||
     '';
-  if (planType) quotaParts.push(planType);
+  const planPresentation = getPlanPresentation({
+    provider: row.provider,
+    planType,
+    t,
+  });
+  const planLabel = getPlanLabel(planPresentation, planDisplayMode);
+  if (planLabel) quotaParts.push(planLabel);
   const usedPercent =
     row.headerQuotaUsedPercent ?? row.responseMetadata?.quota?.used_percent ?? null;
   if (typeof usedPercent === 'number' && Number.isFinite(usedPercent)) {
@@ -515,7 +523,7 @@ const buildRequestDiagnosticDetails = (row: MonitoringEventRow, t: TFunction, lo
   if (!row.failed) return null;
 
   const summary = maskSensitiveText(row.failSummary || '');
-  const diagnostics = buildHeaderDiagnosticParts(row, t, locale);
+  const diagnostics = buildHeaderDiagnosticParts(row, t, locale, 'full');
   if (!row.failStatusCode && !summary && diagnostics.length === 0) return null;
   const statusText = row.failStatusCode
     ? `${shortLabel(t, 'monitoring.fail_status_code_short', 'monitoring.fail_status_code')} ${row.failStatusCode}`
@@ -728,14 +736,26 @@ type RealtimeTokenUsageDetails = {
 
 const buildRealtimeTokenUsageDetails = (row: MonitoringEventRow, t: TFunction) => {
   const fields = [
-    { label: t('monitoring.realtime_usage_total_label'), value: formatCompactNumber(row.totalTokens) },
-    { label: t('monitoring.realtime_usage_input_label'), value: formatCompactNumber(row.inputTokens) },
-    { label: t('monitoring.realtime_usage_output_label'), value: formatCompactNumber(row.outputTokens) },
+    {
+      label: t('monitoring.realtime_usage_total_label'),
+      value: formatCompactNumber(row.totalTokens),
+    },
+    {
+      label: t('monitoring.realtime_usage_input_label'),
+      value: formatCompactNumber(row.inputTokens),
+    },
+    {
+      label: t('monitoring.realtime_usage_output_label'),
+      value: formatCompactNumber(row.outputTokens),
+    },
     {
       label: t('monitoring.realtime_usage_reasoning_label'),
       value: String(row.reasoningTokens),
     },
-    { label: t('monitoring.realtime_usage_cached_label'), value: formatCompactNumber(row.cachedTokens) },
+    {
+      label: t('monitoring.realtime_usage_cached_label'),
+      value: formatCompactNumber(row.cachedTokens),
+    },
     {
       label: t('monitoring.realtime_usage_cache_read_label'),
       value: formatCompactNumber(row.cacheReadTokens),
@@ -1101,9 +1121,7 @@ export function RealtimeEventsPanel({
               const apiKeyDisplay = buildRealtimeApiKeyDisplay(row, t);
               const requestedModel = row.requestedModel?.trim() || row.model;
               const resolvedModel = row.resolvedModel?.trim() || '';
-              const showResolvedModel = Boolean(
-                resolvedModel && resolvedModel !== requestedModel
-              );
+              const showResolvedModel = Boolean(resolvedModel && resolvedModel !== requestedModel);
               const reasoningEffort = formatOptionalText(row.reasoningEffort);
               const serviceTier = formatOptionalText(row.serviceTier);
               const requestServiceTier = formatOptionalText(row.requestServiceTier);

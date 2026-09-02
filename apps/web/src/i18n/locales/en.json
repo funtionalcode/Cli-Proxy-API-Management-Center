@@ -74,6 +74,24 @@
     "title": "Auto Login in Progress...",
     "message": "Attempting to connect to server using locally saved connection information"
   },
+  "database_maintenance": {
+    "title": "Database upgrade maintenance is not finished",
+    "badge": "Degraded",
+    "query_index_count_one": "{{formattedCount}} query index",
+    "query_index_count_other": "{{formattedCount}} query indexes",
+    "offline_job_count_one": "{{formattedCount}} offline cleanup job",
+    "offline_job_count_other": "{{formattedCount}} offline cleanup jobs",
+    "summary_both": "{{indexes}} and {{jobs}} remain.",
+    "summary_indexes": "Pending: {{indexes}}.",
+    "summary_jobs": "Pending: {{jobs}}.",
+    "body": "Some query indexes or legacy derived-data maintenance are not ready yet, so historical request queries may be noticeably slower or time out.",
+    "data_safe": "Your authoritative request data has not been lost.",
+    "steps_title": "View maintenance steps",
+    "steps_intro": "Stop Manager Server before running the offline command. Do not run cleanup from the web panel.",
+    "docker_title": "Docker Compose",
+    "native_title": "Native installation",
+    "steps_note": "Use the same-version binary and restart Manager Server after the command completes. The warning will disappear automatically when maintenance is clean."
+  },
   "login": {
     "connection_title": "Connection Address",
     "connection_current": "Current URL",
@@ -756,6 +774,10 @@
     "cooling_policy_unverified_hint": "Three-state cooling support cannot be confirmed for this CPA build, so explicit Enable cooling is unavailable. Use a build containing {{commit}} or a later release.",
     "rebuild_mid_system_message_label": "Rebuild Mid-conversation System Messages",
     "rebuild_mid_system_message_hint": "Move Claude messages with role system into the top-level system field before forwarding.",
+    "claude_request_fingerprint_label": "Request fingerprint",
+    "claude_request_fingerprint_hint": "Keep the caller's prompt and headers by default, or opt in to the Claude Code CLI request fingerprint.",
+    "claude_request_fingerprint_default": "Default (caller-owned)",
+    "claude_request_fingerprint_claude_code_cli": "Claude Code CLI",
     "force_mapping_label": "Rewrite response model to alias",
     "model_alias_scope_hint": "These aliases apply to this API-key provider only. OAuth credential mappings are configured under Credential Management → OAuth Configuration.",
     "input_modalities_placeholder": "Input modalities: text, image",
@@ -1372,6 +1394,7 @@
     "detail_forecast_basis_previous": "Based on the previous window actuals",
     "detail_forecast_unavailable": "No usable forecast basis is available, so no forecast is shown",
     "detail_window_boundary_incomplete": "Complete window boundaries are unavailable, so interval usage was not calculated",
+    "detail_current_window_boundary_unconfirmed": "The current period boundary is not confirmed",
     "detail_scope_incomplete": "Model-scoped usage may be incomplete ({{count}} unmatched requests)",
     "detail_scope_unknown": "The provider did not supply a complete model scope, so interval usage was not calculated",
     "detail_quota_snapshot_stale": "This quota snapshot is stale; refresh before relying on it",
@@ -1719,7 +1742,6 @@
     "load_failed": "Failed to load quota: {{message}}",
     "missing_auth_index": "Auth file missing auth_index",
     "empty_models": "No quota data available",
-    "plan_label": "Plan",
     "group_gemini_models": "Gemini models",
     "group_claude_gpt_models": "Claude models",
     "group_models_description": "Models in this group: {{models}}",
@@ -1746,13 +1768,7 @@
     "error_badge": "Plan unavailable",
     "load_failed": "Subscription failed: {{message}}",
     "missing_auth_index": "Auth file missing auth_index",
-    "empty_data": "No subscription data",
-    "plan_badge": "{{plan}}",
-    "plan_free": "Free",
-    "plan_pro": "Pro",
-    "plan_ultra": "Ultra",
-    "plan_ultra_lite": "Ultra Lite",
-    "plan_unknown": "Unknown"
+    "empty_data": "No subscription data"
   },
   "claude_quota": {
     "title": "Claude Quota",
@@ -1774,15 +1790,7 @@
     "iguana_necktie": "Iguana Necktie",
     "weekly_scoped_model": "Weekly {{model}}",
     "limit_index": "Limit #{{index}}",
-    "extra_usage_label": "Extra Usage",
-    "plan_label": "Plan",
-    "plan_unknown": "Unknown",
-    "plan_free": "Free",
-    "plan_pro": "Pro",
-    "plan_max": "Max",
-    "plan_max5": "Max 5x",
-    "plan_max20": "Max 20x",
-    "plan_team": "Team"
+    "extra_usage_label": "Extra Usage"
   },
   "codex_quota": {
     "title": "Codex Quota",
@@ -1794,7 +1802,7 @@
     "missing_auth_index": "Auth file missing auth_index",
     "missing_account_id": "Codex credential missing ChatGPT account ID",
     "empty_windows": "No quota data available",
-    "no_access": "This credential has no Codex access (plan: free).",
+    "no_access": "This credential has no Codex access.",
     "refresh_button": "Refresh Quota",
     "retry_button": "Retry",
     "fetch_all": "Fetch All",
@@ -1804,6 +1812,9 @@
     "reset_confirm_message": "This will consume 1 Codex reset credit for {{name}}. {{count}} available now. Continue?",
     "reset_success": "{{name}} quota reset",
     "reset_failed": "Failed to reset {{name}} quota: {{message}}",
+    "reset_verify_failed": "Failed to verify reset credits for {{name}}: {{message}}",
+    "reset_no_credits": "No reset credits currently available for {{name}}",
+    "reset_partial_success": "{{name}} quota reset completed, but refreshing the latest quota failed. Refresh manually or retry later.",
     "reset_credits_label": "Resets",
     "reset_credits_available_label": "Remaining",
     "reset_credits_unit": "resets",
@@ -1853,13 +1864,7 @@
     "additional_monthly_window": "{{name}} monthly limit",
     "additional_generic_window": "{{name}} {{duration}} limit",
     "window_usage": "{{used}} / {{total}} hours used",
-    "window_usage_duration": "{{used}} / {{total}} used",
-    "plan_label": "Plan",
-    "plan_plus": "Plus",
-    "plan_team": "Team",
-    "plan_free": "Free",
-    "plan_pro": "Pro 20x",
-    "plan_prolite": "Pro 5x"
+    "window_usage_duration": "{{used}} / {{total}} used"
   },
   "kimi_quota": {
     "title": "Kimi Quota",
@@ -1921,9 +1926,6 @@
     "used_percent": "Used {{percent}}",
     "reset_at": "Resets {{time}}",
     "product_usage": "{{product}} usage",
-    "plan_label": "Plan",
-    "plan_supergrok": "SuperGrok",
-    "plan_supergrok_heavy": "SuperGrok Heavy",
     "official_api_plan": "Official API",
     "official_api_health": "Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.",
     "pay_as_you_go_label": "Pay-as-you-go",
@@ -2416,6 +2418,9 @@
     "eyebrow": "Runtime Overview",
     "title": "Request Monitoring",
     "subtitle": "Track model requests, accounts, channels, and estimated cost here. Model requests are not the same as business requests; task counts are estimated and for reference only.",
+    "database_maintenance_hint_title": "Database maintenance is still pending.",
+    "database_maintenance_hint_body": "Historical request queries may be slower or time out until offline maintenance completes.",
+    "database_maintenance_long_range_hint": "Long time ranges can be especially expensive while this warning is present.",
     "connection_status": "Connection",
     "usage_switch": "Usage Stats",
     "logging_switch": "File Logging",
@@ -2424,6 +2429,7 @@
     "realtime_console_eyebrow": "Realtime Runtime Monitor",
     "console_subtitle": "Track call volume, success and failure, token structure, and spend by account within the selected time range, with a live table that behaves more like a request log console.",
     "range_today": "Today",
+    "range_yesterday": "Yesterday",
     "range_7d": "7d",
     "range_14d": "14d",
     "range_30d": "30d",
@@ -3425,6 +3431,7 @@
       "cpa_connection_risk_title": "Confirm CPA Connection Change",
       "cpa_connection_risk_message": "You are changing the Manager Server CPA connection. Current CPA: {{currentBase}}; CPA after save: {{nextBase}}. This affects proxying and monitoring data. Confirm the target CPA URL and Management Key are exactly correct before continuing.",
       "cpa_connection_risk_confirm": "Confirm and Accept Risk",
+      "cpa_switch_unsaved_config": "The current CPA configuration has unsaved changes. Save or discard them before switching the CPA connection.",
       "current_cpa_base": "Current CPA URL",
       "bound_cpa_base": "Manager Server bound CPA",
       "not_bound": "Not bound",
@@ -3659,12 +3666,12 @@
         "add": "Add API Key",
         "generate": "Generate",
         "empty": "No API keys",
-        "hint": "Each entry represents an API key (consistent with 'API Key Management' page style)",
+        "hint": "Adding, updating, and deleting API keys is saved to CPA immediately; the page Save button is not required.",
         "edit_title": "Edit API Key",
         "add_title": "Add API Key",
         "input_label": "API Key",
         "input_placeholder": "Paste your API key",
-        "input_hint": "This only modifies the local config file content, it will not sync to the API Key Management interface",
+        "input_hint": "API key changes are saved to CPA after you confirm; Generate only fills this field.",
         "alias_label": "Alias",
         "alias_placeholder": "e.g. Alice / Team A",
         "alias_hint": "Aliases are saved in the CPAM database and linked to historical requests by API key hash.",
@@ -3685,7 +3692,25 @@
         "alias_error_too_long": "Alias must be 120 characters or less",
         "alias_error_duplicate": "Alias already exists. Use a unique alias.",
         "error_empty": "Please enter an API key",
-        "error_invalid": "API key contains invalid characters"
+        "error_invalid": "API key contains invalid characters",
+        "error_duplicate": "This API key already exists",
+        "saving": "Saving...",
+        "save_failed": "API key save failed",
+        "added": "API key added and saved.",
+        "updated": "API key updated and saved.",
+        "deleted": "API key deleted.",
+        "delete_title": "Delete API Key",
+        "delete_confirm": "Delete this API key from CPA?",
+        "save_partial_success": "API key was saved, but the alias could not be saved. Please edit the alias again later.",
+        "update_partial_success": "API key was updated, but the alias could not be saved or migrated. Please edit the alias again later.",
+        "delete_partial_success": "API key was deleted, but alias cleanup failed.",
+        "stale_key_refreshed": "This API key is no longer in CPA; the list has been refreshed.",
+        "canonical_key_missing": "CPA did not return the saved API key after refreshing the list.",
+        "state_refresh_failed": "The API key change was submitted, but the latest state could not be refreshed. Reload the page to confirm the current state.",
+        "source_dirty_guard": "The source configuration has unsaved changes. Save or discard the source changes before managing API keys.",
+        "operation_busy": "Another API key or configuration save is in progress. Please wait.",
+        "mutation_outcome_unknown": "The result of this API key change could not be confirmed. Reload the page to verify the current CPA state before continuing.",
+        "alias_state_unavailable": "The current API key alias state could not be confirmed. Please try again later."
       },
       "payload_rules": {
         "rule": "Rule",
@@ -4027,6 +4052,8 @@
     "api_key_compare_title": "Client Key Trend",
     "api_key_keyword_placeholder": "Search client key, account, or auth label",
     "api_key_rank_title": "Client Key Usage Ranking",
+    "api_key_rank_context_top": "Top {{limit}} · {{total}} total client keys · sorted by cost",
+    "api_key_rank_context_total": "{{total}} total client keys · sorted by cost",
     "api_key_warning_title": "Anomalous Client Key Alerts",
     "credential_rank_title": "Credential Usage Ranking",
     "credential_warning_title": "Anomalous Credential Alerts",
@@ -4139,11 +4166,16 @@
     "submit_callback": "Submit callback",
     "loading_link": "Fetching OAuth login link...",
     "waiting": "After OAuth login completes, paste the callback URL and submit it.",
+    "callback_submitting": "Submitting the callback URL...",
+    "callback_accepted": "Callback submitted. Waiting for OAuth to finish...",
     "synchronizing": "Re-login succeeded. Synchronizing the Accounts workspace...",
     "success": "Re-login succeeded",
     "error": "Re-login failed",
     "missing_state": "The OAuth login link is missing its state value. Refresh the link and try again.",
     "callback_required": "Paste the callback URL first.",
+    "identity_changed": "OAuth completed, but it belongs to a different ChatGPT Space or account. The original credential was not marked as recovered.",
+    "identity_ambiguous": "OAuth completed, but multiple credentials match the original account ID. No credential was selected automatically.",
+    "identity_unconfirmed": "OAuth completed, but the original credential update could not be confirmed yet. Check the refreshed credential list for an identity change.",
     "same_account_hint": "Use the target account to complete OAuth login. CPA saves Codex credentials by the logged-in account; the same account usually overwrites the matching credential.",
     "rerun_hint": "Re-login is complete. Run the inspection again to refresh the account status."
   },
@@ -4373,6 +4405,9 @@
     "title": "System Info",
     "about_title": "CPA Manager Plus",
     "database_status_title": "SQLite Storage",
+    "database_maintenance_title": "Database maintenance pending",
+    "database_maintenance_counts": "Pending: {{indexes}}; {{jobs}}.",
+    "database_maintenance_hint": "Stop Manager Server and run cleanup-derived; this status will clear automatically after restart.",
     "database_file": "Database file",
     "database_wal_file": "WAL file",
     "database_shm_file": "SHM file",
@@ -4470,6 +4505,8 @@
     "xai_base_url_required": "Please enter the xAI Base URL",
     "claude_config_added": "Claude configuration added successfully",
     "claude_config_updated": "Claude configuration updated successfully",
+    "claude_fingerprint_not_applied": "Configuration saved, but the request fingerprint did not take effect. The connected CPA may not support fingerprint-profile.",
+    "claude_fingerprint_verify_unavailable": "Configuration saved, but the request fingerprint could not be verified. Refresh the provider list to check.",
     "claude_config_deleted": "Claude configuration deleted successfully",
     "vertex_config_added": "Vertex configuration added successfully",
     "vertex_config_updated": "Vertex configuration updated successfully",
@@ -4615,5 +4652,60 @@
     "env_locked_hint": "This switch is locked by the service startup environment. Update the environment variable and restart to change it.",
     "env_locked_reason": "Locked by the {{envKey}} environment variable. Update it and restart the service to change this switch.",
     "gating_note": "Disabling a switch only affects new problems found later. Tasks already queued or in progress will continue to finish."
+  },
+  "plans": {
+    "label": "Plan",
+    "codex": {
+      "free": "Free",
+      "go": "Go",
+      "plus": "Plus",
+      "pro_5x": "Pro 5x",
+      "pro_20x": "Pro 20x",
+      "team": "Team",
+      "business": "Business",
+      "business_premium_5x": {
+        "short": "Business 5x",
+        "full": "Business Premium 5x"
+      },
+      "business_usage_based": {
+        "short": "Business PAYG",
+        "full": "Business Usage-based"
+      },
+      "enterprise": "Enterprise",
+      "enterprise_automation": {
+        "short": "Ent. Auto",
+        "full": "Enterprise Automation"
+      },
+      "enterprise_usage_based": {
+        "short": "Ent. PAYG",
+        "full": "Enterprise Usage-based"
+      },
+      "edu": {
+        "short": "Edu",
+        "full": "Education"
+      },
+      "edu_plus": {
+        "short": "Edu Plus",
+        "full": "Education Plus"
+      },
+      "edu_pro": {
+        "short": "Edu Pro",
+        "full": "Education Pro"
+      }
+    },
+    "claude": {
+      "free": "Free",
+      "pro": "Pro",
+      "max": "Max",
+      "max_5x": "Max 5x",
+      "max_20x": "Max 20x",
+      "team": "Team"
+    },
+    "antigravity": {
+      "free": "Free",
+      "pro": "Pro",
+      "ultra": "Ultra",
+      "ultra_lite": "Ultra Lite"
+    }
   }
 }

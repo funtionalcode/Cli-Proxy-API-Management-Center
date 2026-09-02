@@ -869,12 +869,31 @@
 }
 
 .keyTableColAction {
+  position: sticky;
+  right: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
+  align-self: stretch;
   gap: $spacing-xs;
   flex-shrink: 0;
   white-space: nowrap;
+  background-color: var(--app-surface-strong, #fff);
+  background-image: linear-gradient(var(--surface-subtle), var(--surface-subtle));
+  box-shadow: -1px 0 0 var(--border-subtle);
+}
+
+.keyTableHeader .keyTableColAction {
+  z-index: 3;
+  background-image: linear-gradient(
+    var(--surface-subtle-strong),
+    var(--surface-subtle-strong)
+  );
+}
+
+.keyTableRow:hover .keyTableColAction {
+  background-image: linear-gradient(var(--surface-subtle-hover), var(--surface-subtle-hover));
 }
 
 .keyTableInput {

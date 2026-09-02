@@ -132,7 +132,7 @@ func TestManagerEnrichesMissingProjectSnapshotWithoutOverwritingAccount(t *testi
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"files":[{"auth_index":"auth-1","account":"alice@example.com","label":"Alice","name":"alice.json","provider":"codex","project_id":"vertex-project-42"}]}`))
+			_, _ = w.Write([]byte(`{"files":[{"auth_index":"auth-1","account":"alice@example.com","label":"Alice","name":"alice.json","provider":"vertex","project_id":"vertex-project-42"}]}`))
 			return
 		}
 		if r.URL.Path != "/v0/management/usage-queue" {
@@ -191,6 +191,109 @@ func TestManagerEnrichesMissingProjectSnapshotWithoutOverwritingAccount(t *testi
 	}
 	if events[0].AuthLabelSnapshot != "Alice" {
 		t.Fatalf("auth label snapshot = %q", events[0].AuthLabelSnapshot)
+	}
+}
+
+func TestManagerEnrichesCodexProjectSnapshotFromAccountID(t *testing.T) {
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"files":[{"auth_index":"auth-1","account":"same@example.com","name":"codex.json","provider":"codex","project_id":"unsafe-generic-project","id_token":{"chatgpt_account_id":"account-a"}}]}`))
+			return
+		}
+		if r.URL.Path != "/v0/management/usage-queue" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_, _ = w.Write([]byte(`[{"timestamp":"2026-05-06T00:00:00Z","model":"gpt-test","auth_index":"auth-1","input_tokens":10,"output_tokens":5}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "auto"), db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx, RuntimeConfig{CPAUpstreamURL: upstream.URL, ManagementKey: "management-key"})
+
+	waitFor(t, func() bool {
+		events, _, err := db.Counts(context.Background())
+		return err == nil && events == 1
+	})
+	events, err := db.RecentEvents(context.Background(), 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("recent events: len=%d err=%v", len(events), err)
+	}
+	if events[0].AuthAccountIDSnapshot != "account-a" {
+		t.Fatalf("codex account snapshot = %q, want %q", events[0].AuthAccountIDSnapshot, "account-a")
+	}
+	if events[0].AuthProjectIDSnapshot != "unsafe-generic-project" {
+		t.Fatalf("codex project snapshot = %q, want %q", events[0].AuthProjectIDSnapshot, "unsafe-generic-project")
+	}
+}
+
+// TestManagerEnrichesCodexAccountIDFromEffectiveProvider verifies that a raw
+// event with provider="codex" but an empty auth_provider_snapshot still
+// triggers auth-files enrichment so an explicit ChatGPT account_id can be
+// resolved. Previously needsAccountSnapshotEnrichment only checked
+// AuthProviderSnapshot, so a Codex event with all snapshot fields populated
+// except AuthAccountIDSnapshot would skip enrichment entirely.
+func TestManagerEnrichesCodexAccountIDFromEffectiveProvider(t *testing.T) {
+	var calls int32
+	var authFilesRequested int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			atomic.AddInt32(&authFilesRequested, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"files":[{"auth_index":"auth-1","account":"preserved@example.com","name":"codex.json","provider":"codex","project_id":"preserved-project","id_token":{"chatgpt_account_id":"account-a"}}]}`))
+			return
+		}
+		if r.URL.Path != "/v0/management/usage-queue" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// Raw event has provider=codex but no auth_provider_snapshot; account
+			// and project snapshots are already present; only auth_account_id_snapshot
+			// is missing.
+			_, _ = w.Write([]byte(`[{"timestamp":"2026-05-06T00:00:00Z","model":"gpt-test","provider":"codex","auth_index":"auth-1","account_snapshot":"preserved@example.com","auth_project_id_snapshot":"preserved-project","input_tokens":10,"output_tokens":5}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "auto"), db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx, RuntimeConfig{CPAUpstreamURL: upstream.URL, ManagementKey: "management-key"})
+
+	waitFor(t, func() bool {
+		events, _, err := db.Counts(context.Background())
+		return err == nil && events == 1
+	})
+	if atomic.LoadInt32(&authFilesRequested) == 0 {
+		t.Fatal("auth-files were never requested for effective-provider Codex event")
+	}
+	events, err := db.RecentEvents(context.Background(), 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("recent events: len=%d err=%v", len(events), err)
+	}
+	if events[0].AuthAccountIDSnapshot != "account-a" {
+		t.Fatalf("codex account id snapshot = %q, want %q", events[0].AuthAccountIDSnapshot, "account-a")
+	}
+	if events[0].AccountSnapshot != "preserved@example.com" {
+		t.Fatalf("account snapshot overwritten = %q, want %q", events[0].AccountSnapshot, "preserved@example.com")
+	}
+	if events[0].AuthProjectIDSnapshot != "preserved-project" {
+		t.Fatalf("project snapshot overwritten = %q, want %q", events[0].AuthProjectIDSnapshot, "preserved-project")
 	}
 }
 

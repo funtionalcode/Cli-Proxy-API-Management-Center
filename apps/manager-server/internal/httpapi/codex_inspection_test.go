@@ -239,15 +239,23 @@ func TestCodexInspectionManualActionsRoute(t *testing.T) {
 	testutil.RequireStatus(t, completedCancelRR, http.StatusConflict)
 
 	actionBody := `{"resultIds":[` + strconv.FormatInt(runDetail.Results[0].ID, 10) + `]}`
-	actionRR := testutil.Request(
-		t,
-		handler,
-		http.MethodPost,
-		"/v0/management/codex-inspection/runs/"+strconv.FormatInt(runDetail.Run.ID, 10)+"/actions",
-		actionBody,
-		testutil.AdminKey,
-	)
-	testutil.RequireStatus(t, actionRR, http.StatusOK)
+	actionPath := "/v0/management/codex-inspection/runs/" + strconv.FormatInt(runDetail.Run.ID, 10) + "/actions"
+	deadline = time.Now().Add(2 * time.Second)
+	var actionRR *httptest.ResponseRecorder
+	for {
+		actionRR = testutil.Request(t, handler, http.MethodPost, actionPath, actionBody, testutil.AdminKey)
+		if actionRR.Code == http.StatusOK {
+			break
+		}
+		if actionRR.Code != http.StatusConflict ||
+			!strings.Contains(actionRR.Body.String(), "codex inspection is already running") {
+			testutil.RequireStatus(t, actionRR, http.StatusOK)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("manual actions remained blocked after completed run: %s", actionRR.Body.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if !patchCalled {
 		t.Fatal("manual actions route did not patch auth file")
 	}

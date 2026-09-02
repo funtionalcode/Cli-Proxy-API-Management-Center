@@ -255,27 +255,33 @@ func (w *RateLimitAutoDisableWorker) handleCandidateLocked(ctx context.Context, 
 		log.Printf("[quota-auto-disable] auth file %q was already disabled without CPAMP ownership; skip auto disable/recovery", candidate.FileName)
 		return
 	}
+	observedEnabledAtMS := time.Now().UnixMilli()
 
 	log.Printf("[quota-auto-disable] quota limit reached for auth file %q account=%q provider=%q resetAt=%s, disabling", candidate.FileName, candidate.DisplayAccount, candidate.Provider, candidate.ResetAt.Format(time.RFC3339))
 	if err := w.patchAuthFileTarget(ctx, candidate.BaseURL, candidate.ManagementKey, target, true); err != nil {
 		log.Printf("[quota-auto-disable] failed to disable auth file %q: %v", candidate.FileName, err)
 		return
 	}
+	disabledAtMS := time.Now().UnixMilli()
+	if disabledAtMS < observedEnabledAtMS {
+		disabledAtMS = observedEnabledAtMS
+	}
 
 	owner := firstNonEmpty(candidate.Owner, model.QuotaCooldownOwnerUsage429)
-	_, err = w.store.UpsertQuotaCooldown(ctx, store.QuotaCooldownUpsert{
-		AuthFileName:     candidate.FileName,
-		AuthIndex:        resolvedAuthIndex,
-		AccountSnapshot:  resolvedAccountSnapshot,
-		Provider:         resolvedProvider,
-		ReasonCode:       candidate.ReasonCode,
-		WindowKind:       candidate.WindowKind,
-		EvidenceJSON:     candidate.EvidenceJSON,
-		RecoverAtMS:      candidate.ResetAt.UnixMilli(),
-		Owner:            owner,
-		EventHash:        candidate.EventHash,
-		PreDisabledState: preDisabled,
-		DisabledAtMS:     now.UnixMilli(),
+	persisted, err := w.store.UpsertQuotaCooldown(ctx, store.QuotaCooldownUpsert{
+		AuthFileName:        candidate.FileName,
+		AuthIndex:           resolvedAuthIndex,
+		AccountSnapshot:     resolvedAccountSnapshot,
+		Provider:            resolvedProvider,
+		ReasonCode:          candidate.ReasonCode,
+		WindowKind:          candidate.WindowKind,
+		EvidenceJSON:        candidate.EvidenceJSON,
+		RecoverAtMS:         candidate.ResetAt.UnixMilli(),
+		Owner:               owner,
+		EventHash:           candidate.EventHash,
+		PreDisabledState:    preDisabled,
+		ObservedEnabledAtMS: observedEnabledAtMS,
+		DisabledAtMS:        disabledAtMS,
 	})
 	if err != nil {
 		log.Printf("[quota-auto-disable] disabled auth file %q but failed to persist cooldown ownership: %v", candidate.FileName, err)
@@ -303,7 +309,7 @@ func (w *RateLimitAutoDisableWorker) handleCandidateLocked(ctx context.Context, 
 		}
 		return
 	}
-	log.Printf("[quota-auto-disable] disabled auth file %q; persisted CPAMP-owned auto-enable at %s", candidate.FileName, candidate.ResetAt.Format(time.RFC3339))
+	log.Printf("[quota-auto-disable] disabled auth file %q; persisted CPAMP-owned auto-enable at %s", candidate.FileName, time.UnixMilli(persisted.RecoverAtMS).Format(time.RFC3339))
 }
 
 func (w *RateLimitAutoDisableWorker) extendExistingCooldown(ctx context.Context, candidate quotaAutoDisableCandidate, current authFile) bool {

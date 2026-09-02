@@ -158,4 +158,26 @@ describe('accountsWorkspaceUrlState', () => {
       readAccountsWorkspaceUrlState(search, DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE).statusFilter
     ).toBe('disabled_with_reset');
   });
+
+  it('round-trips the unconfirmed status filter', () => {
+    const search = writeAccountsWorkspaceUrlSearch(
+      '',
+      {
+        ...DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE,
+        view: 'accounts',
+        healthMode: 'local',
+        statusFilter: 'unconfirmed',
+        account: null,
+        detailTab: 'overview',
+        editor: null,
+        editorProvider: '',
+      },
+      DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE
+    );
+
+    expect(search).toBe('?status=unconfirmed');
+    expect(
+      readAccountsWorkspaceUrlState(search, DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE).statusFilter
+    ).toBe('unconfirmed');
+  });
 });

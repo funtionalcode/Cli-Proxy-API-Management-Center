@@ -165,6 +165,7 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		coalesce(auth_label_snapshot, ''),
 		coalesce(auth_file_snapshot, ''),
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+		coalesce(auth_account_id_snapshot, ''),
 		coalesce(auth_project_id_snapshot, ''),
 		coalesce(reasoning_effort, ''),
 		coalesce(service_tier, ''),
@@ -222,6 +223,7 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			&item.AuthLabelSnapshot,
 			&item.AuthFileSnapshot,
 			&item.AuthProviderSnapshot,
+			&item.AuthAccountIDSnapshot,
 			&item.AuthProjectIDSnapshot,
 			&item.ReasoningEffort,
 			&item.ServiceTier,
@@ -249,6 +251,7 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			return nil, err
 		}
 		item.Failed = failed != 0
+		item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(item.AuthProviderSnapshot, item.AuthProjectIDSnapshot)
 		item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
 		items = append(items, item)
 	}

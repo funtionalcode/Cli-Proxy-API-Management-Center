@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,7 +18,10 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/adminreset"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/cpaconnection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/derivedmaintenance"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/managerdatasnapshot"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/runtimeconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/httpapi"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
@@ -46,9 +50,33 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "store-cpa-connection":
+			if err := cpaconnection.Run(context.Background(), os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("store CPA connection: %v", err)
+				os.Exit(1)
+			}
+			return
+		case "manager-data-snapshot":
+			if err := runManagerDataSnapshotCommand(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("manage Manager data snapshot: %v", err)
+				os.Exit(1)
+			}
+			return
+		case "sanitize-runtime-config":
+			if err := runtimeconfig.Run(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("sanitize runtime config: %v", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 	runServer()
+}
+
+func runManagerDataSnapshotCommand(args []string, stdout io.Writer, stderr io.Writer) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return managerdatasnapshot.Run(ctx, args, stdout, stderr)
 }
 
 func runServer() {
@@ -66,6 +94,14 @@ func runServer() {
 		}
 	}()
 	cfg.DBPath = databaseLock.DatabasePath()
+	if err := sqliterepo.RequireExistingDataKeyForEncryptedCPAConnection(
+		context.Background(),
+		cfg.DBPath,
+		cfg.DataKey,
+		cfg.DataKeyPath,
+	); err != nil {
+		log.Fatalf("validate data key availability: %v", err)
+	}
 	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
 	if err != nil {
 		log.Fatalf("load data key: %v", err)

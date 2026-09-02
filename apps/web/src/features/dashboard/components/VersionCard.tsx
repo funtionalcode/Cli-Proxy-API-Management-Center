@@ -54,17 +54,25 @@ interface HealthItem {
   to?: string;
 }
 
+interface VersionBadge {
+  label: string;
+  className: string;
+  releaseUrl?: string;
+}
+
 const renderBadge = (
   comparison: VersionComparison,
   latest: string,
+  releaseUrl: string,
   t: TFunction
-): { label: string; className: string } | null => {
+): VersionBadge | null => {
   if (comparison === null) return null;
   if (comparison > 0) {
     const display = latest.trim().replace(/^[vV]+/, '');
     return {
       label: t('dashboard.version_update_available', { version: `v${display}` }),
       className: styles.badgeUpdate,
+      releaseUrl: releaseUrl || undefined,
     };
   }
   if (comparison === 0) {
@@ -82,6 +90,21 @@ const renderVersionValue = (value: string, releaseUrl: string): ReactNode => {
     <a className={styles.versionLink} href={releaseUrl} target="_blank" rel="noopener noreferrer">
       <span className={styles.value}>{value}</span>
       <IconExternalLink size={12} />
+    </a>
+  );
+};
+
+const renderBadgeValue = (badge: VersionBadge | null): ReactNode => {
+  if (!badge) return null;
+
+  const className = `${styles.badge} ${badge.className}`;
+  if (!badge.releaseUrl) {
+    return <span className={className}>{badge.label}</span>;
+  }
+
+  return (
+    <a className={className} href={badge.releaseUrl} target="_blank" rel="noopener noreferrer">
+      {badge.label}
     </a>
   );
 };
@@ -211,14 +234,6 @@ export function VersionCard({
     }
   }, [apiVersion, showNotification, t]);
 
-  const appBadge = useMemo(
-    () => renderBadge(compareVersions(latest.latestApp, appVersion), latest.latestApp, t),
-    [appVersion, latest.latestApp, t]
-  );
-  const apiBadge = useMemo(
-    () => renderBadge(compareVersions(latest.latestApi, apiVersion), latest.latestApi, t),
-    [apiVersion, latest.latestApi, t]
-  );
   const appReleaseUrl = useMemo(
     () => buildDashboardVersionReleaseURL('manager', appVersion),
     [appVersion]
@@ -226,6 +241,34 @@ export function VersionCard({
   const apiReleaseUrl = useMemo(
     () => buildDashboardVersionReleaseURL('core', apiVersion),
     [apiVersion]
+  );
+  const latestAppReleaseUrl = useMemo(
+    () => buildDashboardVersionReleaseURL('manager', latest.latestApp),
+    [latest.latestApp]
+  );
+  const latestApiReleaseUrl = useMemo(
+    () => buildDashboardVersionReleaseURL('core', latest.latestApi),
+    [latest.latestApi]
+  );
+  const appBadge = useMemo(
+    () =>
+      renderBadge(
+        compareVersions(latest.latestApp, appVersion),
+        latest.latestApp,
+        latestAppReleaseUrl,
+        t
+      ),
+    [appVersion, latest.latestApp, latestAppReleaseUrl, t]
+  );
+  const apiBadge = useMemo(
+    () =>
+      renderBadge(
+        compareVersions(latest.latestApi, apiVersion),
+        latest.latestApi,
+        latestApiReleaseUrl,
+        t
+      ),
+    [apiVersion, latest.latestApi, latestApiReleaseUrl, t]
   );
 
   const buildTimeDisplay = serverBuildDate
@@ -347,9 +390,7 @@ export function VersionCard({
                   appVersion || t('dashboard.version_unknown'),
                   appReleaseUrl
                 )}
-                {appBadge && (
-                  <span className={`${styles.badge} ${appBadge.className}`}>{appBadge.label}</span>
-                )}
+                {renderBadgeValue(appBadge)}
               </div>
             </div>
           </div>
@@ -378,9 +419,7 @@ export function VersionCard({
                   apiVersion || t('dashboard.version_unknown'),
                   apiReleaseUrl
                 )}
-                {apiBadge && (
-                  <span className={`${styles.badge} ${apiBadge.className}`}>{apiBadge.label}</span>
-                )}
+                {renderBadgeValue(apiBadge)}
               </div>
             </div>
           </div>

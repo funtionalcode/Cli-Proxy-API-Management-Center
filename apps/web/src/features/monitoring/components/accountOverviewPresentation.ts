@@ -2,18 +2,21 @@ import type { TFunction } from 'i18next';
 import type { MonitoringAccountAuthState } from '@/features/monitoring/accountOverviewState';
 import type { MonitoringAccountQuotaProvider } from '@/features/monitoring/accountOverviewQuotaTargets';
 import type { MonitoringAccountRow } from '@/features/monitoring/hooks/useMonitoringData';
-import { normalizePlanType } from '@/utils/quota';
+import type { QuotaModelScope, QuotaResetAccuracy } from '@/types';
+import { formatQuotaResetTime, type QuotaResetTimeFormatOptions } from '@/utils/quota/formatters';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import styles from '../MonitoringCenterPage.module.scss';
-
-const PREMIUM_CODEX_PLAN_TYPES = new Set(['pro', 'prolite', 'pro-lite', 'pro_lite']);
 
 export type AccountQuotaWindow = {
   id: string;
   label: string;
   remainingPercent: number | null;
   resetLabel: string;
+  resetAtMs?: number | null;
+  resetAccuracy?: QuotaResetAccuracy;
   usageLabel: string | null;
+  modelScope?: QuotaModelScope;
+  providerWindowAliases?: string[];
 };
 
 export type AccountQuotaEntry = {
@@ -27,8 +30,10 @@ export type AccountQuotaEntry = {
   emptyMessage?: string;
   windows: AccountQuotaWindow[];
   error?: string;
+  errorStatus?: number;
   failedAtMs?: number;
   fetchedAtMs?: number;
+  quotaInventoryObserved?: boolean;
   observedAtMs?: number;
   observedFromUsageHeaders?: boolean;
 };
@@ -57,6 +62,18 @@ export type CacheTokenPresentation = {
 };
 
 export const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
+
+export const formatAccountQuotaResetDisplay = (
+  resetAtMs: number | null | undefined,
+  resetLabel: string | null | undefined,
+  options?: QuotaResetTimeFormatOptions
+): string => {
+  const canonicalLabel = formatQuotaResetTime(resetAtMs, options);
+  if (canonicalLabel !== '-') return canonicalLabel;
+  const fallbackLabel = resetLabel?.trim() ?? '';
+  const parsedFallbackLabel = formatQuotaResetTime(fallbackLabel, options);
+  return parsedFallbackLabel !== '-' ? parsedFallbackLabel : fallbackLabel || '-';
+};
 
 const joinShort = (values: string[], limit = 2) => {
   if (values.length <= limit) {
@@ -124,22 +141,6 @@ const buildAccountCacheSummaryMetric = (
     fullLabel: cacheMetric.fullLabel,
     value: cacheMetric.value,
   };
-};
-
-export const getCodexPlanLabel = (
-  planType: string | null | undefined,
-  t: TFunction
-): string | null => {
-  const normalized = normalizePlanType(planType);
-  if (!normalized) return null;
-  if (normalized === 'pro') return t('codex_quota.plan_pro');
-  if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') {
-    return t('codex_quota.plan_prolite');
-  }
-  if (normalized === 'plus') return t('codex_quota.plan_plus');
-  if (normalized === 'team') return t('codex_quota.plan_team');
-  if (normalized === 'free') return t('codex_quota.plan_free');
-  return planType || normalized;
 };
 
 const isRedundantAccountSecondaryLabel = (candidate: string, primaryText: string) => {

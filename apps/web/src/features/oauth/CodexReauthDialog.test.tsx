@@ -2,6 +2,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexReauthDialog } from './CodexReauthDialog';
+import { CodexReauthReconciliationError } from './codexReauthModel';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -77,6 +78,7 @@ vi.mock('@/utils/clipboard', () => ({
 const TARGET = {
   account: 'codex@example.com',
   fileName: 'codex.json',
+  accountId: 'acct-1',
   provider: 'codex',
   authIndex: 'auth-1',
 };
@@ -290,10 +292,200 @@ describe('CodexReauthDialog connection lifecycle', () => {
     act(() => renderer.unmount());
   });
 
+  it('keeps polling the original state when an accepted callback is still pending', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'wait' });
+    const onSuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+
+    act(() =>
+      renderer.root
+        .findByType('input')
+        .props.onChange({ target: { value: 'http://localhost/callback?code=1' } })
+    );
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+    });
+
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(mocks.getAuthStatus).toHaveBeenCalledWith('state-1', REQUEST_SCOPE);
+    expect(mocks.intervalCallback).not.toBeNull();
+    expect(textContent(renderer.root)).toContain('codex_reauth.callback_accepted');
+
+    act(() => renderer.unmount());
+  });
+
+  it('completes exactly once when the immediate callback probe confirms OAuth', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    act(() =>
+      renderer.root
+        .findByType('input')
+        .props.onChange({ target: { value: 'http://localhost/callback?code=1' } })
+    );
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+    });
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(textContent(renderer.root)).toContain('codex_reauth.success');
+
+    act(() => renderer.unmount());
+  });
+
+  it('ignores a late callback response after polling already completed OAuth', async () => {
+    const callbackRequest = deferred<{ status: 'ok' }>();
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockReturnValue(callbackRequest.promise);
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    act(() =>
+      renderer.root
+        .findByType('input')
+        .props.onChange({ target: { value: 'http://localhost/callback?code=1' } })
+    );
+    let callbackPromise!: Promise<void>;
+    act(() => {
+      callbackPromise = Promise.resolve(
+        findButton(renderer, 'codex_reauth.submit_callback').props.onClick()
+      );
+    });
+    await flushEffects();
+    await act(async () => {
+      await mocks.intervalCallback?.();
+    });
+    await act(async () => {
+      callbackRequest.resolve({ status: 'ok' });
+      await callbackPromise;
+    });
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+
+    act(() => renderer.unmount());
+  });
+
+  it('confirms a 409 callback through the original OAuth state', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockRejectedValue(
+      Object.assign(new Error('oauth flow is already completed'), { status: 409 })
+    );
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    act(() =>
+      renderer.root
+        .findByType('input')
+        .props.onChange({ target: { value: 'http://localhost/callback?code=1' } })
+    );
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+    });
+
+    expect(mocks.getAuthStatus).toHaveBeenCalledWith('state-1', REQUEST_SCOPE);
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+
+    act(() => renderer.unmount());
+  });
+
+  it('keeps waiting when a 409 callback still has pending OAuth status', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockRejectedValue(
+      Object.assign(new Error('oauth flow is already completed'), { status: 409 })
+    );
+    mocks.getAuthStatus.mockResolvedValue({ status: 'wait' });
+    const onSuccess = vi.fn();
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    act(() =>
+      renderer.root
+        .findByType('input')
+        .props.onChange({ target: { value: 'http://localhost/callback?code=1' } })
+    );
+    await act(async () => {
+      await findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+    });
+
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(mocks.intervalCallback).not.toBeNull();
+    expect(textContent(renderer.root)).toContain('codex_reauth.callback_accepted');
+
+    act(() => renderer.unmount());
+  });
+
   it('waits for Accounts synchronization before announcing re-login success', async () => {
     const synchronization = deferred<void>();
     mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
     mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
     const onSuccess = vi.fn(() => synchronization.promise);
 
     let renderer!: ReactTestRenderer;
@@ -335,6 +527,7 @@ describe('CodexReauthDialog connection lifecycle', () => {
   it('reports re-login success with a synchronization warning when Accounts reload fails', async () => {
     mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
     mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
     const onSuccess = vi.fn().mockRejectedValue(new Error('temporary Accounts reload failure'));
 
     let renderer!: ReactTestRenderer;
@@ -368,6 +561,168 @@ describe('CodexReauthDialog connection lifecycle', () => {
       'error'
     );
     expect(textContent(renderer.root)).toContain('temporary Accounts reload failure');
+
+    act(() => renderer.unmount());
+  });
+
+  it('keeps identity reconciliation failures in the error state', async () => {
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn().mockRejectedValue(
+      new CodexReauthReconciliationError('identity_changed', 'identity changed')
+    );
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+
+    const input = renderer.root.findByType('input');
+    act(() => input.props.onChange({ target: { value: 'http://localhost/callback?code=1' } }));
+    await act(async () => {
+      findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(textContent(renderer.root)).toContain('identity changed');
+    expect(mocks.showNotification).toHaveBeenCalledWith('identity changed', 'error');
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      expect.stringContaining('codex_reauth.success'),
+      'warning'
+    );
+
+    act(() => renderer.unmount());
+  });
+
+  it('does not restart OAuth while Accounts is still synchronizing after a successful callback', async () => {
+    const synchronization = deferred<void>();
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.submitCallback.mockResolvedValue({ status: 'ok' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn(() => synchronization.promise);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    const startCount = mocks.startAuth.mock.calls.length;
+
+    const input = renderer.root.findByType('input');
+    act(() => input.props.onChange({ target: { value: 'http://localhost/callback?code=1' } }));
+    await act(async () => {
+      findButton(renderer, 'codex_reauth.submit_callback').props.onClick();
+      await Promise.resolve();
+    });
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(textContent(renderer.root)).toContain('codex_reauth.synchronizing');
+    expect(mocks.showNotification).not.toHaveBeenCalledWith('codex_reauth.success', 'success');
+
+    await act(async () => {
+      renderer.update(
+        <CodexReauthDialog
+          open
+          target={{ ...TARGET, authIndex: 'auth-2' }}
+          requestScope={{ ...REQUEST_SCOPE }}
+          onClose={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+    });
+    await flushEffects();
+
+    expect(mocks.startAuth).toHaveBeenCalledTimes(startCount);
+    expect(textContent(renderer.root)).toContain('codex_reauth.synchronizing');
+
+    await act(async () => {
+      synchronization.resolve();
+      await flush();
+    });
+
+    expect(mocks.startAuth).toHaveBeenCalledTimes(startCount);
+    expect(mocks.showNotification).toHaveBeenCalledWith('codex_reauth.success', 'success');
+    expect(textContent(renderer.root)).toContain('codex_reauth.success');
+
+    act(() => renderer.unmount());
+  });
+
+  it('does not restart OAuth while Accounts is still synchronizing after polling success', async () => {
+    const synchronization = deferred<void>();
+    mocks.startAuth.mockResolvedValue({ url: 'https://auth.example/codex', state: 'state-1' });
+    mocks.getAuthStatus.mockResolvedValue({ status: 'ok' });
+    const onSuccess = vi.fn(() => synchronization.promise);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <CodexReauthDialog
+          open
+          target={TARGET}
+          requestScope={REQUEST_SCOPE}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      );
+    });
+    await flushEffects();
+    const startCount = mocks.startAuth.mock.calls.length;
+    expect(mocks.intervalCallback).not.toBeNull();
+
+    let pollingPromise!: Promise<void>;
+    act(() => {
+      pollingPromise = Promise.resolve(mocks.intervalCallback?.());
+    });
+    await flushEffects();
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(textContent(renderer.root)).toContain('codex_reauth.synchronizing');
+    expect(mocks.showNotification).not.toHaveBeenCalledWith('codex_reauth.success', 'success');
+
+    await act(async () => {
+      renderer.update(
+        <CodexReauthDialog
+          open
+          target={{ ...TARGET, authIndex: 'auth-2' }}
+          requestScope={{ ...REQUEST_SCOPE }}
+          onClose={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+    });
+    await flushEffects();
+
+    expect(mocks.startAuth).toHaveBeenCalledTimes(startCount);
+    expect(textContent(renderer.root)).toContain('codex_reauth.synchronizing');
+
+    await act(async () => {
+      synchronization.resolve();
+      await pollingPromise;
+      await flush();
+    });
+
+    expect(mocks.startAuth).toHaveBeenCalledTimes(startCount);
+    expect(mocks.showNotification).toHaveBeenCalledWith('codex_reauth.success', 'success');
+    expect(textContent(renderer.root)).toContain('codex_reauth.success');
 
     act(() => renderer.unmount());
   });

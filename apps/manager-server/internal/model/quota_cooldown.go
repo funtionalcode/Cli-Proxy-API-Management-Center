@@ -31,16 +31,17 @@ type QuotaCooldown struct {
 }
 
 type QuotaCooldownUpsert struct {
-	AuthFileName     string
-	AuthIndex        string
-	AccountSnapshot  string
-	Provider         string
-	ReasonCode       string
-	WindowKind       string
-	EvidenceJSON     string
-	RecoverAtMS      int64
-	Owner            string
-	EventHash        string
-	PreDisabledState bool
-	DisabledAtMS     int64
+	AuthFileName        string
+	AuthIndex           string
+	AccountSnapshot     string
+	Provider            string
+	ReasonCode          string
+	WindowKind          string
+	EvidenceJSON        string
+	RecoverAtMS         int64
+	Owner               string
+	EventHash           string
+	PreDisabledState    bool
+	ObservedEnabledAtMS int64
+	DisabledAtMS        int64
 }

@@ -9,3 +9,9 @@ export {
   resolveQuotaDisplayState,
 } from './quotaConfigs';
 export type { QuotaConfig } from './quotaConfigs';
+export {
+  refreshQuotaWithConfig,
+  type QuotaRefreshResult,
+  type QuotaSetter,
+  type QuotaUpdater,
+} from './quotaRefresh';

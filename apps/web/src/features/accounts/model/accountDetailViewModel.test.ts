@@ -13,6 +13,8 @@ import { buildAccountDetailViewModel } from './accountDetailViewModel';
 import { accountWindowUsageRequestKey } from './accountWindowUsageRows';
 import type { UsageValueRow } from './usageValueRows';
 
+const CODEX_MAIN_SCOPE = { kind: 'family', key: 'codex_main', complete: true } as const;
+
 type AccountRowOverrides = Omit<Partial<AccountRow>, 'quota'> & {
   quota?: Partial<AccountRow['quota']>;
 };
@@ -173,6 +175,53 @@ const makeMonitoringValue = (
 });
 
 describe('accountDetailViewModel', () => {
+  it('uses the full unified plan label for credential details', () => {
+    const viewModel = buildAccountDetailViewModel(
+      makeRow({
+        provider: 'codex',
+        planType: 'self_serve_business_prolite',
+      })
+    );
+
+    expect(viewModel.identity.planPresentation).toMatchObject({
+      rawPlanType: 'self_serve_business_prolite',
+      canonicalPlanType: 'business_premium_5x',
+      shortLabel: 'Business 5x',
+      fullLabel: 'Business Premium 5x',
+      known: true,
+    });
+    expect(viewModel.overview.credential.fields).toContainEqual(
+      expect.objectContaining({
+        key: 'planType',
+        value: 'Business Premium 5x',
+      })
+    );
+  });
+
+  it('preserves unknown plan casing in credential details', () => {
+    const viewModel = buildAccountDetailViewModel(
+      makeRow({
+        provider: 'antigravity',
+        planType: 'Antigravity Future',
+        quota: { planType: 'Antigravity Future' },
+      })
+    );
+
+    expect(viewModel.identity.planPresentation).toMatchObject({
+      rawPlanType: 'Antigravity Future',
+      canonicalPlanType: 'unknown:antigravity:antigravity future',
+      shortLabel: 'Antigravity Future',
+      fullLabel: 'Antigravity Future',
+      known: false,
+    });
+    expect(viewModel.overview.credential.fields).toContainEqual(
+      expect.objectContaining({
+        key: 'planType',
+        value: 'Antigravity Future',
+      })
+    );
+  });
+
   it('keeps credential identity fields focused and hides missing values', () => {
     const populated = buildAccountDetailViewModel(
       makeRow({
@@ -476,6 +525,69 @@ describe('accountDetailViewModel', () => {
     expect(viewModel.quota.windows[0].forecast).toBeNull();
   });
 
+  it('does not forecast an incomplete quota scope even when cached usage is present', () => {
+    const row = makeRow({ provider: 'codex' });
+    const nowMs = Date.now();
+    const modelScope = { kind: 'feature' as const, key: 'future_feature', complete: false };
+    const currentKey = accountWindowUsageRequestKey(
+      row.selectionKey,
+      'future-feature-weekly-0',
+      'current',
+      modelScope
+    );
+    const previousKey = accountWindowUsageRequestKey(
+      row.selectionKey,
+      'future-feature-weekly-0',
+      'previous',
+      modelScope
+    );
+    const windowUsageByKey = new Map<string, MonitoringAccountWindowUsageItem>([
+      [
+        currentKey,
+        makeWindowUsage({
+          window_key: 'future-feature-weekly-0',
+          total_requests: 250,
+          total_tokens: 29_000_000,
+          total_cost: 21.23,
+        }),
+      ],
+      [
+        previousKey,
+        makeWindowUsage({
+          window_key: 'future-feature-weekly-0',
+          total_requests: 250,
+          total_tokens: 29_000_000,
+          total_cost: 21.23,
+        }),
+      ],
+    ]);
+
+    const viewModel = buildAccountDetailViewModel(row, {
+      quotaWindows: [
+        {
+          key: 'future-feature-weekly-0',
+          providerWindowId: 'future-feature-weekly-0',
+          label: 'Future Feature',
+          kind: 'weekly',
+          remainingPercent: 100,
+          usedPercent: 0,
+          resetLabel: 'later',
+          resetAtMs: nowMs + 7 * 24 * 60 * 60 * 1000,
+          resetAccuracy: 'exact',
+          observedAtMs: nowMs,
+          limitWindowSeconds: 7 * 24 * 60 * 60,
+          windowMode: 'fixed',
+          cycleStartMs: nowMs - 60 * 60 * 1000,
+          cycleEndMs: nowMs + 7 * 24 * 60 * 60 * 1000,
+          modelScope,
+        },
+      ],
+      windowUsageByKey,
+    });
+
+    expect(viewModel.quota.windows[0].forecast).toBeNull();
+  });
+
   it('falls back to an eligible previous cycle when usage is newer than quota progress', () => {
     const row = makeRow({ provider: 'antigravity' });
     const nowMs = Date.now();
@@ -533,6 +645,20 @@ describe('accountDetailViewModel', () => {
           cycleEndMs: nowMs + 23 * 60 * 60 * 1000,
           modelScope,
           availability: 'active',
+          currentCycle: {
+            id: 2,
+            activationId: 1,
+            state: 'active',
+            scheduledStartMs: nowMs - 60 * 60 * 1000,
+            scheduledEndMs: nowMs + 23 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 60 * 60 * 1000,
+            actualEndMs: null,
+            durationSeconds: 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: '',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
           previousCycle: {
             id: 1,
             activationId: 1,
@@ -564,7 +690,7 @@ describe('accountDetailViewModel', () => {
     });
   });
 
-  it('does not use dynamic quota progress when the current cycle is not forecast eligible', () => {
+  it('does not forecast from the previous cycle when the current cycle is not forecast eligible', () => {
     const row = makeRow({ provider: 'codex' });
     const nowMs = Date.now();
     const currentKey = accountWindowUsageRequestKey(row.selectionKey, 'weekly', 'current');
@@ -643,12 +769,79 @@ describe('accountDetailViewModel', () => {
       windowUsageByKey,
     });
 
-    expect(viewModel.quota.windows[0].forecast).toEqual({
-      basis: 'previous',
-      requests: 20,
-      tokens: 200_000,
-      cost: 2,
+    expect(viewModel.quota.windows[0].forecast).toBeNull();
+  });
+
+  it('does not forecast a stale lifecycle current window from previous usage', () => {
+    const row = makeRow({ provider: 'codex' });
+    const nowMs = Date.now();
+    const previousKey = accountWindowUsageRequestKey(row.selectionKey, 'weekly', 'previous');
+    const windowUsageByKey = new Map<string, MonitoringAccountWindowUsageItem>([
+      [
+        previousKey,
+        makeWindowUsage({
+          window_key: 'weekly',
+          total_requests: 20,
+          total_tokens: 200_000,
+          total_cost: 2,
+        }),
+      ],
+    ]);
+
+    const viewModel = buildAccountDetailViewModel(row, {
+      quotaWindows: [
+        {
+          key: 'weekly',
+          providerWindowId: 'weekly',
+          label: 'Weekly',
+          kind: 'weekly',
+          remainingPercent: 99,
+          usedPercent: 1,
+          resetLabel: 'later',
+          resetAtMs: nowMs + 7 * 24 * 60 * 60 * 1000,
+          resetAccuracy: 'exact',
+          observedAtMs: nowMs,
+          limitWindowSeconds: 7 * 24 * 60 * 60,
+          windowMode: 'fixed',
+          cycleStartMs: nowMs - 60 * 60 * 1000,
+          cycleEndMs: nowMs + 23 * 60 * 60 * 1000,
+          modelScope: { kind: 'all', complete: true },
+          availability: 'active',
+          stale: true,
+          currentCycle: {
+            id: 2,
+            activationId: 1,
+            state: 'active',
+            scheduledStartMs: nowMs - 60 * 60 * 1000,
+            scheduledEndMs: nowMs + 23 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 60 * 60 * 1000,
+            actualEndMs: null,
+            durationSeconds: 7 * 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: '',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
+          previousCycle: {
+            id: 1,
+            activationId: 1,
+            state: 'closed',
+            scheduledStartMs: nowMs - 8 * 24 * 60 * 60 * 1000,
+            scheduledEndMs: nowMs - 7 * 24 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 8 * 24 * 60 * 60 * 1000,
+            actualEndMs: nowMs - 7 * 24 * 60 * 60 * 1000,
+            durationSeconds: 7 * 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: 'scheduled',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
+        },
+      ],
+      windowUsageByKey,
     });
+
+    expect(viewModel.quota.windows[0].forecast).toBeNull();
   });
 
   it('does not use stale quota progress without matched previous usage', () => {
@@ -1674,6 +1867,7 @@ describe('accountDetailViewModel', () => {
           resetLabel: '2026-07-30T04:00:00Z',
           resetAtMs: earlierResetAtMs,
           resetAccuracy: 'exact',
+          modelScope: CODEX_MAIN_SCOPE,
         },
         {
           key: 'weekly-model',
@@ -1684,6 +1878,7 @@ describe('accountDetailViewModel', () => {
           resetLabel: '2026-07-30T06:00:00Z',
           resetAtMs: laterResetAtMs,
           resetAccuracy: 'exact',
+          modelScope: CODEX_MAIN_SCOPE,
         },
       ],
     });
@@ -1724,6 +1919,7 @@ describe('accountDetailViewModel', () => {
             resetLabel: '2026-07-30T04:00:00Z',
             resetAtMs: Date.parse('2026-07-30T04:00:00Z'),
             resetAccuracy: 'exact',
+            modelScope: CODEX_MAIN_SCOPE,
           },
           {
             key: 'weekly-unknown',
@@ -1734,6 +1930,7 @@ describe('accountDetailViewModel', () => {
             resetLabel: '-',
             resetAtMs: null,
             resetAccuracy: 'unknown',
+            modelScope: CODEX_MAIN_SCOPE,
           },
         ],
       }

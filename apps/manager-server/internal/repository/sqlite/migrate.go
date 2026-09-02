@@ -16,6 +16,7 @@ import (
 
 const (
 	accountHistoryIdentityFormatVersionKey = "usage_account_history_identity_format_version"
+	legacyAccountHistoryStructureRevision  = "identity-2:model-1"
 	dashboardHourlyRollupFormatVersionKey  = "usage_dashboard_hourly_format_version"
 	dashboardHourlyRollupFormatVersion     = "3"
 	usageMonitoringModelFormatVersionKey   = "usage_monitoring_model_format_version"
@@ -40,6 +41,7 @@ const (
 	usageAccountModelRollupsTable         = "usage_account_model_rollups"
 	usagePricingAccountRollupsTable       = "usage_pricing_account_rollups_v1"
 	usageAccountModelRollupsLegacy        = "usage_account_model_rollups_legacy_v1120_rc2"
+	usageAccountModelIdentityLegacy       = "usage_account_model_rollups_legacy_identity_v3"
 	usagePricingAccountLegacy             = "usage_pricing_account_rollups_v1_legacy_v1120_rc2"
 	usageDashboardHourlyLegacy            = "usage_dashboard_hourly_rollups_legacy_v1120_rc2"
 	usageHourlyAggregateLegacy            = "usage_hourly_aggregate_v1_legacy_v1120_rc2"
@@ -48,6 +50,8 @@ const (
 	usageMonitoringProjectionLegacyPrefix = "usage_monitoring_event_projection_v1_legacy_g"
 	usageMonitoringAccountLegacy          = "usage_monitoring_account_daily_rollups_v1_legacy_recovery"
 	usageMonitoringAPIKeyLegacy           = "usage_monitoring_api_key_daily_rollups_v1_legacy_recovery"
+	usageMonitoringAccountIdentityLegacy  = "usage_monitoring_account_daily_rollups_v1_legacy_identity_v3"
+	usageMonitoringAPIKeyIdentityLegacy   = "usage_monitoring_api_key_daily_rollups_v1_legacy_identity_v3"
 	usageMonitoringSelectorLegacy         = "usage_monitoring_selector_daily_rollups_v1_legacy_recovery"
 	usageMonitoringHeaderLegacy           = "usage_monitoring_header_latest_v1_legacy_recovery"
 	usageMonitoringProjectionLegacy       = "usage_monitoring_event_projection_v1_legacy_recovery"
@@ -241,6 +245,7 @@ func Migrate(db *sql.DB) error {
 			auth_label_snapshot text,
 			auth_file_snapshot text,
 			auth_provider_snapshot text,
+			auth_account_id_snapshot text,
 			auth_project_id_snapshot text,
 			auth_snapshot_at_ms integer,
 			requested_model text,
@@ -366,6 +371,7 @@ func Migrate(db *sql.DB) error {
 			auth_label_snapshot text not null,
 			provider text not null,
 			auth_provider_snapshot text not null,
+			auth_account_id_snapshot text not null default '',
 			auth_index text not null,
 			source text not null,
 			source_hash text not null,
@@ -398,7 +404,7 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null,
 			primary key (
 				structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
-				provider, auth_provider_snapshot, auth_index, source, source_hash,
+				provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index, source, source_hash,
 				auth_file_snapshot, api_key_hash, executor_type, model, billing_model,
 				pricing_model, service_tier, context_threshold_tokens, failed
 			)
@@ -411,6 +417,7 @@ func Migrate(db *sql.DB) error {
 			auth_label_snapshot text not null,
 			provider text not null,
 			auth_provider_snapshot text not null,
+			auth_account_id_snapshot text not null default '',
 			auth_index text not null,
 			source text not null,
 			source_hash text not null,
@@ -442,7 +449,7 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null,
 			primary key (
 				structure_revision, bucket_ms, api_key_hash, account_snapshot,
-				auth_label_snapshot, provider, auth_provider_snapshot, auth_index,
+				auth_label_snapshot, provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index,
 				source, source_hash, auth_file_snapshot, executor_type, model,
 				billing_model, pricing_model, service_tier,
 				context_threshold_tokens, failed
@@ -485,6 +492,7 @@ func Migrate(db *sql.DB) error {
 			auth_label_snapshot text not null,
 			auth_file_snapshot text not null,
 			auth_provider_snapshot text not null,
+			auth_account_id_snapshot text not null default '',
 			auth_project_id_snapshot text not null,
 			reasoning_effort text not null,
 			service_tier text not null,
@@ -515,6 +523,7 @@ func Migrate(db *sql.DB) error {
 			account_snapshot text not null,
 			auth_label_snapshot text not null,
 			auth_provider_snapshot text not null,
+			auth_account_id_snapshot text not null default '',
 			auth_project_id_snapshot text not null,
 			source text not null,
 			source_hash text not null,
@@ -992,7 +1001,7 @@ func validateUsageDerivedSchemaVersions(db *sql.DB, hourlySnapshot usageHourlyAg
 		var accountHistoryVersion string
 		err = db.QueryRow(`select value from settings where key = ?`, accountHistoryIdentityFormatVersionKey).Scan(&accountHistoryVersion)
 		switch {
-		case err == nil && accountHistoryVersion != "1" && accountHistoryVersion != usageidentity.FormatVersion && accountHistoryVersion != usageidentity.AccountHistoryStructureRevision():
+		case err == nil && accountHistoryVersion != "1" && accountHistoryVersion != "2" && accountHistoryVersion != legacyAccountHistoryStructureRevision && accountHistoryVersion != usageidentity.FormatVersion && accountHistoryVersion != usageidentity.AccountHistoryStructureRevision():
 			return fmt.Errorf("unsupported account history identity format version %q", accountHistoryVersion)
 		case err != nil && !errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("inspect account history identity format version: %w", err)
@@ -1134,6 +1143,29 @@ func tablePrimaryKeyMatches(tx *sql.Tx, tableName string, expected []string) (bo
 		}
 	}
 	return true, nil
+}
+
+func tablePrimaryKeyHasColumn(tx *sql.Tx, tableName, columnName string) (bool, error) {
+	rows, err := tx.Query(`pragma table_info(` + tableName + `)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s primary key column: %w", tableName, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKeyPosition int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKeyPosition); err != nil {
+			return false, fmt.Errorf("scan %s primary key column: %w", tableName, err)
+		}
+		if name == columnName && primaryKeyPosition > 0 {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect %s primary key column: %w", tableName, err)
+	}
+	return false, nil
 }
 
 type usageMonitoringMigrationSnapshot struct {
@@ -1367,6 +1399,7 @@ func resetUsageDerivedDataWithoutSource(db *sql.DB, snapshot usageMonitoringMigr
 		"usage_rollup_rebuild_state",
 		"usage_pricing_rollup_state",
 		"usage_data_migrations",
+		derivedDeferredIndexesTable,
 	}
 	placeholders := make([]string, len(existingTables))
 	args := make([]any, len(existingTables))
@@ -1436,7 +1469,10 @@ func resetUsageDerivedDataWithoutSource(db *sql.DB, snapshot usageMonitoringMigr
 				processed_rows = 0, changed_rows = 0, applied_rows = 0,
 				started_at_ms = null, updated_at_ms = 0,
 			finished_at_ms = null, last_error = null
-			where name in ('usage_cache_accounting_v1', 'usage_cache_accounting_v2')`)
+				where name in ('usage_cache_accounting_v1', 'usage_cache_accounting_v2')`)
+	}
+	if present[derivedDeferredIndexesTable] {
+		statements = append(statements, `delete from `+derivedDeferredIndexesTable)
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
@@ -1465,6 +1501,19 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 		return versionErr
 	}
 
+	var projectionRevision string
+	projectionRevisionErr := tx.QueryRow(`select structure_revision
+		from usage_monitoring_rollup_state where rollup_name = ?`, usageMonitoringProjectionRollupName).Scan(&projectionRevision)
+	projectionRevisionMismatch := false
+	switch {
+	case projectionRevisionErr == nil:
+		projectionRevisionMismatch = projectionRevision != usageidentity.MonitoringProjectionStructureRevision()
+	case errors.Is(projectionRevisionErr, sql.ErrNoRows):
+		projectionRevisionMismatch = true
+	default:
+		return fmt.Errorf("inspect usage monitoring projection revision: %w", projectionRevisionErr)
+	}
+
 	rows, err := tx.Query(`pragma table_info(` + usageprojection.EventTable + `)`)
 	if err != nil {
 		return fmt.Errorf("inspect usage monitoring projection columns: %w", err)
@@ -1472,6 +1521,7 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 	hasAccountKey := false
 	hasRequestedModel := false
 	hasAnalyticsModel := false
+	hasAuthAccountID := false
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -1490,6 +1540,9 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 		if name == "analytics_model" {
 			hasAnalyticsModel = true
 		}
+		if name == "auth_account_id_snapshot" {
+			hasAuthAccountID = true
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close usage monitoring projection column inspection: %w", err)
@@ -1500,6 +1553,32 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 	selectorHasRevision, err := tableHasColumn(tx, usageMonitoringSelectorDailyTable, "model_format_revision")
 	if err != nil {
 		return err
+	}
+	statsHasAuthAccountID, err := tableHasColumn(tx, usageMonitoringAccountDailyTable, "auth_account_id_snapshot")
+	if err != nil {
+		return err
+	}
+	apiKeyStatsHasAuthAccountID, err := tableHasColumn(tx, usageMonitoringAPIKeyDailyTable, "auth_account_id_snapshot")
+	if err != nil {
+		return err
+	}
+	statsPKHasAuthAccountID, err := tablePrimaryKeyHasColumn(tx, usageMonitoringAccountDailyTable, "auth_account_id_snapshot")
+	if err != nil {
+		return err
+	}
+	apiKeyStatsPKHasAuthAccountID, err := tablePrimaryKeyHasColumn(tx, usageMonitoringAPIKeyDailyTable, "auth_account_id_snapshot")
+	if err != nil {
+		return err
+	}
+	if !statsHasAuthAccountID {
+		if _, err := tx.Exec(`alter table ` + usageMonitoringAccountDailyTable + ` add column auth_account_id_snapshot text not null default ''`); err != nil {
+			return fmt.Errorf("add usage monitoring account stats auth account id: %w", err)
+		}
+	}
+	if !apiKeyStatsHasAuthAccountID {
+		if _, err := tx.Exec(`alter table ` + usageMonitoringAPIKeyDailyTable + ` add column auth_account_id_snapshot text not null default ''`); err != nil {
+			return fmt.Errorf("add usage monitoring api-key stats auth account id: %w", err)
+		}
 	}
 
 	if !hasAccountKey {
@@ -1517,13 +1596,29 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 			return fmt.Errorf("add usage monitoring projection analytics model: %w", err)
 		}
 	}
+	if !hasAuthAccountID {
+		if _, err := tx.Exec(`alter table ` + usageprojection.EventTable + ` add column auth_account_id_snapshot text not null default ''`); err != nil {
+			return fmt.Errorf("add usage monitoring projection auth account id: %w", err)
+		}
+	}
+	headerHasAuthAccountID, err := tableHasColumn(tx, usageMonitoringHeaderLatestTable, "auth_account_id_snapshot")
+	if err != nil {
+		return err
+	}
+	if !headerHasAuthAccountID {
+		if _, err := tx.Exec(`alter table ` + usageMonitoringHeaderLatestTable + ` add column auth_account_id_snapshot text not null default ''`); err != nil {
+			return fmt.Errorf("add usage monitoring header auth account id: %w", err)
+		}
+	}
 	if !selectorHasRevision {
 		if _, err := tx.Exec(`alter table ` + usageMonitoringSelectorDailyTable + ` add column model_format_revision text not null default ''`); err != nil {
 			return fmt.Errorf("add usage monitoring selector model format revision: %w", err)
 		}
 	}
 
-	needsRebuild := versionErr != nil || !hasAccountKey || !hasRequestedModel || !hasAnalyticsModel || !selectorHasRevision
+	statsNeedsIdentityUpgrade := !statsHasAuthAccountID || !statsPKHasAuthAccountID
+	apiKeyStatsNeedsIdentityUpgrade := !apiKeyStatsHasAuthAccountID || !apiKeyStatsPKHasAuthAccountID
+	needsRebuild := versionErr != nil || projectionRevisionMismatch || !hasAccountKey || !hasRequestedModel || !hasAnalyticsModel || !hasAuthAccountID || !headerHasAuthAccountID || !selectorHasRevision || statsNeedsIdentityUpgrade || apiKeyStatsNeedsIdentityUpgrade
 	if needsRebuild {
 		if err := dropUsageMonitoringSearchTriggers(tx); err != nil {
 			return err
@@ -1559,10 +1654,21 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 			if err != nil {
 				return err
 			}
-			if !hasRows {
+			identitySchemaUpgrade :=
+				(tableName == usageMonitoringAccountDailyTable && statsNeedsIdentityUpgrade) ||
+					(tableName == usageMonitoringAPIKeyDailyTable && apiKeyStatsNeedsIdentityUpgrade)
+			if !hasRows && !identitySchemaUpgrade {
 				continue
 			}
-			if err := parkAndRecreateDerivedTable(tx, tableName, legacyName); err != nil {
+			var rebuildErr error
+			if tableName == usageMonitoringAccountDailyTable && statsNeedsIdentityUpgrade {
+				rebuildErr = parkAndRecreateMonitoringIdentityTable(tx, tableName, usageMonitoringAccountIdentityLegacy, "auth_provider_snapshot, auth_index")
+			} else if tableName == usageMonitoringAPIKeyDailyTable && apiKeyStatsNeedsIdentityUpgrade {
+				rebuildErr = parkAndRecreateMonitoringIdentityTable(tx, tableName, usageMonitoringAPIKeyIdentityLegacy, "auth_provider_snapshot, auth_index")
+			} else {
+				rebuildErr = parkAndRecreateDerivedTable(tx, tableName, legacyName)
+			}
+			if err := rebuildErr; err != nil {
 				return err
 			}
 		}
@@ -1600,14 +1706,26 @@ func ensureUsageMonitoringProjectionIdentity(db *sql.DB) error {
 			coverage_event_id = 0, target_event_id = ?, processed_events = 0,
 			last_run_started_at_ms = null, updated_at_ms = 0,
 			finished_at_ms = null, last_error = null
-			where rollup_name in (?, ?)`,
+			where rollup_name = ?`,
 			usageidentity.ModelFormatVersion,
 			status,
 			latestEventID,
 			usageMonitoringMetadataRollupName,
+		); err != nil {
+			return fmt.Errorf("reset usage monitoring metadata state: %w", err)
+		}
+		if _, err := tx.Exec(`update usage_monitoring_rollup_state set
+			structure_revision = ?, status = ?, backfill_last_event_id = 0,
+			coverage_event_id = 0, target_event_id = ?, processed_events = 0,
+			last_run_started_at_ms = null, updated_at_ms = 0,
+			finished_at_ms = null, last_error = null
+			where rollup_name = ?`,
+			usageidentity.MonitoringProjectionStructureRevision(),
+			status,
+			latestEventID,
 			usageMonitoringProjectionRollupName,
 		); err != nil {
-			return fmt.Errorf("reset usage monitoring model derivation state: %w", err)
+			return fmt.Errorf("reset usage monitoring projection state: %w", err)
 		}
 		var searchStateExists int
 		if err := tx.QueryRow(`select count(*) from sqlite_master where type = 'table' and name = ?`, usageMonitoringSearchStateTable).Scan(&searchStateExists); err != nil {
@@ -1657,6 +1775,32 @@ func parkAndRecreateDerivedTable(tx *sql.Tx, tableName, legacyTableName string) 
 		if _, err := tx.Exec(`delete from usage_derived_cleanup_cursors where table_name = ?`, tableName); err != nil {
 			return fmt.Errorf("reset derived cleanup cursor for %s: %w", tableName, err)
 		}
+	}
+	return nil
+}
+
+// parkAndRecreateMonitoringIdentityTable upgrades a pre-auth-account-id
+// monitoring rollup. The rollups are derived data, so the old table is parked
+// and rebuilt from immutable usage_events; extending the primary key prevents
+// two explicit Codex account IDs sharing display metadata from being merged.
+func parkAndRecreateMonitoringIdentityTable(tx *sql.Tx, tableName, legacyTableName, primaryKeyFragment string) error {
+	var createSQL string
+	if err := tx.QueryRow(`select sql from sqlite_master where type = 'table' and name = ?`, tableName).Scan(&createSQL); err != nil {
+		return fmt.Errorf("read monitoring identity table schema %s: %w", tableName, err)
+	}
+	upgradedFragment := strings.Replace(primaryKeyFragment, "auth_provider_snapshot, auth_index", "auth_provider_snapshot, auth_account_id_snapshot, auth_index", 1)
+	if upgradedFragment == primaryKeyFragment {
+		return fmt.Errorf("monitoring identity table %s primary key fragment not found", tableName)
+	}
+	createSQL = strings.Replace(createSQL, primaryKeyFragment, upgradedFragment, 1)
+	if createSQL == "" {
+		return fmt.Errorf("monitoring identity table %s has no reusable schema", tableName)
+	}
+	if err := parkDerivedTable(tx, tableName, legacyTableName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(createSQL); err != nil {
+		return fmt.Errorf("recreate monitoring identity table %s: %w", tableName, err)
 	}
 	return nil
 }
@@ -1791,7 +1935,7 @@ func ensureUsageMonitoringSearchIndex(db *sql.DB) error {
 			last_run_started_at_ms = null, updated_at_ms = 0,
 			finished_at_ms = null, last_error = null
 			where rollup_name = ?`,
-			usageidentity.ModelFormatVersion,
+			usageidentity.MonitoringProjectionStructureRevision(),
 			status,
 			latestEventID,
 			usageMonitoringProjectionRollupName,
@@ -1814,7 +1958,7 @@ func ensureAccountHistoryIdentityFormatVersion(db *sql.DB) error {
 	switch {
 	case err == nil && version == usageidentity.AccountHistoryStructureRevision():
 		return tx.Commit()
-	case err == nil && version != "1" && version != usageidentity.FormatVersion:
+	case err == nil && version != "1" && version != "2" && version != legacyAccountHistoryStructureRevision && version != usageidentity.FormatVersion:
 		return fmt.Errorf("unsupported account history identity format version %q", version)
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return err
@@ -1825,7 +1969,7 @@ func ensureAccountHistoryIdentityFormatVersion(db *sql.DB) error {
 		return err
 	}
 	if hasRows {
-		if err := parkDerivedTable(tx, usageAccountModelRollupsTable, usageAccountModelRollupsLegacy); err != nil {
+		if err := parkDerivedTable(tx, usageAccountModelRollupsTable, usageAccountModelIdentityLegacy); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(createUsageAccountModelRollupsTable); err != nil {
@@ -1837,6 +1981,34 @@ func ensureAccountHistoryIdentityFormatVersion(db *sql.DB) error {
 	}
 	if err := scheduleUsageRollupRebuild(tx, "account_history"); err != nil {
 		return err
+	}
+	var monitoringStateExists int
+	if err := tx.QueryRow(`select count(*) from sqlite_master
+		where type = 'table' and name = ?`, usageMonitoringRollupStateTable).Scan(&monitoringStateExists); err != nil {
+		return err
+	}
+	if monitoringStateExists > 0 {
+		var latestEventID int64
+		if err := tx.QueryRow(`select coalesce(max(id), 0) from usage_events`).Scan(&latestEventID); err != nil {
+			return err
+		}
+		projectionStatus := "pending"
+		if latestEventID == 0 {
+			projectionStatus = "ready"
+		}
+		if _, err := tx.Exec(`update usage_monitoring_rollup_state set
+			structure_revision = ?, status = ?, backfill_last_event_id = 0,
+			coverage_event_id = 0, target_event_id = ?, processed_events = 0,
+			last_run_started_at_ms = null, updated_at_ms = 0,
+			finished_at_ms = null, last_error = null
+			where rollup_name = ?`,
+			usageidentity.MonitoringProjectionStructureRevision(),
+			projectionStatus,
+			latestEventID,
+			usageMonitoringProjectionRollupName,
+		); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`insert into settings (key, value, updated_at_ms) values (?, ?, ?)
 		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
@@ -2640,6 +2812,7 @@ func ensureUsageEventSnapshotColumns(db *sql.DB) error {
 		{name: "auth_label_snapshot", definition: "text"},
 		{name: "auth_file_snapshot", definition: "text"},
 		{name: "auth_provider_snapshot", definition: "text"},
+		{name: "auth_account_id_snapshot", definition: "text"},
 		{name: "auth_project_id_snapshot", definition: "text"},
 		{name: "auth_snapshot_at_ms", definition: "integer"},
 		{name: "executor_type", definition: "text"},

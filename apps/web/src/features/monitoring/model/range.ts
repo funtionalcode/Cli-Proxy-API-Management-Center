@@ -18,6 +18,12 @@ const startOfTodayMs = (nowMs: number) => {
   return now.getTime();
 };
 
+const startOfPreviousLocalDayMs = (todayStartMs: number) => {
+  const previousDay = new Date(todayStartMs);
+  previousDay.setDate(previousDay.getDate() - 1);
+  return previousDay.getTime();
+};
+
 const isValidCustomTimeRange = (
   range: MonitoringCustomTimeRange | null | undefined
 ): range is MonitoringCustomTimeRange =>
@@ -44,6 +50,8 @@ export const getRangeBounds = (
   switch (range) {
     case 'today':
       return { startMs: todayStart, endMs: nowMs };
+    case 'yesterday':
+      return { startMs: startOfPreviousLocalDayMs(todayStart), endMs: todayStart };
     case '7d':
       return { startMs: todayStart - 6 * 24 * 60 * 60 * 1000, endMs: nowMs };
     case '14d':
@@ -60,7 +68,7 @@ export const shouldUseHourlyTimeline = (
   range: MonitoringTimeRange,
   customRange?: MonitoringCustomTimeRange | null
 ) =>
-  range === 'today' ||
+  (range === 'today' || range === 'yesterday') ||
   (range === 'custom' &&
     isValidCustomTimeRange(customRange) &&
     buildLocalDayKey(customRange.startMs) === buildLocalDayKey(customRange.endMs));

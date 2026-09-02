@@ -74,6 +74,22 @@
     "title": "正在自動登入...",
     "message": "正在使用本地儲存的連線資訊嘗試連線伺服器"
   },
+  "database_maintenance": {
+    "title": "資料庫升級維護尚未完成",
+    "badge": "效能降級",
+    "query_index_count_other": "{{formattedCount}} 個查詢索引",
+    "offline_job_count_other": "{{formattedCount}} 個離線清理工作",
+    "summary_both": "還有 {{indexes}} 和 {{jobs}} 待完成。",
+    "summary_indexes": "還有 {{indexes}} 待準備。",
+    "summary_jobs": "還有 {{jobs}} 待完成。",
+    "body": "部分查詢索引或舊衍生資料維護尚未完成，歷史請求查詢可能明顯變慢或逾時。",
+    "data_safe": "權威請求資料沒有遺失。",
+    "steps_title": "查看維護步驟",
+    "steps_intro": "執行離線命令前請先停止 Manager Server。不要從 Web 面板線上執行清理。",
+    "docker_title": "Docker Compose",
+    "native_title": "原生安裝",
+    "steps_note": "請使用相同版本的二進位程式，命令完成後重新啟動 Manager Server。維護狀態清理後，提示會自動消失。"
+  },
   "login": {
     "connection_title": "連線位址",
     "connection_current": "目前位址",
@@ -756,6 +772,10 @@
     "cooling_policy_unverified_hint": "無法確認目前 CPA 是否支援三態冷卻，因此暫不提供「啟用冷卻」覆寫。請使用包含 {{commit}} 的版本或後續正式版本。",
     "rebuild_mid_system_message_label": "重建對話中途的 System 訊息",
     "rebuild_mid_system_message_hint": "轉送前將 Claude 對話中 role 為 system 的訊息移動到頂層 system 欄位。",
+    "claude_request_fingerprint_label": "請求指紋",
+    "claude_request_fingerprint_hint": "預設保留呼叫端傳入的提示詞與請求標頭；也可選擇使用 Claude Code CLI 請求指紋。",
+    "claude_request_fingerprint_default": "預設（由呼叫端控制）",
+    "claude_request_fingerprint_claude_code_cli": "Claude Code CLI",
     "force_mapping_label": "將回應模型名稱回寫為別名",
     "model_alias_scope_hint": "此處別名僅作用於目前 API Key 供應商。OAuth 憑證映射請在「憑證管理 → OAuth 設定」中設定。",
     "input_modalities_placeholder": "輸入模態：text, image",
@@ -1372,6 +1392,7 @@
     "detail_forecast_basis_previous": "基於上一個視窗實際值",
     "detail_forecast_unavailable": "暫無可用預測依據，暫不預測",
     "detail_window_boundary_incomplete": "缺少完整視窗邊界，因此未計算區間用量",
+    "detail_current_window_boundary_unconfirmed": "週期邊界尚未確認",
     "detail_scope_incomplete": "模型範圍用量可能不完整（未匹配 {{count}} 個請求）",
     "detail_scope_unknown": "Provider 未提供完整模型範圍，因此未計算該區間用量",
     "detail_quota_snapshot_stale": "額度快照已過期，請重新整理後再參考",
@@ -1719,7 +1740,6 @@
     "load_failed": "配額取得失敗：{{message}}",
     "missing_auth_index": "驗證檔案缺少 auth_index",
     "empty_models": "暫無配額資料",
-    "plan_label": "方案",
     "group_gemini_models": "Gemini 模型",
     "group_claude_gpt_models": "Claude 模型",
     "group_models_description": "此群組包含：{{models}}",
@@ -1746,13 +1766,7 @@
     "error_badge": "方案不可用",
     "load_failed": "訂閱取得失敗：{{message}}",
     "missing_auth_index": "驗證檔案缺少 auth_index",
-    "empty_data": "暫無訂閱資料",
-    "plan_badge": "{{plan}}",
-    "plan_free": "免費版",
-    "plan_pro": "Pro",
-    "plan_ultra": "Ultra",
-    "plan_ultra_lite": "Ultra Lite",
-    "plan_unknown": "未知"
+    "empty_data": "暫無訂閱資料"
   },
   "claude_quota": {
     "title": "Claude 配額",
@@ -1774,15 +1788,7 @@
     "iguana_necktie": "Iguana Necktie",
     "weekly_scoped_model": "{{model}} 週限額",
     "limit_index": "限額 #{{index}}",
-    "extra_usage_label": "額外用量",
-    "plan_label": "方案",
-    "plan_unknown": "未知",
-    "plan_free": "免費版",
-    "plan_pro": "專業版",
-    "plan_max": "Max",
-    "plan_max5": "Max 5x",
-    "plan_max20": "Max 20x",
-    "plan_team": "團隊版"
+    "extra_usage_label": "額外用量"
   },
   "codex_quota": {
     "title": "Codex 額度",
@@ -1794,7 +1800,7 @@
     "missing_auth_index": "驗證檔案缺少 auth_index",
     "missing_account_id": "Codex 憑證缺少 ChatGPT 帳號 ID",
     "empty_windows": "暫無配額資料",
-    "no_access": "該憑證已無 Codex 存取權限（free）。",
+    "no_access": "該憑證已無 Codex 存取權限。",
     "refresh_button": "重新整理配額",
     "retry_button": "重試",
     "fetch_all": "取得全部",
@@ -1804,6 +1810,9 @@
     "reset_confirm_message": "將為 {{name}} 消耗 1 次 Codex reset credit。目前可用 {{count}} 次，確認繼續？",
     "reset_success": "{{name}} 已重置配額",
     "reset_failed": "{{name}} 重置配額失敗：{{message}}",
+    "reset_verify_failed": "檢查 {{name}} 的重置配額失敗：{{message}}",
+    "reset_no_credits": "{{name}} 目前沒有可用的重置配額",
+    "reset_partial_success": "{{name}} 已完成重置，但最新配額刷新失敗，請手動刷新或稍後重試。",
     "reset_credits_label": "重置",
     "reset_credits_available_label": "剩餘",
     "reset_credits_unit": "次",
@@ -1853,13 +1862,7 @@
     "additional_generic_window": "{{name}} {{duration}} 限額",
     "window_usage": "已用 {{used}} / {{total}} 小時",
     "window_usage_duration": "已用 {{used}} / {{total}}",
-    "observed_window": "最近用量 Header",
-    "plan_label": "方案",
-    "plan_plus": "Plus",
-    "plan_team": "Team",
-    "plan_free": "Free",
-    "plan_pro": "Pro 20x",
-    "plan_prolite": "Pro 5x"
+    "observed_window": "最近用量 Header"
   },
   "kimi_quota": {
     "title": "Kimi 配額",
@@ -1921,9 +1924,6 @@
     "used_percent": "已用 {{percent}}",
     "reset_at": "重置 {{time}}",
     "product_usage": "{{product}} 使用",
-    "plan_label": "方案",
-    "plan_supergrok": "SuperGrok",
-    "plan_supergrok_heavy": "SuperGrok Heavy",
     "official_api_plan": "官方 API",
     "official_api_health": "xAI 官方 API 身分可存取；此 OAuth 憑證無法透過該介面取得帳單和剩餘額度。",
     "pay_as_you_go_label": "按量付費",
@@ -2416,6 +2416,9 @@
     "eyebrow": "Runtime Overview",
     "title": "請求監控",
     "subtitle": "這裡統計模型請求、帳號、渠道和預估花費。模型請求不等同於業務請求；任務數為系統估算，僅供參考。",
+    "database_maintenance_hint_title": "資料庫維護尚未完成。",
+    "database_maintenance_hint_body": "離線維護完成前，歷史請求查詢可能較慢或逾時。",
+    "database_maintenance_long_range_hint": "目前提示存在時，較長時間範圍的查詢可能尤其昂貴。",
     "connection_status": "連線狀態",
     "usage_switch": "使用統計開關",
     "logging_switch": "檔案記錄開關",
@@ -2424,6 +2427,7 @@
     "realtime_console_eyebrow": "即時運行監控",
     "console_subtitle": "按帳號與時間範圍追蹤呼叫規模、成功失敗、Token 結構與花費，並提供接近請求日誌的即時監控表。",
     "range_today": "今天",
+    "range_yesterday": "昨天",
     "range_7d": "7 天",
     "range_14d": "14 天",
     "range_30d": "30 天",
@@ -3425,6 +3429,7 @@
       "cpa_connection_risk_title": "確認修改 CPA 連線",
       "cpa_connection_risk_message": "你正在修改 Manager Server 的 CPA 連線。目前 CPA：{{currentBase}}；儲存後 CPA：{{nextBase}}。這會影響代理和監控資料，請確認目標 CPA 位址和 Management Key 完全正確後再繼續。",
       "cpa_connection_risk_confirm": "確認並承擔風險",
+      "cpa_switch_unsaved_config": "目前 CPA 設定存在未儲存的修改。請先儲存或放棄這些修改，再切換 CPA 連線。",
       "current_cpa_base": "目前 CPA 位址",
       "bound_cpa_base": "Manager Server 已綁定 CPA",
       "not_bound": "未綁定",
@@ -3659,12 +3664,12 @@
         "add": "新增 API 金鑰",
         "generate": "產生",
         "empty": "暫無 API 金鑰",
-        "hint": "每個條目代表一個 API 金鑰（與「API 金鑰管理」頁面樣式一致）",
+        "hint": "API 金鑰的新增、修改和刪除會立即保存到 CPA，無需點擊頁面底部的保存按鈕。",
         "edit_title": "編輯 API 金鑰",
         "add_title": "新增 API 金鑰",
         "input_label": "API 金鑰",
         "input_placeholder": "貼上你的 API 金鑰",
-        "input_hint": "此處僅修改本地設定檔內容，不會自動同步到 API 金鑰管理介面",
+        "input_hint": "點擊確定後 API 金鑰會立即保存到 CPA；產生按鈕只會填入輸入框。",
         "alias_label": "別名",
         "alias_placeholder": "例如 Alice / Team A",
         "alias_hint": "別名保存在 CPAM 資料庫中，按 API Key 雜湊關聯歷史請求。",
@@ -3685,7 +3690,25 @@
         "alias_error_too_long": "別名不能超過 120 個字元",
         "alias_error_duplicate": "別名已存在，請換一個唯一別名",
         "error_empty": "請輸入 API 金鑰",
-        "error_invalid": "API 金鑰包含無效字元"
+        "error_invalid": "API 金鑰包含無效字元",
+        "error_duplicate": "此 API 金鑰已存在",
+        "saving": "保存中...",
+        "save_failed": "API 金鑰保存失敗",
+        "added": "API 金鑰已新增並保存。",
+        "updated": "API 金鑰已更新並保存。",
+        "deleted": "API 金鑰已刪除。",
+        "delete_title": "刪除 API 金鑰",
+        "delete_confirm": "確定要從 CPA 中刪除此 API 金鑰嗎？",
+        "save_partial_success": "API 金鑰已保存，但別名保存失敗，請稍後重新編輯別名。",
+        "update_partial_success": "API 金鑰已更新，但別名保存或遷移失敗，請稍後重新編輯別名。",
+        "delete_partial_success": "API 金鑰已刪除，但別名清理失敗。",
+        "stale_key_refreshed": "此 API 金鑰已不在 CPA 中，清單已重新整理。",
+        "canonical_key_missing": "重新整理後的 CPA API 金鑰清單中找不到剛保存的金鑰。",
+        "state_refresh_failed": "API 金鑰變更已提交，但最新狀態重新整理失敗。請重新載入頁面以確認目前狀態。",
+        "source_dirty_guard": "來源設定存在未保存修改。請先保存或撤銷來源設定修改，再管理 API 金鑰。",
+        "operation_busy": "另一個 API 金鑰操作或設定保存正在進行，請稍候。",
+        "mutation_outcome_unknown": "無法確認此次 API 金鑰變更是否已提交。請重新載入頁面確認 CPA 目前狀態後再繼續操作。",
+        "alias_state_unavailable": "無法確認目前 API 金鑰的別名狀態，請稍後重試。"
       },
       "payload_rules": {
         "rule": "規則",
@@ -4027,6 +4050,8 @@
     "api_key_compare_title": "客戶端 Key 趨勢",
     "api_key_keyword_placeholder": "搜尋客戶端 Key、帳號或認證標籤",
     "api_key_rank_title": "客戶端 Key 消耗排行",
+    "api_key_rank_context_top": "Top {{limit}} · 共 {{total}} 個客戶端 Key · 按費用排序",
+    "api_key_rank_context_total": "共 {{total}} 個客戶端 Key · 按費用排序",
     "api_key_warning_title": "異常客戶端 Key 預警",
     "credential_rank_title": "憑證消耗排行",
     "credential_warning_title": "異常憑證預警",
@@ -4139,11 +4164,16 @@
     "submit_callback": "提交回呼",
     "loading_link": "正在取得 OAuth 登入連結...",
     "waiting": "等待 OAuth 登入完成後貼上回呼地址提交。",
+    "callback_submitting": "正在提交回呼地址...",
+    "callback_accepted": "回呼已提交，正在等待授權完成...",
     "synchronizing": "重新登入已成功，正在同步憑證管理工作區...",
     "success": "重新登入成功",
     "error": "重新登入失敗",
     "missing_state": "OAuth 登入連結缺少狀態標識，請重新取得連結。",
     "callback_required": "請先貼上回呼地址。",
+    "identity_changed": "OAuth 授權已完成，但本次授權對應不同的 ChatGPT Space 或帳號，因此原憑證未被視為已恢復。",
+    "identity_ambiguous": "OAuth 授權已完成，但有多個憑證符合原帳號 ID，系統未自動選擇任何憑證。",
+    "identity_unconfirmed": "OAuth 授權已完成，但暫時無法確認原憑證已更新。請檢查重新整理後的憑證清單是否發生身份變化。",
     "same_account_hint": "請使用目標帳號完成 OAuth 登入。CPA 會依登入帳號儲存 Codex 憑據；同一帳號通常會覆蓋同名憑據。",
     "rerun_hint": "重新登入已完成，請重新執行巡檢以更新帳號狀態。"
   },
@@ -4373,6 +4403,9 @@
     "title": "系統資訊",
     "about_title": "CPA Manager Plus",
     "database_status_title": "SQLite 儲存空間",
+    "database_maintenance_title": "資料庫維護待完成",
+    "database_maintenance_counts": "還有 {{indexes}} 和 {{jobs}} 待完成。",
+    "database_maintenance_hint": "請停止 Manager Server 並執行 cleanup-derived；重新啟動後狀態會自動恢復。",
     "database_file": "資料庫檔案",
     "database_wal_file": "WAL 檔案",
     "database_shm_file": "SHM 檔案",
@@ -4470,6 +4503,8 @@
     "xai_base_url_required": "請填寫 xAI Base URL",
     "claude_config_added": "Claude 設定新增成功",
     "claude_config_updated": "Claude 設定更新成功",
+    "claude_fingerprint_not_applied": "設定已儲存，但請求指紋未生效，目前連線的 CPA 可能不支援 fingerprint-profile。",
+    "claude_fingerprint_verify_unavailable": "設定已送出，但無法確認請求指紋是否生效，請重新整理後檢查。",
     "claude_config_deleted": "Claude 設定刪除成功",
     "vertex_config_added": "Vertex 設定新增成功",
     "vertex_config_updated": "Vertex 設定更新成功",
@@ -4615,5 +4650,60 @@
     "env_locked_hint": "此開關由服務啟動環境鎖定，請修改環境變數並重新啟動。",
     "env_locked_reason": "由環境變數 {{envKey}} 鎖定。修改該變數並重新啟動服務後才能變更此開關。",
     "gating_note": "關閉某項策略只會影響之後發現的新問題；已經排隊或正在處理的任務會繼續完成。"
+  },
+  "plans": {
+    "label": "方案",
+    "codex": {
+      "free": "Free",
+      "go": "Go",
+      "plus": "Plus",
+      "pro_5x": "Pro 5x",
+      "pro_20x": "Pro 20x",
+      "team": "Team",
+      "business": "Business",
+      "business_premium_5x": {
+        "short": "Business 5x",
+        "full": "Business Premium 5x"
+      },
+      "business_usage_based": {
+        "short": "Business PAYG",
+        "full": "Business Usage-based"
+      },
+      "enterprise": "Enterprise",
+      "enterprise_automation": {
+        "short": "Ent. Auto",
+        "full": "Enterprise Automation"
+      },
+      "enterprise_usage_based": {
+        "short": "Ent. PAYG",
+        "full": "Enterprise Usage-based"
+      },
+      "edu": {
+        "short": "Edu",
+        "full": "Education"
+      },
+      "edu_plus": {
+        "short": "Edu Plus",
+        "full": "Education Plus"
+      },
+      "edu_pro": {
+        "short": "Edu Pro",
+        "full": "Education Pro"
+      }
+    },
+    "claude": {
+      "free": "免費版",
+      "pro": "專業版",
+      "max": "Max",
+      "max_5x": "Max 5x",
+      "max_20x": "Max 20x",
+      "team": "團隊版"
+    },
+    "antigravity": {
+      "free": "免費版",
+      "pro": "Pro",
+      "ultra": "Ultra",
+      "ultra_lite": "Ultra Lite"
+    }
   }
 }

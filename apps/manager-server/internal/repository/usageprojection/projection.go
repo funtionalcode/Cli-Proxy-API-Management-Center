@@ -59,6 +59,11 @@ func SearchTextExpression(prefix string) string {
 		expression := prefix + column
 		if column == "analytics_model" {
 			expression = usageidentity.SQLRequestAnalyticsModelExpression(prefix+"model", prefix+"requested_model")
+		} else if column == "auth_project_id_snapshot" {
+			// Historical Codex account markers remain in immutable usage_events,
+			// but they are not project identifiers and must not become searchable
+			// project text in the monitoring projection.
+			expression = usageidentity.SQLProjectIDSnapshotExpression(prefix)
 		}
 		parts = append(parts, fmt.Sprintf("coalesce(%s, '')", expression))
 	}
@@ -123,7 +128,7 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		event_id, timestamp_ms, search_text, account_key, provider, executor_type, model,
 		requested_model, analytics_model, resolved_model, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot,
-		auth_provider_snapshot, auth_project_id_snapshot, reasoning_effort,
+		auth_provider_snapshot, auth_account_id_snapshot, auth_project_id_snapshot, reasoning_effort,
 		service_tier, failed, latency_ms, input_tokens, output_tokens,
 		reasoning_tokens, cached_tokens, cache_tokens, cache_read_tokens,
 		cache_creation_tokens, normalized_total_input_tokens, total_tokens,
@@ -149,6 +154,7 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		coalesce(auth_label_snapshot, ''),
 		coalesce(auth_file_snapshot, ''),
 		coalesce(auth_provider_snapshot, ''),
+		coalesce(auth_account_id_snapshot, ''),
 		coalesce(auth_project_id_snapshot, ''),
 		coalesce(reasoning_effort, ''),
 		coalesce(service_tier, ''),
@@ -188,6 +194,7 @@ func upsertEvents(ctx context.Context, tx *sql.Tx, whereClause string, whereArgs
 		auth_label_snapshot = excluded.auth_label_snapshot,
 		auth_file_snapshot = excluded.auth_file_snapshot,
 		auth_provider_snapshot = excluded.auth_provider_snapshot,
+		auth_account_id_snapshot = excluded.auth_account_id_snapshot,
 		auth_project_id_snapshot = excluded.auth_project_id_snapshot,
 		reasoning_effort = excluded.reasoning_effort,
 		service_tier = excluded.service_tier,
@@ -243,6 +250,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 			coalesce(account_snapshot, '') as account_snapshot,
 			coalesce(auth_label_snapshot, '') as auth_label_snapshot,
 			coalesce(nullif(auth_provider_snapshot, ''), provider, '') as auth_provider_snapshot,
+			coalesce(auth_account_id_snapshot, '') as auth_account_id_snapshot,
 			coalesce(auth_project_id_snapshot, '') as auth_project_id_snapshot,
 			coalesce(source, '') as source,
 			coalesce(source_hash, '') as source_hash,
@@ -280,7 +288,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 	insert into %s (
 		snapshot_key, event_id, event_hash, timestamp_ms, auth_file_snapshot,
 		auth_index, account_snapshot, auth_label_snapshot,
-		auth_provider_snapshot, auth_project_id_snapshot, source, source_hash,
+		auth_provider_snapshot, auth_account_id_snapshot, auth_project_id_snapshot, source, source_hash,
 		response_metadata_json, header_quota_recover_at_ms,
 		header_quota_used_percent, header_quota_plan_type, header_error_kind,
 		header_error_code, header_trace_id, updated_at_ms
@@ -288,7 +296,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 	select
 		snapshot_key, event_id, event_hash, timestamp_ms, auth_file_snapshot,
 		auth_index, account_snapshot, auth_label_snapshot,
-		auth_provider_snapshot, auth_project_id_snapshot, source, source_hash,
+		auth_provider_snapshot, auth_account_id_snapshot, auth_project_id_snapshot, source, source_hash,
 		response_metadata_json, header_quota_recover_at_ms,
 		header_quota_used_percent, header_quota_plan_type, header_error_kind,
 		header_error_code, header_trace_id, ?
@@ -302,6 +310,7 @@ func upsertHeaders(ctx context.Context, tx *sql.Tx, whereClause string, whereArg
 		account_snapshot = excluded.account_snapshot,
 		auth_label_snapshot = excluded.auth_label_snapshot,
 		auth_provider_snapshot = excluded.auth_provider_snapshot,
+		auth_account_id_snapshot = excluded.auth_account_id_snapshot,
 		auth_project_id_snapshot = excluded.auth_project_id_snapshot,
 		source = excluded.source,
 		source_hash = excluded.source_hash,

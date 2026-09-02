@@ -27,6 +27,8 @@ const calculateOutputTokensPerSecond = (
   return outputTokens / (latencyMs / 1000);
 };
 
+const CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX = 'codex-account-id:v1:';
+
 export const buildEventRows = (
   details: UsageDetailWithEndpoint[],
   authMetaMap: Map<string, MonitoringAuthMeta>,
@@ -46,7 +48,10 @@ export const buildEventRows = (
         return null;
       }
 
-      const authIndex = normalizeAuthIndex(detail.auth_index) ?? '-';
+      const authIndexIdentity = normalizeAuthIndex(detail.auth_index) ?? '';
+      const authIndex = authIndexIdentity || '-';
+      const sourceIdentity = readString(detail.source);
+      const sourceHashIdentity = readString(detail.source_hash ?? detail.sourceHash);
       const authMeta = authMetaMap.get(authIndex);
       const sourceMeta = resolveSourceDisplay(
         detail.source,
@@ -64,6 +69,8 @@ export const buildEventRows = (
       const snapshotProvider = readString(
         detail.auth_provider_snapshot ?? detail.authProviderSnapshot
       );
+      const eventProvider = readString(detail.provider);
+      const effectiveProvider = snapshotProvider || eventProvider;
       const snapshotDisplay = snapshotAccount || snapshotLabel;
       const channelMeta =
         channelByAuthIndex.get(authIndex) ||
@@ -108,7 +115,17 @@ export const buildEventRows = (
       const xForwardedFor = readString(detail.x_forwarded_for ?? detail.xForwardedFor);
       const userAgent = readString(detail.user_agent ?? detail.userAgent);
       const resolvedModel = readString(detail.__resolvedModel);
-      const projectId = readString(detail.auth_project_id_snapshot ?? detail.authProjectIdSnapshot);
+      const accountId = readString(
+        detail.auth_account_id_snapshot ?? detail.authAccountIdSnapshot
+      );
+      const rawProjectId = readString(
+        detail.auth_project_id_snapshot ?? detail.authProjectIdSnapshot
+      );
+      const projectId =
+        effectiveProvider.toLowerCase().replace(/_/g, '-') === 'codex' &&
+        rawProjectId.startsWith(CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX)
+          ? ''
+          : rawProjectId;
       const inputTokens = Math.max(Number(detail.tokens?.input_tokens) || 0, 0);
       const outputTokens = Math.max(Number(detail.tokens?.output_tokens) || 0, 0);
       const reasoningTokens = Math.max(Number(detail.tokens?.reasoning_tokens) || 0, 0);
@@ -204,17 +221,24 @@ export const buildEventRows = (
         userAgent,
         sourceKey,
         source: sourceLabel,
+        sourceIdentity,
+        sourceHashIdentity,
         sourceMasked,
         account,
+        accountIdentity: snapshotAccount,
         accountMasked,
         authIndex,
+        authIndexIdentity,
         authIndexMasked: maskAuthIndex(authIndex),
         authLabel: authMeta?.label || snapshotLabel || sourceMasked,
+        authLabelIdentity: snapshotLabel,
+        accountId: accountId || undefined,
         projectId,
         apiKeyHash,
         apiKeyLabel,
         apiKeyMasked,
-        provider: authMeta?.provider || snapshotProvider || sourceMeta.type || '-',
+        provider: authMeta?.provider || snapshotProvider || eventProvider || sourceMeta.type || '-',
+        providerIdentity: effectiveProvider,
         planType: authMeta?.planType || '-',
         channel: channelLabel,
         channelHost: channelMeta?.host || '-',

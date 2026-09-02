@@ -30,7 +30,7 @@
   <tr>
     <td align="center">
       <strong>仪表盘</strong><br>
-      <img src="img/home-zh.png" alt="CPA CLIProxyAPI 管理与可观测性仪表盘" width="420">
+      <img src="img/dashboard-zh.png" alt="CPA CLIProxyAPI 管理与可观测性仪表盘" width="420">
     </td>
     <td align="center">
       <strong>请求监控</strong><br>
@@ -43,8 +43,18 @@
       <img src="img/usage-analytics-zh.png" alt="CPA 按模型和账号拆解用量与成本" width="420">
     </td>
     <td align="center">
-      <strong>账号健康</strong><br>
-      <img src="img/codex-inspection-zh.png" alt="Codex 与 xAI 账号巡检和配额健康" width="420">
+      <strong>凭证管理</strong><br>
+      <img src="img/credential-zh.png" alt="CPA 凭证管理列表、可用状态、用量、配额和操作" width="420">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>凭证健康巡检</strong><br>
+      <img src="img/credential-health-zh.png" alt="CPA 凭证健康巡检状态、历史和结果" width="420">
+    </td>
+    <td align="center">
+      <strong>凭证配额</strong><br>
+      <img src="img/credential-quota-zh.png" alt="CPA 凭证配额用量、当前窗口和预测" width="420">
     </td>
   </tr>
 </table>
@@ -95,6 +105,7 @@ CPA / CLIProxyAPI 可以在 `:8317` 直接托管官方 Management Center，也�
 - 使用单 Docker 容器，或 Linux、macOS、Windows 的 amd64/arm64 原生包运行；完整栈可以与 CPA 一起部署。
 - 请求历史、Manager 配置、账号自动化和模型价格都保存在本地文件，不需要注册账号，也不包含遥测 SDK。
 - 备份 SQLite 时同时保存 `data.key`，才能恢复加密后的 CPA Management Key。
+- 如果用只读根文件系统或非 root 用户加固运行环境，需要给 SQLite 提供可写的临时目录和可写的数据库文件；参见[只读根文件系统](https://seakee.github.io/CPA-Manager-Plus/docs/deployment/docker.html)。
 
 想先了解界面？可以打开[在线演示](https://seakee.github.io/CPA-Manager-Plus/)。演示站只使用虚构数据，不是部署或运行模式，不能连接、管理或监控真实 CPA。
 

@@ -9,9 +9,63 @@ import (
 // FormatVersion changes whenever the canonical account-history identity
 // algorithm changes. Persistent derived rollups include this version so they
 // can be rebuilt from immutable usage_events without touching raw history.
-const FormatVersion = "2"
+const FormatVersion = "3"
 
-const keyPrefix = "usage-account-history"
+const (
+	keyPrefix                    = "usage-account-history"
+	codexAccountIDSnapshotPrefix = "codex-account-id:v1:"
+)
+
+// CodexAccountIDSnapshot marks a freshly observed, explicit ChatGPT account_id
+// before it is stored in the legacy project-id snapshot column. Historical
+// values in that column predate this provenance marker and must never be
+// reinterpreted as a stable Codex account identity.
+func CodexAccountIDSnapshot(accountID string) string {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return ""
+	}
+	return codexAccountIDSnapshotPrefix + accountID
+}
+
+// CodexAccountIDFromSnapshot returns an account id only when the snapshot has
+// explicit provenance from the strict Codex account-id resolver.
+func CodexAccountIDFromSnapshot(snapshot string) string {
+	snapshot = strings.TrimSpace(snapshot)
+	if !strings.HasPrefix(snapshot, codexAccountIDSnapshotPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(snapshot, codexAccountIDSnapshotPrefix))
+}
+
+// ProjectIDSnapshot returns only a real provider project snapshot. The
+// pre-v3 Codex account marker is retained in immutable history for audit but
+// must never be exposed as a project identifier again.
+func ProjectIDSnapshot(provider, projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if normalizeProvider(provider) == "codex" && CodexAccountIDFromSnapshot(projectID) != "" {
+		return ""
+	}
+	return projectID
+}
+
+// SQLProjectIDSnapshotExpression mirrors ProjectIDSnapshot for SQL filters
+// and option lists. Keep this expression equivalent to the Go helper.
+func SQLProjectIDSnapshotExpression(alias string) string {
+	column := func(name string) string {
+		if alias == "" {
+			return name
+		}
+		if strings.HasSuffix(alias, ".") {
+			return alias + name
+		}
+		return alias + "." + name
+	}
+	provider := "lower(replace(trim(coalesce(nullif(" + column("auth_provider_snapshot") + ", ''), " + column("provider") + ", '')), '_', '-'))"
+	marker := "'" + codexAccountIDSnapshotPrefix + "'"
+	project := "trim(coalesce(" + column("auth_project_id_snapshot") + ", ''))"
+	return "case when " + provider + " = 'codex' and substr(" + project + ", 1, length(" + marker + ")) = " + marker + " then '' else " + project + " end"
+}
 
 // Fields contains the credential snapshots available on a usage event or an
 // account-history request. Display values are deliberately lower priority than
@@ -20,6 +74,7 @@ type Fields struct {
 	AuthFileSnapshot      string
 	AuthIndex             string
 	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
 	AuthProjectIDSnapshot string
 	AccountSnapshot       string
 	AuthLabelSnapshot     string
@@ -30,10 +85,26 @@ type Fields struct {
 // credential snapshot. The key is opaque to clients; RowKey is the response
 // correlation contract.
 func AccountKey(fields Fields) (string, bool) {
+	provider := normalizeProvider(fields.AuthProviderSnapshot)
+	if provider == "codex" {
+		if accountID := strings.TrimSpace(fields.AuthAccountIDSnapshot); accountID != "" {
+			return encodeKey("codex-account", provider, accountID), true
+		}
+	}
+	return LegacyAccountKey(fields)
+}
+
+// LegacyAccountKey returns the format-v2 credential identity. Account-window
+// reads use it only as an exact file/index compatibility key for Codex events
+// collected before a stable account_id snapshot was available.
+func LegacyAccountKey(fields Fields) (string, bool) {
 	authFile := effectiveAuthFile(fields)
 	authIndex := strings.TrimSpace(fields.AuthIndex)
 	provider := normalizeProvider(fields.AuthProviderSnapshot)
 	projectID := strings.TrimSpace(fields.AuthProjectIDSnapshot)
+	if provider == "codex" && CodexAccountIDFromSnapshot(projectID) != "" {
+		projectID = ""
+	}
 	account := strings.TrimSpace(fields.AccountSnapshot)
 	label := strings.TrimSpace(fields.AuthLabelSnapshot)
 
@@ -61,21 +132,23 @@ func AccountKey(fields Fields) (string, bool) {
 	}
 }
 
-// PricingStructureRevision binds the pricing rollup structure to the identity
-// format as well as model/context-tier structure.
 func PricingStructureRevision(modelPriceRevision string) string {
 	return fmt.Sprintf("model-%s:identity-%s:%s", ModelFormatVersion, FormatVersion, strings.TrimSpace(modelPriceRevision))
 }
 
-// AccountHistoryStructureRevision binds the legacy account-history rollup to
-// both credential identity and analytics model identity.
 func AccountHistoryStructureRevision() string {
 	return fmt.Sprintf("identity-%s:model-%s", FormatVersion, ModelFormatVersion)
 }
 
-// SQLAccountKeyExpression returns the SQLite expression equivalent of
-// AccountKey for a usage_events row. alias may be empty or a trusted internal
-// table alias such as "e".
+// MonitoringProjectionStructureRevision versions the derived monitoring
+// projection independently from account-history rollups. The projection's
+// search document intentionally omits the historical Codex account marker
+// from the project field, so changing that expression must rebuild only the
+// projection/search derivation from immutable usage_events.
+func MonitoringProjectionStructureRevision() string {
+	return AccountHistoryStructureRevision() + ":project-v1"
+}
+
 func SQLAccountKeyExpression(alias string) string {
 	column := func(name string) string {
 		if alias == "" {
@@ -92,6 +165,7 @@ func SQLAccountKeyExpression(alias string) string {
 	source := trimmed("source")
 	account := trimmed("account_snapshot")
 	label := trimmed("auth_label_snapshot")
+	accountID := trimmed("auth_account_id_snapshot")
 	projectID := trimmed("auth_project_id_snapshot")
 	providerSource := "coalesce(nullif(" + trimmed("auth_provider_snapshot") + ", ''), " + trimmed("provider") + ", '')"
 	providerNormalized := "case lower(replace(trim(" + providerSource + "), '_', '-')) " +
@@ -100,6 +174,11 @@ func SQLAccountKeyExpression(alias string) string {
 	authFile := "case when " + authFileSnapshot + " <> '' then " + authFileSnapshot +
 		" when " + source + " <> '' and " + source + " <> " + account + " and " + source + " <> " + label +
 		" then " + source + " else '' end"
+	marker := "'" + codexAccountIDSnapshotPrefix + "'"
+	legacyMarkerAccountID := "case when substr(" + projectID + ", 1, length(" + marker + ")) = " + marker +
+		" then trim(substr(" + projectID + ", length(" + marker + ") + 1)) else '' end"
+	codexAccountID := "case when " + providerNormalized + " = 'codex' then " + accountID + " else '' end"
+	legacyProjectID := "case when " + providerNormalized + " = 'codex' and (" + accountID + " <> '' or " + legacyMarkerAccountID + " <> '') then '' else " + projectID + " end"
 
 	hexValue := func(value string) string { return "hex(" + value + ")" }
 	prefix := "'" + keyPrefix + ":" + FormatVersion + ":"
@@ -115,13 +194,14 @@ func SQLAccountKeyExpression(alias string) string {
 	}
 
 	return "case " +
+		"when " + providerNormalized + " = 'codex' and " + codexAccountID + " <> '' then " + key("codex-account", providerNormalized, codexAccountID) + " " +
 		"when " + authFile + " <> '' and " + authIndex + " <> '' then " + key("file-index", authFile, authIndex) + " " +
-		"when " + authFile + " <> '' and " + projectID + " <> '' then " + key("file-project", authFile, providerNormalized, projectID) + " " +
+		"when " + authFile + " <> '' and " + legacyProjectID + " <> '' then " + key("file-project", authFile, providerNormalized, legacyProjectID) + " " +
 		"when " + authFile + " <> '' and " + account + " <> '' then " + key("file-account", authFile, providerNormalized, account) + " " +
 		"when " + authFile + " <> '' and " + label + " <> '' then " + key("file-label", authFile, providerNormalized, label) + " " +
 		"when " + authFile + " <> '' then " + key("file", authFile, providerNormalized) + " " +
 		"when " + authIndex + " <> '' then " + key("auth-index", providerNormalized, authIndex) + " " +
-		"when " + projectID + " <> '' then " + key("project", providerNormalized, projectID) + " " +
+		"when " + legacyProjectID + " <> '' then " + key("project", providerNormalized, legacyProjectID) + " " +
 		"when " + account + " <> '' then " + key("account", providerNormalized, account) + " " +
 		"when " + label + " <> '' then " + key("label", providerNormalized, label) + " " +
 		"else '' end"

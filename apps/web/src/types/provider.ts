@@ -30,6 +30,14 @@ export interface CloakConfig {
   cacheUserId?: boolean;
 }
 
+/**
+ * Claude request fingerprint profile. `''` keeps the caller-owned
+ * fingerprint; `'claude-code-cli'` opts in to the Claude Code CLI
+ * request fingerprint. `oauth-cli` is accepted upstream as a legacy
+ * alias and is normalized to `'claude-code-cli'` on read.
+ */
+export type ClaudeFingerprintProfile = '' | 'claude-code-cli';
+
 export interface GeminiKeyConfig {
   apiKey: string;
   priority?: number;
@@ -58,6 +66,12 @@ export interface ProviderKeyConfig {
   cloak?: CloakConfig;
   authIndex?: string;
   disableCooling?: boolean | null;
+  fingerprintProfile?: ClaudeFingerprintProfile;
+  /**
+   * @deprecated CPA compatibility only. Do not use for new writes;
+   * use {@link fingerprintProfile} instead. Kept so older configs that
+   * carry `experimental-cch-signing` round-trip losslessly.
+   */
   experimentalCchSigning?: boolean;
   rebuildMidSystemMessage?: boolean;
 }

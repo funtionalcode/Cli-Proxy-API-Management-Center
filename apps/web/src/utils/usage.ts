@@ -2,8 +2,10 @@ import i18n from '@/i18n';
 import { maskApiKey } from './format';
 import { normalizeAuthIndex } from './authIndex';
 import { parseTimestampMs } from './timestamp';
+import { normalizeAnalyticsModel } from './analyticsModel';
 
 export { normalizeAuthIndex };
+export { normalizeAnalyticsModel } from './analyticsModel';
 
 export interface ModelPriceContextTier {
   thresholdTokens: number;
@@ -175,6 +177,8 @@ export interface UsageResponseHeaderMetadata {
 export interface UsageDetail {
   timestamp: string;
   source: string;
+  source_hash?: string;
+  sourceHash?: string;
   auth_index: string | number | null;
   api_key_hash?: string;
   apiKeyHash?: string;
@@ -186,6 +190,8 @@ export interface UsageDetail {
   authFileSnapshot?: string;
   auth_provider_snapshot?: string;
   authProviderSnapshot?: string;
+  auth_account_id_snapshot?: string;
+  authAccountIdSnapshot?: string;
   auth_project_id_snapshot?: string;
   authProjectIdSnapshot?: string;
   auth_snapshot_at_ms?: number;
@@ -325,37 +331,6 @@ const readDetailString = (value: unknown): string | undefined => {
   if (value === null || value === undefined) return undefined;
   const text = String(value).trim();
   return text || undefined;
-};
-
-const REASONING_MODEL_SUFFIXES = new Set([
-  'none',
-  'auto',
-  '-1',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-]);
-
-const isReasoningModelSuffix = (value: string): boolean => {
-  if (REASONING_MODEL_SUFFIXES.has(value.toLowerCase())) return true;
-  if (!/^[+-]?\d+$/.test(value)) return false;
-  try {
-    return BigInt(value) >= 0n && BigInt(value) <= 9_223_372_036_854_775_807n;
-  } catch {
-    return false;
-  }
-};
-
-export const normalizeAnalyticsModel = (value: unknown): string => {
-  const model = value === null || value === undefined ? '' : String(value);
-  const open = model.lastIndexOf('(');
-  if (open <= 0 || !model.endsWith(')')) return model;
-  const suffix = model.slice(open + 1, -1);
-  if (!isReasoningModelSuffix(suffix)) return model;
-  return model.slice(0, open) || model;
 };
 
 const readResponseHeaderMetadata = (value: unknown): UsageResponseHeaderMetadata | undefined =>
@@ -918,6 +893,9 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           auth_provider_snapshot: readDetailString(
             detailRaw.auth_provider_snapshot ?? detailRaw.authProviderSnapshot
           ),
+          auth_account_id_snapshot: readDetailString(
+            detailRaw.auth_account_id_snapshot ?? detailRaw.authAccountIdSnapshot
+          ),
           auth_project_id_snapshot: readDetailString(
             detailRaw.auth_project_id_snapshot ?? detailRaw.authProjectIdSnapshot
           ),
@@ -1049,6 +1027,9 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           ),
           auth_provider_snapshot: readDetailString(
             detailRaw.auth_provider_snapshot ?? detailRaw.authProviderSnapshot
+          ),
+          auth_account_id_snapshot: readDetailString(
+            detailRaw.auth_account_id_snapshot ?? detailRaw.authAccountIdSnapshot
           ),
           auth_project_id_snapshot: readDetailString(
             detailRaw.auth_project_id_snapshot ?? detailRaw.authProjectIdSnapshot
@@ -1545,9 +1526,7 @@ export function formatCompactNumber(value: number): string {
 
 export function formatUsd(value: number, fractionDigits = 2): string {
   const num = Number(value);
-  const digits = Number.isInteger(fractionDigits)
-    ? Math.max(0, Math.min(6, fractionDigits))
-    : 2;
+  const digits = Number.isInteger(fractionDigits) ? Math.max(0, Math.min(6, fractionDigits)) : 2;
   if (!Number.isFinite(num)) return `$${(0).toFixed(digits)}`;
 
   const fixed = num.toFixed(digits);

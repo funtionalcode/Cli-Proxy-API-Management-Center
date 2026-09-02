@@ -46,7 +46,7 @@ If you see login instead of setup, Manager Server is already configured. Use the
 | `GET /v1/models`                      | CPA API Key                                        |
 | CPAMP Manager Server APIs after setup | CPAMP Admin Key                                    |
 
-Do not mix these keys. CPA connections saved through setup or the panel are encrypted with `data.key` and written to SQLite. Installer env/secret-managed connections read the key from the install directory and are not written to SQLite. In the CPAMP Lightweight Panel, the browser holds the CPA Management Key.
+Do not mix these keys. CPA connections saved through setup or the panel are encrypted with `data.key` and written to SQLite. The one-click installer uses env/secret input only for a one-time import; after a successful import it is encrypted into SQLite and removed from the final runtime configuration. Manual env/secret deployments still read the key from their deployment environment. In the CPAMP Lightweight Panel, the browser holds the CPA Management Key.
 
 ## Full Docker Opens Login Instead Of Setup
 
@@ -63,6 +63,21 @@ Do not use the CPA Management Key on the CPAMP login form. If the admin key is l
 ## What If I Forget The Admin Key?
 
 Stop Manager Server, back up the data directory, then follow [Reset Admin Key](../operations/reset-admin-key.md).
+
+## Startup Or Import Reports Conflicting CPA Connection Records
+
+The message means the connection resolver cannot safely derive one connection from the historical SQLite rows, usually because partial records without a complete authority conflict. A complete `manager_config_v1` always wins; if it differs from stale legacy `setup`, Manager keeps the manager connection and canonicalizes setup without repair. A complete compatible legacy setup can also complete a partial manager row. If the resolver reports an unresolvable conflict, stop Manager Server, confirm the correct CPA URL and CPA Management Key, then repair explicitly:
+
+```bash
+cpa-manager-plus store-cpa-connection \
+  --repair-conflict \
+  --cpa-base-url '<cpa-url>' \
+  --management-key-file '<key-file>' \
+  --db-path '<usage.sqlite>' \
+  --data-key-path '<data.key>'
+```
+
+The repair canonicalizes both rows to the connection you provide, keeps it encrypted at rest, and preserves collector settings and other data; startup then proceeds normally. See [backup and migration](../operations/backup.md).
 
 ## I Changed CPA Panel Repository, But Monitoring Is Empty
 
@@ -281,7 +296,7 @@ data.key
 
 CPA connections saved through setup or the panel are encrypted with `data.key` before being written to SQLite. If `data.key` is lost, the encrypted CPA Management Key cannot be recovered and the CPA connection must be saved again.
 
-If the installer manages the connection through env/secrets, the CPA Management Key is usually stored in `secrets/cpa-management-key` under the install directory and is not written to SQLite. Back up `secrets/` together with the data directory.
+After a successful one-click import, the CPA Management Key is stored in the encrypted SQLite configuration; back up `data.key` together with SQLite. The installer's temporary `secrets/cpa-management-key` is normally removed, but may remain after a failed upgrade or skipped execution for a retry. Manual env/secret deployments must still back up their matching secret files together with the data directory.
 
 ## 401 From Manager Server
 

@@ -60,7 +60,7 @@ func TestAccountActionCandidateFromEventUsesSafeEvidence(t *testing.T) {
 		AuthFileSnapshot:      "codex-auth.json",
 		AuthIndex:             "7",
 		AccountSnapshot:       "user@example.com",
-		AuthProjectIDSnapshot: "acct-123",
+		AuthAccountIDSnapshot: "acct-123",
 		FailSummary:           "authentication_error: invalidated OAuth token",
 		FailBody:              `{"error":{"type":"authentication_error","code":"token_revoked","message":"secret token sk-sensitive"}}`,
 		RawJSON:               `{"authorization":"Bearer secret","raw":"payload"}`,
@@ -135,6 +135,50 @@ func TestAccountActionCandidateFromEventUsesHeaderErrorCode(t *testing.T) {
 		t.Fatalf("decode evidence: %v", err)
 	}
 	if evidence["headerErrorCode"] != "token_invalidated" || evidence["headerTraceId"] != "req-header-auth" {
+		t.Fatalf("evidence = %#v", evidence)
+	}
+}
+
+func TestAccountActionCandidateUsesNormalizedHeaderMetadataWithoutFailBodyHeaders(t *testing.T) {
+	payload := `{
+		"timestamp": "2026-04-25T00:00:00Z",
+		"failed": true,
+		"fail": {"status_code": 401, "body": "upstream rejected request"},
+		"provider": "codex",
+		"model": "gpt-5.4",
+		"endpoint": "POST /v1/chat/completions",
+		"auth_file_snapshot": "codex-auth.json",
+		"auth_index": "auth-1",
+		"account_snapshot": "user@example.com",
+		"response_headers": {
+			"X-OpenAI-IDE-Error-Code": ["token_invalidated"]
+		}
+	}`
+	event, err := usage.NormalizeRaw([]byte(payload))
+	if err != nil {
+		t.Fatalf("normalize header-only account action event: %v", err)
+	}
+	if event.FailBody != "upstream rejected request" || strings.Contains(event.FailBody, "token_invalidated") {
+		t.Fatalf("fail body = %q", event.FailBody)
+	}
+	if event.HeaderErrorKind != "auth" || event.HeaderErrorCode != "token_invalidated" {
+		t.Fatalf("header error = kind:%q code:%q metadata:%#v", event.HeaderErrorKind, event.HeaderErrorCode, event.ResponseMetadata)
+	}
+
+	// Ensure classification is supplied by structured metadata, not raw JSON.
+	event.RawJSON = ""
+	candidate, ok := accountActionCandidateFromEvent(event, time.Now())
+	if !ok {
+		t.Fatal("candidate not detected from structured response metadata")
+	}
+	if candidate.ActionType != model.AccountActionTypeReauth || candidate.ReasonCode != credentialpolicy.ReasonTokenRevoked {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+	var evidence map[string]any
+	if err := json.Unmarshal([]byte(candidate.EvidenceJSON), &evidence); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if evidence["errorCode"] != "token_invalidated" {
 		t.Fatalf("evidence = %#v", evidence)
 	}
 }

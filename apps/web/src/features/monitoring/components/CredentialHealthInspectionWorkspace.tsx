@@ -18,6 +18,7 @@ interface CredentialHealthInspectionWorkspaceProps {
     target?: CodexReauthTarget | null,
     snapshot?: CredentialInspectionSnapshot | null
   ) => void | Promise<void>;
+  onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
   onOpenCredential: (target: CredentialInspectionTarget) => void;
 }
 
@@ -26,6 +27,7 @@ export function CredentialHealthInspectionWorkspace({
   onModeChange,
   onSnapshotChange,
   onCredentialsChanged,
+  onCodexReauthStart,
   onOpenCredential,
 }: CredentialHealthInspectionWorkspaceProps) {
   const availability = usePanelFeatureAvailability();
@@ -56,6 +58,7 @@ export function CredentialHealthInspectionWorkspace({
         modeControl={modeControl}
         onSnapshotChange={onSnapshotChange}
         onCredentialsChanged={onCredentialsChanged}
+        onCodexReauthStart={onCodexReauthStart}
         onOpenCredential={onOpenCredential}
       />
     );
@@ -67,6 +70,7 @@ export function CredentialHealthInspectionWorkspace({
       modeControl={modeControl}
       onSnapshotChange={onSnapshotChange}
       onCredentialsChanged={onCredentialsChanged}
+      onCodexReauthStart={onCodexReauthStart}
       onOpenCredential={onOpenCredential}
     />
   );

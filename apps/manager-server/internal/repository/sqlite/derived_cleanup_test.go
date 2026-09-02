@@ -269,6 +269,42 @@ func TestCleanupDerivedBatchIsBoundedAndResumable(t *testing.T) {
 	}
 }
 
+func TestCleanupDerivedBatchRemovesIdentityLegacyTable(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "identity-legacy.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`create table ` + usageAccountModelIdentityLegacy + ` (id integer primary key)`); err != nil {
+		t.Fatalf("create identity legacy table: %v", err)
+	}
+	if _, err := db.Exec(`insert into ` + usageAccountModelIdentityLegacy + ` (id) values (1)`); err != nil {
+		t.Fatalf("seed identity legacy table: %v", err)
+	}
+
+	processed, pending, err := cleanupDerivedBatch(context.Background(), db, 1000)
+	if err != nil {
+		t.Fatalf("clean identity legacy rows: %v", err)
+	}
+	if processed != 1 || !pending {
+		t.Fatalf("clean identity legacy rows = processed:%d pending:%t, want 1,true", processed, pending)
+	}
+	processed, pending, err = cleanupDerivedBatch(context.Background(), db, 1000)
+	if err != nil {
+		t.Fatalf("drop identity legacy table: %v", err)
+	}
+	if processed != 0 || !pending {
+		t.Fatalf("drop identity legacy table = processed:%d pending:%t, want 0,true", processed, pending)
+	}
+	exists, err := derivedTableExists(context.Background(), db, usageAccountModelIdentityLegacy)
+	if err != nil {
+		t.Fatalf("inspect identity legacy table: %v", err)
+	}
+	if exists {
+		t.Fatal("identity legacy table still exists after cleanup")
+	}
+}
+
 func TestMonitoringFTSCleanupIsBoundedAndRequiresOfflineFinalization(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

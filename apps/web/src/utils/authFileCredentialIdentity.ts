@@ -91,13 +91,20 @@ export const readAuthFileStatusProvider = (file: AuthFileItem): string =>
   );
 
 export const readAuthFileStatusAccountId = (file: AuthFileItem): string => {
+  // Codex identity is the ChatGPT account/Space id. Generic project_id, Gemini
+  // project ids and JWT sub values are not equivalent and must never be used as
+  // a fallback for reauth or credential mutation reconciliation.
+  if (readAuthFileStatusProvider(file) === 'codex') {
+    return normalizeIdentityValue(resolveCodexChatgptAccountId(file));
+  }
+
   const direct = readAccountIdFromValue(file);
   if (direct) return direct;
   for (const field of ['id_token', 'idToken', 'metadata', 'attributes'] as const) {
     const nested = readAccountIdFromValue(file[field]);
     if (nested) return nested;
   }
-  return normalizeIdentityValue(resolveCodexChatgptAccountId(file));
+  return '';
 };
 
 export const readAuthFileStatusAccountSnapshot = (file: AuthFileItem): string => {

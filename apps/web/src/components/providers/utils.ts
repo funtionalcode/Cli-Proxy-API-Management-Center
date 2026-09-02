@@ -1,4 +1,4 @@
-import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
+import type { ApiKeyEntry, ClaudeFingerprintProfile, OpenAIProviderConfig } from '@/types';
 import {
   buildRecentRequestCompositeKey,
   mergeRecentRequestBucketGroups,
@@ -285,3 +285,15 @@ export const buildApiKeyEntry = (input?: Partial<ApiKeyEntry>): ApiKeyEntry => (
   authIndex: input?.authIndex ?? '',
   headers: input?.headers ?? {},
 });
+
+// undefined (untouched / preserve raw) and '' (explicit Default / clear raw)
+// both display as Default in the select; re-picking the displayed Default must
+// not silently turn an untouched config into an explicit clear. A real
+// explicit clear requires going through Claude Code CLI first.
+export const resolveClaudeFingerprintSelection = (
+  current: ClaudeFingerprintProfile | undefined,
+  next: string
+): ClaudeFingerprintProfile | undefined => {
+  if (current === undefined && next === '') return undefined;
+  return next as ClaudeFingerprintProfile;
+};

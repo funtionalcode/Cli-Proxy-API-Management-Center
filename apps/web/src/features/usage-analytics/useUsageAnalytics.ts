@@ -344,6 +344,7 @@ export function useUsageAnalytics() {
   const filterSelectorsData = filterSelectorsAnalytics.dataStale
     ? null
     : filterSelectorsAnalytics.data;
+  const timelineBounds = include.timeline ? bounds : null;
   const adapted = useMemo(
     () =>
       adaptUsageAnalyticsData(
@@ -351,13 +352,15 @@ export function useUsageAnalytics() {
         resolvedGranularity,
         filters.apiKeyKeyword,
         apiKeyDisplayMap,
-        credentialDisplayContext
+        credentialDisplayContext,
+        timelineBounds
       ),
     [
       analyticsData,
       apiKeyDisplayMap,
       credentialDisplayContext,
       filters.apiKeyKeyword,
+      timelineBounds,
       resolvedGranularity,
     ]
   );

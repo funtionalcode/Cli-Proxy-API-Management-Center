@@ -20,6 +20,7 @@ export type PanelFeatureUnavailableReason =
 
 export interface PanelFeatureAvailability {
   checking: boolean;
+  panelHostConfirmed: boolean;
   panelHostMode: PanelHostMode;
   panelBase: string;
   managerServiceBase: string;
@@ -34,6 +35,7 @@ export interface PanelFeatureAvailability {
 
 export interface ResolvePanelFeatureAvailabilityInput {
   checking?: boolean;
+  panelHostConfirmed: boolean;
   panelHostedByUsageService: boolean;
   panelBase: string;
   managerServiceBase: string;
@@ -49,6 +51,7 @@ const buildUnavailableState = (
   reason: PanelFeatureUnavailableReason
 ): PanelFeatureAvailability => ({
   checking: input.checking === true,
+  panelHostConfirmed: input.panelHostConfirmed,
   panelHostMode: input.panelHostedByUsageService ? 'manager_embedded' : 'external_panel',
   panelBase: normalizeBase(input.panelBase),
   managerServiceBase: '',
@@ -67,6 +70,9 @@ export function resolvePanelFeatureAvailability(
   if (!input.managementKey) {
     return buildUnavailableState(input, 'service_not_configured');
   }
+  if (!input.panelHostConfirmed) {
+    return buildUnavailableState(input, 'service_unavailable');
+  }
 
   const managerServiceBase = normalizeBase(input.managerServiceBase);
   if (!managerServiceBase || !input.managerConfig) {
@@ -78,13 +84,15 @@ export function resolvePanelFeatureAvailability(
 
   const hasCPAConnection = Boolean(
     input.managerConfig.cpaConnection?.cpaBaseUrl &&
-    input.managerConfig.cpaConnection?.managementKey
+    (input.managerConfig.cpaConnection?.managementKeyConfigured ||
+      input.managerConfig.cpaConnection?.managementKey)
   );
   const collectorEnabled = input.managerConfig.collector?.enabled !== false;
   const requestMonitoringAvailable = hasCPAConnection && collectorEnabled;
 
   return {
     checking: input.checking === true,
+    panelHostConfirmed: input.panelHostConfirmed,
     panelHostMode: input.panelHostedByUsageService ? 'manager_embedded' : 'external_panel',
     panelBase: normalizeBase(input.panelBase),
     managerServiceBase,
@@ -103,22 +111,21 @@ export function resolvePanelFeatureAvailability(
 }
 
 export interface BuildPanelManagerServiceCandidatesInput {
+  panelHostConfirmed: boolean;
   panelHostedByUsageService: boolean;
-  panelHostModeKnown?: boolean;
   panelBase: string;
-  apiBase?: string;
   usageServiceEnabled?: boolean;
   usageServiceBase?: string;
 }
 
 export function buildPanelManagerServiceCandidates({
+  panelHostConfirmed,
   panelHostedByUsageService,
-  panelHostModeKnown,
   panelBase,
-  apiBase,
   usageServiceEnabled,
   usageServiceBase,
 }: BuildPanelManagerServiceCandidatesInput): string[] {
+  if (!panelHostConfirmed) return [];
   const normalizedPanelBase = normalizeBase(panelBase);
   if (panelHostedByUsageService) {
     return normalizedPanelBase ? [normalizedPanelBase] : [];
@@ -129,11 +136,7 @@ export function buildPanelManagerServiceCandidates({
   if (configuredManagerBase) {
     return [configuredManagerBase];
   }
-  if (panelHostModeKnown) {
-    return [];
-  }
-
-  return Array.from(new Set([apiBase, normalizedPanelBase].map(normalizeBase).filter(Boolean)));
+  return [];
 }
 
 export function resolvePersistedPanelHostMode({
@@ -200,6 +203,7 @@ type PanelFeatureAvailabilityRequest = {
 
 const initialAvailability: PanelFeatureAvailability = {
   checking: true,
+  panelHostConfirmed: false,
   panelHostMode: 'external_panel',
   panelBase: '',
   managerServiceBase: '',
@@ -214,6 +218,7 @@ const initialAvailability: PanelFeatureAvailability = {
 
 const demoAvailability: PanelFeatureAvailability = {
   checking: false,
+  panelHostConfirmed: true,
   panelHostMode: 'manager_embedded',
   panelBase: DEMO_API_BASE,
   managerServiceBase: DEMO_API_BASE,
@@ -252,6 +257,9 @@ const buildAvailabilityRequestKey = ({
     String(usageServiceRevision),
   ].join('\u001f');
 
+const isConfirmedExternalPanelProbeFailure = (error: unknown): boolean =>
+  error !== null && typeof error === 'object' && (error as { status?: unknown }).status === 404;
+
 async function detectPanelFeatureAvailability({
   apiBase,
   managementKey,
@@ -265,6 +273,7 @@ async function detectPanelFeatureAvailability({
   if (!managementKey) {
     return resolvePanelFeatureAvailability({
       checking: false,
+      panelHostConfirmed: false,
       panelHostedByUsageService: false,
       panelBase: normalizedPanelBase,
       managerServiceBase: '',
@@ -279,21 +288,23 @@ async function detectPanelFeatureAvailability({
     persistedPanelBase,
     persistedPanelHostMode,
   });
+  let panelHostConfirmed = Boolean(knownPanelHostMode);
   let panelHostedByUsageService = knownPanelHostMode === 'manager_embedded';
   if (!knownPanelHostMode) {
     try {
       const info = await usageServiceApi.getInfo(normalizedPanelBase);
+      panelHostConfirmed = true;
       panelHostedByUsageService = isUsageServiceId(info.service);
-    } catch {
+    } catch (error) {
+      panelHostConfirmed = isConfirmedExternalPanelProbeFailure(error);
       panelHostedByUsageService = false;
     }
   }
 
   const candidates = buildPanelManagerServiceCandidates({
+    panelHostConfirmed,
     panelHostedByUsageService,
-    panelHostModeKnown: Boolean(knownPanelHostMode),
     panelBase: normalizedPanelBase,
-    apiBase,
     usageServiceEnabled,
     usageServiceBase,
   });
@@ -315,6 +326,7 @@ async function detectPanelFeatureAvailability({
       }
       return resolvePanelFeatureAvailability({
         checking: false,
+        panelHostConfirmed,
         panelHostedByUsageService,
         panelBase: normalizedPanelBase,
         managerServiceBase: candidate,
@@ -329,6 +341,7 @@ async function detectPanelFeatureAvailability({
 
   const unavailableState = resolvePanelFeatureAvailability({
     checking: false,
+    panelHostConfirmed,
     panelHostedByUsageService,
     panelBase: normalizedPanelBase,
     managerServiceBase: '',

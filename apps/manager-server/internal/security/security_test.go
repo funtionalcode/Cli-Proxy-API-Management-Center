@@ -1,6 +1,7 @@
 package security
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,177 @@ func TestProtectorEncryptsAndDecryptsString(t *testing.T) {
 	}
 	if _, err := otherProtector.UnprotectString(encrypted); err == nil {
 		t.Fatal("decrypt with wrong data key succeeded")
+	}
+}
+
+// TestProtectorAlwaysEncryptsPlaintextLookingLikeCiphertext proves that a real
+// CPA Management Key whose plaintext happens to start with the encrypted-value
+// prefix is still encrypted at rest. The legacy implementation short-circuited
+// ProtectString whenever IsProtected(value) was true, so such a key would be
+// persisted verbatim and then misread as ciphertext on the next load.
+func TestProtectorAlwaysEncryptsPlaintextLookingLikeCiphertext(t *testing.T) {
+	protector, err := NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+
+	const plaintextKey = "enc:v1:real-cpa-management-key"
+	encrypted, err := protector.ProtectString(plaintextKey)
+	if err != nil {
+		t.Fatalf("protect plaintext that resembles ciphertext: %v", err)
+	}
+	if encrypted == plaintextKey {
+		t.Fatalf("ProtectString returned the plaintext verbatim: %q", encrypted)
+	}
+	if !IsProtected(encrypted) {
+		t.Fatalf("encrypted value is not a protected envelope: %q", encrypted)
+	}
+
+	roundtrip, err := protector.UnprotectString(encrypted)
+	if err != nil {
+		t.Fatalf("unprotect roundtrip: %v", err)
+	}
+	if roundtrip != plaintextKey {
+		t.Fatalf("roundtrip = %q, want %q", roundtrip, plaintextKey)
+	}
+}
+
+// TestProtectorUnprotectsValidLegacyCiphertext ensures values produced by the
+// current envelope format still decrypt after the prefix-collision fix.
+func TestProtectorUnprotectsValidLegacyCiphertext(t *testing.T) {
+	protector, err := NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+	encrypted, err := protector.ProtectString("legacy-secret")
+	if err != nil {
+		t.Fatalf("protect legacy secret: %v", err)
+	}
+	plaintext, err := protector.UnprotectString(encrypted)
+	if err != nil {
+		t.Fatalf("unprotect legacy ciphertext: %v", err)
+	}
+	if plaintext != "legacy-secret" {
+		t.Fatalf("legacy plaintext = %q", plaintext)
+	}
+}
+
+// TestProtectorRejectsMalformedEnvelopePlaintext verifies that a plaintext
+// value such as "enc:v1:not-ciphertext" (which is not a structurally valid
+// envelope) is treated as legacy plaintext by the migration path rather than
+// being silently accepted or causing a hard decrypt failure.
+func TestIsValidProtectedEnvelope(t *testing.T) {
+	protector, err := NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+	valid, _ := protector.ProtectString("payload")
+	if !IsValidProtectedEnvelope(valid) {
+		t.Fatalf("valid ciphertext not recognized as envelope: %q", valid)
+	}
+	if IsValidProtectedEnvelope("enc:v1:not-ciphertext") {
+		t.Fatal("malformed enc:v1 plaintext incorrectly recognized as envelope")
+	}
+	if IsValidProtectedEnvelope("enc:v1:real-key") {
+		t.Fatal("prefix-only plaintext incorrectly recognized as envelope")
+	}
+	if IsValidProtectedEnvelope("") {
+		t.Fatal("empty value recognized as envelope")
+	}
+	if IsValidProtectedEnvelope("management-key") {
+		t.Fatal("ordinary plaintext recognized as envelope")
+	}
+	shortNonce := base64.RawStdEncoding.EncodeToString(make([]byte, encryptedNonceSize-1))
+	validTagOnly := base64.RawStdEncoding.EncodeToString(make([]byte, encryptedTagSize))
+	if IsValidProtectedEnvelope(encryptedPrefix + shortNonce + ":" + validTagOnly) {
+		t.Fatal("envelope with a short nonce recognized as valid")
+	}
+	validNonce := base64.RawStdEncoding.EncodeToString(make([]byte, encryptedNonceSize))
+	shortCiphertext := base64.RawStdEncoding.EncodeToString(make([]byte, encryptedTagSize-1))
+	if IsValidProtectedEnvelope(encryptedPrefix + validNonce + ":" + shortCiphertext) {
+		t.Fatal("envelope shorter than the AES-GCM tag recognized as valid")
+	}
+}
+
+// TestUnprotectStringFailClosed proves that a value which is a structurally
+// valid envelope but fails authenticated decryption (wrong key or corrupted
+// ciphertext) produces an error instead of being returned as plaintext.
+func TestUnprotectStringFailClosed(t *testing.T) {
+	protector, err := NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+	encrypted, err := protector.ProtectString("secret-value")
+	if err != nil {
+		t.Fatalf("protect secret: %v", err)
+	}
+
+	other, err := NewProtector([]byte("abcdef0123456789abcdef0123456789"))
+	if err != nil {
+		t.Fatalf("create other protector: %v", err)
+	}
+	if _, err := other.UnprotectString(encrypted); err == nil {
+		t.Fatal("wrong data key decryption succeeded; must fail closed")
+	}
+
+	corrupted := encrypted[:len(encrypted)-4] + "AAAA"
+	if _, err := protector.UnprotectString(corrupted); err == nil {
+		t.Fatal("corrupted ciphertext decryption succeeded; must fail closed")
+	}
+}
+
+// TestMigrateLegacyPlaintextEnvelope exercises the repository-side migration
+// helper that distinguishes legacy plaintext from real ciphertext at the
+// storage boundary. A malformed enc:v1 plaintext must be re-encrypted; a valid
+// ciphertext must decrypt; a structurally valid but undecryptable value must
+// error fail-closed.
+func TestMigrateLegacyPlaintextEnvelope(t *testing.T) {
+	protector, err := NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+
+	// Malformed enc:v1 plaintext is legacy plaintext and should be re-encrypted.
+	migrated, err := MigrateLegacyValue(protector, "enc:v1:legacy-real-key")
+	if err != nil {
+		t.Fatalf("migrate malformed legacy plaintext: %v", err)
+	}
+	if migrated == "enc:v1:legacy-real-key" {
+		t.Fatal("legacy plaintext was not re-encrypted")
+	}
+	if plaintext, err := protector.UnprotectString(migrated); err != nil || plaintext != "enc:v1:legacy-real-key" {
+		t.Fatalf("migrated legacy plaintext roundtrip = %q, %v", plaintext, err)
+	}
+
+	// A valid ciphertext is returned as its decrypted plaintext.
+	encrypted, err := protector.ProtectString("already-encrypted")
+	if err != nil {
+		t.Fatalf("protect already encrypted: %v", err)
+	}
+	decrypted, err := MigrateLegacyValue(protector, encrypted)
+	if err != nil {
+		t.Fatalf("migrate valid ciphertext: %v", err)
+	}
+	if decrypted != "already-encrypted" {
+		t.Fatalf("migrated ciphertext = %q", decrypted)
+	}
+
+	// Structurally valid envelope but wrong key must fail closed.
+	other, err := NewProtector([]byte("abcdef0123456789abcdef0123456789"))
+	if err != nil {
+		t.Fatalf("create other protector: %v", err)
+	}
+	otherEncrypted, err := other.ProtectString("other-key-secret")
+	if err != nil {
+		t.Fatalf("protect with other key: %v", err)
+	}
+	if _, err := MigrateLegacyValue(protector, otherEncrypted); err == nil {
+		t.Fatal("migrating undecryptable envelope succeeded; must fail closed")
+	}
+
+	// Empty value stays empty.
+	if migrated, err := MigrateLegacyValue(protector, ""); err != nil || migrated != "" {
+		t.Fatalf("migrate empty = %q, %v", migrated, err)
 	}
 }
 

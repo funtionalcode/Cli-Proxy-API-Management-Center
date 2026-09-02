@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AuthFileItem } from '@/types';
 import {
   acknowledgeAccountCredentialMutationMarkers,
   clearAccountCredentialMutationMarkersForTests,
+  createAccountCredentialMutationBaseline,
+  hasAccountCredentialMutationEvidence,
   listAccountCredentialMutationMarkers,
   recordAccountCredentialMutationMarker,
 } from './accountCredentialMutationMarker';
@@ -43,7 +46,7 @@ describe('account credential mutation markers', () => {
       provider: 'xai',
       createdAtMs,
     });
-    const rawStorage = window.sessionStorage.getItem('cpa.accounts.credential-mutation-markers.v1');
+    const rawStorage = window.sessionStorage.getItem('cpa.accounts.credential-mutation-markers.v2');
     expect(rawStorage).toContain('v1:opaque-connection');
     expect(rawStorage).not.toContain('http://');
     expect(rawStorage).not.toContain('management-key');
@@ -75,5 +78,63 @@ describe('account credential mutation markers', () => {
     acknowledgeAccountCredentialMutationMarkers(first ? [first.id] : []);
     expect(listAccountCredentialMutationMarkers('connection-a')).toEqual([]);
     expect(listAccountCredentialMutationMarkers('connection-b')).toHaveLength(1);
+  });
+
+  it('requires post-baseline credential evidence for OAuth markers', () => {
+    const existing = [
+      {
+        id: 'runtime-a',
+        name: 'codex-a.json',
+        provider: 'codex',
+        authIndex: 'auth-a',
+        account_id: 'account-a',
+        modified: 1_000,
+      },
+      {
+        id: 'runtime-b',
+        name: 'codex-b.json',
+        provider: 'codex',
+        authIndex: 'auth-b',
+        account_id: 'account-b',
+        modified: 1_000,
+      },
+    ] as AuthFileItem[];
+    const baseline = createAccountCredentialMutationBaseline(existing, 'codex');
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'connection-a',
+      provider: 'codex',
+      baseline,
+      requireObservedMutation: true,
+      createdAtMs: Date.now(),
+    });
+    expect(marker).not.toBeNull();
+    expect(hasAccountCredentialMutationEvidence(marker!, existing)).toBe(false);
+    expect(
+      hasAccountCredentialMutationEvidence(marker!, [
+        { ...existing[0], status_message: 'token_expired' },
+        existing[1],
+      ])
+    ).toBe(false);
+
+    const created = {
+      id: 'runtime-c',
+      name: 'codex-c.json',
+      provider: 'codex',
+      authIndex: 'auth-c',
+      account_id: 'account-c',
+      modified: 2_000,
+    } as AuthFileItem;
+    expect(hasAccountCredentialMutationEvidence(marker!, [...existing, created])).toBe(true);
+  });
+
+  it('fails closed when an OAuth marker has no captured baseline', () => {
+    expect(
+      recordAccountCredentialMutationMarker({
+        connectionFingerprint: 'connection-a',
+        provider: 'codex',
+        requireObservedMutation: true,
+        createdAtMs: Date.now(),
+      })
+    ).toBeNull();
   });
 });

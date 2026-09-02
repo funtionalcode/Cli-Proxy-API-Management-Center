@@ -16,6 +16,7 @@ const authSnapshotCacheTTL = 30 * time.Second
 
 type authSnapshot struct {
 	Account      string
+	AccountID    string
 	Label        string
 	FileName     string
 	Provider     string
@@ -33,9 +34,7 @@ type authSnapshotResolver struct {
 }
 
 func newAuthSnapshotResolver() *authSnapshotResolver {
-	return &authSnapshotResolver{
-		client: &http.Client{Timeout: 5 * time.Second},
-	}
+	return &authSnapshotResolver{client: &http.Client{Timeout: 5 * time.Second}}
 }
 
 func (r *authSnapshotResolver) clear() {
@@ -63,7 +62,7 @@ func (r *authSnapshotResolver) lookup(ctx context.Context, cfg RuntimeConfig, au
 	now := time.Now()
 	r.mu.Lock()
 	sameSource := r.baseURL == baseURL && r.managementKey == managementKey
-	if r.baseURL == baseURL && r.managementKey == managementKey && now.Before(r.expiresAt) {
+	if sameSource && now.Before(r.expiresAt) && r.hasAllLocked(authIndices) {
 		result := r.lookupLocked(authIndices)
 		r.mu.Unlock()
 		return result
@@ -89,6 +88,18 @@ func (r *authSnapshotResolver) lookup(ctx context.Context, cfg RuntimeConfig, au
 	result := r.lookupLocked(authIndices)
 	r.mu.Unlock()
 	return result
+}
+
+func (r *authSnapshotResolver) hasAllLocked(authIndices map[string]struct{}) bool {
+	if len(r.snapshots) == 0 {
+		return false
+	}
+	for authIndex := range authIndices {
+		if _, ok := r.snapshots[authIndex]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *authSnapshotResolver) lookupLocked(authIndices map[string]struct{}) map[string]authSnapshot {
@@ -117,38 +128,19 @@ func (r *authSnapshotResolver) fetch(ctx context.Context, baseURL string, manage
 		if authIndex == "" {
 			return false, nil
 		}
-		account := firstSafeAccount(
-			readAuthFileString(file, "account"),
-			readAuthFileString(file, "email"),
-		)
-		label := firstNonEmpty(
-			readAuthFileString(file, "label"),
-			readAuthFileString(file, "name"),
-			readAuthFileString(file, "email"),
-			account,
-		)
+		account := firstSafeAccount(readAuthFileString(file, "account"), readAuthFileString(file, "email"))
+		label := firstNonEmpty(readAuthFileString(file, "label"), readAuthFileString(file, "name"), readAuthFileString(file, "email"), account)
 		fileName := readAuthFileString(file, "name")
-		provider := firstNonEmpty(
-			readAuthFileString(file, "provider"),
-			readAuthFileString(file, "type"),
-		)
-		projectID := firstNonEmpty(
-			readAuthFileString(file, "project_id"),
-			readAuthFileString(file, "projectId"),
-			readAuthFileString(file, "gemini_virtual_project"),
-			readAuthFileString(file, "geminiVirtualProject"),
-		)
+		provider := firstNonEmpty(readAuthFileString(file, "provider"), readAuthFileString(file, "type"))
+		accountID := ""
+		projectID := firstNonEmpty(readAuthFileString(file, "project_id"), readAuthFileString(file, "projectId"), readAuthFileString(file, "gemini_virtual_project"), readAuthFileString(file, "geminiVirtualProject"))
+		if strings.EqualFold(provider, "codex") {
+			accountID = readCodexAccountID(file)
+		}
 		if account == "" {
 			account = firstNonEmpty(label, fileName)
 		}
-		snapshots[authIndex] = authSnapshot{
-			Account:      account,
-			Label:        label,
-			FileName:     fileName,
-			Provider:     provider,
-			ProjectID:    projectID,
-			CapturedAtMS: capturedAt,
-		}
+		snapshots[authIndex] = authSnapshot{Account: account, AccountID: accountID, Label: label, FileName: fileName, Provider: provider, ProjectID: projectID, CapturedAtMS: capturedAt}
 		return false, nil
 	})
 	if err != nil {
@@ -166,6 +158,22 @@ func readAuthFileString(file map[string]any, keys ...string) string {
 		text := strings.TrimSpace(toString(value))
 		if text != "" {
 			return text
+		}
+	}
+	return ""
+}
+
+func readCodexAccountID(file map[string]any) string {
+	if accountID := readAuthFileString(file, "account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"); accountID != "" {
+		return accountID
+	}
+	for _, key := range []string{"id_token", "idToken", "metadata", "attributes"} {
+		child, ok := file[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		if accountID := readCodexAccountID(child); accountID != "" {
+			return accountID
 		}
 	}
 	return ""
@@ -210,7 +218,5 @@ func looksLikeSecret(value string) bool {
 	if strings.ContainsAny(trimmed, " /\\") {
 		return false
 	}
-	return strings.HasPrefix(trimmed, "sk-") ||
-		strings.HasPrefix(trimmed, "AIza") ||
-		(len(trimmed) >= 32 && len(trimmed) <= 512)
+	return strings.HasPrefix(trimmed, "sk-") || strings.HasPrefix(trimmed, "AIza") || (len(trimmed) >= 32 && len(trimmed) <= 512)
 }

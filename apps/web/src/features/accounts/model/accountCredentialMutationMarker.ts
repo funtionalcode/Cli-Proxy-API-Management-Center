@@ -1,5 +1,19 @@
-const STORAGE_KEY = 'cpa.accounts.credential-mutation-markers.v1';
-const STORAGE_VERSION = 1;
+import type { AuthFileItem } from '@/types';
+import { getAuthFileStatusMessage } from '@/features/authFiles/constants';
+import {
+  readAuthFileCredentialRefreshAtMs,
+  readAuthFileUpdatedAtMs,
+} from '@/features/accounts/model/accountQuotaSummary';
+import {
+  readAuthFileStatusAccountId,
+  readAuthFileStatusAuthIndex,
+  readAuthFileStatusPhysicalName,
+  readAuthFileStatusProvider,
+  readAuthFileStatusRuntimeId,
+} from '@/utils/authFileCredentialIdentity';
+
+const STORAGE_KEY = 'cpa.accounts.credential-mutation-markers.v2';
+const STORAGE_VERSION = 2;
 const MAX_MARKERS = 32;
 const MAX_MARKER_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -8,6 +22,20 @@ export interface AccountCredentialMutationMarker {
   connectionFingerprint: string;
   provider: string;
   createdAtMs: number;
+  requireObservedMutation: boolean;
+  baseline?: AccountCredentialMutationBaseline;
+}
+
+export interface AccountCredentialMutationEvidence {
+  identityKey: string;
+  credentialRefreshAtMs: number;
+  updatedAtMs: number;
+  statusMessage: string;
+}
+
+export interface AccountCredentialMutationBaseline {
+  provider: string;
+  credentials: AccountCredentialMutationEvidence[];
 }
 
 interface StoredAccountCredentialMutationMarkers {
@@ -28,6 +56,48 @@ const normalizeProvider = (value: string): string => {
 const readTimestamp = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
 
+const buildCredentialIdentityKey = (file: AuthFileItem): string =>
+  JSON.stringify([
+    readAuthFileStatusProvider(file),
+    readAuthFileStatusAccountId(file),
+    readAuthFileStatusPhysicalName(file),
+    readAuthFileStatusRuntimeId(file),
+    readAuthFileStatusAuthIndex(file) ?? '',
+  ]);
+
+const buildCredentialEvidence = (file: AuthFileItem): AccountCredentialMutationEvidence => ({
+  identityKey: buildCredentialIdentityKey(file),
+  credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(file) ?? 0,
+  updatedAtMs: readAuthFileUpdatedAtMs(file) ?? 0,
+  statusMessage: getAuthFileStatusMessage(file),
+});
+
+const normalizeEvidence = (value: unknown): AccountCredentialMutationEvidence | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const identityKey = typeof record.identityKey === 'string' ? record.identityKey.trim() : '';
+  if (!identityKey) return null;
+  return {
+    identityKey,
+    credentialRefreshAtMs: readTimestamp(record.credentialRefreshAtMs),
+    updatedAtMs: readTimestamp(record.updatedAtMs),
+    statusMessage: typeof record.statusMessage === 'string' ? record.statusMessage.trim() : '',
+  };
+};
+
+const normalizeBaseline = (value: unknown): AccountCredentialMutationBaseline | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const provider = typeof record.provider === 'string' ? normalizeProvider(record.provider) : '';
+  if (!provider || !Array.isArray(record.credentials)) return null;
+  return {
+    provider,
+    credentials: record.credentials
+      .map(normalizeEvidence)
+      .filter((item): item is AccountCredentialMutationEvidence => item !== null),
+  };
+};
+
 const normalizeMarker = (value: unknown): AccountCredentialMutationMarker | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -36,8 +106,18 @@ const normalizeMarker = (value: unknown): AccountCredentialMutationMarker | null
     typeof record.connectionFingerprint === 'string' ? record.connectionFingerprint.trim() : '';
   const provider = typeof record.provider === 'string' ? normalizeProvider(record.provider) : '';
   const createdAtMs = readTimestamp(record.createdAtMs);
+  const requireObservedMutation = record.requireObservedMutation === true;
+  const baseline = normalizeBaseline(record.baseline);
   if (!id || !connectionFingerprint || !provider || createdAtMs <= 0) return null;
-  return { id, connectionFingerprint, provider, createdAtMs };
+  if (requireObservedMutation && (!baseline || baseline.provider !== provider)) return null;
+  return {
+    id,
+    connectionFingerprint,
+    provider,
+    createdAtMs,
+    requireObservedMutation,
+    ...(baseline ? { baseline } : {}),
+  };
 };
 
 const getStorage = (): Storage | null => {
@@ -100,15 +180,26 @@ export const recordAccountCredentialMutationMarker = ({
   connectionFingerprint,
   provider,
   createdAtMs = Date.now(),
+  baseline,
+  requireObservedMutation = false,
 }: {
   connectionFingerprint: string;
   provider: string;
   createdAtMs?: number;
+  baseline?: AccountCredentialMutationBaseline | null;
+  requireObservedMutation?: boolean;
 }): AccountCredentialMutationMarker | null => {
   const normalizedConnectionFingerprint = connectionFingerprint.trim();
   const normalizedProvider = normalizeProvider(provider);
   const normalizedCreatedAtMs = readTimestamp(createdAtMs);
   if (!normalizedConnectionFingerprint || !normalizedProvider || normalizedCreatedAtMs <= 0) {
+    return null;
+  }
+  const normalizedBaseline = normalizeBaseline(baseline);
+  if (
+    requireObservedMutation &&
+    (!normalizedBaseline || normalizedBaseline.provider !== normalizedProvider)
+  ) {
     return null;
   }
   markerSequence += 1;
@@ -117,9 +208,46 @@ export const recordAccountCredentialMutationMarker = ({
     connectionFingerprint: normalizedConnectionFingerprint,
     provider: normalizedProvider,
     createdAtMs: normalizedCreatedAtMs,
+    requireObservedMutation,
+    ...(normalizedBaseline ? { baseline: normalizedBaseline } : {}),
   };
   saveMarkers([...loadMarkers(), marker]);
   return marker;
+};
+
+export const createAccountCredentialMutationBaseline = (
+  files: readonly AuthFileItem[],
+  provider: string
+): AccountCredentialMutationBaseline | null => {
+  const normalizedProvider = normalizeProvider(provider);
+  if (!normalizedProvider) return null;
+  return {
+    provider: normalizedProvider,
+    credentials: files
+      .filter((file) => normalizeProvider(readAuthFileStatusProvider(file)) === normalizedProvider)
+      .map(buildCredentialEvidence),
+  };
+};
+
+export const hasAccountCredentialMutationEvidence = (
+  marker: AccountCredentialMutationMarker,
+  files: readonly AuthFileItem[]
+): boolean => {
+  if (!marker.requireObservedMutation) return true;
+  if (!marker.baseline || marker.baseline.provider !== marker.provider) return false;
+  const baselineByIdentity = new Map(
+    marker.baseline.credentials.map((item) => [item.identityKey, item])
+  );
+  return files
+    .filter((file) => normalizeProvider(readAuthFileStatusProvider(file)) === marker.provider)
+    .map(buildCredentialEvidence)
+    .some((current) => {
+      const baseline = baselineByIdentity.get(current.identityKey);
+      // A provider-wide timestamp/status change is not attributable to the
+      // OAuth operation that created this generic marker. Only a newly
+      // observed credential identity is causal evidence without a target key.
+      return !baseline;
+    });
 };
 
 export const listAccountCredentialMutationMarkers = (

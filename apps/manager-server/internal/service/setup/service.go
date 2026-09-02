@@ -124,14 +124,36 @@ func (s *Service) Setup(ctx context.Context, req Request, _ string) (Result, err
 		return Result{}, err
 	} else if source == managerconfig.SourceEnv && setupDiffers(existing, req) {
 		return Result{}, errors.New("setup is managed by environment variables")
-	} else if ok && existing.ManagementKey != "" && req.ManagementKey != existing.ManagementKey {
-		if cpa.NormalizeBaseURL(existing.CPAUpstreamURL) != req.CPAUpstreamURL {
-			return Result{}, errors.New("invalid management key for existing setup")
+	} else {
+		// Partial historical rows are exposed by ResolveSetupWithSource so the
+		// server can report needs_setup, but they are not an authority for a
+		// first complete setup. Reuse the bootstrap/import resolver here: complete
+		// manager or setup authority keeps the existing rotation rules, while
+		// authority-less partial rows may be replaced after validating the request.
+		if source != managerconfig.SourceEnv {
+			resolution, resolveErr := s.resolvePersistedConnection(ctx)
+			if resolveErr != nil {
+				return Result{}, resolveErr
+			}
+			if resolution.Authority == managerconfig.LegacyConnectionAuthorityNone {
+				ok = false
+			} else {
+				existing = store.Setup{
+					CPAUpstreamURL: resolution.Connection.BaseURL,
+					ManagementKey:  resolution.Connection.ManagementKey,
+				}
+				ok = true
+			}
 		}
-		if err := cpa.ValidateManagementAPI(ctx, req.CPAUpstreamURL, req.ManagementKey); err != nil {
-			return Result{}, err
+		if ok && existing.ManagementKey != "" && req.ManagementKey != existing.ManagementKey {
+			if cpa.NormalizeBaseURL(existing.CPAUpstreamURL) != req.CPAUpstreamURL {
+				return Result{}, errors.New("invalid management key for existing setup")
+			}
+			if err := cpa.ValidateManagementAPI(ctx, req.CPAUpstreamURL, req.ManagementKey); err != nil {
+				return Result{}, err
+			}
+			managementAPIValidated = true
 		}
-		managementAPIValidated = true
 	}
 	if !managementAPIValidated {
 		if err := cpa.ValidateManagementAPI(ctx, req.CPAUpstreamURL, req.ManagementKey); err != nil {
@@ -179,10 +201,7 @@ func (s *Service) Setup(ctx context.Context, req Request, _ string) (Result, err
 		Queue:          req.Queue,
 		PopSide:        req.PopSide,
 	}
-	if err := s.store.SaveSetup(ctx, setup); err != nil {
-		return Result{}, err
-	}
-	if err := s.store.SaveManagerConfig(ctx, managerCfg); err != nil {
+	if err := s.store.SaveManagerConfigAndSetup(ctx, managerCfg, setup); err != nil {
 		return Result{}, err
 	}
 	if err := s.markBootstrapReady(ctx); err != nil {
@@ -211,6 +230,18 @@ func (s *Service) markBootstrapReady(ctx context.Context) error {
 	state.ProjectInitialized = true
 	state.DataKeyReady = true
 	return s.store.SaveBootstrapState(ctx, state)
+}
+
+func (s *Service) resolvePersistedConnection(ctx context.Context) (managerconfig.LegacyConnectionResolution, error) {
+	managerCfg, managerOK, err := s.store.LoadManagerConfig(ctx)
+	if err != nil {
+		return managerconfig.LegacyConnectionResolution{}, err
+	}
+	setup, setupOK, err := s.store.LoadSetup(ctx)
+	if err != nil {
+		return managerconfig.LegacyConnectionResolution{}, err
+	}
+	return managerconfig.ResolveLegacyConnectionAuthority(managerCfg, managerOK, setup, setupOK)
 }
 
 func setupDiffers(existing store.Setup, req Request) bool {

@@ -61,6 +61,8 @@ usage-statistics-enabled: true
 
 也可以由 CPAMP 在首次 setup 或保存配置时启用。
 
+本页的环境变量示例属于手动 Docker 部署和旧版本兼容路径。一键安装脚本不会把 CPA URL 或 CPA Management Key 留在最终 Compose 环境中，而是先执行一次 `store-cpa-connection`，使用 `/data/data.key` 加密写入 SQLite。配置 API 也只返回 `managementKeyConfigured`，不会把已保存的 CPA Key 回传浏览器。
+
 ## CPA + CPAMP 一起部署
 
 如果还没有运行 CPA，用下面的 Compose 文件同时启动 CPA 和 CPAMP：
@@ -233,7 +235,27 @@ docker run --rm \
 - `usage.sqlite` 保存用量数据和加密后的 CPAMP 配置。
 - `data.key` 用来解密通过 setup / 面板保存到 SQLite 的 CPA Management Key。
 - 如果 `data.key` 丢失，保存到 SQLite 的 CPA Management Key 无法恢复，只能重新保存 CPA 连接。
-- 如果使用安装器 env/secret 管理连接，同时备份安装目录里的 `secrets/`。
+- 如果是手动 env/secret 部署，或安装器尚未完成/跳过 CPA 连接导入，同时备份安装目录里的 `secrets/`。
+
+## 只读根文件系统
+
+标准 CPAMP Docker/Compose 部署的根文件系统默认可写，不需要额外的临时卷配置。
+
+如果给 Manager Server 容器启用 `readOnlyRootFilesystem: true` 等加固配置，SQLite 仍需要一个可写的临时目录。Kubernetes 可以在 `/tmp` 挂载可写临时卷：
+
+```yaml
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+volumes:
+  - name: tmp
+    emptyDir: {}
+```
+
+如果自行设置 `emptyDir.sizeLimit`，应根据数据库规模和实际工作负载评估容量。Unix 类环境也可以通过 `SQLITE_TMPDIR` 指向其他可写临时路径。
+
+同时要确保数据库文件及 WAL/SHM 伴生文件对 Manager Server 运行用户可写。CPAMP 不会自动修改文件属主或权限，也不会迁移 SQLite 临时文件。
 
 ::: details 高级：采集协议和网络要求
 
@@ -276,6 +298,26 @@ docker run -d \
   seakee/cpa-manager-plus:latest
 ```
 
+### 升级后显示数据库维护未完成
+
+为避免大型历史数据库在升级时因无界 `CREATE INDEX` 或派生清理而阻塞 HTTP 监听，Manager Server 只会在启动阶段处理有界 schema/metadata 工作。若全局 Warning、系统信息页或 `/status.databaseMaintenance.required` 表示仍需维护，服务可以继续采集和响应，但历史请求查询可能明显变慢或超时。
+
+在 Compose 文件所在目录执行：
+
+```bash
+docker compose stop cpa-manager-plus
+
+docker compose run --rm --no-deps \
+  cpa-manager-plus \
+  cleanup-derived --db-path /data/usage.sqlite
+
+docker compose start cpa-manager-plus
+```
+
+如果 Compose 服务名不是 `cpa-manager-plus`，请替换为实际服务名。不要在 Manager Server 仍运行时执行，也不要从 Web UI 在线触发清理；该命令需要独占 SQLite 进程锁。完成后重新启动，维护状态会从数据库 metadata 自动恢复为 clean，UI Warning 也会自动消失。
+
+`cleanup-derived` 只处理派生清理、延后索引和旧索引替换，不会删除、重建或改写 authoritative `usage_events`。执行前仍应备份 `/data` 和 `data.key`。
+
 ## 验证
 
 基础健康检查：
@@ -300,7 +342,12 @@ collector.lastError
 lastConsumedAt
 lastInsertedAt
 eventCount
+databaseMaintenance.required
+databaseMaintenance.deferredIndexes
+databaseMaintenance.offlineJobs
 ```
+
+`databaseMaintenance.required=true` 表示服务可运行但查询性能可能降级；按上面的离线步骤处理。维护完成并重启后，应为 `false`，两个计数应为 `0`。
 
 如果监控页面为空，继续按 [请求监控排障](../troubleshooting/request-monitoring.md) 检查。
 
@@ -311,5 +358,5 @@ eventCount
 - 镜像变为 `seakee/cpa-manager-plus`。
 - 容器通常命名为 `cpa-manager-plus`。
 - Full Docker / Manager Server 模式登录使用 CPAMP 管理员密钥，不使用 CPA Management Key。
-- setup / 面板保存的 CPA Management Key 使用 `/data/data.key` 加密保存；安装器 env/secret 模式从安装目录读取。
+- setup / 面板保存的 CPA Management Key 使用 `/data/data.key` 加密保存；安装器提供的 env/secret 输入只用于一次性导入，成功后从最终运行配置移除。
 - CPAMP 轻量面板不会配置或挂接外部 Manager Server 统计。

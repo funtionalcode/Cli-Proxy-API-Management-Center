@@ -33,6 +33,13 @@ const emptyAnalyticsResponse = {
   generated_at_ms: 1,
   granularity: 'hour',
 };
+const HOUR_MS = 60 * 60 * 1000;
+
+const localHourStartMs = (timestampMs: number) => {
+  const date = new Date(timestampMs);
+  date.setMinutes(0, 0, 0);
+  return date.getTime();
+};
 
 describe('useUsageAnalytics request orchestration', () => {
   let renderer: ReactTestRenderer | null = null;
@@ -49,6 +56,8 @@ describe('useUsageAnalytics request orchestration', () => {
     const main = Boolean(params.include?.summary);
     const credentialTimeline = Boolean(params.include?.credential_timeline);
     const apiKeyTimeline = Boolean(params.include?.api_key_timeline);
+    const mainTimelineStartMs =
+      typeof params.fromMs === 'number' ? localHourStartMs(params.fromMs) : 0;
     const mainData = params.include?.credential_stats
       ? {
           ...emptyAnalyticsResponse,
@@ -77,7 +86,7 @@ describe('useUsageAnalytics request orchestration', () => {
             ...emptyAnalyticsResponse,
             timeline: [
               {
-                bucket_ms: 1,
+                bucket_ms: mainTimelineStartMs,
                 label: '00:00',
                 calls: 5,
                 tokens: 500,
@@ -85,7 +94,7 @@ describe('useUsageAnalytics request orchestration', () => {
                 failure: 0,
               },
               {
-                bucket_ms: 3_600_001,
+                bucket_ms: mainTimelineStartMs + 2 * HOUR_MS,
                 label: '01:00',
                 calls: 5,
                 tokens: 500,
@@ -138,7 +147,7 @@ describe('useUsageAnalytics request orchestration', () => {
                 api_key_timeline: [
                   {
                     api_key_hash: 'key-a',
-                    bucket_ms: 1,
+                    bucket_ms: mainTimelineStartMs,
                     calls: 2,
                     tokens: 200,
                     success: 2,
@@ -146,7 +155,7 @@ describe('useUsageAnalytics request orchestration', () => {
                   },
                   {
                     api_key_hash: 'key-a',
-                    bucket_ms: 3_600_001,
+                    bucket_ms: mainTimelineStartMs + 2 * HOUR_MS,
                     calls: 4,
                     tokens: 400,
                     success: 4,
@@ -261,6 +270,29 @@ describe('useUsageAnalytics request orchestration', () => {
     expect(selectorsAfterTab?.dataScopeKey).toBe(selectorScope);
   });
 
+  it('fills missing buckets in the main usage timeline from the active range', async () => {
+    await renderHook();
+
+    const overview = lastParams((params) => Boolean(params.include?.summary));
+    expect(typeof overview?.fromMs).toBe('number');
+    const firstBucketMs = localHourStartMs(overview?.fromMs as number);
+
+    expect(latestResult?.timeline.slice(0, 3).map((point) => point.bucketMs)).toEqual([
+      firstBucketMs,
+      firstBucketMs + HOUR_MS,
+      firstBucketMs + 2 * HOUR_MS,
+    ]);
+    expect(latestResult?.timeline[1]).toMatchObject({
+      requestCount: 0,
+      totalTokens: 0,
+      successCount: 0,
+      failureCount: 0,
+      averageLatencyMs: null,
+      p95LatencyMs: null,
+      p95TtftMs: null,
+    });
+  });
+
   it('loads exact timeline buckets for the visible client keys on overview and trends', async () => {
     await renderHook();
 
@@ -271,7 +303,9 @@ describe('useUsageAnalytics request orchestration', () => {
       activeTab: 'overview',
       apiKeyHashes: ['key-a'],
     });
-    expect(latestResult?.apiKeyTrendSeries[0].points.map((point) => point.value)).toEqual([2, 4]);
+    expect(latestResult?.apiKeyTrendSeries[0].points.slice(0, 3).map((point) => point.value)).toEqual(
+      [2, 0, 4]
+    );
 
     await act(async () => {
       latestResult?.setActiveTab('trends');
@@ -323,6 +357,7 @@ describe('useUsageAnalytics request orchestration', () => {
       selectedCredentialID: 'credential-a.json',
     });
     expect(latestResult?.credentialTrendSeries).toHaveLength(1);
+    expect(latestResult?.timeline).toEqual([]);
   });
 
   it('exposes selected credential timeline loading and error states', async () => {

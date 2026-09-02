@@ -1,6 +1,6 @@
 # 二开功能保留清单
 
-更新时间：2026-08-21
+更新时间：2026-09-02
 
 本文记录当前 `master`（及已落地未提交的本地改动）中需要在后续同步上游时保留的二开能力。口径以“用户可感知的功能和数据兼容行为”为主，不逐行记录文件级重构。
 
@@ -31,7 +31,8 @@
 ### 1. Manager Server 与外部面板联动
 
 - 自动识别面板运行模式：Manager Server 同源托管、CPA 面板外接 Manager Server。
-- 外部面板可探测 Manager Server 候选地址，支持从 `usage-service` 配置、当前 API base、当前页面 base 推导。
+- 外部面板只使用与当前面板地址匹配的持久化宿主模式和已配置的 Manager Server 地址；禁止盲探 CPA/当前页面的 Manager 专用接口，避免自代理递归。
+- 面板宿主探测不确定时 fail closed；明确的外部 Manager 绑定仍可启用请求监控、模型定价、巡检和 API Key 别名。
 - 请求监控、模型定价、服务端 Codex 巡检等入口通过 `usePanelFeatureAvailability` 统一门控。
 - CPA 面板连接外部 Manager Server 时，仍可加载请求监控入口和 API Key 别名。
 - 配置页支持查看和保存 Manager Server 配置，包括 CPA 地址、CPA Management Key、请求记录读取开关、采集模式、轮询间隔、批量大小、查询限制。
@@ -209,6 +210,8 @@
 - 配置页保留可视化编辑器和源码 diff。
 - 配置分组支持 `request-log`、`success-request-log`、`success-logs-max-files`、`logging-to-file`、`plugins`、`ws-auth`、`routing/strategy`、各 Provider 配置等 section。
 - API Keys 卡片编辑器保留。
+- API Key 新增、替换和删除采用上游 v1.12.7 的即时 CPA 持久化与串行化保护；外部 Manager 模式仍同步维护别名生命周期。
+- Manager Server 返回的 CPA Management Key 仅保留 `managementKeyConfigured` 状态，密钥输入只写不回传；外部 Manager 配置保存不得回填当前面板登录密钥。
 - 账号处理策略配置保留，包括额度冷却、认证异常待处理、自动禁用明确异常认证文件。
 - 运行时开关、Header 默认值、Codex 身份混淆、Antigravity 签名缓存、额度策略等配置项需要保留。
 
@@ -318,3 +321,4 @@ npm --workspace apps/web run test -- src/features/authFiles/model/authFileConfig
 | 2026-07-31 | 错误/成功请求日志筛选栏补充请求 ID（对接 CPA `request_id`） |
 | 2026-08-21 | 同步上游 v1.12.1；将权重、单账号模型别名、渐进加载和旧 URL 兼容迁入统一 Accounts 架构。 |
 | 2026-08-21 | 恢复同步时被无冲突覆盖的 CPA Panel + 外部 Manager Server 能力探测、配置入口和 API Key 别名按钮门控。 |
+| 2026-09-02 | 同步上游 v1.12.7；接入 API Key 即时持久化、CPA Key 只写安全边界、Provider 配额与监控改进，同时保留外部 Manager 别名能力并禁止 CPA Manager 接口盲探。 |

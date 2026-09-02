@@ -33,6 +33,19 @@ import {
   normalizeAnalyticsModel,
 } from '@/utils/usage';
 
+const CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX = 'codex-account-id:v1:';
+const projectIdForDisplay = (provider: unknown, projectId: unknown): string | undefined => {
+  const value = typeof projectId === 'string' ? projectId.trim() : '';
+  const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  if (
+    normalizedProvider.replace(/_/g, '-') === 'codex' &&
+    value.startsWith(CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX)
+  ) {
+    return undefined;
+  }
+  return value || undefined;
+};
+
 export type UsageAnalyticsTab =
   | 'overview'
   | 'trends'
@@ -50,6 +63,11 @@ export type UsageAnalyticsCacheStatus = 'all' | 'hit' | 'miss';
 export type UsageAnalyticsCustomRange = {
   startMs: number;
   endMs: number;
+};
+
+export type UsageAnalyticsRangeBounds = {
+  fromMs: number;
+  toMs: number;
 };
 
 export type UsageAnalyticsFiltersState = {
@@ -414,6 +432,7 @@ export type UsageDrilldownEvent = {
   apiKeyLabel: string;
   source: string;
   authIndex: string;
+  provider: string;
   endpoint: string;
   totalTokens: number;
   estimatedCost: number;
@@ -626,10 +645,33 @@ const localDayStartMs = (timestampMs: number) => {
   return date.getTime();
 };
 
+const getLocalBucketStartMs = (
+  timestampMs: number,
+  granularity: UsageAnalyticsResolvedGranularity
+) => {
+  if (granularity === 'day') return localDayStartMs(timestampMs);
+  const date = new Date(timestampMs);
+  date.setMinutes(0, 0, 0);
+  return date.getTime();
+};
+
+const getNextUsageBucketStartMs = (
+  bucketMs: number,
+  granularity: UsageAnalyticsResolvedGranularity
+) => {
+  const date = new Date(bucketMs);
+  if (granularity === 'hour') {
+    date.setHours(date.getHours() + 1, 0, 0, 0);
+    return date.getTime();
+  }
+  date.setDate(date.getDate() + 1);
+  return date.getTime();
+};
+
 export const getUsageRangeBounds = (
   filters: Pick<UsageAnalyticsFiltersState, 'timeRange' | 'customRange'>,
   nowMs: number
-) => {
+): UsageAnalyticsRangeBounds | null => {
   if (filters.timeRange === 'custom') {
     const range = filters.customRange;
     if (
@@ -914,6 +956,83 @@ export const buildUsageTimeline = (
       averageTokensPerRequest: requestCount > 0 ? totalTokens / requestCount : 0,
     };
   });
+
+const sortUsageTimeline = (timeline: UsageTimelinePoint[]) =>
+  timeline.slice().sort((left, right) => left.bucketMs - right.bucketMs);
+
+const buildEmptyUsageTimelinePoint = (
+  bucketMs: number,
+  granularity: UsageAnalyticsResolvedGranularity
+): UsageTimelinePoint => ({
+  bucketMs,
+  bucketEndMs: bucketMs + getBucketSizeMs(granularity),
+  label: formatLocalBucketLabel(bucketMs, granularity),
+  requestCount: 0,
+  totalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cachedTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+  reasoningTokens: 0,
+  estimatedCost: 0,
+  successCount: 0,
+  failureCount: 0,
+  successRate: 0,
+  failureRate: 0,
+  averageLatencyMs: null,
+  p95LatencyMs: null,
+  p95TtftMs: null,
+  cacheHitRate: 0,
+  averageTokensPerRequest: 0,
+});
+
+export const fillUsageTimelineBuckets = (
+  timeline: UsageTimelinePoint[] = [],
+  bounds: UsageAnalyticsRangeBounds | null | undefined,
+  granularity: UsageAnalyticsResolvedGranularity
+): UsageTimelinePoint[] => {
+  const sortedTimeline = sortUsageTimeline(timeline);
+  if (sortedTimeline.length === 0) {
+    return sortedTimeline;
+  }
+  if (
+    !bounds ||
+    !Number.isFinite(bounds.fromMs) ||
+    !Number.isFinite(bounds.toMs) ||
+    bounds.fromMs >= bounds.toMs
+  ) {
+    return sortedTimeline;
+  }
+
+  const pointsByBucket = new Map<number, UsageTimelinePoint[]>();
+  timeline.forEach((point) => {
+    const bucketKey = getLocalBucketStartMs(point.bucketMs, granularity);
+    const points = pointsByBucket.get(bucketKey);
+    if (points) {
+      points.push(point);
+    } else {
+      pointsByBucket.set(bucketKey, [point]);
+    }
+  });
+
+  const filledTimeline: UsageTimelinePoint[] = [];
+  const firstBucketMs = getLocalBucketStartMs(bounds.fromMs, granularity);
+  for (
+    let bucketMs = firstBucketMs;
+    bucketMs < bounds.toMs;
+    bucketMs = getNextUsageBucketStartMs(bucketMs, granularity)
+  ) {
+    const points = pointsByBucket.get(bucketMs);
+    if (points) {
+      filledTimeline.push(...points);
+    } else {
+      filledTimeline.push(buildEmptyUsageTimelinePoint(bucketMs, granularity));
+    }
+  }
+
+  return sortUsageTimeline(filledTimeline);
+};
 
 export const buildUsageCredentialTimeline = (
   timeline: MonitoringAnalyticsCredentialTimelinePoint[] = [],
@@ -1497,7 +1616,7 @@ export const buildCredentialRows = (
         source: row.source,
         sourceHash: row.source_hash,
         account: display.account || row.account_snapshot || row.auth_label_snapshot,
-        projectId: row.auth_project_id_snapshot,
+        projectId: projectIdForDisplay(row.auth_provider_snapshot, row.auth_project_id_snapshot),
         requestCount: toNumber(row.calls),
         successCount: toNumber(row.success_calls),
         failureCount: toNumber(row.failure_calls),
@@ -2347,6 +2466,7 @@ export const buildDrilldownPreview = (
       apiKeyLabel: resolveUsageApiKeyLabel(row.api_key_hash || '', apiKeyDisplayMap),
       source: row.source || '',
       authIndex: row.auth_index || '',
+      provider: row.auth_provider_snapshot || row.source || '',
       endpoint: row.endpoint || row.path || '',
       totalTokens,
       estimatedCost: totalTokens * costPerToken,
@@ -2370,10 +2490,14 @@ export const adaptUsageAnalyticsData = (
   granularity: UsageAnalyticsResolvedGranularity,
   keyword = '',
   apiKeyDisplayMap?: UsageApiKeyDisplayMap,
-  credentialDisplayContext?: UsageCredentialDisplayContext
+  credentialDisplayContext?: UsageCredentialDisplayContext,
+  timelineBounds?: UsageAnalyticsRangeBounds | null
 ) => {
   const summary = buildUsageSummary(data?.summary);
-  const timeline = buildUsageTimeline(data?.timeline ?? [], granularity);
+  const mappedTimeline = buildUsageTimeline(data?.timeline ?? [], granularity);
+  const timeline = data
+    ? fillUsageTimelineBuckets(mappedTimeline, timelineBounds, granularity)
+    : mappedTimeline;
   const credentialTimeline = buildUsageCredentialTimeline(
     data?.credential_timeline ?? [],
     granularity,
@@ -2460,6 +2584,10 @@ export const analyzeUsageBucket = (
   if (index < 0) return null;
   const point = timeline[index];
   const previousPoint = index > 0 ? timeline[index - 1] : null;
+  const comparisonPoint =
+    previousPoint && previousPoint.requestCount > 0 && point.requestCount > 0
+      ? previousPoint
+      : null;
   const changes = {
     requestCount: previousPoint ? percentChange(point.requestCount, previousPoint.requestCount) : 0,
     totalTokens: previousPoint ? percentChange(point.totalTokens, previousPoint.totalTokens) : 0,
@@ -2474,14 +2602,16 @@ export const analyzeUsageBucket = (
     estimatedCost: previousPoint
       ? percentChange(point.estimatedCost, previousPoint.estimatedCost)
       : 0,
-    cacheHitRate: previousPoint ? point.cacheHitRate - previousPoint.cacheHitRate : 0,
-    averageTokensPerRequest: previousPoint
-      ? percentChange(point.averageTokensPerRequest, previousPoint.averageTokensPerRequest)
+    cacheHitRate: comparisonPoint ? point.cacheHitRate - comparisonPoint.cacheHitRate : 0,
+    averageTokensPerRequest: comparisonPoint
+      ? percentChange(point.averageTokensPerRequest, comparisonPoint.averageTokensPerRequest)
       : 0,
-    failureRate: previousPoint ? point.failureRate - previousPoint.failureRate : 0,
+    failureRate: comparisonPoint ? point.failureRate - comparisonPoint.failureRate : 0,
     averageLatencyMs:
-      previousPoint && previousPoint.averageLatencyMs !== null && point.averageLatencyMs !== null
-        ? percentChange(point.averageLatencyMs, previousPoint.averageLatencyMs)
+      comparisonPoint &&
+      comparisonPoint.averageLatencyMs !== null &&
+      point.averageLatencyMs !== null
+        ? percentChange(point.averageLatencyMs, comparisonPoint.averageLatencyMs)
         : 0,
   };
   const anomalies: UsageAnomaly[] = [];

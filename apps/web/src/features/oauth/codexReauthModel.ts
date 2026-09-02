@@ -6,6 +6,30 @@ import {
   readAuthFileStatusRuntimeId,
 } from '@/utils/authFileStatusMutation';
 
+export type CodexReauthReconciliationCode =
+  | 'identity_changed'
+  | 'identity_ambiguous'
+  | 'identity_unconfirmed';
+
+export class CodexReauthReconciliationError extends Error {
+  readonly code: CodexReauthReconciliationCode;
+
+  constructor(code: CodexReauthReconciliationCode, message: string) {
+    super(message);
+    this.code = code;
+    Object.defineProperty(this, 'name', {
+      value: 'CodexReauthReconciliationError',
+      enumerable: false,
+      configurable: true,
+    });
+  }
+}
+
+export const isCodexReauthReconciliationError = (
+  error: unknown
+): error is CodexReauthReconciliationError =>
+  error instanceof CodexReauthReconciliationError;
+
 export type CodexReauthTarget = {
   account: string;
   fileName?: string;

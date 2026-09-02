@@ -192,6 +192,13 @@ func (s *Store) RunDerivedStartupMaintenance(ctx context.Context) error {
 	return sqliterepo.RunDerivedStartupMaintenance(ctx, s.db)
 }
 
+func (s *Store) DerivedMaintenanceStatus(ctx context.Context) (sqliterepo.DerivedMaintenanceStatus, error) {
+	if s == nil {
+		return sqliterepo.DerivedMaintenanceStatus{Reasons: []string{}}, nil
+	}
+	return sqliterepo.ReadDerivedMaintenanceStatus(ctx, s.db)
+}
+
 func (s *Store) BackfillLegacyQuotaSnapshotsBatch(ctx context.Context, maxGroupSize int) (LegacyQuotaSnapshotBackfillResult, error) {
 	if s == nil {
 		return LegacyQuotaSnapshotBackfillResult{Completed: true}, nil
@@ -216,6 +223,14 @@ func (s *Store) LoadSetup(ctx context.Context) (Setup, bool, error) {
 
 func (s *Store) SaveManagerConfig(ctx context.Context, cfg ManagerConfig) error {
 	return s.Settings.SaveManagerConfig(ctx, cfg)
+}
+
+func (s *Store) SaveManagerConfigAndSetup(ctx context.Context, cfg ManagerConfig, setup Setup) error {
+	return s.Settings.SaveManagerConfigAndSetup(ctx, cfg, setup)
+}
+
+func (s *Store) NormalizeLegacyConnectionStorage(ctx context.Context, cfg ManagerConfig, managerPresent bool, setup Setup, setupPresent bool) error {
+	return s.Settings.NormalizeLegacyConnectionStorage(ctx, cfg, managerPresent, setup, setupPresent)
 }
 
 func (s *Store) LoadManagerConfig(ctx context.Context) (ManagerConfig, bool, error) {

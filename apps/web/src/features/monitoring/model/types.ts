@@ -28,7 +28,14 @@ export type MonitoringAuthMeta = {
   updatedAt: string;
 };
 
-export type MonitoringTimeRange = 'today' | '7d' | '14d' | '30d' | 'all' | 'custom';
+export type MonitoringTimeRange =
+  | 'today'
+  | 'yesterday'
+  | '7d'
+  | '14d'
+  | '30d'
+  | 'all'
+  | 'custom';
 
 export type MonitoringCustomTimeRange = {
   startMs: number;
@@ -158,17 +165,24 @@ export type MonitoringEventRow = {
   userAgent?: string;
   sourceKey: string;
   source: string;
+  sourceIdentity?: string;
+  sourceHashIdentity?: string;
   sourceMasked: string;
   account: string;
+  accountIdentity?: string;
   accountMasked: string;
   authIndex: string;
+  authIndexIdentity?: string;
   authIndexMasked: string;
   authLabel: string;
+  authLabelIdentity?: string;
+  accountId?: string;
   projectId: string;
   apiKeyHash: string;
   apiKeyLabel: string;
   apiKeyMasked: string;
   provider: string;
+  providerIdentity?: string;
   planType: string;
   channel: string;
   channelHost: string;
@@ -249,6 +263,7 @@ export type MonitoringAccountModelSpendRow = {
 export type MonitoringAccountRow = {
   id: string;
   account: string;
+  provider?: string;
   filterValue?: string;
   displayAccount: string;
   accountMasked: string;
@@ -256,6 +271,8 @@ export type MonitoringAccountRow = {
   authIndices: string[];
   sourceKeys?: string[];
   channels: string[];
+  /** Raw provider plan values; presentation is resolved at the UI boundary. */
+  planTypes?: string[];
   totalCalls: number;
   successCalls: number;
   failureCalls: number;
@@ -370,6 +387,7 @@ export interface MonitoringScopeFilters {
 export interface UseMonitoringDataParams {
   usage?: unknown;
   config: Config | null | undefined;
+  connectionScopeKey?: string | null;
   modelPrices: Record<string, ModelPrice>;
   apiKeyAliases?: ApiKeyAlias[];
   timeRange: MonitoringTimeRange;
@@ -384,7 +402,9 @@ export interface UseMonitoringDataReturn {
   loading: boolean;
   error: string;
   authFiles: AuthFileItem[];
+  authFilesLoaded: boolean;
   channels: MonitoringChannelMeta[];
+  channelsLoaded: boolean;
   summary: MonitoringSummary;
   metadata: MonitoringMetadata;
   statusChips: MonitoringStatusChip[];
@@ -409,12 +429,14 @@ export interface UseMonitoringDataReturn {
   lastRefreshedAt: Date | null;
   isTransitioningScope: boolean;
   hasPresentationSnapshot: boolean;
-  refreshMeta: (showLoading?: boolean) => Promise<void>;
+  refreshMeta: (showLoading?: boolean) => Promise<MonitoringMetaPayload | null>;
   loadMoreEvents: () => void;
 }
 
 export type MonitoringMetaPayload = {
   authFiles: AuthFileItem[];
+  authFilesLoaded: boolean;
   channels: MonitoringChannelMeta[];
+  channelsLoaded: boolean;
   error: string;
 };

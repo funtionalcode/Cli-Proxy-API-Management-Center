@@ -88,6 +88,7 @@ type eventRow struct {
 	AuthLabelSnapshot     string
 	AuthFileSnapshot      string
 	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
 	AuthProjectIDSnapshot string
 	AuthIndex             string
 	Source                string
@@ -565,6 +566,7 @@ func eventsAfterCheckpoint(ctx context.Context, tx *sql.Tx, lastEventID, targetE
 		coalesce(auth_label_snapshot, ''),
 		coalesce(auth_file_snapshot, ''),
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+		coalesce(auth_account_id_snapshot, ''),
 		coalesce(auth_project_id_snapshot, ''),
 		coalesce(auth_index, ''),
 	coalesce(source, ''),
@@ -606,6 +608,7 @@ func accountHistoryEventsAfterCheckpoint(
 		coalesce(e.auth_label_snapshot, ''),
 		coalesce(e.auth_file_snapshot, ''),
 		coalesce(nullif(e.auth_provider_snapshot, ''), e.provider, ''),
+		coalesce(e.auth_account_id_snapshot, ''),
 		coalesce(e.auth_project_id_snapshot, ''),
 		coalesce(e.auth_index, ''),
 		coalesce(e.source, ''),
@@ -650,6 +653,7 @@ func scanAccountHistoryEvents(rows *sql.Rows, capacity int) ([]eventRow, error) 
 			&row.AuthLabelSnapshot,
 			&row.AuthFileSnapshot,
 			&row.AuthProviderSnapshot,
+			&row.AuthAccountIDSnapshot,
 			&row.AuthProjectIDSnapshot,
 			&row.AuthIndex,
 			&row.Source,
@@ -695,6 +699,7 @@ func aggregateAccountHistory(events []eventRow, nowMS int64) []AccountHistoryRow
 			AuthFileSnapshot:      event.AuthFileSnapshot,
 			AuthIndex:             event.AuthIndex,
 			AuthProviderSnapshot:  event.AuthProviderSnapshot,
+			AuthAccountIDSnapshot: event.AuthAccountIDSnapshot,
 			AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
 			AccountSnapshot:       event.AccountSnapshot,
 			AuthLabelSnapshot:     event.AuthLabelSnapshot,
