@@ -1495,7 +1495,13 @@
     "value_output_tokens": "Output tokens",
     "value_recent": "Last seen",
     "value_source_monitoring": "Request monitoring",
-    "value_source_recent": "Recent requests"
+    "value_source_recent": "Recent requests",
+    "clear_cooldown": "Clear local cooldown",
+    "clear_cooldown_title": "Clear local cooldown",
+    "clear_cooldown_confirm": "Clear the local quota cooldown and error state for {{name}}? This does not reset the provider quota or consume quota reset credits. Disabled accounts stay disabled. If the provider quota is still exhausted, requests may enter cooldown again.",
+    "clear_cooldown_success": "Local cooldown cleared for {{name}}.",
+    "clear_cooldown_failed": "Could not clear the local cooldown for {{name}}: {{message}}",
+    "clear_cooldown_refresh_failed": "Local cooldown cleared for {{name}}, but the account list could not be refreshed: {{message}}. Refresh the list to check the current status."
   },
   "auth_files": {
     "upload_button": "Upload File",

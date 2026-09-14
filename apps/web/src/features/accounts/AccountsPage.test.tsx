@@ -354,6 +354,7 @@ const { mocks } = vi.hoisted(() => {
       batchPatchFields: vi.fn(async () => ({ success: 1, failed: 0, failedNames: [] })),
       batchSetStatus: vi.fn(async () => undefined),
       consumeResetCredit: vi.fn(async () => ({ statusCode: 200, body: '' })),
+      clearLocalCooldown: vi.fn(async () => ({ status: 'ok', auth_index: 'auth-1', models: [] })),
       batchDownload: vi.fn(async () => undefined),
       batchDelete: vi.fn(),
       handleDelete: vi.fn(),
@@ -500,6 +501,10 @@ vi.mock('react-i18next', () => ({
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
   useLocation: () => mocks.location,
+}));
+
+vi.mock('@/services/api/authCooldown', () => ({
+  clearLocalCooldown: mocks.clearLocalCooldown,
 }));
 
 vi.mock('@/hooks/useHeaderRefresh', () => ({
@@ -1173,6 +1178,8 @@ describe('AccountsPage replacement flows', () => {
     mocks.batchSetStatus.mockClear();
     mocks.batchPatchFields.mockClear();
     mocks.consumeResetCredit.mockClear();
+    mocks.clearLocalCooldown.mockReset();
+    mocks.clearLocalCooldown.mockResolvedValue({ status: 'ok', auth_index: 'auth-1', models: [] });
     mocks.batchDelete.mockClear();
     mocks.handleDelete.mockClear();
     mocks.handleDownload.mockClear();
@@ -1249,6 +1256,98 @@ describe('AccountsPage replacement flows', () => {
     mocks.lastCodexReauthProps = null;
     mocks.lastHealthWorkspaceProps = null;
     mocks.localInspection = null;
+  });
+
+  it('clears local cooldown from account details after confirmation without consuming reset credits', async () => {
+    mocks.files[0] = { ...mocks.files[0], disabled: true, status: 'disabled' };
+    const file = mocks.files[0];
+    mocks.location.search = `?account=${encodeURIComponent(getAuthFileSelectionKey(file))}`;
+    const renderer = await renderAccountsPage();
+    mocks.loadFiles.mockClear();
+
+    act(() => findDrawerMoreItem(renderer, 'clear-local-cooldown').onClick());
+    expect(mocks.clearLocalCooldown).not.toHaveBeenCalled();
+    const confirmation =
+      mocks.showConfirmation.mock.calls[mocks.showConfirmation.mock.calls.length - 1]?.[0];
+    expect(confirmation.title).toBe('accounts.clear_cooldown_title');
+    expect(confirmation.message).toContain('codex@example.com');
+    await act(async () => {
+      await Promise.all([confirmation.onConfirm(), confirmation.onConfirm()]);
+    });
+
+    expect(mocks.clearLocalCooldown).toHaveBeenCalledExactlyOnceWith('auth-1', {
+      apiBase: 'http://cpa-a.local:8317',
+      managementKey: 'manager-key',
+    });
+    expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+    expect(mocks.batchSetStatus).not.toHaveBeenCalled();
+    expect(mocks.loadFiles).toHaveBeenCalledWith({ throwOnError: true });
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'accounts.clear_cooldown_success:codex@example.com',
+      'success'
+    );
+  });
+
+  it('reports a local cooldown API failure and does not consume quota credits', async () => {
+    mocks.clearLocalCooldown.mockRejectedValueOnce(new Error('reset unavailable'));
+    mocks.location.search = `?account=${encodeURIComponent(getAuthFileSelectionKey(mocks.files[0]))}`;
+    const renderer = await renderAccountsPage();
+    act(() => findDrawerMoreItem(renderer, 'clear-local-cooldown').onClick());
+
+    await act(async () =>
+      mocks.showConfirmation.mock.calls[
+        mocks.showConfirmation.mock.calls.length - 1
+      ]?.[0].onConfirm()
+    );
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'accounts.clear_cooldown_failed:codex@example.com:reset unavailable',
+      'error'
+    );
+    expect(mocks.consumeResetCredit).not.toHaveBeenCalled();
+    expect(findDrawerMoreItem(renderer, 'clear-local-cooldown').disabled).toBe(false);
+  });
+
+  it('does not clear cooldown if the CPA connection changes before confirmation', async () => {
+    mocks.location.search = `?account=${encodeURIComponent(getAuthFileSelectionKey(mocks.files[0]))}`;
+    const renderer = await renderAccountsPage();
+    act(() => findDrawerMoreItem(renderer, 'clear-local-cooldown').onClick());
+    const confirmation =
+      mocks.showConfirmation.mock.calls[mocks.showConfirmation.mock.calls.length - 1]?.[0];
+
+    mocks.apiBase = 'http://cpa-b.local:8317';
+    await act(async () => renderer.update(<AccountsPage />));
+    await act(async () => confirmation.onConfirm());
+
+    expect(mocks.clearLocalCooldown).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a successful cooldown clear from an account list refresh failure', async () => {
+    mocks.location.search = `?account=${encodeURIComponent(getAuthFileSelectionKey(mocks.files[0]))}`;
+    const renderer = await renderAccountsPage();
+    mocks.loadFiles.mockRejectedValueOnce(new Error('list offline'));
+    act(() => findDrawerMoreItem(renderer, 'clear-local-cooldown').onClick());
+
+    await act(async () =>
+      mocks.showConfirmation.mock.calls[
+        mocks.showConfirmation.mock.calls.length - 1
+      ]?.[0].onConfirm()
+    );
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'accounts.clear_cooldown_refresh_failed:codex@example.com:list offline',
+      'warning'
+    );
+    expect(mocks.clearLocalCooldown).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables cooldown clearing when the credential has no auth index', async () => {
+    mocks.files = [{ ...mocks.files[0], authIndex: undefined, auth_index: undefined }];
+    mocks.location.search = `?account=${encodeURIComponent(getAuthFileSelectionKey(mocks.files[0]))}`;
+    const renderer = await renderAccountsPage();
+
+    expect(findDrawerMoreItem(renderer, 'clear-local-cooldown').disabled).toBe(true);
+    expect(mocks.clearLocalCooldown).not.toHaveBeenCalled();
   });
 
   it('opens OAuth editors inline instead of navigating to auth-files routes', async () => {

@@ -1493,7 +1493,13 @@
     "value_output_tokens": "輸出 Token",
     "value_recent": "最近出現",
     "value_source_monitoring": "請求監控",
-    "value_source_recent": "最近請求"
+    "value_source_recent": "最近請求",
+    "clear_cooldown": "清除本機冷卻",
+    "clear_cooldown_title": "清除本機冷卻",
+    "clear_cooldown_confirm": "清除 {{name}} 在中轉中的額度冷卻和錯誤狀態？此操作不會重設上游實際額度，也不消耗額度重設次數。已停用的帳號保持停用。若上游額度仍已耗盡，請求可能再次進入冷卻。",
+    "clear_cooldown_success": "{{name}} 的本機冷卻已清除。",
+    "clear_cooldown_failed": "清除 {{name}} 的本機冷卻失敗：{{message}}",
+    "clear_cooldown_refresh_failed": "{{name}} 的本機冷卻已清除，但帳號清單更新失敗：{{message}}。請重新整理清單以確認目前狀態。"
   },
   "auth_files": {
     "upload_button": "上傳檔案",

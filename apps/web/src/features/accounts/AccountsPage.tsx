@@ -306,6 +306,7 @@ import {
 } from '@/stores';
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { normalizeAuthIndex } from '@/utils/authIndex';
+import { clearLocalCooldown } from '@/services/api/authCooldown';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
   buildUsageHeaderSnapshotLookup,
@@ -1034,6 +1035,8 @@ export function AccountsPage() {
     () => readCompletedAccountReauthResultKeys(connectionFingerprint)
   );
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [clearingCooldownKeys, setClearingCooldownKeys] = useState<ReadonlySet<string>>(new Set());
+  const clearingCooldownKeysRef = useRef(new Set<string>());
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(
     () => initialWorkspaceUrlState.current.account
   );
@@ -5650,6 +5653,79 @@ export function AccountsPage() {
     selectedRowKey,
   ]);
 
+  const clearAccountCooldown = useCallback(
+    (row: AccountRow) => {
+      const authIndex = normalizeAuthIndex(row.raw['auth_index'] ?? row.raw.authIndex);
+      if (!authIndex || disableControls || configurationSaving) return;
+      const scopeKey = credentialEvidenceScopeKey;
+      const requestKey = `${scopeKey}:${row.selectionKey}`;
+      if (clearingCooldownKeysRef.current.has(requestKey)) return;
+      const displayName = getDisplayAccount(row);
+      let confirmed = false;
+      showConfirmation({
+        title: t('accounts.clear_cooldown_title'),
+        message: t('accounts.clear_cooldown_confirm', { name: displayName }),
+        confirmText: t('accounts.clear_cooldown'),
+        cancelText: t('common.cancel'),
+        variant: 'primary',
+        onConfirm: async () => {
+          if (confirmed || activeCredentialEvidenceScopeKeyRef.current !== scopeKey) return;
+          confirmed = true;
+          if (clearingCooldownKeysRef.current.has(requestKey)) return;
+          clearingCooldownKeysRef.current.add(requestKey);
+          setClearingCooldownKeys((prev) => new Set(prev).add(requestKey));
+          let cleared = false;
+          try {
+            await clearLocalCooldown(authIndex, authFilesRequestScope);
+            cleared = true;
+            if (activeCredentialEvidenceScopeKeyRef.current !== scopeKey) return;
+            invalidateModels(row.raw);
+            await loadFiles({ throwOnError: true });
+            if (activeCredentialEvidenceScopeKeyRef.current !== scopeKey) return;
+            showNotification(
+              t('accounts.clear_cooldown_success', { name: displayName }),
+              'success'
+            );
+          } catch (error: unknown) {
+            if (activeCredentialEvidenceScopeKeyRef.current !== scopeKey) return;
+            const message = error instanceof Error ? error.message : t('common.unknown_error');
+            showNotification(
+              t(
+                cleared
+                  ? 'accounts.clear_cooldown_refresh_failed'
+                  : 'accounts.clear_cooldown_failed',
+                {
+                  name: displayName,
+                  message,
+                }
+              ),
+              cleared ? 'warning' : 'error'
+            );
+          } finally {
+            clearingCooldownKeysRef.current.delete(requestKey);
+            setClearingCooldownKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(requestKey);
+              return next;
+            });
+          }
+        },
+      });
+    },
+    [
+      authFilesRequestScope,
+      configurationSaving,
+      credentialEvidenceScopeKey,
+      disableControls,
+      getDisplayAccount,
+      invalidateModels,
+      loadFiles,
+      showConfirmation,
+      showNotification,
+      t,
+    ]
+  );
+
   const canResetCodexQuota = useCallback(
     (row: AccountRow) => {
       if (row.provider !== CODEX_CONFIG.type || row.runtimeOnly) return false;
@@ -7424,6 +7500,17 @@ export function AccountsPage() {
             } satisfies DropdownMenuItem,
           ]
         : []),
+      {
+        key: 'clear-local-cooldown',
+        label: t('accounts.clear_cooldown'),
+        icon: <IconRefreshCw size={15} />,
+        onClick: () => clearAccountCooldown(selectedRow),
+        disabled:
+          disableControls ||
+          configurationSaving ||
+          normalizeAuthIndex(selectedRow.raw['auth_index'] ?? selectedRow.raw.authIndex) === null ||
+          clearingCooldownKeys.has(`${credentialEvidenceScopeKey}:${selectedRow.selectionKey}`),
+      },
       { key: 'drawer-danger-divider', type: 'divider' },
       {
         key: 'delete',

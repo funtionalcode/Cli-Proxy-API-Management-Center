@@ -1493,7 +1493,13 @@
     "value_output_tokens": "输出 Token",
     "value_recent": "最近出现",
     "value_source_monitoring": "请求监控",
-    "value_source_recent": "最近请求"
+    "value_source_recent": "最近请求",
+    "clear_cooldown": "清除本地冷却",
+    "clear_cooldown_title": "清除本地冷却",
+    "clear_cooldown_confirm": "清除 {{name}} 在中转中的额度冷却和错误状态？此操作不会重置上游真实额度，也不消耗额度重置次数。已禁用的账号保持禁用。若上游额度仍然耗尽，请求可能再次进入冷却。",
+    "clear_cooldown_success": "{{name}} 的本地冷却已清除。",
+    "clear_cooldown_failed": "清除 {{name}} 的本地冷却失败：{{message}}",
+    "clear_cooldown_refresh_failed": "{{name}} 的本地冷却已清除，但账号列表刷新失败：{{message}}。请刷新列表确认当前状态。"
   },
   "auth_files": {
     "upload_button": "上传文件",
