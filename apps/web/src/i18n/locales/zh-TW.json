@@ -186,6 +186,8 @@
     "plugin_store": "插件商店",
     "plugin_store_short": "商店",
     "usage_analytics": "用量分析",
+    "account_usage": "帳號用量",
+    "account_usage_short": "帳號用量",
     "monitoring_center": "請求監控",
     "monitoring_center_short": "監控",
     "account_actions": "認證異常",
@@ -4711,5 +4713,20 @@
       "ultra": "Ultra",
       "ultra_lite": "Ultra Lite"
     }
+  },
+  "proxy_gateway": {
+    "source_url_label": "動態代理來源 API URL",
+    "source_url_hint": "API 每行回傳一個代理位址。測試無需儲存；運行中的閘道每 5 分鐘更新。",
+    "pool_proxies_count": "靜態代理數: ",
+    "test_btn": "測試首個靜態代理",
+    "source_test_btn": "測試動態來源",
+    "source_test_success": "已取得 {{count}} 個代理，首個代理連線正常，延遲 {{latency}} ms",
+    "source_fetch_failed": "動態來源取得失敗: ",
+    "source_proxy_failed": "已取得 {{count}} 個代理，首個代理連線失敗: ",
+    "gateway_test_btn": "測試閘道",
+    "gateway_test_hint": "透過已儲存的閘道監聽埠及代理池測試 HTTPS 轉發。",
+    "gateway_test_disabled": "請先儲存並啟動閘道，再測試轉發。",
+    "gateway_test_success": "閘道轉發正常，延遲 {{latency}} ms",
+    "gateway_test_failed": "閘道轉發測試失敗: "
   }
 }

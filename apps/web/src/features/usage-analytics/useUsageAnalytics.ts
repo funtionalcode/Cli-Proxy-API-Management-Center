@@ -90,7 +90,11 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debouncedValue;
 }
 
-export function useUsageAnalytics() {
+export function useUsageAnalytics({
+  lockedTab,
+}: {
+  lockedTab?: UsageAnalyticsTab;
+} = {}) {
   const config = useConfigStore((state) => state.config);
   const { apiKeyAliases, loadApiKeyAliases } = useUsageData({ loadUsageEvents: false });
   const [monitoringMeta, setMonitoringMeta] = useState<UsageAnalyticsMonitoringMeta>(
@@ -104,7 +108,7 @@ export function useUsageAnalytics() {
     () => initialUiState.filters
   );
   const [activeTabState, setActiveTabState] = useState<UsageAnalyticsTab>(
-    () => initialUiState.activeTab
+    () => lockedTab ?? initialUiState.activeTab
   );
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [selectedBucketMs, setSelectedBucketMs] = useState<number | null>(null);
@@ -202,10 +206,14 @@ export function useUsageAnalytics() {
     }),
     [authFileMap, authMetaMap, channelByAuthIndex, sourceInfoMap]
   );
-  const setActiveTab = useCallback((tab: UsageAnalyticsTab) => {
-    setActiveTabState(tab);
-    writeUsageAnalyticsUiState({ activeTab: tab });
-  }, []);
+  const setActiveTab = useCallback(
+    (tab: UsageAnalyticsTab) => {
+      if (lockedTab) return;
+      setActiveTabState(tab);
+      writeUsageAnalyticsUiState({ activeTab: tab });
+    },
+    [lockedTab]
+  );
   const debouncedSearchQuery = useDebouncedValue(
     filters.searchQuery.trim(),
     USAGE_SEARCH_DEBOUNCE_MS
@@ -238,12 +246,12 @@ export function useUsageAnalytics() {
 
   useEffect(() => {
     const nextState = { activeTab: activeTabState, filters };
-    writeUsageAnalyticsUiState(nextState);
+    writeUsageAnalyticsUiState(lockedTab ? { filters } : nextState);
     const nextParams = buildUsageAnalyticsSearchParams(nextState);
     if (nextParams.toString() !== searchParams.toString()) {
       setSearchParams(nextParams, { replace: true });
     }
-  }, [activeTabState, filters, searchParams, setSearchParams]);
+  }, [activeTabState, filters, lockedTab, searchParams, setSearchParams]);
   const drilldownPreview = useMemo(() => {
     if (selectedBucketMs === null) return null;
     return {

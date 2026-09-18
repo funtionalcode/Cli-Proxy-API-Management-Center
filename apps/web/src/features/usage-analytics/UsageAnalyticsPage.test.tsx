@@ -17,6 +17,7 @@ const { mocks } = vi.hoisted(() => ({
     navigate: vi.fn(),
     copyToClipboard: vi.fn(async () => true),
     translationCalls: [] as Array<[string, Record<string, unknown> | undefined]>,
+    usageHookArgs: [] as unknown[],
     usageState: null as unknown,
   },
 }));
@@ -41,7 +42,10 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('./useUsageAnalytics', () => ({
-  useUsageAnalytics: () => mocks.usageState,
+  useUsageAnalytics: (options?: unknown) => {
+    mocks.usageHookArgs.push(options);
+    return mocks.usageState;
+  },
 }));
 
 vi.mock('@/utils/clipboard', () => ({
@@ -56,10 +60,10 @@ const getText = (node: ReactTestInstance): string =>
     })
     .join('');
 
-const renderPage = () => {
+const renderPage = (focusedTab?: 'credentials') => {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(<UsageAnalyticsPage />);
+    renderer = create(<UsageAnalyticsPage focusedTab={focusedTab} />);
   });
   return renderer;
 };
@@ -541,6 +545,7 @@ beforeEach(() => {
   mocks.copyToClipboard.mockReset();
   mocks.copyToClipboard.mockResolvedValue(true);
   mocks.translationCalls.length = 0;
+  mocks.usageHookArgs.length = 0;
   mocks.usageState = createUsageState();
 });
 
@@ -1127,6 +1132,38 @@ describe('UsageAnalyticsPage', () => {
     expect(mocks.navigate).toHaveBeenCalledWith(
       '/monitoring?from_ms=1780000000000&to_ms=1780003600000&auth_file=auth.json&project_id=project-1&search=req-42&min_latency_ms=10000&cache_status=miss'
     );
+  });
+
+  it('renders the focused account-usage view with credential data and time filters', () => {
+    mocks.usageState = createUsageState({ activeTab: 'credentials' });
+
+    const renderer = renderPage('credentials');
+    const text = getText(renderer.root);
+
+    expect(mocks.usageHookArgs[mocks.usageHookArgs.length - 1]).toEqual({
+      lockedTab: 'credentials',
+    });
+    expect(text).toContain('usage_analytics.credential_rank_title');
+    expect(text).toContain('usage_analytics.range_24h');
+    expect(text).toContain('usage_analytics.range_custom');
+    expect(text).not.toContain('usage_analytics.tabs_label');
+    expect(text).not.toContain('usage_analytics.tab_overview');
+  });
+
+  it('explains when persistent account usage is unavailable and links to configuration', () => {
+    mocks.usageState = createUsageState({
+      activeTab: 'credentials',
+      enabled: false,
+      unavailableReason: 'service_not_configured',
+    });
+    const renderer = renderPage('credentials');
+
+    expect(
+      renderer.root.findAllByProps({ 'data-usage-service-unavailable': 'true' })
+    ).toHaveLength(1);
+    expect(getText(renderer.root)).toContain('monitoring.request_monitoring_not_configured_body');
+    clickHostButton(findHostButtonByText(renderer, 'monitoring.open_manager_config'));
+    expect(mocks.navigate).toHaveBeenCalledWith('/config');
   });
 
   it('renders selected credential timeline loading and error states', () => {

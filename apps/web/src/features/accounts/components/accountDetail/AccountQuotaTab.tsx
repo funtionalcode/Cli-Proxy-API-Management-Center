@@ -145,10 +145,8 @@ export function AccountQuotaTab({
         }).format(value)
       : '-';
 
-  const hasResetRecords =
-    detailView.quota.resetCreditsAvailableCount !== null ||
-    detailView.quota.resetCreditExpiries.length > 0;
-  const shouldShowResetRecords = detailView.identity.provider === 'codex' && hasResetRecords;
+  const shouldShowResetRecords = detailView.identity.provider === 'codex';
+  const resetCreditsAvailableCount = detailView.quota.resetCreditsAvailableCount;
 
   return (
     <div className={styles.quotaTab} data-account-quota-tab="true">
@@ -219,6 +217,88 @@ export function AccountQuotaTab({
       </section>
 
       {windowUsageError ? <div className={styles.errorBox}>{windowUsageError}</div> : null}
+
+      {shouldShowResetRecords ? (
+        <section
+          className={styles.quotaSection}
+          data-account-quota-evidence="true"
+          data-account-quota-reset-records="true"
+        >
+          <div className={styles.quotaResetCard} data-quota-evidence-panel="reset">
+            <div className={styles.quotaResetHeader}>
+              <div className={styles.quotaResetHeaderMain}>
+                <span
+                  className={`${styles.quotaPanelIcon} ${styles.quotaResetIcon}`}
+                  aria-hidden="true"
+                >
+                  <IconRefreshCw size={16} />
+                </span>
+                <div className={styles.quotaResetTitle}>
+                  <h3>{t('accounts.detail_quota_reset_records', { defaultValue: '重置记录' })}</h3>
+                  <span>{t('codex_quota.reset_credits_card_subtitle')}</span>
+                </div>
+              </div>
+              <div className={styles.quotaResetHeaderActions}>
+                <div className={styles.quotaResetCount} data-quota-reset-count="true">
+                  <span>{t('codex_quota.reset_credits_available_label')}</span>
+                  <strong>
+                    {resetCreditsAvailableCount !== null
+                      ? resetCreditsAvailableCount
+                      : t('codex_quota.reset_credits_unknown')}
+                  </strong>
+                  <span className={styles.quotaResetCountUnit}>
+                    {t('codex_quota.reset_credits_unit')}
+                  </span>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className={styles.quotaResetAction}
+                  data-quota-reset-action="true"
+                  onClick={onResetQuota}
+                  disabled={resetQuotaDisabled}
+                >
+                  <IconRefreshCw size={14} />
+                  {t('codex_quota.reset_action_button')}
+                </Button>
+              </div>
+            </div>
+            {resetCreditsAvailableCount === 0 ? (
+              <div className={styles.quotaResetAvailabilityNote} role="status">
+                {t('codex_quota.reset_credits_unavailable_label')}
+              </div>
+            ) : null}
+            {detailView.quota.resetCreditExpiries.length > 0 ? (
+              <div className={styles.quotaResetExpirySection}>
+                <span className={styles.quotaResetExpiryLabel}>
+                  {t('codex_quota.reset_credits_expected_expiry_label')}
+                </span>
+                <div className={styles.quotaResetExpiryList}>
+                  {detailView.quota.resetCreditExpiries.map((item, index) => (
+                    <div
+                      key={`${item.id}:${item.expiresAtMs}`}
+                      className={styles.quotaResetExpiryItem}
+                    >
+                      <span>{t('codex_quota.reset_credit_expiry_item', { index: index + 1 })}</span>
+                      <strong data-quota-reset-credit-expiry={item.id}>
+                        {formatQuotaResetTimestamp(item.expiresAtMs, i18n.language)}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {detailView.quota.cooldown ? (
+              <div className={styles.quotaResetCooldown}>
+                <span>{t('accounts.detail_cooldown')}</span>
+                <strong data-quota-cooldown-recover-at="true">
+                  {formatQuotaResetTimestamp(detailView.quota.cooldown.recoverAtMs, i18n.language)}
+                </strong>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
 
       {standardWindows.length > 0 || allWindows.length === 0 ? (
         <section className={styles.quotaSection} data-quota-window-group="standard">
@@ -293,85 +373,6 @@ export function AccountQuotaTab({
         </section>
       ) : null}
 
-      {shouldShowResetRecords ? (
-        <section
-          className={styles.quotaSection}
-          data-account-quota-evidence="true"
-          data-account-quota-reset-records="true"
-        >
-          <div className={styles.quotaResetCard} data-quota-evidence-panel="reset">
-            <div className={styles.quotaResetHeader}>
-              <div className={styles.quotaResetHeaderMain}>
-                <span
-                  className={`${styles.quotaPanelIcon} ${styles.quotaResetIcon}`}
-                  aria-hidden="true"
-                >
-                  <IconRefreshCw size={16} />
-                </span>
-                <div className={styles.quotaResetTitle}>
-                  <h3>{t('accounts.detail_quota_reset_records', { defaultValue: '重置记录' })}</h3>
-                  <span>{t('codex_quota.reset_credits_card_subtitle')}</span>
-                </div>
-              </div>
-              <div className={styles.quotaResetHeaderActions}>
-                {detailView.quota.resetCreditsAvailableCount !== null ? (
-                  <div className={styles.quotaResetCount} data-quota-reset-count="true">
-                    <span>{t('codex_quota.reset_credits_available_label')}</span>
-                    <strong>{detailView.quota.resetCreditsAvailableCount}</strong>
-                    <span className={styles.quotaResetCountUnit}>
-                      {t('codex_quota.reset_credits_unit')}
-                    </span>
-                  </div>
-                ) : null}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className={styles.quotaResetAction}
-                  data-quota-reset-action="true"
-                  onClick={onResetQuota}
-                  disabled={resetQuotaDisabled}
-                >
-                  <IconRefreshCw size={14} />
-                  {t('codex_quota.reset_action_button')}
-                </Button>
-              </div>
-            </div>
-            {detailView.quota.resetCreditsAvailableCount === 0 ? (
-              <div className={styles.quotaResetAvailabilityNote} role="status">
-                {t('codex_quota.reset_credits_unavailable_label')}
-              </div>
-            ) : null}
-            {detailView.quota.resetCreditExpiries.length > 0 ? (
-              <div className={styles.quotaResetExpirySection}>
-                <span className={styles.quotaResetExpiryLabel}>
-                  {t('codex_quota.reset_credits_expected_expiry_label')}
-                </span>
-                <div className={styles.quotaResetExpiryList}>
-                  {detailView.quota.resetCreditExpiries.map((item, index) => (
-                    <div
-                      key={`${item.id}:${item.expiresAtMs}`}
-                      className={styles.quotaResetExpiryItem}
-                    >
-                      <span>{t('codex_quota.reset_credit_expiry_item', { index: index + 1 })}</span>
-                      <strong data-quota-reset-credit-expiry={item.id}>
-                        {formatQuotaResetTimestamp(item.expiresAtMs, i18n.language)}
-                      </strong>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {detailView.quota.cooldown ? (
-              <div className={styles.quotaResetCooldown}>
-                <span>{t('accounts.detail_cooldown')}</span>
-                <strong data-quota-cooldown-recover-at="true">
-                  {formatQuotaResetTimestamp(detailView.quota.cooldown.recoverAtMs, i18n.language)}
-                </strong>
-              </div>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 }

@@ -1,0 +1,337 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  min-width: 0;
+  max-width: 1200px;
+  margin: 0 auto;
+  color: var(--text-primary);
+}
+
+.bannerCard {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-shadow: var(--shadow);
+}
+
+.bannerHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.bannerTitle {
+  font-size: 20px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.statusBadge {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  &.running {
+    background: var(--success-badge-bg);
+    color: var(--success-badge-text);
+    border: 1px solid var(--success-badge-border);
+  }
+
+  &.stopped {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+  }
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.proxyAddressBox {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  padding: 12px 18px;
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 15px;
+  color: var(--primary-color);
+  min-width: 0;
+
+  > span {
+    overflow-wrap: anywhere;
+  }
+
+  .copyButton {
+    margin-left: auto;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.statCard {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  .statLabel {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .statValue {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+}
+
+.sectionCard {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sectionTitle {
+  font-size: 17px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.formRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.poolCard {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.poolHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.poolTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
+
+  :global(.form-group) {
+    margin-bottom: 0;
+    min-width: 0;
+  }
+}
+
+.textarea {
+  width: 100%;
+  min-height: 120px;
+  font-family: monospace;
+  font-size: 13px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--text-primary);
+  resize: vertical;
+  box-sizing: border-box;
+
+  &::placeholder {
+    color: var(--text-tertiary);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+}
+
+.poolActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.testResultBadge {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+
+  &.success {
+    background: var(--success-badge-bg);
+    color: var(--success-badge-text);
+  }
+
+  &.error {
+    background: var(--failure-badge-bg);
+    color: var(--failure-badge-text);
+  }
+}
+
+.actionBar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.description {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+
+.emptyState {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-secondary);
+}
+
+.sourceRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+
+  :global(.form-group) {
+    flex: 1;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+  > button {
+    margin-top: 26px;
+    flex-shrink: 0;
+  }
+}
+
+.sourceResults {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+}
+
+.sourceResultHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+
+  > label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+.proxyChoiceList {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.proxyChoice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+}
+
+.proxyChoiceText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+@media (max-width: 640px) {
+  .bannerCard,
+  .sectionCard {
+    padding: 16px;
+  }
+  .poolCard {
+    padding: 12px;
+  }
+  .statsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .formRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sourceRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .sourceRow > button {
+    margin-top: 0;
+    align-self: flex-start;
+  }
+  .bannerTitle {
+    flex-wrap: wrap;
+  }
+}

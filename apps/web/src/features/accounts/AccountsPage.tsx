@@ -5731,10 +5731,11 @@ export function AccountsPage() {
       if (row.provider !== CODEX_CONFIG.type || row.runtimeOnly) return false;
       if (normalizeAuthIndex(row.raw['auth_index'] ?? row.raw.authIndex) === null) return false;
       const evidence = getDisplayCodexResetEvidenceQuota(row);
-      return (
-        (evidence?.rateLimitResetCreditsAvailableCount ?? 0) > 0 ||
-        (evidence?.rateLimitResetCredits?.length ?? 0) > 0
-      );
+      const availableCount = evidence?.rateLimitResetCreditsAvailableCount;
+      if (availableCount === 0 && (evidence?.rateLimitResetCredits?.length ?? 0) === 0) {
+        return false;
+      }
+      return true;
     },
     [getDisplayCodexResetEvidenceQuota]
   );
@@ -6972,20 +6973,15 @@ export function AccountsPage() {
               accountHistoryError
             );
             const accountHistoryFootnote = accountHistoryError
-              ? row.usage.success + row.usage.failure > 0
-                ? t('accounts.history_recent_fallback')
-                : t('accounts.history_unavailable')
+              ? t('accounts.history_unavailable')
               : accountHistoryLoading && !accountHistory
                 ? t('accounts.history_loading')
                 : accountHistory?.sync_status === 'pending'
                   ? t('accounts.history_syncing')
                   : null;
-            const recentRequestCount = row.usage.success + row.usage.failure;
             const accountHistoryRequestValue = accountHistoryMatched
               ? formatCompactNumber(accountHistory.total_requests)
-              : recentRequestCount > 0
-                ? formatCompactNumber(recentRequestCount)
-                : '-';
+              : '-';
             const accountHistoryTokenValue = accountHistoryMatched
               ? formatCompactNumber(accountHistory.total_tokens)
               : '-';
@@ -6994,9 +6990,7 @@ export function AccountsPage() {
               : '-';
             const accountHistorySuccessValue = accountHistoryMatched
               ? formatHistorySuccessRate(accountHistory.success_rate)
-              : row.usage.successRate !== null
-                ? formatPercent(row.usage.successRate, 1)
-                : '-';
+              : '-';
             return (
               <article
                 key={row.selectionKey}
@@ -7489,14 +7483,15 @@ export function AccountsPage() {
         onClick: () => void handleDownload(selectedRow.fileName),
         disabled: selectedRow.runtimeOnly,
       },
-      ...(canResetCodexQuota(selectedRow)
+      ...(selectedRow.provider === CODEX_CONFIG.type && !selectedRow.runtimeOnly
         ? [
             {
               key: 'reset-codex-quota',
               label: t('codex_quota.reset_action_button'),
               icon: <IconRefreshCw size={15} />,
               onClick: () => resetCodexQuotaForRow(selectedRow),
-              disabled: configurationSaving || resettingSelectedQuota,
+              disabled:
+                !canResetCodexQuota(selectedRow) || configurationSaving || resettingSelectedQuota,
             } satisfies DropdownMenuItem,
           ]
         : []),

@@ -1,0 +1,103 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+
+  select {
+    min-width: 0;
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+  }
+}
+
+.error {
+  color: var(--danger-color, #dc2626);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.accountCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+}
+
+.loginSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  font-size: 13px;
+  color: var(--text-secondary);
+
+  p {
+    margin: 0;
+  }
+}
+
+.loginLink {
+  color: var(--primary-color);
+  overflow-wrap: anywhere;
+}
+
+.callbackRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .accountCard,
+  .callbackRow {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+}
+.tableWrap {
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  caption {
+    text-align: left;
+    color: var(--text-secondary);
+    padding-bottom: 12px;
+  }
+  th,
+  td {
+    padding: 10px;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  td {
+    overflow-wrap: anywhere;
+    max-width: 280px;
+  }
+}

@@ -2309,10 +2309,10 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
-function UsageAnalyticsPageInner() {
+function UsageAnalyticsPageInner({ focusedTab }: { focusedTab?: UsageAnalyticsTab }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const usage = useUsageAnalytics();
+  const usage = useUsageAnalytics({ lockedTab: focusedTab });
   const showNotification = useNotificationStore((state) => state.showNotification);
   const chartTheme = useUsageChartTheme();
   const themedUsageMetrics = useMemo(() => getThemedUsageMetrics(chartTheme), [chartTheme]);
@@ -2525,7 +2525,17 @@ function UsageAnalyticsPageInner() {
     { value: 'hit', label: t('usage_analytics.cache_status_hit') },
     { value: 'miss', label: t('usage_analytics.cache_status_miss') },
   ];
-  const noData = !usage.loading && !usage.error && !hasUsageData(usage.summary, usage.timeline);
+  const noData =
+    usage.enabled &&
+    !usage.loading &&
+    !usage.error &&
+    !hasUsageData(usage.summary, usage.timeline);
+  const unavailableBodyKey =
+    usage.unavailableReason === 'monitoring_disabled'
+      ? 'monitoring.request_monitoring_disabled_body'
+      : usage.unavailableReason === 'service_unavailable'
+        ? 'monitoring.request_monitoring_service_unavailable_body'
+        : 'monitoring.request_monitoring_not_configured_body';
   const rankRowLimit = 8;
   const credentialRankRowLimit = 10;
   const apiKeyRankContext =
@@ -2700,16 +2710,18 @@ function UsageAnalyticsPageInner() {
   return (
     <div className={styles.page}>
       <section className={styles.controlsPanel}>
-        <div className={styles.controlsTabsRow}>
-          <SegmentedTabs
-            items={usageTabItems}
-            activeTab={usage.activeTab}
-            onChange={usage.setActiveTab}
-            ariaLabel={t('usage_analytics.tabs_label')}
-            idBase="usage-analytics-tab"
-            className={styles.tabs}
-          />
-        </div>
+        {!focusedTab ? (
+          <div className={styles.controlsTabsRow}>
+            <SegmentedTabs
+              items={usageTabItems}
+              activeTab={usage.activeTab}
+              onChange={usage.setActiveTab}
+              ariaLabel={t('usage_analytics.tabs_label')}
+              idBase="usage-analytics-tab"
+              className={styles.tabs}
+            />
+          </div>
+        ) : null}
 
         <div className={styles.controlsFilterSection}>
           <div className={styles.controlBar}>
@@ -2903,6 +2915,19 @@ function UsageAnalyticsPageInner() {
             <strong>{t('usage_analytics.error_title')}</strong>
             <span>{usage.error}</span>
           </div>
+        </section>
+      ) : null}
+
+      {!usage.loading && !usage.enabled ? (
+        <section className={styles.alertPanel} data-usage-service-unavailable="true">
+          <IconShield size={22} />
+          <div>
+            <strong>{t('monitoring.usage_disabled_title')}</strong>
+            <span>{t(unavailableBodyKey)}</span>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => navigate('/config')}>
+            {t('monitoring.open_manager_config')}
+          </Button>
         </section>
       ) : null}
 
@@ -3919,6 +3944,6 @@ function DetailPanel({
   );
 }
 
-export function UsageAnalyticsPage() {
-  return <UsageAnalyticsPageInner />;
+export function UsageAnalyticsPage({ focusedTab }: { focusedTab?: UsageAnalyticsTab } = {}) {
+  return <UsageAnalyticsPageInner focusedTab={focusedTab} />;
 }

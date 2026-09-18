@@ -9311,6 +9311,36 @@ describe('AccountsPage replacement flows', () => {
     expect(treeText(renderer)).toContain('accounts.history_unavailable');
   });
 
+  it('does not present restart-volatile recent requests as persistent account history', async () => {
+    mocks.files = [
+      {
+        ...makeCodexFile('volatile.json', 'auth-volatile', 'volatile@example.com'),
+        success: 510,
+        failed: 0,
+        recent_requests: [{ success: 510, failed: 0 }],
+      },
+    ];
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockRejectedValue(new Error('history offline'));
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const card = findAccountCardByKey(renderer, 'volatile.json\u0000auth-volatile');
+    expect(readText(card)).not.toContain('510');
+    expect(
+      card.findByProps({ 'aria-label': 'accounts.history_requests -' }).findByType('strong')
+        .children
+    ).toEqual(['-']);
+    expect(card.findByProps({ 'aria-label': 'accounts.history_success -' })).toBeTruthy();
+    expect(readText(card)).toContain('accounts.history_unavailable');
+  });
+
   it('renders the mobile filters entrypoint in the accounts toolbar', async () => {
     const renderer = await renderAccountsPage();
 
@@ -9494,8 +9524,8 @@ describe('AccountsPage replacement flows', () => {
     expect(renderer.root.findAllByProps({ 'data-quota-window-group': 'standard' })).toHaveLength(1);
     expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'standard' })).toHaveLength(1);
     expect(treeText(renderer)).toContain('accounts.detail_quota_standard_title');
-    expect(renderer.root.findAllByProps({ 'data-account-quota-evidence': 'true' })).toHaveLength(0);
-    expect(renderer.root.findAllByProps({ 'data-quota-evidence-panel': 'reset' })).toHaveLength(0);
+    expect(renderer.root.findAllByProps({ 'data-account-quota-evidence': 'true' })).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ 'data-quota-evidence-panel': 'reset' })).toHaveLength(1);
     const windowUsageRequest = mocks.getAccountWindowUsage.mock.calls[0]?.[2] as
       | AccountWindowUsageRequestForTest
       | undefined;
@@ -10987,6 +11017,28 @@ describe('AccountsPage replacement flows', () => {
     expect(resetAction.props.disabled).toBe(true);
     expect(treeText(renderer)).toContain('codex_quota.reset_credits_unavailable_label');
     expect(mocks.showConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('keeps Codex reset records and the reset action visible when credits are still unknown', async () => {
+    mocks.quotaState.codexQuota = {
+      'codex.json': {
+        status: 'success',
+        authFileKey: 'codex.json::auth-1',
+        windows: [],
+      },
+    };
+
+    const renderer = await renderAccountsPage();
+    await openCodexQuotaTab(renderer, 'codex.json');
+
+    expect(
+      renderer.root.findAllByProps({ 'data-account-quota-reset-records': 'true' })
+    ).toHaveLength(1);
+    const resetAction = renderer.root.findByProps({ 'data-quota-reset-action': 'true' });
+    expect(resetAction.props.disabled).toBe(false);
+    expect(treeText(renderer)).toContain('codex_quota.reset_credits_card_subtitle');
+    expect(treeText(renderer)).toContain('codex_quota.reset_credits_unknown');
+    expect(findDrawerMoreItem(renderer, 'reset-codex-quota').disabled).toBe(false);
   });
 
   it('enables reset when only the reset-credit list carries display evidence', async () => {

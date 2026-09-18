@@ -63,7 +63,9 @@ const sidebarIcons: Record<string, ReactNode> = {
   dashboard: <IconSidebarDashboard size={SIDEBAR_ICON_SIZE} />,
   aiProviders: <IconSidebarProviders size={SIDEBAR_ICON_SIZE} />,
   proxyConfigs: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
+  proxyGateway: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
   authFiles: <IconSidebarAuthFiles size={SIDEBAR_ICON_SIZE} />,
+  accountUsage: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
   oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
   usageAnalytics: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
   monitoring: <IconSidebarMonitor size={SIDEBAR_ICON_SIZE} />,
@@ -584,9 +586,21 @@ function MainLayoutContent({ routeBase = '', demoMode = false }: MainLayoutProps
         shortLabel: navShortLabel('nav.proxy_configs', t('nav.proxy_configs')),
         icon: sidebarIcons.proxyConfigs,
       },
+      {
+        path: '/proxy-gateway',
+        label: t('nav.proxy_gateway', '代理池网关'),
+        shortLabel: navShortLabel('nav.proxy_gateway', t('nav.proxy_gateway', '网关')),
+        icon: sidebarIcons.proxyGateway,
+      },
       ...pluginControlNavItems,
     ],
     [
+      {
+        path: '/account-usage',
+        label: t('nav.account_usage'),
+        shortLabel: navShortLabel('nav.account_usage', t('nav.account_usage')),
+        icon: sidebarIcons.accountUsage,
+      },
       {
         path: '/accounts',
         label: t('nav.accounts', { defaultValue: t('accounts.title') }),

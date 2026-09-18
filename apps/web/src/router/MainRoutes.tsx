@@ -1,3 +1,4 @@
+import { ProxyGatewayPage } from '@/pages/ProxyGatewayPage';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import {
   Navigate,
@@ -7,6 +8,7 @@ import {
   type RouteObject,
 } from 'react-router-dom';
 import { AccountsPage } from '@/pages/AccountsPage';
+import { AccountUsagePage } from '@/pages/AccountUsagePage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { AiProvidersPage } from '@/pages/AiProvidersPage';
 import { AiProvidersClaudeEditLayout } from '@/pages/AiProvidersClaudeEditLayout';
@@ -153,6 +155,8 @@ const mainRoutes: RouteObject[] = [
   { path: '/ai-providers', element: <AiProvidersPage /> },
   { path: '/ai-providers/*', element: <AiProvidersPage /> },
   { path: '/proxy-configs', element: <ProxyConfigsPage /> },
+  { path: '/proxy-gateway', element: <ProxyGatewayPage /> },
+  { path: '/account-usage', element: <AccountUsagePage /> },
   { path: '/accounts', element: <AccountsPage /> },
   { path: '/auth-files', element: <LegacyAccountsRedirect /> },
   { path: '/auth-files/oauth-excluded', element: <LegacyAccountsRedirect view="oauth" /> },

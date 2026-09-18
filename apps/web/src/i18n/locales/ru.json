@@ -192,6 +192,8 @@
     "plugin_store": "Магазин плагинов",
     "plugin_store_short": "Магазин",
     "usage_analytics": "Аналитика использования",
+    "account_usage": "Использование аккаунтов",
+    "account_usage_short": "Аккаунты",
     "monitoring_center": "Мониторинг запросов",
     "monitoring_center_short": "Мониторинг",
     "account_actions": "Проблемы аутентификации",
@@ -4717,5 +4719,20 @@
       "ultra": "Ultra",
       "ultra_lite": "Ultra Lite"
     }
+  },
+  "proxy_gateway": {
+    "source_url_label": "API URL динамического источника прокси",
+    "source_url_hint": "API возвращает один прокси в строке. Тест не требует сохранения; работающий шлюз обновляется каждые 5 минут.",
+    "pool_proxies_count": "Статические прокси: ",
+    "test_btn": "Проверить первый статический прокси",
+    "source_test_btn": "Проверить источник",
+    "source_test_success": "Получено прокси: {{count}}; первый подключён за {{latency}} мс",
+    "source_fetch_failed": "Ошибка загрузки источника: ",
+    "source_proxy_failed": "Получено прокси: {{count}}; ошибка подключения первого: ",
+    "gateway_test_btn": "Проверить шлюз",
+    "gateway_test_hint": "Проверка HTTPS через сохранённый порт шлюза и пул прокси.",
+    "gateway_test_disabled": "Сохраните и запустите шлюз перед проверкой.",
+    "gateway_test_success": "Передача через шлюз успешна, {{latency}} мс",
+    "gateway_test_failed": "Ошибка проверки шлюза: "
   }
 }
