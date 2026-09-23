@@ -242,3 +242,4 @@ export function formatKimiResetHint(t: TFunction, hint?: string): string {
   if (!hint) return '';
   return t('kimi_quota.reset_hint', { hint });
 }
+

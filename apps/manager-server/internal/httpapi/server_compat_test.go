@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -572,7 +575,8 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 		t.Fatalf("empty usage body = %s", emptyRR.Body.String())
 	}
 
-	_, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("usage-event-1", 10)})
+	event1 := compatEvent("usage-event-1", 10)
+	_, err := db.InsertEvents(context.Background(), []usage.Event{event1})
 	if err != nil {
 		t.Fatalf("insert usage event: %v", err)
 	}
@@ -586,11 +590,12 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 	exportRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage/export", "", testutil.AdminKey)
 	testutil.RequireStatus(t, exportRR, http.StatusOK)
 	if !strings.Contains(exportRR.Header().Get("Content-Type"), "application/x-ndjson") ||
-		!strings.Contains(exportRR.Body.String(), `"event_hash":"usage-event-1"`) {
+		!strings.Contains(exportRR.Body.String(), `"event_hash":"`+event1.EventHash+`"`) {
 		t.Fatalf("export content type = %q body = %s", exportRR.Header().Get("Content-Type"), exportRR.Body.String())
 	}
 
-	importLine := `{"event_hash":"usage-event-2","timestamp_ms":1778000001000,"timestamp":"2026-05-06T00:00:01Z","model":"gpt-test","endpoint":"POST /v1/chat/completions","input_tokens":2,"output_tokens":3,"total_tokens":5,"failed":false}`
+	importHash := canonicalCompatEventHash("usage-event-2")
+	importLine := fmt.Sprintf(`{"event_hash":%q,"timestamp_ms":1778000001000,"timestamp":"2026-05-06T00:00:01Z","model":"gpt-test","endpoint":"POST /v1/chat/completions","input_tokens":2,"output_tokens":3,"total_tokens":5,"failed":false}`, importHash)
 	importRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/usage/import", importLine+"\n", testutil.AdminKey)
 	testutil.RequireStatus(t, importRR, http.StatusOK)
 	if !strings.Contains(importRR.Body.String(), `"format":"usage_service_jsonl"`) ||
@@ -602,7 +607,8 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 func TestServerCompatUsageImportSessionRoutes(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	handler, _ := newCompatHandler(t, cfg, nil)
-	line := `{"event_hash":"usage-session-event","timestamp_ms":1778000001000,"timestamp":"2026-05-06T00:00:01Z","model":"gpt-test","endpoint":"POST /v1/chat/completions","input_tokens":2,"output_tokens":3,"total_tokens":5,"failed":false}` + "\n"
+	sessionHash := canonicalCompatEventHash("usage-session-event")
+	line := fmt.Sprintf(`{"event_hash":%q,"timestamp_ms":1778000001000,"timestamp":"2026-05-06T00:00:01Z","model":"gpt-test","endpoint":"POST /v1/chat/completions","input_tokens":2,"output_tokens":3,"total_tokens":5,"failed":false}`+"\n", sessionHash)
 	createBody := `{"filename":"history.jsonl","size_bytes":` + strconv.Itoa(len(line)) + `,"resume_key":"0123456789abcdef0123456789abcdef"}`
 
 	unauthorized := testutil.Request(t, handler, http.MethodPost, "/v0/management/usage/import-sessions", createBody, "wrong-key")
@@ -816,7 +822,7 @@ func TestServerCompatMonitoringAnalytics(t *testing.T) {
 	if payload.Summary == nil || payload.Summary.TotalCalls != 1 {
 		t.Fatalf("summary = %#v", payload.Summary)
 	}
-	if payload.Events == nil || len(payload.Events.Items) != 1 || payload.Events.Items[0].EventHash != "monitoring-analytics-event" {
+	if payload.Events == nil || len(payload.Events.Items) != 1 || payload.Events.Items[0].EventHash != event.EventHash {
 		t.Fatalf("events = %#v", payload.Events)
 	}
 }
@@ -1199,9 +1205,17 @@ func (s *recordingAutomationRuntimeService) Reload(context.Context) error {
 	return nil
 }
 
+func canonicalCompatEventHash(raw string) string {
+	if len(raw) == 64 {
+		return raw
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
 func compatEvent(hash string, offset int64) usage.Event {
 	return usage.Event{
-		EventHash:    hash,
+		EventHash:    canonicalCompatEventHash(hash),
 		TimestampMS:  1_778_000_000_000 + offset,
 		Timestamp:    time.UnixMilli(1_778_000_000_000 + offset).UTC().Format(time.RFC3339Nano),
 		Model:        "gpt-test",

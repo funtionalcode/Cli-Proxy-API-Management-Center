@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     interactionsApiKeys: GeminiKeyConfig[];
     codexApiKeys: ProviderKeyConfig[];
     xaiApiKeys: ProviderKeyConfig[];
+    metaApiKeys: ProviderKeyConfig[];
     claudeApiKeys: ProviderKeyConfig[];
     vertexApiKeys: ProviderKeyConfig[];
     openaiCompatibility: never[];
@@ -17,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   clearCache: vi.fn(),
   updateGeminiKey: vi.fn(),
   updateVertexConfig: vi.fn(),
+  updateMetaConfig: vi.fn(),
   getVertexConfigs: vi.fn(),
+  getMetaConfigs: vi.fn(),
   getOpenAIProviders: vi.fn(),
   showNotification: vi.fn(),
   showConfirmation: vi.fn(),
@@ -56,9 +59,11 @@ vi.mock('@/stores', () => ({
 vi.mock('@/services/api', () => ({
   providersApi: {
     getVertexConfigs: mocks.getVertexConfigs,
+    getMetaConfigs: mocks.getMetaConfigs,
     getOpenAIProviders: mocks.getOpenAIProviders,
     updateGeminiKey: mocks.updateGeminiKey,
     updateVertexConfig: mocks.updateVertexConfig,
+    updateMetaConfig: mocks.updateMetaConfig,
   },
 }));
 
@@ -68,11 +73,13 @@ vi.mock('@/components/providers', async () => {
 
   return {
     buildProviderRows: ({
-      gemini,
-      vertex,
+      gemini = [],
+      vertex = [],
+      meta = [],
     }: {
-      gemini: GeminiKeyConfig[];
-      vertex: ProviderKeyConfig[];
+      gemini?: GeminiKeyConfig[];
+      vertex?: ProviderKeyConfig[];
+      meta?: ProviderKeyConfig[];
     }) => [
       ...gemini.map((raw, originalIndex) => ({
         key: `gemini:${originalIndex}`,
@@ -96,6 +103,17 @@ vi.mock('@/components/providers', async () => {
         sortName: raw.apiKey,
         baseUrl: raw.baseUrl ?? '',
       })),
+      ...meta.map((raw, originalIndex) => ({
+        key: `meta:${originalIndex}`,
+        kind: 'meta' as const,
+        originalIndex,
+        raw,
+        modelNames: [],
+        enabled: true,
+        label: raw.apiKey,
+        sortName: raw.apiKey,
+        baseUrl: raw.baseUrl ?? '',
+      })),
     ],
     filterAndSortProviderRows: (rows: unknown[]) => rows,
     PROVIDER_KIND_LABELS: {
@@ -104,6 +122,7 @@ vi.mock('@/components/providers', async () => {
       interactions: 'Interactions',
       codex: 'Codex',
       xai: 'xAI',
+      meta: 'Muse (Meta)',
       claude: 'Claude',
       vertex: 'Vertex',
       openai: 'OpenAI',
@@ -190,12 +209,14 @@ describe('AiProvidersPage cooling policy mutation', () => {
       interactionsApiKeys: [],
       codexApiKeys: [],
       xaiApiKeys: [],
+      metaApiKeys: [],
       claudeApiKeys: [],
       vertexApiKeys: [],
       openaiCompatibility: [],
     };
     mocks.fetchConfig.mockImplementation(async () => mocks.config);
     mocks.getVertexConfigs.mockImplementation(async () => mocks.config.vertexApiKeys);
+    mocks.getMetaConfigs.mockImplementation(async () => mocks.config.metaApiKeys);
     mocks.getOpenAIProviders.mockResolvedValue([]);
     mocks.updateGeminiKey.mockImplementation(
       async (_original: GeminiKeyConfig, next: GeminiKeyConfig) => {
@@ -205,6 +226,11 @@ describe('AiProvidersPage cooling policy mutation', () => {
     mocks.updateVertexConfig.mockImplementation(
       async (_original: ProviderKeyConfig, next: ProviderKeyConfig) => {
         mocks.config = { ...mocks.config, vertexApiKeys: [next] };
+      }
+    );
+    mocks.updateMetaConfig.mockImplementation(
+      async (_original: ProviderKeyConfig, next: ProviderKeyConfig) => {
+        mocks.config = { ...mocks.config, metaApiKeys: [next] };
       }
     );
   });
@@ -356,6 +382,34 @@ describe('AiProvidersPage cooling policy mutation', () => {
 
     act(() => renderer.unmount());
   });
+
+  it('sends the Meta undefined -> enabled transition as disable-cooling false', async () => {
+    mocks.config.geminiApiKeys = [];
+    mocks.config.metaApiKeys = [{ apiKey: 'meta-key', baseUrl: 'https://api.meta.ai/v1' }];
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AiProvidersPage />);
+    });
+    await flush();
+    await openDetail(renderer);
+
+    await act(async () => {
+      renderer.root.findByProps({ 'data-policy': 'enabled' }).props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(mocks.updateMetaConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'meta-key' }),
+      expect.objectContaining({ apiKey: 'meta-key', disableCooling: false })
+    );
+    expect(renderer.root.findByProps({ 'data-current-policy': true }).children.join('')).toBe(
+      'enabled'
+    );
+
+    act(() => renderer.unmount());
+  });
 });
 
 describe('AiProvidersPage current-layer config refresh', () => {
@@ -368,6 +422,7 @@ describe('AiProvidersPage current-layer config refresh', () => {
       interactionsApiKeys: [],
       codexApiKeys: [],
       xaiApiKeys: [],
+      metaApiKeys: [],
       claudeApiKeys: [],
       vertexApiKeys: [],
       openaiCompatibility: [],

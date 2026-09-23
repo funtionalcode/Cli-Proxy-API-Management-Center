@@ -12,6 +12,7 @@ import {
   getAuthFileCodexInspectionKeyForFile,
   getAuthFileCodexInspectionKeyForIdentity,
   getAuthFileSelectionKey,
+  getAuthFileCredentialStatusCodes,
   isAuthFileInspectionAuthenticationFailure,
   hasActiveCodexInspectionAuthenticationFailure,
   type AuthFileCodexStatusSummary,
@@ -55,6 +56,7 @@ import {
   getPlanPresentation,
   resolveAuthFilePlanType,
 } from '@/utils/plans';
+import { buildAccountSubscriptionPresentation } from './accountSubscriptionPresentation';
 
 export {
   compareQuotaResetLabels,
@@ -85,6 +87,7 @@ export const ACCOUNT_CODEX_STATUS_FILTERS = [
 export const ACCOUNT_STATUS_FILTERS = [
   'all',
   'available',
+  'enabled',
   'unconfirmed',
   'disabled',
   'problem',
@@ -101,6 +104,7 @@ export type AccountRowSortKey =
   | 'plan'
   | 'note'
   | 'reset'
+  | 'remaining'
   | 'priority'
   | 'recent'
   | 'quota'
@@ -191,6 +195,9 @@ export interface AccountRow {
   weight?: number | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
+  subscriptionUntilMs: number | null;
+  authenticationAtMs: number;
+  rawCredentialStatusSuperseded: boolean;
   quota: AccountQuotaSummary;
   usage: AccountUsageSummary;
   inspection: AccountInspectionSummary | null;
@@ -361,11 +368,18 @@ export const buildAccountInspectionBySelectionKey = (
       boundary?.inspectionAtMs ?? 0,
       usesExactInspection ? 0 : (boundary?.fallbackInspectionAtMs ?? 0)
     );
+    const authenticationBoundaryAtMs = boundary?.authenticationAtMs ?? 0;
     const inspectionBaselinePending = usesExactInspection
       ? boundary?.inspectionBaselinePending === true
       : boundary?.fallbackInspectionBaselinePending === true;
     if (inspectionBaselinePending) return;
     if (inspection.createdAtMs <= boundaryAtMs) return;
+    if (
+      inspection.createdAtMs <= authenticationBoundaryAtMs &&
+      hasActiveCodexInspectionAuthenticationFailure(inspection)
+    ) {
+      return;
+    }
     const credentialRefreshAtMs = readAuthFileCredentialRefreshAtMs(file) ?? 0;
     if (
       credentialRefreshAtMs > 0 &&
@@ -422,44 +436,94 @@ export const buildAccountRows = (
     const effectiveFile = inspectionSupersedesRawDisabled
       ? { ...file, disabled: inspection.disabled }
       : file;
-    const codexQuota =
+    const overrideCodexQuotaBySelectionKey = overrides?.codexQuotaBySelectionKey;
+    const storeCodexQuota =
+      provider === 'codex' ? getCredentialScopedQuotaState(stores.codexQuota, file) : undefined;
+    const overrideCodexQuota = overrideCodexQuotaBySelectionKey?.get(selectionKey);
+    const codexQuota = overrideCodexQuota ?? storeCodexQuota;
+    const subscriptionCodexQuota =
       provider === 'codex'
-        ? (overrides?.codexQuotaBySelectionKey?.get(selectionKey) ??
-          getCredentialScopedQuotaState(stores.codexQuota, file))
+        ? overrideCodexQuotaBySelectionKey
+          ? overrideCodexQuota
+          : storeCodexQuota
         : undefined;
+    const credentialAuthenticationBoundaryAtMs = Math.max(
+      evidenceBoundary?.authenticationAtMs ?? 0,
+      statusBoundary?.authenticationAtMs ?? 0
+    );
     const authenticationAtMs = getAccountCredentialEvidenceCutoffs({
       providerQuota: codexQuota,
       inspection,
+      authenticationBoundaryAtMs: credentialAuthenticationBoundaryAtMs,
       credentialRefreshAtMs: readAuthFileCredentialRefreshAtMs(file) ?? 0,
     }).authenticationAtMs;
     const rawStatusMessage = resolveStatusMessage(file);
+    const rawStatusCodes = getAuthFileCredentialStatusCodes(file);
     const boundarySupersedesRawStatus = (
       boundary: AccountCredentialEvidenceBoundary | undefined
     ): boolean => {
-      if (!boundary || boundary.localAtMs <= 0) return false;
-      if (rawStatusMessage === '' || !boundary.rawStatusMessages.includes(rawStatusMessage)) {
+      if (!boundary) return false;
+      const rawStatusMessageMatches =
+        rawStatusMessage !== '' && (boundary.rawStatusMessages ?? []).includes(rawStatusMessage);
+      const rawStatusCodeMatches = rawStatusCodes.some((statusCode) =>
+        (boundary.rawStatusCodes ?? []).includes(statusCode)
+      );
+      if (!rawStatusMessageMatches && !rawStatusCodeMatches) {
         return false;
       }
       if (updatedAtMs === null) return true;
-      return updatedAtMs <= Math.max(boundary.rawStatusAtMs, boundary.localAtMs);
+      if (
+        (boundary.authenticationAtMs ?? 0) > 0 &&
+        updatedAtMs > (boundary.authenticationAtMs ?? 0)
+      ) {
+        return false;
+      }
+      const boundaryAtMs = Math.max(
+        boundary.rawStatusAtMs,
+        (boundary.authenticationAtMs ?? 0) > 0
+          ? (boundary.authenticationAtMs ?? 0)
+          : boundary.localAtMs
+      );
+      return boundaryAtMs > 0 && updatedAtMs <= boundaryAtMs;
     };
-    const rawStatusSuperseded =
+    const hasCapturedRawStatusBoundary = [evidenceBoundary, statusBoundary].some(
+      (boundary) =>
+        (boundary?.rawStatusMessages?.length ?? 0) > 0 ||
+        (boundary?.rawStatusCodes?.length ?? 0) > 0
+    );
+    const hasAuthenticationRecoveryBoundary = [evidenceBoundary, statusBoundary].some(
+      (boundary) => (boundary?.authenticationAtMs ?? 0) > 0
+    );
+    const rawCredentialStatusSuperseded =
       boundarySupersedesRawStatus(evidenceBoundary) ||
       boundarySupersedesRawStatus(statusBoundary) ||
-      (authenticationAtMs > 0 && updatedAtMs !== null && authenticationAtMs >= updatedAtMs);
+      (!hasCapturedRawStatusBoundary &&
+        !hasAuthenticationRecoveryBoundary &&
+        authenticationAtMs > 0 &&
+        updatedAtMs !== null &&
+        authenticationAtMs >= updatedAtMs);
     const quota = resolveAccountQuota(effectiveFile, stores, overrides);
+    const planType = quota.planType ?? readPlanType(file);
+    const subscriptionUntilMs = buildAccountSubscriptionPresentation({
+      row: {
+        provider,
+        planType,
+        raw: file,
+      },
+      codexQuota: subscriptionCodexQuota,
+    }).subscriptionUntilMs;
     return {
       key: file.name,
       selectionKey,
       fileName: file.name,
       accountLabel: resolveAccountLabel(file),
       provider,
-      planType: quota.planType ?? readPlanType(file),
-      canonicalPlanType: getCanonicalPlanType(provider, quota.planType ?? readPlanType(file)),
+      planType,
+      canonicalPlanType: getCanonicalPlanType(provider, planType),
       disabled: effectiveFile.disabled === true,
       runtimeOnly:
         file.runtimeOnly === true || file.runtimeOnly === 'true' || file.runtime_only === true,
-      statusMessage: rawStatusSuperseded ? '' : rawStatusMessage,
+      statusMessage: rawCredentialStatusSuperseded ? '' : rawStatusMessage,
       authIndex,
       projectId: readProjectId(file),
       note: readString(file.note),
@@ -467,6 +531,9 @@ export const buildAccountRows = (
       weight: readNumber(file.weight),
       createdAtMs: readAuthFileCreatedAtMs(file),
       updatedAtMs,
+      subscriptionUntilMs,
+      authenticationAtMs,
+      rawCredentialStatusSuperseded,
       quota,
       usage: buildUsageSummary(file),
       inspection,
@@ -512,6 +579,20 @@ const hasOperationalItems = (
 
 const hasPartialGroupedQuota = (row: AccountRow): boolean =>
   row.quota.groupedAvailabilityState === 'partial';
+
+const getAccountQuotaEvidenceAtMs = (row: AccountRow): number | null => {
+  const value =
+    row.quota.source === 'observed-header'
+      ? (row.quota.observedQuotaAtMs ?? row.quota.observedAtMs ?? row.quota.fetchedAtMs)
+      : (row.quota.fetchedAtMs ?? row.quota.observedQuotaAtMs ?? row.quota.observedAtMs);
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+};
+
+const hasCurrentAccountQuotaEvidence = (row: AccountRow): boolean => {
+  if (row.authenticationAtMs <= 0) return true;
+  const observedAtMs = getAccountQuotaEvidenceAtMs(row);
+  return observedAtMs !== null && observedAtMs >= row.authenticationAtMs;
+};
 
 const getRowRequestHealthEvidence = (
   row: AccountRow,
@@ -572,10 +653,10 @@ const hasConfirmedAvailableEvidence = (
 ): boolean => {
   const requestEvidence = getRowRequestHealthEvidence(row, context.requestEvidenceBySelectionKey);
   return (
-    row.quota.status === 'ok' ||
+    (row.quota.status === 'ok' && hasCurrentAccountQuotaEvidence(row)) ||
     isAccountInspectionHealthyEvidence(row) ||
     (isAccountRequestHealthEvidenceCurrent(row, requestEvidence) &&
-      requestEvidence?.direction === 'positive')
+      requestEvidence?.kind === 'success')
   );
 };
 
@@ -828,6 +909,7 @@ const matchesStatusFilter = (
   if (status === 'available') {
     return isAccountRowAvailable(row, context.requestEvidenceBySelectionKey);
   }
+  if (status === 'enabled') return !row.disabled;
   if (status === 'disabled') return row.disabled;
   if (status === 'unconfirmed') {
     return classifyAccountMetricStatus(row, context) === 'unconfirmed';
@@ -978,6 +1060,9 @@ const compareAccountRowsBySort = (left: AccountRow, right: AccountRow, sort: Acc
   }
   if (sort.key === 'created') {
     return compareNullableNumbers(left.createdAtMs, right.createdAtMs, sort.direction);
+  }
+  if (sort.key === 'remaining') {
+    return compareNullableNumbers(left.subscriptionUntilMs, right.subscriptionUntilMs, sort.direction);
   }
   if (sort.key === 'reset') {
     return compareQuotaResets(left.quota, right.quota, sort.direction);

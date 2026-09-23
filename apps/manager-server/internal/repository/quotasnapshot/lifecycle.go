@@ -11,6 +11,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const (
@@ -1035,20 +1036,28 @@ func reconcileCycle(
 		}
 		return active.ID, 0, false, nil
 	}
-	if activeErr == nil && isReliableLifecycleBoundary(*snapshot) && active.ScheduledEndMS != nil &&
-		*snapshot.CycleStartMS >= *active.ScheduledEndMS {
-		actualEndMS := *active.ScheduledEndMS
-		if actualEndMS < active.ActualStartMS {
-			actualEndMS = active.ActualStartMS
+	if activeErr == nil && isReliableLifecycleBoundary(*snapshot) && active.ScheduledEndMS != nil {
+		strictScheduledRollover := *snapshot.CycleStartMS >= *active.ScheduledEndMS
+		nearScheduledRollover := cycleBoundaryIsNearScheduledRollover(active, *snapshot)
+		if strictScheduledRollover || nearScheduledRollover {
+			actualEndMS := *active.ScheduledEndMS
+			if actualEndMS < active.ActualStartMS {
+				actualEndMS = active.ActualStartMS
+			}
+			if _, err := tx.ExecContext(ctx, `update account_quota_cycles set
+				state = 'closed', actual_end_ms = ?, end_reason = 'scheduled',
+				last_observation_id = ?, updated_at_ms = ? where id = ?`,
+				actualEndMS, observationID, snapshot.CreatedAtMS, active.ID); err != nil {
+				return 0, 0, false, err
+			}
+			var id int64
+			if nearScheduledRollover {
+				id, err = restoreOrInsertCycleAt(ctx, tx, activationID, observationID, &actualEndMS, snapshot)
+			} else {
+				id, err = restoreOrInsertCycle(ctx, tx, activationID, observationID, snapshot)
+			}
+			return id, active.ID, false, err
 		}
-		if _, err := tx.ExecContext(ctx, `update account_quota_cycles set
-			state = 'closed', actual_end_ms = ?, end_reason = 'scheduled',
-			last_observation_id = ?, updated_at_ms = ? where id = ?`,
-			actualEndMS, observationID, snapshot.CreatedAtMS, active.ID); err != nil {
-			return 0, 0, false, err
-		}
-		id, err := restoreOrInsertCycle(ctx, tx, activationID, observationID, snapshot)
-		return id, active.ID, false, err
 	}
 	if isProvisionalZeroAPIBoundary(*snapshot) {
 		// A zero-use Codex API response whose calculated start follows the query
@@ -1221,6 +1230,34 @@ func cycleBoundaryShouldRefreshExpiredCurrent(
 		return false
 	}
 	return snapshot.ObservedAtMS >= *cycle.ScheduledEndMS &&
+		*snapshot.CycleEndMS > snapshot.ObservedAtMS
+}
+
+// cycleBoundaryIsNearScheduledRollover reports whether a reliable incoming
+// boundary is just before the active scheduled end because of provider timing
+// jitter. The observation must already be at the old end, while the incoming
+// boundary must still cover that observation, so material overlaps continue to
+// use the expired-boundary refresh path.
+func cycleBoundaryIsNearScheduledRollover(
+	cycle model.AccountQuotaCycle,
+	snapshot model.AccountQuotaSnapshot,
+) bool {
+	if isProvisionalZeroAPIBoundary(snapshot) {
+		return false
+	}
+	if cycle.ScheduledEndMS == nil ||
+		cycle.DurationSeconds == nil ||
+		snapshot.CycleStartMS == nil ||
+		snapshot.CycleEndMS == nil ||
+		snapshot.DurationSeconds == nil {
+		return false
+	}
+	if *cycle.DurationSeconds != *snapshot.DurationSeconds ||
+		*snapshot.CycleStartMS >= *cycle.ScheduledEndMS {
+		return false
+	}
+	return *cycle.ScheduledEndMS-*snapshot.CycleStartMS <= quotaBoundaryJitterMS &&
+		snapshot.ObservedAtMS >= *cycle.ScheduledEndMS &&
 		*snapshot.CycleEndMS > snapshot.ObservedAtMS
 }
 
@@ -1405,16 +1442,40 @@ func restoreOrInsertCycle(
 	activationID, observationID int64,
 	snapshot *model.AccountQuotaSnapshot,
 ) (int64, error) {
+	return restoreOrInsertCycleAt(ctx, tx, activationID, observationID, nil, snapshot)
+}
+
+func restoreOrInsertCycleAt(
+	ctx context.Context,
+	tx *sql.Tx,
+	activationID, observationID int64,
+	actualStartMS *int64,
+	snapshot *model.AccountQuotaSnapshot,
+) (int64, error) {
 	closed, err := matchingClosedCycle(ctx, tx, activationID, *snapshot)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return insertCycle(ctx, tx, activationID, observationID, *snapshot)
+		if actualStartMS == nil {
+			return insertCycle(ctx, tx, activationID, observationID, *snapshot)
+		}
+		return insertCycleWithKey(
+			ctx,
+			tx,
+			activationID,
+			observationID,
+			*actualStartMS,
+			providerCycleKey(*snapshot),
+			*snapshot,
+		)
 	}
 
 	if !cycleBoundaryShouldUpgrade(closed, *snapshot) {
 		applyActiveCycleBoundary(snapshot, closed)
+	}
+	if actualStartMS == nil {
+		actualStartMS = snapshot.CycleStartMS
 	}
 	if _, err := tx.ExecContext(ctx, `update account_quota_cycles set
 		state = 'active', scheduled_start_ms = ?, scheduled_end_ms = ?, actual_start_ms = ?,
@@ -1422,7 +1483,7 @@ func restoreOrInsertCycle(
 		last_observation_id = ?, updated_at_ms = ? where id = ?`,
 		snapshot.CycleStartMS,
 		snapshot.CycleEndMS,
-		*snapshot.CycleStartMS,
+		*actualStartMS,
 		snapshot.DurationSeconds,
 		snapshot.BoundaryAccuracy,
 		observationID,
@@ -1972,6 +2033,29 @@ func resolveContainerCycleID(
 }
 
 func (r *repository) ListWindowStates(ctx context.Context, accountKey, provider string) ([]model.AccountQuotaWindowState, error) {
+	return r.listWindowStates(ctx, accountKey, provider, false)
+}
+
+func (r *repository) ListLegacyCodexWorkspaceWindowStates(
+	ctx context.Context,
+	accountKey, provider string,
+) ([]model.AccountQuotaWindowState, error) {
+	legacyPrefix := "usage-account-history:" + usageidentity.FormatVersion + ":codex-account:"
+	if !strings.EqualFold(strings.TrimSpace(provider), "codex") || !strings.HasPrefix(strings.TrimSpace(accountKey), legacyPrefix) {
+		return []model.AccountQuotaWindowState{}, nil
+	}
+	return r.listWindowStates(ctx, accountKey, provider, true)
+}
+
+func (r *repository) listWindowStates(
+	ctx context.Context,
+	accountKey, provider string,
+	includeLegacyCodexWorkspace bool,
+) ([]model.AccountQuotaWindowState, error) {
+	legacyFilter := `and ` + excludeLegacyCodexWorkspaceSnapshotSQL("")
+	if includeLegacyCodexWorkspace {
+		legacyFilter = ""
+	}
 	rows, err := r.db.QueryContext(ctx, `select
 		id, account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, coalesce(model_scope_key, ''), coalesce(model_ids_json, ''),
@@ -1979,6 +2063,7 @@ func (r *repository) ListWindowStates(ctx context.Context, accountKey, provider 
 		coalesce(container_provider_window_id, ''), availability, generation,
 		first_seen_at_ms, last_seen_at_ms, missing_since_ms, deactivated_at_ms
 		from account_quota_windows where account_key = ? and provider = ?
+			`+legacyFilter+`
 		order by updated_at_ms desc, id desc`, strings.TrimSpace(accountKey), strings.TrimSpace(provider))
 	if err != nil {
 		return nil, err

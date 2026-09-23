@@ -4,6 +4,7 @@ import {
   buildMonitoringSourceDisplay,
   isGenericMonitoringProviderLabel,
   isKeyDisambiguatedLabel,
+  isProviderLikeMonitoringLabel,
   isRedundantMonitoringLabel,
 } from './sourceDisplay';
 import type { MonitoringAuthMeta, MonitoringChannelMeta } from './types';
@@ -21,7 +22,25 @@ describe('isGenericMonitoringProviderLabel', () => {
     expect(isGenericMonitoringProviderLabel('x-ai')).toBe(true);
     expect(isGenericMonitoringProviderLabel('grok')).toBe(true);
     expect(isGenericMonitoringProviderLabel('antigravity')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('devin')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('Devin')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('meta')).toBe(true);
+    expect(isGenericMonitoringProviderLabel('Meta')).toBe(true);
     expect(isGenericMonitoringProviderLabel('anyrouter.top #1')).toBe(false);
+  });
+});
+
+describe('isProviderLikeMonitoringLabel', () => {
+  it('identifies generic or provider-equivalent labels', () => {
+    expect(isProviderLikeMonitoringLabel('codex', 'codex')).toBe(true);
+    expect(isProviderLikeMonitoringLabel('grok', 'xai')).toBe(true);
+    expect(isProviderLikeMonitoringLabel('workbuddy', 'workbuddy')).toBe(true);
+    expect(isProviderLikeMonitoringLabel('WorkBuddy', 'workbuddy')).toBe(true);
+    expect(isProviderLikeMonitoringLabel('Team Relay', 'workbuddy')).toBe(false);
+    expect(isProviderLikeMonitoringLabel('workbuddy #1', 'workbuddy')).toBe(false);
+    expect(isProviderLikeMonitoringLabel('', 'workbuddy')).toBe(false);
+    expect(isProviderLikeMonitoringLabel(null, 'workbuddy')).toBe(false);
+    expect(isProviderLikeMonitoringLabel('workbuddy', null)).toBe(false);
   });
 });
 
@@ -110,6 +129,45 @@ describe('buildMonitoringSourceDisplay', () => {
 
     expect(display.primary).toBe('fbc***@vip.qq.com');
     expect(display.meta).toBe('codex');
+  });
+
+  it('keeps generic devin provider labels secondary to the account identity', () => {
+    const authMetaMap = new Map<string, MonitoringAuthMeta>([
+      [
+        'devin-1',
+        {
+          authIndex: 'devin-1',
+          label: 'devin',
+          account: 'user@example.com',
+          provider: 'devin',
+          status: 'active',
+          disabled: false,
+          unavailable: false,
+          runtimeOnly: false,
+          planType: '-',
+          updatedAt: '',
+        },
+      ],
+    ]);
+
+    const display = buildMonitoringSourceDisplay(
+      {
+        authIndex: 'devin-1',
+        accountSnapshot: 'user@example.com',
+        authLabelSnapshot: 'devin',
+        authProviderSnapshot: 'devin',
+        channel: 'devin',
+      },
+      {
+        authMetaMap,
+        channelByAuthIndex: new Map(),
+      }
+    );
+
+    expect(display.primary).toBe('use***@example.com');
+    expect(display.meta).toBe('devin');
+    expect(display.accountMasked).toBe('use***@example.com');
+    expect(display.provider).toBe('devin');
   });
 
   it('still prefers non-generic channel names over the account identity', () => {
@@ -219,5 +277,92 @@ describe('buildMonitoringSourceDisplay', () => {
 
     expect(display.primary).toBe('kuaileshifu');
     expect(display.meta).toBe('openai');
+  });
+
+  it('prefers credential account over dynamic/unknown provider when channel and source are provider-equivalent (#686)', () => {
+    const authMetaMap = new Map<string, MonitoringAuthMeta>([
+      [
+        'wb-1',
+        {
+          authIndex: 'wb-1',
+          label: 'workbuddy',
+          account: 'marscosmo',
+          provider: 'workbuddy',
+          status: 'active',
+          disabled: false,
+          unavailable: false,
+          runtimeOnly: false,
+          planType: '-',
+          updatedAt: '',
+        },
+      ],
+    ]);
+
+    const display = buildMonitoringSourceDisplay(
+      {
+        authIndex: 'wb-1',
+        account: 'marscosmo',
+        accountSnapshot: 'marscosmo',
+        authLabelSnapshot: 'workbuddy',
+        authProviderSnapshot: 'workbuddy',
+        channel: 'workbuddy',
+        source: 'workbuddy',
+      },
+      {
+        authMetaMap,
+        channelByAuthIndex: new Map(),
+      }
+    );
+
+    expect(display.primary).toBe('marscosmo');
+    expect(display.meta).toBe('workbuddy');
+  });
+
+  it('preserves distinct custom channel name over account for unknown provider', () => {
+    const display = buildMonitoringSourceDisplay(
+      {
+        authIndex: 'wb-1',
+        account: 'marscosmo',
+        channel: 'Team WorkBuddy Relay',
+        authProviderSnapshot: 'workbuddy',
+      },
+      emptyContext
+    );
+
+    expect(display.primary).toBe('Team WorkBuddy Relay');
+    expect(display.meta).toBe('workbuddy');
+  });
+
+  it('preserves key-disambiguated source over account for unknown provider', () => {
+    const display = buildMonitoringSourceDisplay(
+      {
+        authIndex: 'wb-1',
+        account: 'marscosmo',
+        channel: 'workbuddy',
+        source: 'workbuddy #1',
+        authProviderSnapshot: 'workbuddy',
+      },
+      emptyContext
+    );
+
+    expect(display.primary).toBe('workbuddy #1');
+    expect(display.meta).toBe('marscosmo');
+  });
+
+  it('falls back to unknown provider rather than opaque hash when no account exists', () => {
+    const validHash = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const display = buildMonitoringSourceDisplay(
+      {
+        authIndex: 'future-1',
+        account: '',
+        channel: 'future-provider',
+        source: `h:${validHash}`,
+        authProviderSnapshot: 'future-provider',
+      },
+      emptyContext
+    );
+
+    expect(display.primary).toBe('future-provider');
+    expect(display.primary).not.toContain('h:');
   });
 });

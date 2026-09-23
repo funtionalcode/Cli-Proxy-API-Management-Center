@@ -344,8 +344,8 @@ func TestToAccountBuildsStableDistinctFallbackKeys(t *testing.T) {
 		"account":    "new-label@example.com",
 		"account_id": "account-1",
 	})
-	if oldLabel.Key != newLabel.Key {
-		t.Fatalf("account ID fallback key changed with label: old=%q new=%q", oldLabel.Key, newLabel.Key)
+	if oldLabel.Key == newLabel.Key {
+		t.Fatalf("same Codex Workspace merged different members: old=%q new=%q", oldLabel.Key, newLabel.Key)
 	}
 	if inspectionActionIdentityKey(resultFromAccount(first)) == inspectionActionIdentityKey(resultFromAccount(second)) {
 		t.Fatal("same-name account snapshots shared an action identity")
@@ -370,6 +370,75 @@ func TestToAccountBuildsStableDistinctFallbackKeys(t *testing.T) {
 	})
 	if renamedLabel.Key != labelOnly.Key {
 		t.Fatalf("label-only runtime key changed with display label: old=%q new=%q", labelOnly.Key, renamedLabel.Key)
+	}
+}
+
+func TestInspectionIdentityRejectsInvalidCodexAccountEvidence(t *testing.T) {
+	candidate := toAccount(authFile{
+		"id":         "runtime-conflict",
+		"name":       "shared.json",
+		"provider":   "codex",
+		"auth_index": "auth-1",
+		"account_id": "workspace-a",
+		"account":    "alice@example.com",
+		"metadata": map[string]any{
+			"id_token": map[string]any{"account_id": "workspace-b"},
+		},
+	})
+	result := model.CodexInspectionResult{
+		FileName:        "shared.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-a",
+		AccountSnapshot: "alice@example.com",
+	}
+	if inspectionResultMatchesCurrentAccount(result, candidate) {
+		t.Fatalf("invalid Codex account evidence matched mutation target: %#v", candidate)
+	}
+}
+
+func TestToAccountRejectsConflictingExplicitCodexMemberEvidence(t *testing.T) {
+	candidate := toAccount(authFile{
+		"id":               "runtime-member-conflict",
+		"name":             "shared.json",
+		"provider":         "codex",
+		"auth_index":       "auth-1",
+		"account_id":       "workspace-a",
+		"account_snapshot": "bob@example.com",
+		"accountSnapshot":  "alice@example.com",
+		"account":          "alice@example.com",
+	})
+	if candidate.AccountSnapshot != "" || !candidate.AccountSnapshotInvalid {
+		t.Fatalf("conflicting member evidence = %#v, want invalid and no member", candidate)
+	}
+	result := model.CodexInspectionResult{
+		FileName:        "shared.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-a",
+		AccountSnapshot: "alice@example.com",
+	}
+	if inspectionResultMatchesCurrentAccount(result, candidate) {
+		t.Fatal("conflicting Codex member evidence matched a mutation target")
+	}
+}
+
+func TestToAccountRejectsStrongCodexMemberSnapshotConflictingWithDisplayEmail(t *testing.T) {
+	for _, field := range []string{"account", "email"} {
+		t.Run(field, func(t *testing.T) {
+			candidate := toAccount(authFile{
+				"id":               "runtime-member-display-conflict",
+				"name":             "shared.json",
+				"provider":         "codex",
+				"auth_index":       "auth-1",
+				"account_id":       "workspace-a",
+				"account_snapshot": "alice@example.com",
+				field:              "bob@example.com",
+			})
+			if candidate.AccountSnapshot != "" || !candidate.AccountSnapshotInvalid {
+				t.Fatalf("conflicting member evidence = %#v, want invalid and no member", candidate)
+			}
+		})
 	}
 }
 
@@ -1456,6 +1525,72 @@ func TestXAISummaryWindowsDoesNotCreateMonthlyWindowFromOnDemandOnlyData(t *test
 	}
 }
 
+func TestXAISummaryWindowsMetadataOnlyWeekly(t *testing.T) {
+	summary := &xaiBillingSummary{
+		HasWeeklyData: true,
+		UsagePercent:  nil,
+		PeriodEnd:     "2026-08-20T00:00:00Z",
+	}
+	windows := xaiSummaryWindows(summary)
+	if len(windows) != 1 {
+		t.Fatalf("metadata-only weekly windows = %#v, want exactly 1 window", windows)
+	}
+	if windows[0].ID != "xai-weekly" || windows[0].UsedPercent != nil || windows[0].ResetLabel != "2026-08-20T00:00:00Z" {
+		t.Fatalf("metadata-only weekly window = %#v, want xai-weekly with nil used percent", windows[0])
+	}
+}
+
+func TestXAISummaryWindowsZeroMonthlyLimit(t *testing.T) {
+	zero := float64(0)
+	summary := &xaiBillingSummary{
+		MonthlyLimitCents: &zero,
+		UsedPercent:       nil,
+		BillingPeriodEnd:  "2026-09-01T00:00:00Z",
+	}
+	windows := xaiSummaryWindows(summary)
+	for _, window := range windows {
+		if window.ID == "xai-monthly" {
+			t.Fatalf("zero monthly limit produced xai-monthly window: %#v", windows)
+		}
+	}
+}
+
+func TestXAISummaryWindowsPositiveMonthlyLimit(t *testing.T) {
+	positiveLimit := float64(10000)
+	usedPercent := float64(25)
+	summary := &xaiBillingSummary{
+		MonthlyLimitCents: &positiveLimit,
+		UsedPercent:       &usedPercent,
+		BillingPeriodEnd:  "2026-09-01T00:00:00Z",
+	}
+	windows := xaiSummaryWindows(summary)
+	if len(windows) != 1 || windows[0].ID != "xai-monthly" {
+		t.Fatalf("positive monthly limit windows = %#v, want xai-monthly", windows)
+	}
+	if windows[0].UsedPercent == nil || *windows[0].UsedPercent != 25 {
+		t.Fatalf("positive monthly limit used percent = %#v, want 25", windows[0].UsedPercent)
+	}
+}
+
+func TestXAISummaryWindowsWeeklyPlusZeroMonthly(t *testing.T) {
+	zero := float64(0)
+	summary := &xaiBillingSummary{
+		HasWeeklyData:     true,
+		UsagePercent:      nil,
+		PeriodEnd:         "2026-09-12T00:00:00Z",
+		MonthlyLimitCents: &zero,
+		UsedPercent:       nil,
+		BillingPeriodEnd:  "2026-10-01T00:00:00Z",
+	}
+	windows := xaiSummaryWindows(summary)
+	if len(windows) != 1 || windows[0].ID != "xai-weekly" {
+		t.Fatalf("weekly + zero monthly windows = %#v, want weekly only", windows)
+	}
+	if windows[0].UsedPercent != nil || windows[0].ResetLabel != "2026-09-12T00:00:00Z" {
+		t.Fatalf("weekly window = %#v, want nil used percent", windows[0])
+	}
+}
+
 func TestParseXAIBillingSummaryDoesNotCreateMonthlyWindowFromWeeklyZeroOnDemandData(t *testing.T) {
 	summary := parseXAIBillingSummary(map[string]any{
 		"currentPeriod": map[string]any{
@@ -1469,32 +1604,32 @@ func TestParseXAIBillingSummaryDoesNotCreateMonthlyWindowFromWeeklyZeroOnDemandD
 	if summary == nil {
 		t.Fatal("summary is nil")
 	}
+	if !summary.HasWeeklyData || summary.UsagePercent != nil {
+		t.Fatalf("weekly zero on-demand summary = %#v, want weekly data with unknown usage", summary)
+	}
+	if summary.BillingPeriodEnd != "" {
+		t.Fatalf("billing period end = %q, want absent", summary.BillingPeriodEnd)
+	}
 	windows := xaiSummaryWindows(summary)
 	if len(windows) != 1 || windows[0].ID != "xai-weekly" {
 		t.Fatalf("weekly zero on-demand windows = %#v, want weekly only", windows)
 	}
 }
 
-func TestParseXAIBillingSummaryTreatsOmittedWeeklyPercentAsResetZeroOnlyForValidPeriod(t *testing.T) {
-	valid := parseXAIBillingSummary(map[string]any{
+func TestParseXAIBillingSummaryKeepsOmittedWeeklyPercentUnknown(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
 		"currentPeriod": map[string]any{
 			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
 			"start": "2026-08-13T00:00:00Z",
 			"end":   "2026-08-20T00:00:00Z",
 		},
 	})
-	if valid == nil || valid.UsagePercent == nil || *valid.UsagePercent != 0 {
-		t.Fatalf("valid weekly reset summary = %#v, want zero usage", valid)
+	if summary == nil || !summary.HasWeeklyData || summary.UsagePercent != nil || summary.PeriodEnd != "2026-08-20T00:00:00Z" {
+		t.Fatalf("weekly summary = %#v, want unknown usage and weekly reset", summary)
 	}
-
-	incomplete := parseXAIBillingSummary(map[string]any{
-		"currentPeriod": map[string]any{
-			"type": "USAGE_PERIOD_TYPE_WEEKLY",
-			"end":  "2026-08-20T00:00:00Z",
-		},
-	})
-	if incomplete == nil || incomplete.UsagePercent != nil {
-		t.Fatalf("incomplete weekly period summary = %#v, want unknown usage", incomplete)
+	windows := xaiSummaryWindows(summary)
+	if len(windows) != 1 || windows[0].ID != "xai-weekly" || windows[0].UsedPercent != nil || windows[0].ResetLabel != summary.PeriodEnd {
+		t.Fatalf("weekly windows = %#v, want unknown usage with weekly reset", windows)
 	}
 }
 
@@ -1513,7 +1648,7 @@ func TestParseXAIBillingSummaryTreatsNestedEmptyCentValuesAsPlaceholders(t *test
 		},
 		"billingPeriodEnd": "2026-09-01T00:00:00Z",
 	})
-	if summary == nil || summary.UsagePercent == nil || *summary.UsagePercent != 0 {
+	if summary == nil || summary.UsagePercent != nil {
 		t.Fatalf("nested weekly summary = %#v", summary)
 	}
 	for name, value := range map[string]*float64{
@@ -1624,7 +1759,7 @@ func TestMergeXAIBillingSummaryUsesLegacyBillingGroupsOverWeeklyPlaceholders(t *
 	})
 
 	merged := mergeXAIBillingSummary(weekly, legacy)
-	if merged == nil || merged.UsagePercent == nil || *merged.UsagePercent != 0 {
+	if merged == nil || merged.UsagePercent != nil {
 		t.Fatalf("merged weekly summary = %#v", merged)
 	}
 	for name, value := range map[string]struct {
@@ -1645,6 +1780,83 @@ func TestMergeXAIBillingSummaryUsesLegacyBillingGroupsOverWeeklyPlaceholders(t *
 	}
 	if merged.BillingPeriodEnd != "2026-09-01T00:00:00Z" {
 		t.Fatalf("billing period end = %q", merged.BillingPeriodEnd)
+	}
+}
+
+func TestMergeXAIBillingSummaryKeepsWeeklyAndMonthlyResetBoundariesSeparate(t *testing.T) {
+	weekly := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-09-05T00:00:00Z",
+			"end":   "2026-09-12T00:00:00Z",
+		},
+		"onDemandCap":      map[string]any{"val": 0},
+		"onDemandUsed":     map[string]any{"val": 0},
+		"billingPeriodEnd": "2026-09-12T00:00:00Z",
+	})
+	monthly := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{"val": 0},
+		"used":             map[string]any{"val": 0},
+		"billingPeriodEnd": "2026-10-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(weekly, monthly)
+	if merged == nil || merged.UsagePercent != nil || merged.PeriodEnd != "2026-09-12T00:00:00Z" {
+		t.Fatalf("merged weekly summary = %#v", merged)
+	}
+	if merged.MonthlyLimitCents == nil || *merged.MonthlyLimitCents != 0 {
+		t.Fatalf("merged monthly limit = %#v, want zero evidence", merged.MonthlyLimitCents)
+	}
+	if merged.BillingPeriodEnd != "2026-10-01T00:00:00Z" {
+		t.Fatalf("merged billing period end = %q", merged.BillingPeriodEnd)
+	}
+
+	windows := xaiSummaryWindows(merged)
+	if len(windows) != 1 {
+		t.Fatalf("merged windows = %#v, want weekly only because monthly limit is zero", windows)
+	}
+	if windows[0].ID != "xai-weekly" || windows[0].UsedPercent != nil || windows[0].ResetLabel != "2026-09-12T00:00:00Z" {
+		t.Fatalf("weekly window = %#v", windows[0])
+	}
+}
+
+func TestMergeXAIBillingSummaryKeepsWeeklyAndPositiveMonthlyResetBoundariesSeparate(t *testing.T) {
+	weekly := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-09-05T00:00:00Z",
+			"end":   "2026-09-12T00:00:00Z",
+		},
+		"onDemandCap":      map[string]any{"val": 0},
+		"onDemandUsed":     map[string]any{"val": 0},
+		"billingPeriodEnd": "2026-09-12T00:00:00Z",
+	})
+	monthly := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{"val": 10000},
+		"used":             map[string]any{"val": 2500},
+		"billingPeriodEnd": "2026-10-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(weekly, monthly)
+	if merged == nil || merged.UsagePercent != nil || merged.PeriodEnd != "2026-09-12T00:00:00Z" {
+		t.Fatalf("merged weekly summary = %#v", merged)
+	}
+	if merged.MonthlyLimitCents == nil || *merged.MonthlyLimitCents != 10000 {
+		t.Fatalf("merged monthly limit = %#v, want positive limit", merged.MonthlyLimitCents)
+	}
+	if merged.BillingPeriodEnd != "2026-10-01T00:00:00Z" {
+		t.Fatalf("merged billing period end = %q", merged.BillingPeriodEnd)
+	}
+
+	windows := xaiSummaryWindows(merged)
+	if len(windows) != 2 {
+		t.Fatalf("merged windows = %#v, want weekly and monthly", windows)
+	}
+	if windows[0].ID != "xai-weekly" || windows[0].UsedPercent != nil || windows[0].ResetLabel != "2026-09-12T00:00:00Z" {
+		t.Fatalf("weekly window = %#v", windows[0])
+	}
+	if windows[1].ID != "xai-monthly" || windows[1].UsedPercent == nil || *windows[1].UsedPercent != 25 || windows[1].ResetLabel != "2026-10-01T00:00:00Z" {
+		t.Fatalf("monthly window = %#v", windows[1])
 	}
 }
 
@@ -2650,6 +2862,47 @@ func TestRunAutoActionNoneDoesNotExecuteActions(t *testing.T) {
 	}
 }
 
+func TestRunAutoActionSkipsCodexRuntimeOnlyCredentialBeforeMutation(t *testing.T) {
+	var patchCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"id":"runtime-auth-1","name":"auth-a.json","provider":"codex","account_id":"workspace-1","account":"alice@example.com","disabled":false,"status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodPatch:
+			patchCalls++
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDisable
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{
+		TriggerType: "manual",
+		TriggerKey:  "manual",
+	})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if patchCalls != 0 {
+		t.Fatalf("runtime-only Codex automatic action made %d mutation calls, want 0", patchCalls)
+	}
+	if len(result.Results) != 1 || result.Results[0].Action != "keep" ||
+		result.Results[0].ErrorKind != "missing_auth_index" ||
+		result.Results[0].Error != "缺少 auth_index" {
+		t.Fatalf("runtime-only Codex result = %#v, want safe missing-auth-index skip", result.Results)
+	}
+}
+
 func TestRunAutoActionEnableEnablesRecoveredDisabledAccount(t *testing.T) {
 	var patchCalled bool
 	var patchedDisabled bool
@@ -2954,7 +3207,7 @@ func TestApplyDisableOwnershipRejectsSameFileReplacement(t *testing.T) {
 	}
 }
 
-func TestApplyDisableOwnershipUsesAccountIDBeforeSnapshot(t *testing.T) {
+func TestApplyDisableOwnershipAllowsMissingCodexMemberEvidence(t *testing.T) {
 	db := newCodexInspectionTestStore(t)
 	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
 		FileName:        "shared-auth.json",
@@ -2976,7 +3229,211 @@ func TestApplyDisableOwnershipUsesAccountIDBeforeSnapshot(t *testing.T) {
 	}}
 	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
 	if !accounts[0].AutoRecoverOwned {
-		t.Fatalf("stable account ID did not retain ownership: %#v", accounts[0])
+		t.Fatalf("missing current Codex member evidence blocked recovery: %#v", accounts[0])
+	}
+	ownership, err := db.ListCodexInspectionDisableOwnership(context.Background())
+	if err != nil {
+		t.Fatalf("list ownership: %v", err)
+	}
+	if len(ownership) != 1 || ownership[0].AccountSnapshot != "old-label@example.com" {
+		t.Fatalf("missing-member ownership = %#v, want preserved", ownership)
+	}
+}
+
+func TestApplyDisableOwnershipRejectsCodexWorkspaceConflict(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("save inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-2",
+		AccountSnapshot: "alice@example.com",
+		Disabled:        true,
+	}}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if accounts[0].AutoRecoverOwned {
+		t.Fatalf("workspace conflict granted recovery: %#v", accounts[0])
+	}
+}
+
+func TestApplyDisableOwnershipRejectsCodexMemberConflict(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("save inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "bob@example.com",
+		Disabled:        true,
+	}}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if accounts[0].AutoRecoverOwned {
+		t.Fatalf("member conflict granted recovery: %#v", accounts[0])
+	}
+}
+
+func TestApplyDisableOwnershipRejectsInvalidCodexEvidence(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("save inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{{
+		FileName:         "shared-auth.json",
+		Provider:         "codex",
+		AuthIndex:        "auth-1",
+		AccountID:        "workspace-1",
+		AccountSnapshot:  "alice@example.com",
+		AccountIDInvalid: true,
+		Disabled:         true,
+	}}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if accounts[0].AutoRecoverOwned {
+		t.Fatalf("invalid Codex evidence granted recovery: %#v", accounts[0])
+	}
+}
+
+func TestApplyDisableOwnershipRestoresWorkspaceOnlyCodexOwnershipByUniqueLocator(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:     "shared-auth.json",
+		Provider:     "codex",
+		AuthIndex:    "auth-1",
+		AccountID:    "workspace-1",
+		DisabledAtMS: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("save workspace-only inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "bob@example.com",
+		Disabled:        true,
+	}}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if !accounts[0].AutoRecoverOwned {
+		t.Fatalf("unique workspace-only Codex ownership was not restored: %#v", accounts[0])
+	}
+	ownership, err := db.ListCodexInspectionDisableOwnership(context.Background())
+	if err != nil {
+		t.Fatalf("list ownership: %v", err)
+	}
+	if len(ownership) != 1 || ownership[0].AuthIndex != "auth-1" {
+		t.Fatalf("workspace-only ownership = %#v, want preserved ownership", ownership)
+	}
+}
+
+func TestApplyDisableOwnershipKeepsAmbiguousCodexOwnership(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:  "shared-auth.json",
+		Provider:  "codex",
+		AuthIndex: "auth-1",
+		AccountID: "workspace-1",
+	}); err != nil {
+		t.Fatalf("save workspace-only inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{
+		{
+			FileName:        "shared-auth.json",
+			Provider:        "codex",
+			AuthIndex:       "auth-1",
+			AccountID:       "workspace-1",
+			AccountSnapshot: "alice@example.com",
+			Disabled:        true,
+		},
+		{
+			FileName:        "shared-auth.json",
+			Provider:        "codex",
+			AuthIndex:       "auth-1",
+			AccountID:       "workspace-1",
+			AccountSnapshot: "bob@example.com",
+			Disabled:        true,
+		},
+	}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if accounts[0].AutoRecoverOwned || accounts[1].AutoRecoverOwned {
+		t.Fatalf("ambiguous workspace-only ownership granted recovery: %#v", accounts)
+	}
+	ownership, err := db.ListCodexInspectionDisableOwnership(context.Background())
+	if err != nil {
+		t.Fatalf("list ownership after ambiguity: %v", err)
+	}
+	if len(ownership) != 1 || ownership[0].AuthIndex != "auth-1" {
+		t.Fatalf("ambiguous workspace-only ownership = %#v, want preserved ownership", ownership)
+	}
+}
+
+func TestApplyDisableOwnershipDoesNotNarrowDuplicateLocatorByMember(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	if err := db.UpsertCodexInspectionDisableOwnership(context.Background(), model.CodexInspectionDisableOwnership{
+		FileName:        "shared-auth.json",
+		Provider:        "codex",
+		AuthIndex:       "auth-1",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("save member-specific inspection disable ownership: %v", err)
+	}
+
+	accounts := []account{
+		{
+			FileName:        "shared-auth.json",
+			Provider:        "codex",
+			AuthIndex:       "auth-1",
+			AccountID:       "workspace-1",
+			AccountSnapshot: "alice@example.com",
+			Disabled:        true,
+		},
+		{
+			FileName:        "shared-auth.json",
+			Provider:        "codex",
+			AuthIndex:       "auth-1",
+			AccountID:       "workspace-1",
+			AccountSnapshot: "bob@example.com",
+			Disabled:        true,
+		},
+	}
+	New(db, nil).applyDisableOwnership(context.Background(), accounts, runLogger{})
+	if accounts[0].AutoRecoverOwned || accounts[1].AutoRecoverOwned {
+		t.Fatalf("duplicate locator ownership was narrowed by member: %#v", accounts)
+	}
+	ownership, err := db.ListCodexInspectionDisableOwnership(context.Background())
+	if err != nil {
+		t.Fatalf("list ownership after duplicate locator: %v", err)
+	}
+	if len(ownership) != 1 || ownership[0].AccountSnapshot != "alice@example.com" {
+		t.Fatalf("duplicate locator ownership = %#v, want preserved Alice record", ownership)
 	}
 }
 
@@ -3198,6 +3655,27 @@ func TestSelectAutoActionItemsNeedsReviewForDeleteAndKeepSiblings(t *testing.T) 
 		outcomes[0].Status != model.CodexInspectionActionStatusNeedsReview ||
 		outcomes[0].Error != fileActionMixedReason {
 		t.Fatalf("outcomes = %#v, want delete result needs_review", outcomes)
+	}
+}
+
+func TestSelectAutoActionItemsNeedsReviewForCodexWithoutAuthIndex(t *testing.T) {
+	result := model.CodexInspectionResult{
+		ID:              1,
+		AccountKey:      "runtime-only",
+		FileName:        "auth-a.json",
+		Provider:        "codex",
+		AccountID:       "workspace-1",
+		AccountSnapshot: "alice@example.com",
+		Action:          "disable",
+	}
+
+	items, outcomes := selectAutoActionItems(model.CodexInspectionAutoActionDisable, false, []model.CodexInspectionResult{result})
+	if len(items) != 0 {
+		t.Fatalf("runtime-only Codex action items = %#v, want none", items)
+	}
+	if len(outcomes) != 1 || outcomes[0].Status != model.CodexInspectionActionStatusNeedsReview ||
+		outcomes[0].Error != inspectionIdentityMissingReason {
+		t.Fatalf("runtime-only Codex outcomes = %#v, want needs_review", outcomes)
 	}
 }
 

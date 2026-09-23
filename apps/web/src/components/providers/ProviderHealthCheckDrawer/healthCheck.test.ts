@@ -100,6 +100,27 @@ describe('provider health check model', () => {
     ]);
   });
 
+  it('builds Meta API key health-check items with Meta identity', () => {
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      xai: [],
+      meta: [{ apiKey: 'meta-key', baseUrl: 'https://api.meta.ai/v1' }],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+
+    expect(buildProviderHealthCheckItems(rows)).toEqual([
+      expect.objectContaining({
+        providerKind: 'meta',
+        providerLabel: expect.stringContaining('Muse (Meta)'),
+        providerSubtitle: 'https://api.meta.ai/v1',
+      }),
+    ]);
+  });
+
   it('summarizes progress from item statuses', () => {
     const items = [
       { status: 'success' },
@@ -199,6 +220,173 @@ describe('provider health check model', () => {
       {},
       undefined,
       'http://second-proxy.example:8080'
+    );
+  });
+
+  it('rejects Meta health check when Authorization header contains DCA token', async () => {
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      meta: [
+        {
+          apiKey: 'meta-valid-key',
+          baseUrl: 'https://api.meta.ai/v1',
+          headers: { Authorization: 'Bearer dca:secret-token' },
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'error',
+      messageKey: 'ai_providers.meta_dca_not_accepted',
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).not.toHaveBeenCalled();
+  });
+
+  it('rejects Meta health check when lowercase authorization header contains plain dca token', async () => {
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      meta: [
+        {
+          apiKey: 'meta-valid-key',
+          baseUrl: 'https://api.meta.ai/v1',
+          headers: { authorization: 'dca:secret-token' },
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'error',
+      messageKey: 'ai_providers.meta_dca_not_accepted',
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).not.toHaveBeenCalled();
+  });
+
+  it('rejects Meta health check when apiKey is DCA token', async () => {
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      meta: [
+        {
+          apiKey: 'dca:secret-token',
+          baseUrl: 'https://api.meta.ai/v1',
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'error',
+      messageKey: 'ai_providers.meta_dca_not_accepted',
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).not.toHaveBeenCalled();
+  });
+
+  it('rejects Meta health check when apiKey is Bearer DCA token', async () => {
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      meta: [
+        {
+          apiKey: 'Bearer dca:secret-token',
+          baseUrl: 'https://api.meta.ai/v1',
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'error',
+      messageKey: 'ai_providers.meta_dca_not_accepted',
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).not.toHaveBeenCalled();
+  });
+
+  it('allows Meta health check with valid custom Authorization header', async () => {
+    mocks.fetchV1ModelsViaApiCall.mockResolvedValueOnce([{ name: 'llama-3.3-70b-instruct' }]);
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [],
+      meta: [
+        {
+          apiKey: 'meta-valid-key',
+          baseUrl: 'https://api.meta.ai/v1',
+          headers: { Authorization: 'Bearer meta-custom-token' },
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'success',
+      modelCount: 1,
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).toHaveBeenCalledWith(
+      'https://api.meta.ai/v1',
+      undefined,
+      { Authorization: 'Bearer meta-custom-token' },
+      undefined,
+      undefined
+    );
+  });
+
+  it('does not block Codex health check with custom Authorization', async () => {
+    mocks.fetchV1ModelsViaApiCall.mockResolvedValueOnce([{ name: 'gpt-4o' }]);
+    const rows = buildProviderRows({
+      gemini: [],
+      codex: [
+        {
+          apiKey: 'codex-key',
+          baseUrl: 'https://api.openai.com/v1',
+          headers: { Authorization: 'Bearer custom-token' },
+        },
+      ],
+      claude: [],
+      vertex: [],
+      openai: [],
+      usageByProvider: emptyUsageByProvider,
+    });
+    const [item] = buildProviderHealthCheckItems(rows);
+
+    const result = await runProviderHealthCheckItem(rows, item);
+    expect(result).toMatchObject({
+      status: 'success',
+      modelCount: 1,
+    });
+    expect(mocks.fetchV1ModelsViaApiCall).toHaveBeenCalledWith(
+      'https://api.openai.com/v1',
+      undefined,
+      { Authorization: 'Bearer custom-token' },
+      undefined,
+      undefined
     );
   });
 });

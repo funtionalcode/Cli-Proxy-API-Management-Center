@@ -151,12 +151,13 @@ export const getPlanPresentation = ({
     };
   }
 
-  const shortLabel = translate(t, resolved.shortLabelKey, resolved.shortDefault);
-  const fullLabel = translate(
-    t,
-    resolved.fullLabelKey ?? resolved.shortLabelKey,
-    resolved.fullDefault ?? resolved.shortDefault
-  );
+  const canonicalConfig = CANONICAL_PLAN_FILTER_LABELS[resolved.canonicalPlanType];
+  const shortLabelKey = canonicalConfig?.key ?? resolved.shortLabelKey;
+  const shortDefault = canonicalConfig?.fallback ?? resolved.shortDefault;
+  const shortLabel = translate(t, shortLabelKey, shortDefault);
+  const fullLabel = resolved.fullLabelKey
+    ? translate(t, resolved.fullLabelKey, resolved.fullDefault ?? shortLabel)
+    : shortLabel;
   return {
     provider: normalizedProvider,
     rawPlanType,

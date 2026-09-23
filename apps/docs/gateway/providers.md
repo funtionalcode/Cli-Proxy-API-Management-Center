@@ -11,8 +11,11 @@
 | OpenAI-compatible | 中转、自建或兼容模型服务 | AI 提供商、模型价格、用量分析 |
 | Gemini / Vertex   | Google 模型与项目凭证    | AI 提供商、OAuth、凭证管理    |
 | xAI / Grok        | API Key 或 OAuth 账号    | AI 提供商、凭证管理、账号巡检 |
+| Muse / Meta       | Device Flow 账号或 `meta-api-key` 推理 Provider | AI 提供商、OAuth、凭证管理 |
 
 添加 Provider 时优先确认四件事：Base URL、认证方式、客户端使用的模型名、是否绑定对应账号或认证文件。
+
+Muse / Meta 是一个需要特别区分凭证类型的场景：OAuth Device Flow 产生的 DCA 用于账号认证和配额读取；模型推理使用独立的 `meta-api-key`。完整支持需要 CPA `v7.3.4+`。
 
 ## 出现请求失败时
 

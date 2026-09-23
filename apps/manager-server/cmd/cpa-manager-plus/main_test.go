@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -15,9 +16,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/buildinfo"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 )
+
+func TestWriteVersion(t *testing.T) {
+	for _, arg := range []string{"-v", "--version"} {
+		t.Run(arg, func(t *testing.T) {
+			var stdout bytes.Buffer
+			handled, err := writeVersion([]string{arg}, &stdout)
+			if err != nil {
+				t.Fatalf("writeVersion(%q): %v", arg, err)
+			}
+			if !handled {
+				t.Fatalf("writeVersion(%q) handled = false, want true", arg)
+			}
+			if got, want := stdout.String(), buildinfo.Version+"\n"; got != want {
+				t.Fatalf("writeVersion(%q) output = %q, want %q", arg, got, want)
+			}
+		})
+	}
+}
 
 type recordingInspectionStopper struct {
 	calls       int

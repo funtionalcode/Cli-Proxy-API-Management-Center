@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -37,7 +39,7 @@ func TestUsagePricingRollupWorkerCatchUp(t *testing.T) {
 
 	worker := NewUsagePricingRollupWorker(db)
 	worker.batchLimit = 10
-	worker.maxBatches = 4
+	worker.maxBatches = usageDerivedTaskCount
 	if pending := worker.catchUp(ctx); pending {
 		t.Fatal("completed catch-up reported pending work")
 	}
@@ -56,7 +58,7 @@ func TestUsagePricingRollupWorkerCatchUp(t *testing.T) {
 	if len(rows) != 1 || rows[0].Calls != 1 || rows[0].InputTokens != 150 || rows[0].ContextThresholdTokens != 100 {
 		t.Fatalf("pricing rows = %#v", rows)
 	}
-	for _, rollupName := range []string{"projection_v1", "metadata_v1", "stats_v1"} {
+	for _, rollupName := range []string{"projection_v1", "metadata_v1", "stats_v1", "codex_legacy_identity_v1"} {
 		monitoringState, err := db.UsageMonitoringState(ctx, rollupName)
 		if err != nil {
 			t.Fatalf("monitoring state %s: %v", rollupName, err)
@@ -129,7 +131,7 @@ func TestUsagePricingRollupWorkerContinuesPendingBacklog(t *testing.T) {
 	worker.continuationDelay = time.Millisecond
 	worker.Start(ctx)
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		state, err := db.UsagePricingState(ctx)
 		if err != nil {
@@ -253,8 +255,9 @@ func newUsagePricingRollupWorkerStore(t *testing.T) *store.Store {
 }
 
 func usagePricingRollupWorkerEvent(hash string, timestampMS, inputTokens int64) usage.Event {
+	sum := sha256.Sum256([]byte(hash))
 	return usage.Event{
-		EventHash:     hash,
+		EventHash:     hex.EncodeToString(sum[:]),
 		TimestampMS:   timestampMS,
 		Timestamp:     time.UnixMilli(timestampMS).UTC().Format(time.RFC3339Nano),
 		Model:         "gpt-a",

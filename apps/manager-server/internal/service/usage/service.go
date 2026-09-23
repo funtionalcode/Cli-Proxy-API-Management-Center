@@ -2,6 +2,9 @@ package usage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -88,8 +91,14 @@ func (s *Service) Import(ctx context.Context, reader io.Reader) (ImportResult, *
 		contextualReader = &contextReadSeeker{ctx: ctx, reader: seeker}
 	}
 	parsed, err := usageparser.StreamImportPayload(contextualReader, importBatchSize, func(events []usageparser.Event) error {
+		if err := s.normalizeImportedEventHashes(ctx, events); err != nil {
+			return &ImportPersistenceError{err: err}
+		}
 		result, err := s.store.InsertEvents(ctx, events)
 		if err != nil {
+			if errors.Is(err, usageparser.ErrInvalidEventHash) {
+				return err
+			}
 			return &ImportPersistenceError{err: err}
 		}
 		added += result.Inserted
@@ -112,6 +121,38 @@ func (s *Service) Import(ctx context.Context, reader io.Reader) (ImportResult, *
 		return result, &parsed, err
 	}
 	return result, &parsed, nil
+}
+
+func (s *Service) normalizeImportedEventHashes(ctx context.Context, events []usageparser.Event) error {
+	legacyHashes := make([]string, 0)
+	for i := range events {
+		hash := events[i].EventHash
+		if hash != "" && !usageparser.IsCanonicalSHA256Hex(hash) {
+			legacyHashes = append(legacyHashes, hash)
+		}
+	}
+	if len(legacyHashes) == 0 {
+		return nil
+	}
+
+	existing, err := s.store.ExistingUsageEventHashes(ctx, legacyHashes)
+	if err != nil {
+		return err
+	}
+	for i := range events {
+		rawHash := events[i].EventHash
+		if rawHash == "" || usageparser.IsCanonicalSHA256Hex(rawHash) {
+			continue
+		}
+		if _, ok := existing[rawHash]; ok {
+			// Preserve the exact historical identity so InsertBatch can deduplicate
+			// or repair its ledger entry without creating a canonicalized duplicate.
+			continue
+		}
+		sum := sha256.Sum256([]byte(rawHash))
+		events[i].EventHash = hex.EncodeToString(sum[:])
+	}
+	return nil
 }
 
 func (s *Service) Counts(ctx context.Context) (events int64, deadLetters int64, err error) {

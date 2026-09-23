@@ -409,6 +409,12 @@ type EventPageItem struct {
 	AnalyticsModel         string
 	RequestedModel         string
 	ResolvedModel          string
+	ResponseModel          string
+	SessionID              string
+	ParentSessionID        string
+	AccessTokenSHA256      string
+	Generate               *bool
+	Stream                 *bool
 	Endpoint               string
 	Method                 string
 	Path                   string
@@ -1767,12 +1773,19 @@ func ResolveAccountWindowLegacyKeys(
 }
 
 func codexLegacyOwnerKey(window AccountWindowUsageQuery) string {
-	return normalizeIdentityProvider(window.AuthProviderSnapshot) + "\x00" + strings.TrimSpace(window.AuthAccountIDSnapshot)
+	member, _ := usageidentity.NormalizeCodexMemberSnapshot(window.AccountSnapshot)
+	return strings.Join([]string{
+		normalizeIdentityProvider(window.AuthProviderSnapshot),
+		strings.TrimSpace(window.AuthAccountIDSnapshot),
+		member,
+	}, "\x00")
 }
 
 func codexLegacyWindowTarget(window AccountWindowUsageQuery) bool {
+	_, memberOK := usageidentity.NormalizeCodexMemberSnapshot(window.AccountSnapshot)
 	return strings.TrimSpace(window.AuthAccountIDSnapshot) != "" &&
-		normalizeIdentityProvider(window.AuthProviderSnapshot) == "codex"
+		normalizeIdentityProvider(window.AuthProviderSnapshot) == "codex" &&
+		memberOK
 }
 
 func codexLegacyWindowCacheKey(window AccountWindowUsageQuery) string {
@@ -1802,19 +1815,18 @@ func accountWindowIdentityFields(window AccountWindowUsageQuery) usageidentity.F
 }
 
 func accountWindowQueryKey(window AccountWindowUsageQuery) string {
+	// AccountKey is a caller-side correlation value, not an authority to
+	// select a Codex bucket. Recompute Codex keys from the credential snapshots
+	// so an old workspace-level codex-account key cannot reach stale derived
+	// data after the member-aware identity revision.
+	if normalizeIdentityProvider(window.AuthProviderSnapshot) == "codex" {
+		key, _ := usageidentity.AccountKey(accountWindowIdentityFields(window))
+		return key
+	}
 	if key := strings.TrimSpace(window.AccountKey); key != "" {
 		return key
 	}
-	key, _ := usageidentity.AccountKey(usageidentity.Fields{
-		AuthFileSnapshot:      window.AuthFileSnapshot,
-		AuthIndex:             window.AuthIndex,
-		AuthProviderSnapshot:  window.AuthProviderSnapshot,
-		AuthAccountIDSnapshot: window.AuthAccountIDSnapshot,
-		AuthProjectIDSnapshot: window.AuthProjectIDSnapshot,
-		AccountSnapshot:       window.AccountSnapshot,
-		AuthLabelSnapshot:     window.AuthLabelSnapshot,
-		Source:                window.Source,
-	})
+	key, _ := usageidentity.AccountKey(accountWindowIdentityFields(window))
 	return key
 }
 
@@ -2659,7 +2671,13 @@ func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsF
 	coalesce(header_quota_plan_type, ''),
 	coalesce(header_error_kind, ''),
 	coalesce(header_error_code, ''),
-	coalesce(header_trace_id, '')
+	coalesce(header_trace_id, ''),
+	coalesce(response_model, ''),
+	coalesce(session_id, ''),
+	coalesce(parent_session_id, ''),
+	coalesce(access_token_sha256, ''),
+	generate,
+	stream
 from usage_events `+where+`
 order by timestamp_ms desc, id desc
 limit ?`, args...)
@@ -2673,6 +2691,8 @@ limit ?`, args...)
 		var item EventPageItem
 		var failed int
 		var responseMetadataJSON string
+		var responseModel, sessionID, parentSessionID, accessTokenSHA256 sql.NullString
+		var generateVal, streamVal sql.NullInt64
 		if err := rows.Scan(
 			&item.ID,
 			&item.RequestID,
@@ -2721,10 +2741,28 @@ limit ?`, args...)
 			&item.HeaderErrorKind,
 			&item.HeaderErrorCode,
 			&item.HeaderTraceID,
+			&responseModel,
+			&sessionID,
+			&parentSessionID,
+			&accessTokenSHA256,
+			&generateVal,
+			&streamVal,
 		); err != nil {
 			return EventsPage{}, err
 		}
 		item.Failed = failed != 0
+		item.ResponseModel = responseModel.String
+		item.SessionID = sessionID.String
+		item.ParentSessionID = parentSessionID.String
+		item.AccessTokenSHA256 = accessTokenSHA256.String
+		if generateVal.Valid {
+			v := generateVal.Int64 != 0
+			item.Generate = &v
+		}
+		if streamVal.Valid {
+			v := streamVal.Int64 != 0
+			item.Stream = &v
+		}
 		item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(item.AuthProviderSnapshot, item.AuthProjectIDSnapshot)
 		item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
 		items = append(items, item)

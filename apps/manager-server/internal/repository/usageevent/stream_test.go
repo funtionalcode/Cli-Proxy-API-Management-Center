@@ -525,10 +525,10 @@ func TestInsertBatchSelectsServiceTierByProviderSemantics(t *testing.T) {
 	for _, event := range recent {
 		byHash[event.EventHash] = event
 	}
-	if event := byHash["codex-tier"]; event.ServiceTier != "priority" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
+	if event := byHash[codex.EventHash]; event.ServiceTier != "priority" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
 		t.Fatalf("codex tiers = %q/%q/%q", event.ServiceTier, event.RequestServiceTier, event.ResponseServiceTier)
 	}
-	if event := byHash["openai-tier"]; event.ServiceTier != "default" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
+	if event := byHash[nonCodex.EventHash]; event.ServiceTier != "default" || event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" {
 		t.Fatalf("non-Codex tiers = %q/%q/%q", event.ServiceTier, event.RequestServiceTier, event.ResponseServiceTier)
 	}
 }
@@ -844,7 +844,7 @@ func explainCompatibleUsageQueryPlan(t *testing.T, db *sql.DB, query string, arg
 
 func streamTestEvent(hash string, timestampMS int64, endpoint, model string) usage.Event {
 	return usage.Event{
-		EventHash:    hash,
+		EventHash:    canonicalTestHash(hash),
 		TimestampMS:  timestampMS,
 		Timestamp:    fmt.Sprintf("2026-01-01T00:00:%02dZ", timestampMS%60),
 		Model:        model,
@@ -854,5 +854,90 @@ func streamTestEvent(hash string, timestampMS int64, endpoint, model string) usa
 		OutputTokens: 2,
 		TotalTokens:  3,
 		CreatedAtMS:  timestampMS,
+	}
+}
+
+func TestWriteExportJSONLAndCompatibleUsagePreserveRequestMetadata(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := New(db)
+
+	genFalse := false
+	streamFalse := false
+	event := streamTestEvent("stream-meta-test", 100, "POST /v1/chat/completions", "gpt-4o")
+	event.ResponseModel = "gpt-4o-mini"
+	event.SessionID = "sess-export-1"
+	event.ParentSessionID = "parent-export-1"
+	event.AccessTokenSHA256 = "sha256-export-hash"
+	event.Generate = &genFalse
+	event.Stream = &streamFalse
+
+	if _, err := repo.InsertBatch(context.Background(), []usage.Event{event}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	// 1. Verify JSONL export stream through real JSONL import parsing
+	var jsonlBuf bytes.Buffer
+	if err := repo.WriteExportJSONL(context.Background(), &jsonlBuf, 10); err != nil {
+		t.Fatalf("write export JSONL: %v", err)
+	}
+
+	importResult, err := usage.ParseImportPayload(jsonlBuf.Bytes())
+	if err != nil {
+		t.Fatalf("parse imported JSONL: %v", err)
+	}
+	if importResult.Format != usage.ImportFormatJSONL || len(importResult.Events) != 1 {
+		t.Fatalf("unexpected import result: format=%q, count=%d", importResult.Format, len(importResult.Events))
+	}
+	exported := importResult.Events[0]
+	if exported.ResponseModel != event.ResponseModel {
+		t.Fatalf("ResponseModel mismatch: got %q, want %q", exported.ResponseModel, event.ResponseModel)
+	}
+	if exported.SessionID != event.SessionID {
+		t.Fatalf("SessionID mismatch: got %q, want %q", exported.SessionID, event.SessionID)
+	}
+	if exported.ParentSessionID != event.ParentSessionID {
+		t.Fatalf("ParentSessionID mismatch: got %q, want %q", exported.ParentSessionID, event.ParentSessionID)
+	}
+	if exported.AccessTokenSHA256 != event.AccessTokenSHA256 {
+		t.Fatalf("AccessTokenSHA256 mismatch: got %q, want %q", exported.AccessTokenSHA256, event.AccessTokenSHA256)
+	}
+	if exported.Generate == nil {
+		t.Fatal("Generate is nil; false presence must not be dropped by omitempty or parser")
+	}
+	if *exported.Generate != false {
+		t.Fatalf("Generate = %v, want false", *exported.Generate)
+	}
+	if exported.Stream == nil {
+		t.Fatal("Stream is nil; false presence must not be dropped by omitempty or parser")
+	}
+	if *exported.Stream != false {
+		t.Fatalf("Stream = %v, want false", *exported.Stream)
+	}
+
+	// 2. Verify compatible usage stream
+	var compBuf bytes.Buffer
+	if err := repo.WriteCompatibleUsage(context.Background(), &compBuf, 10); err != nil {
+		t.Fatalf("write compatible usage: %v", err)
+	}
+	var compPayload usage.Payload
+	if err := json.Unmarshal(compBuf.Bytes(), &compPayload); err != nil {
+		t.Fatalf("unmarshal compatible payload: %v", err)
+	}
+	details := compPayload.APIs[event.Endpoint].Models[event.Model].Details
+	if len(details) != 1 {
+		t.Fatalf("compatible details count = %d", len(details))
+	}
+	compDetail := details[0]
+	if compDetail.ResponseModel != event.ResponseModel ||
+		compDetail.SessionID != event.SessionID ||
+		compDetail.ParentSessionID != event.ParentSessionID ||
+		compDetail.AccessTokenSHA256 != event.AccessTokenSHA256 ||
+		compDetail.Generate == nil || *compDetail.Generate != false ||
+		compDetail.Stream == nil || *compDetail.Stream != false {
+		t.Fatalf("compatible detail metadata mismatch: %+v", compDetail)
 	}
 }

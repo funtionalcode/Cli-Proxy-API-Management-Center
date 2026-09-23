@@ -3,6 +3,8 @@ package usage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,9 +27,11 @@ func TestImportSessionUploadsChunksAndCompletesWithStreamingParser(t *testing.T)
 		TTL:            time.Hour,
 	})
 	defer cancel()
+	h1 := sha256.Sum256([]byte("session-one"))
+	h2 := sha256.Sum256([]byte("session-two"))
 	payload := strings.Join([]string{
-		`{"event_hash":"session-one","timestamp_ms":1,"timestamp":"2026-01-01T00:00:00Z","model":"gpt-test"}`,
-		`{"event_hash":"session-two","timestamp_ms":2,"timestamp":"2026-01-01T00:00:01Z","model":"gpt-test"}`,
+		`{"event_hash":"` + hex.EncodeToString(h1[:]) + `","timestamp_ms":1,"timestamp":"2026-01-01T00:00:00Z","model":"gpt-test"}`,
+		`{"event_hash":"` + hex.EncodeToString(h2[:]) + `","timestamp_ms":2,"timestamp":"2026-01-01T00:00:01Z","model":"gpt-test"}`,
 	}, "\n") + "\n"
 
 	session, err := service.CreateImportSession(context.Background(), "../history.jsonl", int64(len(payload)), "")
@@ -822,5 +826,44 @@ func requireImportSessionErrorCode(t *testing.T, err error, want ImportSessionEr
 	var sessionErr *ImportSessionError
 	if !errors.As(err, &sessionErr) || sessionErr.Code != want {
 		t.Fatalf("error = %v, want code %s", err, want)
+	}
+}
+
+func TestImportSessionAcceptsLegacyNoncanonicalEventHash(t *testing.T) {
+	service, cancel := newImportSessionTestService(t, ImportSessionConfig{
+		Directory:      filepath.Join(t.TempDir(), "imports"),
+		ChunkSizeBytes: 256,
+		DiskQuotaBytes: 1024 * 1024,
+		MaxSessions:    2,
+		TTL:            time.Hour,
+	})
+	defer cancel()
+
+	legacyPayload := `{"event_hash":"legacy-short-hash","timestamp_ms":1,"timestamp":"2026-01-01T00:00:00Z","model":"gpt-test"}` + "\n"
+
+	session, err := service.CreateImportSession(context.Background(), "history.jsonl", int64(len(legacyPayload)), "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	session, err = service.WriteImportSessionChunk(
+		context.Background(),
+		session.ID,
+		0,
+		int64(len(legacyPayload)),
+		strings.NewReader(legacyPayload),
+	)
+	if err != nil {
+		t.Fatalf("write chunk: %v", err)
+	}
+
+	session, err = service.CompleteImportSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("complete session: %v", err)
+	}
+
+	completed := waitForImportSessionStatus(t, service, session.ID, ImportSessionStatusCompleted)
+	if completed.Result == nil || completed.Result.Added != 1 || completed.Result.Skipped != 0 {
+		t.Fatalf("completed session result = %#v", completed)
 	}
 }

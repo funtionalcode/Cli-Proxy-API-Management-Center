@@ -1,6 +1,6 @@
 ---
 title: AI Provider Management
-description: Manage Gemini, Codex, Claude, Vertex, xAI, and OpenAI-compatible CPA providers with priorities, weights, models, proxies, headers, and key testing.
+description: Manage Gemini, Codex, Claude, Vertex, xAI, Meta / Muse, and OpenAI-compatible CPA providers with priorities, weights, models, proxies, headers, and key testing.
 ---
 
 # AI Provider Management
@@ -24,6 +24,7 @@ Open the [AI Providers Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/ai
 - Claude API Key
 - Vertex
 - xAI API Key
+- Meta API Key (`meta-api-key`)
 - OpenAI-compatible
 - Other compatible configuration exposed by the current CPA version
 
@@ -48,6 +49,19 @@ The panel manages CPA `xai-api-key` entries, including:
 - Provider test actions for credential and model access.
 
 An xAI API key is different from an xAI/Grok OAuth credential. See [OAuth Login](./oauth.md), [Accounts](./accounts.md), and [Account Inspection](./codex-inspection.md) for OAuth, billing evidence, and account health.
+
+## Meta / Muse API Keys
+
+The panel manages CPA `meta-api-key` entries for Meta model inference:
+
+- The default base URL is `https://api.meta.ai/v1`.
+- Model discovery and connectivity checks use `GET /v1/models`.
+- Existing provider controls cover API keys, proxy, custom headers, model mapping/exclusions, priority, weight, enablement, cooldown, and retries.
+- Muse / Meta OAuth DCA credentials remain strictly separate from inference API keys.
+
+Do not place a `dca:` or `Bearer dca:` credential in the API key field or a custom `Authorization` header. CPAMP rejects that credential mix before network access. Use [OAuth Login](./oauth.md) and [Accounts](./accounts.md) for account login and quota.
+
+Full Muse / Meta provider management requires CPA `v7.3.4+`.
 
 ## Priority, Weight, And Concurrent Saves
 

@@ -74,6 +74,8 @@ const makeRow = (overrides: Partial<AccountRow> = {}): AccountRow =>
     priority: null,
     createdAtMs: null,
     updatedAtMs: null,
+    authenticationAtMs: 0,
+    rawCredentialStatusSuperseded: false,
     raw: { name: 'credential.json', type: 'codex', provider: 'codex' },
     ...overrides,
   }) as AccountRow;
@@ -81,16 +83,20 @@ const makeRow = (overrides: Partial<AccountRow> = {}): AccountRow =>
 const makeEditor = ({
   rules = '',
   originalRules = rules,
+  prefix = '',
+  originalPrefix = prefix,
   dirty = false,
   canSave = false,
 }: {
   rules?: string;
   originalRules?: string;
+  prefix?: string;
+  originalPrefix?: string;
   dirty?: boolean;
   canSave?: boolean;
 } = {}): UseAuthFileConfigurationEditorResult => {
-  const originalDraft = makeDraft({ excludedModelsText: originalRules });
-  const draft = makeDraft({ excludedModelsText: rules });
+  const originalDraft = makeDraft({ excludedModelsText: originalRules, prefix: originalPrefix });
+  const draft = makeDraft({ excludedModelsText: rules, prefix });
   return {
     state: {
       authFile: { name: 'credential.json', type: 'codex' },
@@ -551,5 +557,160 @@ describe('AccountModelsTab', () => {
 
     expect(readText(renderer.toJSON())).toContain('accounts.model_load_failed');
     expect(findModelRow(renderer, 'last-known-model')).toBeDefined();
+  });
+
+  it('writes bare canonical rule id when disabling prefixed runtime model (UI Case 1)', () => {
+    const editor = makeEditor({ originalPrefix: 'haochi', prefix: 'haochi' });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    act(() => {
+      findButtonByText(
+        findModelRow(renderer, 'haochi/gpt-5.5'),
+        'accounts.model_disable_for_credential'
+      ).props.onClick();
+    });
+
+    expect(editor.updateField).toHaveBeenCalledWith('excludedModelsText', 'gpt-5.5');
+    expect(editor.updateField).not.toHaveBeenCalledWith('excludedModelsText', 'haochi/gpt-5.5');
+  });
+
+  it('writes bare canonical rule id when credential prefix has leading and trailing slashes', () => {
+    const editor = makeEditor({ originalPrefix: '/haochi/', prefix: '/haochi/' });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    act(() => {
+      findButtonByText(
+        findModelRow(renderer, 'haochi/gpt-5.5'),
+        'accounts.model_disable_for_credential'
+      ).props.onClick();
+    });
+
+    expect(editor.updateField).toHaveBeenCalledWith('excludedModelsText', 'gpt-5.5');
+  });
+
+  it('normalizes legacy prefixed exact rule when disabling model (UI Case 2)', () => {
+    const editor = makeEditor({
+      rules: 'haochi/gpt-5.5',
+      originalRules: 'haochi/gpt-5.5',
+      originalPrefix: 'haochi',
+      prefix: 'haochi',
+    });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    const modelRow = findModelRow(renderer, 'haochi/gpt-5.5');
+    expect(modelRow.props['data-model-scope']).not.toBe('credential');
+    expect(modelRow.props['data-model-scope']).toBe('available');
+
+    act(() => {
+      findButtonByText(modelRow, 'accounts.model_disable_for_credential').props.onClick();
+    });
+
+    expect(editor.updateField).toHaveBeenCalledWith('excludedModelsText', 'gpt-5.5');
+  });
+
+  it('restores canonical rule for prefixed model (UI Case 3)', () => {
+    const editor = makeEditor({
+      rules: 'gpt-5.5',
+      originalRules: 'gpt-5.5',
+      originalPrefix: 'haochi',
+      prefix: 'haochi',
+    });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    const modelRow = findModelRow(renderer, 'haochi/gpt-5.5');
+    expect(modelRow.props['data-model-scope']).toBe('credential');
+
+    act(() => {
+      findButtonByText(modelRow, 'accounts.model_restore_for_credential').props.onClick();
+    });
+
+    expect(editor.updateField).toHaveBeenCalledWith('excludedModelsText', '');
+  });
+
+  it('uses original saved prefix instead of unsaved draft prefix to interpret runtime models (UI Case 4)', () => {
+    const editor = makeEditor({
+      originalPrefix: 'haochi',
+      prefix: 'team',
+      rules: '',
+    });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    act(() => {
+      findButtonByText(
+        findModelRow(renderer, 'haochi/gpt-5.5'),
+        'accounts.model_disable_for_credential'
+      ).props.onClick();
+    });
+
+    expect(editor.updateField).toHaveBeenCalledWith('excludedModelsText', 'gpt-5.5');
+  });
+
+  it('disables credential actions and warns when prefixed runtime models cannot be mapped (UI Case 5)', () => {
+    const editor = makeEditor({ originalPrefix: 'haochi', prefix: 'haochi' });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'haochi/private-model' }],
+      modelDefinitions: [],
+      modelDefinitionsLoading: false,
+    });
+
+    const modelRow = findModelRow(renderer, 'haochi/private-model');
+    expect(modelRow.props['data-model-scope']).toBe('unknown');
+
+    const button = findButtonByText(modelRow, 'accounts.model_disable_for_credential');
+    expect(button.props.disabled).toBe(true);
+
+    act(() => {
+      if (button.props.onClick) {
+        button.props.onClick();
+      }
+    });
+    expect(editor.updateField).not.toHaveBeenCalled();
+
+    const text = readText(renderer.toJSON());
+    expect(text).toContain('accounts.model_rule_mapping_unavailable');
+  });
+
+  it('preserves both runtime routes without merging and reflects shared exclusion state (UI Case 6)', () => {
+    const editor = makeEditor({
+      rules: 'gpt-5.5',
+      originalRules: 'gpt-5.5',
+      originalPrefix: 'haochi',
+      prefix: 'haochi',
+    });
+    const { renderer } = renderTab({
+      editor,
+      models: [{ id: 'gpt-5.5' }, { id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    const articles = renderer.root.findAllByType('article');
+    expect(articles).toHaveLength(2);
+
+    const bareRow = findModelRow(renderer, 'gpt-5.5');
+    const prefixedRow = findModelRow(renderer, 'haochi/gpt-5.5');
+
+    expect(bareRow.props['data-model-scope']).toBe('credential');
+    expect(prefixedRow.props['data-model-scope']).toBe('credential');
   });
 });

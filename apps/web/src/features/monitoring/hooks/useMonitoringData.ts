@@ -449,6 +449,7 @@ export function useMonitoringData({
         claudeApiKeys: config?.claudeApiKeys || [],
         codexApiKeys: config?.codexApiKeys || [],
         xaiApiKeys: config?.xaiApiKeys || [],
+        metaApiKeys: config?.metaApiKeys || [],
         vertexApiKeys: config?.vertexApiKeys || [],
         openaiCompatibility: config?.openaiCompatibility || [],
       }),

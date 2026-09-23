@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -24,6 +25,7 @@ type Repository interface {
 	CatchUpProjection(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	CatchUpStats(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	CatchUpMetadata(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
+	CatchUpCodexLegacyIdentityEvidence(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	RecordFailure(ctx context.Context, rollupName string, rollupErr error, nowMS int64) error
 	State(ctx context.Context, rollupName string) (State, error)
 	LoadAggregate(ctx context.Context, filter AnalyticsFilter) (Aggregate, State, bool, error)
@@ -96,6 +98,15 @@ func (r *repository) CatchUpMetadata(ctx context.Context, limit int, nowMS int64
 	})
 }
 
+func (r *repository) CatchUpCodexLegacyIdentityEvidence(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
+	if limit <= 0 || limit > defaultBatchLimit {
+		limit = defaultBatchLimit
+	}
+	return r.catchUp(ctx, usageevent.CodexLegacyIdentityRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, _ int64) error {
+		return usageevent.UpsertCodexLegacyIdentityEvidenceRange(ctx, tx, revision, afterID, throughID)
+	})
+}
+
 type batchUpserter func(context.Context, *sql.Tx, string, int64, int64, int64) error
 
 func (r *repository) catchUp(
@@ -145,13 +156,16 @@ func (r *repository) catchUp(
 		revision, err = currentStructureRevision(ctx, tx)
 	} else if rollupName == ProjectionRollupName {
 		revision = usageidentity.MonitoringProjectionStructureRevision()
+	} else if rollupName == usageevent.CodexLegacyIdentityRollupName {
+		revision = usageevent.CodexLegacyIdentityEvidenceRevision
 	} else {
 		revision = usageidentity.ModelFormatVersion
 	}
 	if err != nil {
 		return CatchUpResult{}, err
 	}
-	if state.StructureRevision != revision {
+	if state.StructureRevision != revision ||
+		(rollupName == usageevent.CodexLegacyIdentityRollupName && latestID < state.CoverageEventID) {
 		if err := resetForRevision(ctx, tx, rollupName, revision, latestID, nowMS); err != nil {
 			return CatchUpResult{}, err
 		}
@@ -166,7 +180,13 @@ func (r *repository) catchUp(
 		rebuilt = true
 	}
 	if state.Status == "clearing" {
-		pending, err := clearStatsRevisionRowsBatch(ctx, tx, revision, limit)
+		var pending bool
+		var err error
+		if rollupName == usageevent.CodexLegacyIdentityRollupName {
+			pending, err = usageevent.ClearCodexLegacyIdentityEvidenceBatch(ctx, tx, limit)
+		} else {
+			pending, err = clearStatsRevisionRowsBatch(ctx, tx, revision, limit)
+		}
 		if err != nil {
 			return CatchUpResult{}, err
 		}
@@ -286,7 +306,7 @@ func (r *repository) RecordFailure(ctx context.Context, rollupName string, rollu
 	if rollupErr == nil || nowMS <= 0 {
 		return nil
 	}
-	if rollupName != StatsRollupName && rollupName != MetadataRollupName && rollupName != ProjectionRollupName {
+	if rollupName != StatsRollupName && rollupName != MetadataRollupName && rollupName != ProjectionRollupName && rollupName != usageevent.CodexLegacyIdentityRollupName {
 		return fmt.Errorf("unknown usage monitoring rollup %q", rollupName)
 	}
 	_, err := r.db.ExecContext(ctx, `update usage_monitoring_rollup_state set
@@ -400,7 +420,7 @@ func resetForRevision(ctx context.Context, tx *sql.Tx, rollupName, revision stri
 }
 
 func revisionResetStatus(rollupName string) string {
-	if rollupName == StatsRollupName {
+	if rollupName == StatsRollupName || rollupName == usageevent.CodexLegacyIdentityRollupName {
 		return "clearing"
 	}
 	return "rebuilding"

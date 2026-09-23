@@ -441,6 +441,10 @@ func (s *Store) InsertEvents(ctx context.Context, events []usage.Event) (InsertR
 	return s.UsageEvents.InsertBatch(ctx, events)
 }
 
+func (s *Store) ExistingUsageEventHashes(ctx context.Context, hashes []string) (map[string]struct{}, error) {
+	return s.UsageEvents.ExistingEventHashes(ctx, hashes)
+}
+
 func (s *Store) UsageCacheAccountingMigrationState(ctx context.Context) (DataMigrationState, error) {
 	state, found, err := s.DataMigrations.UsageCacheAccountingState(ctx)
 	if err != nil {
@@ -537,6 +541,10 @@ func (s *Store) CatchUpUsageMonitoringProjection(ctx context.Context, limit int,
 
 func (s *Store) CatchUpUsageMonitoringMetadata(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
 	return s.UsageMonitoring.CatchUpMetadata(ctx, limit, nowMS)
+}
+
+func (s *Store) CatchUpCodexLegacyIdentityEvidence(ctx context.Context, limit int, nowMS int64) (UsageMonitoringCatchUpResult, error) {
+	return s.UsageMonitoring.CatchUpCodexLegacyIdentityEvidence(ctx, limit, nowMS)
 }
 
 func (s *Store) RecordUsageMonitoringFailure(ctx context.Context, rollupName string, rollupErr error, nowMS int64) error {

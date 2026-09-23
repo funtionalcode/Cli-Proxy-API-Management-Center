@@ -11,6 +11,8 @@ OAuth 登录页面用于添加或重新授权账号。它解决的是“如何�
 - Antigravity OAuth
 - Kimi OAuth
 - xAI OAuth
+- Devin OAuth
+- Muse / Meta OAuth（Device Flow）
 - iFlow OAuth
 - 插件提供的 OAuth
 - Vertex 凭证导入
@@ -26,6 +28,19 @@ OAuth 登录页面用于添加或重新授权账号。它解决的是“如何�
 5. 发一条低成本请求，到 [请求监控](./monitoring.md) 确认请求成功。
 
 OAuth 成功不等于请求一定成功。保存后还要检查提供商配置、认证文件绑定、模型规则和配额状态。
+
+## Muse / Meta Device Flow
+
+Muse / Meta 使用设备授权流程，不依赖浏览器回调到本机：
+
+1. 点击 **Muse (Meta)** 登录入口。
+2. 按页面提示打开验证地址并输入设备码。
+3. 在 Meta 完成授权后返回 CPAMP；面板会轮询认证状态并保存认证文件。
+4. 打开[凭证管理](./accounts.md)确认账号，再按需刷新配额。
+
+Muse / Meta OAuth 保存的是账号认证凭证，其中的 DCA 只用于认证和账号/配额相关流程，**不是** Meta 推理 API Key。不要把 `dca:` 凭证填入 AI Provider 的 API Key 或 `Authorization` Header；模型推理应使用独立的 `meta-api-key` 配置。
+
+当前凭证详情页不提供 Meta 一键重新授权入口；需要重新授权时回到 OAuth 页面重新执行 Device Flow。完整 Muse / Meta 支持需要 CPA `v7.3.4+`。
 
 ## 远程浏览器回调
 

@@ -137,6 +137,16 @@ func TestImportCacheAccountingUsesStructuredSemantics(t *testing.T) {
 			payload:  `{"event_hash":"raw-explicit","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"XAIExecutor","model":"grok-4","tokens":{"input_tokens":100,"cache_read_tokens":20},"raw_json":"{\"tokens\":{\"total_tokens\":888}}"}`,
 			wantMode: CacheInputModeIncluded, wantInput: 100, wantTotal: 888, wantUncache: 80,
 		},
+		{
+			name:     "devin executor with claude alias preserves read included creation separate",
+			payload:  `{"event_hash":"devin-import","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"DevinExecutor","provider":"devin","alias":"claude-fable-5-1","model":"claude-fable-5-1","tokens":{"input_tokens":229788,"cache_read_tokens":228021,"cache_creation_tokens":0,"total_tokens":231563}}`,
+			wantMode: CacheInputModeReadIncludedCreationSeparate, wantInput: 229788, wantTotal: 231563, wantUncache: 1767,
+		},
+		{
+			name:     "explicit read_included_creation_separate mode is preserved on import",
+			payload:  `{"event_hash":"devin-explicit","timestamp_ms":1,"timestamp":"2026-07-15T00:00:00Z","executor_type":"ClaudeExecutor","model":"claude-3-7-sonnet","tokens":{"input_tokens":53,"cache_read_tokens":50,"cache_creation_tokens":14361,"cache_input_mode":"read_included_creation_separate","total_tokens":99999}}`,
+			wantMode: CacheInputModeReadIncludedCreationSeparate, wantInput: 14414, wantTotal: 99999, wantUncache: 3,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1120,5 +1130,109 @@ func TestCompatiblePayloadPrefersExplicitRequestedModelForAudit(t *testing.T) {
 	detail := model.Details[0]
 	if detail.RequestedModel != original.RequestedModel {
 		t.Fatalf("requested model = %q, want %q", detail.RequestedModel, original.RequestedModel)
+	}
+}
+
+func TestParseImportPayloadRoundTripsRequestMetadataFields(t *testing.T) {
+	gen := true
+	stream := false
+	original := Event{
+		Timestamp:          "2026-08-12T10:00:00Z",
+		TimestampMS:        1_755_000_000_000,
+		Endpoint:           "POST /v1/chat/completions",
+		Model:              "gpt-4o",
+		RequestedModel:     "gpt-4o",
+		ResolvedModel:      "gpt-4o-2024-08-06",
+		ResponseModel:      "gpt-4o-mini",
+		SessionID:          "session-xyz",
+		ParentSessionID:    "parent-session-abc",
+		AccessTokenSHA256:  "sha256-token-12345",
+		Generate:           &gen,
+		Stream:             &stream,
+		TotalTokens:        1,
+	}
+
+	payload, err := json.Marshal(BuildPayload([]Event{original}))
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result, err := ParseImportPayload(payload)
+	if err != nil {
+		t.Fatalf("parse import payload: %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("imported events = %d, want 1", len(result.Events))
+	}
+	imported := result.Events[0]
+	if imported.ResponseModel != original.ResponseModel {
+		t.Errorf("ResponseModel = %q, want %q", imported.ResponseModel, original.ResponseModel)
+	}
+	if imported.SessionID != original.SessionID {
+		t.Errorf("SessionID = %q, want %q", imported.SessionID, original.SessionID)
+	}
+	if imported.ParentSessionID != original.ParentSessionID {
+		t.Errorf("ParentSessionID = %q, want %q", imported.ParentSessionID, original.ParentSessionID)
+	}
+	if imported.AccessTokenSHA256 != original.AccessTokenSHA256 {
+		t.Errorf("AccessTokenSHA256 = %q, want %q", imported.AccessTokenSHA256, original.AccessTokenSHA256)
+	}
+	if imported.Generate == nil || *imported.Generate != true {
+		t.Errorf("Generate = %v, want true", imported.Generate)
+	}
+	if imported.Stream == nil || *imported.Stream != false {
+		t.Errorf("Stream = %v, want false", imported.Stream)
+	}
+}
+
+func TestParseImportPayloadJSONLRoundTripsFalseBooleans(t *testing.T) {
+	gen := false
+	stream := false
+	original := Event{
+		Timestamp:          "2026-08-12T10:00:00Z",
+		TimestampMS:        1_755_000_000_000,
+		Endpoint:           "POST /v1/chat/completions",
+		Model:              "gpt-4o",
+		RequestedModel:     "gpt-4o",
+		ResolvedModel:      "gpt-4o-2024-08-06",
+		ResponseModel:      "gpt-4o-mini",
+		SessionID:          "sess-test-false",
+		ParentSessionID:    "parent-sess-false",
+		AccessTokenSHA256:  "sha256-test-hash",
+		Generate:           &gen,
+		Stream:             &stream,
+		TotalTokens:        1,
+	}
+
+	line, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal original event: %v", err)
+	}
+
+	result, err := ParseImportPayload(line)
+	if err != nil {
+		t.Fatalf("parse JSONL import payload: %v", err)
+	}
+	if result.Format != ImportFormatJSONL || len(result.Events) != 1 {
+		t.Fatalf("result format=%q, count=%d", result.Format, len(result.Events))
+	}
+	imported := result.Events[0]
+	if imported.Generate == nil {
+		t.Fatal("Generate is nil, want explicit false")
+	}
+	if *imported.Generate != false {
+		t.Fatalf("Generate = %v, want false", *imported.Generate)
+	}
+	if imported.Stream == nil {
+		t.Fatal("Stream is nil, want explicit false")
+	}
+	if *imported.Stream != false {
+		t.Fatalf("Stream = %v, want false", *imported.Stream)
+	}
+	if imported.ResponseModel != original.ResponseModel ||
+		imported.SessionID != original.SessionID ||
+		imported.ParentSessionID != original.ParentSessionID ||
+		imported.AccessTokenSHA256 != original.AccessTokenSHA256 {
+		t.Fatalf("imported fields mismatch: %+v", imported)
 	}
 }

@@ -172,7 +172,9 @@ export function useAuthFilesModels(
         return;
       }
 
+      let modelsRequestSucceeded = false;
       if (modelsResult.status === 'fulfilled') {
+        modelsRequestSucceeded = true;
         modelsCacheRef.current.set(cacheKey, modelsResult.value);
         staleModelsRef.current.delete(cacheKey);
         setModelsList(modelsResult.value);
@@ -198,6 +200,23 @@ export function useAuthFilesModels(
         setModelDefinitionsError(
           isUnsupportedEndpointError(definitionsResult.reason, true) ? 'unsupported' : 'failed'
         );
+      }
+
+      if (force && modelsRequestSucceeded) {
+        if (
+          definitionsResult.status === 'rejected' &&
+          !isUnsupportedEndpointError(definitionsResult.reason, true)
+        ) {
+          const errorMessage = getErrorMessage(definitionsResult.reason);
+          showNotification(
+            t('auth_files.models_refresh_partial', {
+              message: errorMessage || t('common.unknown_error'),
+            }),
+            'warning'
+          );
+        } else {
+          showNotification(t('auth_files.models_refresh_success'), 'success');
+        }
       }
 
       setModelsLoading(false);

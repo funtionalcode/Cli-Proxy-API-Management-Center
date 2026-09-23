@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -139,6 +139,7 @@ export function AccountModelsTab({
     () => parseExcludedModelsText(draft?.excludedModelsText ?? ''),
     [draft?.excludedModelsText]
   );
+  const credentialPrefix = state?.originalDraft?.prefix ?? '';
   const projection = useMemo(
     () =>
       buildAccountModelRuleProjection({
@@ -149,8 +150,10 @@ export function AccountModelsTab({
         globalRules: globalRulesKnown ? globalExcluded : {},
         globalRulesKnown,
         credentialRulesShared: sharedSourceReadOnly,
+        credentialPrefix,
       }),
     [
+      credentialPrefix,
       credentialRules,
       globalExcluded,
       globalRulesKnown,
@@ -169,6 +172,25 @@ export function AccountModelsTab({
     [draft?.excludedModelsText, state?.originalDraft?.excludedModelsText]
   );
   const modelRulesDirty = diff.added.length > 0 || diff.removed.length > 0;
+  const hasUnresolvedRows = useMemo(
+    () => projection.rows.some((row) => !row.ruleModelIdResolved),
+    [projection.rows]
+  );
+
+  const getModelAliases = useCallback(
+    (model: AccountModelRuleRow): string[] => {
+      const lookupKey =
+        model.ruleModelIdResolved && model.ruleModelId
+          ? model.ruleModelId.trim().toLowerCase()
+          : model.id.trim().toLowerCase();
+      return (
+        aliasesByModelId.get(lookupKey) ??
+        aliasesByModelId.get(model.id.trim().toLowerCase()) ??
+        []
+      );
+    },
+    [aliasesByModelId]
+  );
 
   const filteredRows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -176,12 +198,12 @@ export function AccountModelsTab({
       if (filter === 'available' && model.scope !== 'available') return false;
       if (filter === 'disabled' && !isKnownDisabledScope(model.scope)) return false;
       if (!normalizedQuery) return true;
-      const modelAliases = aliasesByModelId.get(model.id.trim().toLowerCase()) ?? [];
+      const modelAliases = getModelAliases(model);
       return [model.id, model.display_name, model.type, ...modelAliases]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(normalizedQuery));
     });
-  }, [aliasesByModelId, filter, projection.rows, query]);
+  }, [filter, getModelAliases, projection.rows, query]);
 
   const editorReady = Boolean(state && !state.loading && !state.error && draft && state.record);
   const editingDisabled =
@@ -205,9 +227,14 @@ export function AccountModelsTab({
     [disabledCount, t]
   );
 
-  const updateExactRule = (modelId: string, excluded: boolean) => {
-    if (editingDisabled) return;
-    const next = setAccountModelExactRule(credentialRules, modelId, excluded);
+  const updateExactRule = (model: AccountModelRuleRow, excluded: boolean) => {
+    if (editingDisabled || !model.ruleModelIdResolved) return;
+    const next = setAccountModelExactRule(
+      credentialRules,
+      model.ruleModelId,
+      excluded,
+      model.equivalentRuntimeModelIds
+    );
     editor.updateField('excludedModelsText', next.join('\n'));
   };
 
@@ -226,8 +253,8 @@ export function AccountModelsTab({
         <Button
           variant="secondary"
           size="xs"
-          disabled={editingDisabled}
-          onClick={() => updateExactRule(model.id, false)}
+          disabled={editingDisabled || !model.ruleModelIdResolved}
+          onClick={() => updateExactRule(model, false)}
           title={
             remainsExcluded
               ? t('accounts.model_remove_exact_rule_hint')
@@ -270,8 +297,13 @@ export function AccountModelsTab({
       <Button
         variant="secondary"
         size="xs"
-        disabled={editingDisabled}
-        onClick={() => updateExactRule(model.id, true)}
+        disabled={editingDisabled || !model.ruleModelIdResolved}
+        onClick={() => updateExactRule(model, true)}
+        title={
+          !model.ruleModelIdResolved
+            ? t('accounts.model_rule_mapping_unavailable')
+            : undefined
+        }
       >
         {t('accounts.model_disable_for_credential')}
       </Button>
@@ -364,6 +396,12 @@ export function AccountModelsTab({
       {showPartialUnsupported ? (
         <div className={styles.accountModelsWarning} role="note">
           {t('accounts.model_runtime_list_unsupported')}
+        </div>
+      ) : null}
+
+      {hasUnresolvedRows && !modelDefinitionsLoading ? (
+        <div className={styles.accountModelsWarning} role="note">
+          {t('accounts.model_rule_mapping_unavailable')}
         </div>
       ) : null}
 
@@ -486,7 +524,7 @@ export function AccountModelsTab({
       ) : (
         <div className={styles.accountModelsList}>
           {filteredRows.map((model) => {
-            const modelAliases = aliasesByModelId.get(model.id.trim().toLowerCase()) ?? [];
+            const modelAliases = getModelAliases(model);
             return (
               <article
                 key={model.id}

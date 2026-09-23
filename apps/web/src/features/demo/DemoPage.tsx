@@ -19,6 +19,7 @@ import {
   getDemoQuotaStoreState,
   getDemoRawConfig,
   resetDemoCredentialRefresh,
+  resetDemoEvidenceEpoch,
 } from '@/features/demo/demoFixtures';
 import {
   CODEX_INSPECTION_LAST_RUN_STORAGE_KEY,
@@ -168,6 +169,7 @@ export function DemoPage() {
     const restoreDemoPersistIsolation = enableDemoPersistIsolation();
     const restoreDemoInspectionState = installDemoInspectionState();
 
+    resetDemoEvidenceEpoch();
     resetDemoCredentialRefresh();
     resetDemoAuthFileConfiguration();
     resetDemoCodexInspectionRunState();
@@ -217,6 +219,7 @@ export function DemoPage() {
     }));
 
     return () => {
+      resetDemoEvidenceEpoch();
       resetDemoCredentialRefresh();
       resetDemoAuthFileConfiguration();
       resetDemoCodexInspectionRunState();

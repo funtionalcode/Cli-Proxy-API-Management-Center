@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   authFilesApi,
   applyAuthFileFieldsPatchToRecord,
+  type AuthFileLookupTarget,
   type AuthFilesApiRequestScope,
 } from '@/services/api';
 import type { AuthFileItem } from '@/types';
@@ -17,11 +18,15 @@ import {
   type AuthFileConfigurationDraft,
   type AuthFileConfigurationErrors,
 } from '@/features/authFiles/model/authFileConfiguration';
+import { lookupAuthFileMutationSnapshot } from '@/features/authFiles/model/authFileMutationSnapshot';
 import {
   getAuthFilePatchTarget,
   getAuthFileSelectionKey,
 } from '@/features/authFiles/model/credentialStatus';
-import { resolveAuthFileStatusMutationTarget } from '@/utils/authFileStatusMutation';
+import {
+  readAuthFileStatusPhysicalName,
+  resolveAuthFileStatusMutationTarget,
+} from '@/utils/authFileStatusMutation';
 
 export type AuthFileConfigurationEditorState = {
   authFile: AuthFileItem;
@@ -43,7 +48,7 @@ export type UseAuthFileConfigurationEditorOptions = {
   sourceMemberCount?: number;
   connectionKey?: string | null;
   requestScope?: AuthFilesApiRequestScope;
-  loadFiles: () => Promise<void>;
+  reconcileSource?: (physicalName: string) => Promise<void>;
   onSaved?: (fileName: string) => void;
 };
 
@@ -89,7 +94,7 @@ export function useAuthFileConfigurationEditor(
     sourceMemberCount = 0,
     connectionKey = '',
     requestScope,
-    loadFiles,
+    reconcileSource,
     onSaved,
   } = options;
   const { t } = useTranslation();
@@ -301,11 +306,14 @@ export function useAuthFileConfigurationEditor(
     );
 
     try {
-      const response = requestScope
-        ? await authFilesApi.list(requestScope)
-        : await authFilesApi.list();
+      const lookupFiles = (target: AuthFileLookupTarget) =>
+        requestScope ? authFilesApi.lookup(target, requestScope) : authFilesApi.lookup(target);
+
+      const currentFiles = await lookupAuthFileMutationSnapshot(
+        getAuthFilePatchTarget(targetSnapshot),
+        lookupFiles
+      );
       if (!isCurrentTarget()) return;
-      const currentFiles = Array.isArray(response.files) ? response.files : [];
       const resolution = resolveAuthFileStatusMutationTarget(
         currentFiles,
         getAuthFilePatchTarget(targetSnapshot)
@@ -319,8 +327,9 @@ export function useAuthFileConfigurationEditor(
       }
 
       const patchTarget = getAuthFilePatchTarget(resolution.target);
+      const targetPhysicalName = readAuthFileStatusPhysicalName(resolution.target);
       const sourceIdentities = currentFiles
-        .filter((entry) => entry.name.trim() === resolution.target?.name.trim())
+        .filter((entry) => readAuthFileStatusPhysicalName(entry) === targetPhysicalName)
         .map(getAuthFilePatchTarget);
       if (patch['excluded-models'] !== undefined && hasLegacyExcludedModelsAlias(recordSnapshot)) {
         // CPA currently reads `excluded_models` before `excluded-models` and
@@ -412,13 +421,15 @@ export function useAuthFileConfigurationEditor(
           'warning'
         );
       }
-      try {
-        await loadFiles();
-      } catch (refreshError: unknown) {
-        if (isCurrentTarget()) {
-          const refreshMessage =
-            refreshError instanceof Error ? refreshError.message : t('common.unknown_error');
-          showNotification(`${t('notification.load_failed')}: ${refreshMessage}`, 'warning');
+      if (reconcileSource) {
+        try {
+          await reconcileSource(targetPhysicalName || fileName);
+        } catch (refreshError: unknown) {
+          if (isCurrentTarget()) {
+            const refreshMessage =
+              refreshError instanceof Error ? refreshError.message : t('common.unknown_error');
+            showNotification(`${t('notification.load_failed')}: ${refreshMessage}`, 'warning');
+          }
         }
       }
       if (isCurrentTarget()) onSaved?.(fileName);
@@ -438,10 +449,10 @@ export function useAuthFileConfigurationEditor(
   }, [
     canSave,
     currentScopeKey,
-    loadFiles,
     normalizedConnectionKey,
     onSaved,
     patchResult.patch,
+    reconcileSource,
     requestScope,
     showNotification,
     state,

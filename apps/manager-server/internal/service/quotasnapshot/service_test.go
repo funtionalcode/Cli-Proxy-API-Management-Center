@@ -3,6 +3,7 @@ package quotasnapshot
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func newQuotaSnapshotTestService(t *testing.T, nowMS int64) *Service {
@@ -42,6 +44,62 @@ func quotaSnapshotTestAccount() AccountTarget {
 		AuthProviderSnapshot: "codex",
 		AuthIndex:            "auth-1",
 		AccountSnapshot:      "user@example.com",
+	}
+}
+
+func writeQuotaLifecycleSnapshotForKey(
+	t *testing.T,
+	service *Service,
+	accountKey, observationID string,
+	observedAtMS, cycleStartMS, cycleEndMS, durationSeconds int64,
+	usedPercent float64,
+	planType string,
+) {
+	t.Helper()
+	entry := WriteEntry{
+		Provider: "codex",
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: observationID,
+			ObservedAtMS:        observedAtMS,
+			InventoryScopeKey:   "codex:rate-limits",
+			InventoryMode:       "partial",
+		},
+		Windows: []WindowInput{{
+			ProviderWindowID:    "weekly",
+			WindowKind:          "weekly",
+			WindowMode:          "fixed",
+			ModelScopeKind:      "family",
+			ModelScopeKey:       "codex_main",
+			Source:              "api_query",
+			SourceObservationID: observationID,
+			ObservedAtMS:        observedAtMS,
+			BoundaryAccuracy:    "exact",
+			CycleStartMS:        &cycleStartMS,
+			CycleEndMS:          &cycleEndMS,
+			DurationSeconds:     &durationSeconds,
+			UsedPercent:         &usedPercent,
+			PlanType:            planType,
+		}},
+	}
+	observation, err := normalizeObservationInput(accountKey, "codex", entry, service.now().UnixMilli())
+	if err != nil {
+		t.Fatalf("normalize quota observation: %v", err)
+	}
+	snapshot, err := normalizeWindowInput(accountKey, "codex", entry.Windows[0], service.now().UnixMilli())
+	if err != nil {
+		t.Fatalf("normalize quota snapshot: %v", err)
+	}
+	snapshot.InventoryScopeKey = observation.InventoryScopeKey
+	write := model.AccountQuotaObservationWrite{
+		Observation: observation,
+		Snapshots:   []model.AccountQuotaSnapshot{snapshot},
+	}
+	write.Observation.WindowCount = len(write.Snapshots)
+	write.Snapshots[0].ContentHash = snapshotContentHash(write.Snapshots[0])
+	write.Observation.ObservationHash = observationHash(write)
+	if err := service.store.QuotaSnapshots.InsertObservationWrites(context.Background(), []model.AccountQuotaObservationWrite{write}); err != nil {
+		t.Fatalf("write quota lifecycle snapshot: %v", err)
 	}
 }
 
@@ -103,6 +161,302 @@ func TestWriteQuerySelectsLatestCompleteObservationAndMergesCodexResetCredits(t 
 	}
 }
 
+func TestCodexQuotaSnapshotsStayMemberScopedAndIgnoreLegacyWorkspaceKey(t *testing.T) {
+	service, path := newQuotaSnapshotTestServiceWithPath(t, 50_000)
+	ctx := context.Background()
+	cycleStart := int64(100)
+	cycleEnd := int64(18_100)
+	duration := int64(18)
+	window := func(used float64, observedAtMS int64) WindowInput {
+		return WindowInput{
+			ProviderWindowID: "five-hour", WindowKind: "five_hour", WindowMode: "fixed",
+			ModelScopeKind: "all", Source: "api_query", SourceObservationID: fmt.Sprintf("observation-%d", observedAtMS),
+			ObservedAtMS: observedAtMS, BoundaryAccuracy: "exact", UsedPercent: &used,
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+		}
+	}
+	account := func(member string) AccountTarget {
+		return AccountTarget{
+			AuthFileSnapshot:      member + ".json",
+			AuthProviderSnapshot:  "codex",
+			AuthAccountIDSnapshot: "workspace-1",
+			AuthIndex:             "auth-" + member,
+			AccountSnapshot:       member + "@example.com",
+			Source:                member + ".json",
+		}
+	}
+	for _, entry := range []WriteEntry{
+		{RowKey: "alice", Provider: "codex", Account: account("alice"), Observation: &ObservationInput{
+			Source: "api_query", SourceObservationID: "observation-1000", ObservedAtMS: 1_000,
+			InventoryScopeKey: "codex:rate-limits", InventoryMode: "partial",
+		}, Windows: []WindowInput{window(10, 1_000)}},
+		{RowKey: "bob", Provider: "codex", Account: account("bob"), Observation: &ObservationInput{
+			Source: "api_query", SourceObservationID: "observation-2000", ObservedAtMS: 2_000,
+			InventoryScopeKey: "codex:rate-limits", InventoryMode: "partial",
+		}, Windows: []WindowInput{window(20, 2_000)}},
+	} {
+		if _, err := service.Write(ctx, WriteRequest{Entries: []WriteEntry{entry}}); err != nil {
+			t.Fatalf("write %s snapshot: %v", entry.RowKey, err)
+		}
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open quota database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// This is the v3 workspace-only key emitted before Codex member identity
+	// was introduced. It is intentionally left orphaned rather than fanned out.
+	legacyWorkspaceKey := "usage-account-history:3:codex-account:636F646578:776F726B73706163652D31"
+	if _, err := db.Exec(`insert into account_quota_snapshots (
+		account_key, provider, provider_window_id, window_kind, window_mode,
+		model_scope_kind, source, source_observation_id, observed_at_ms,
+		boundary_accuracy, used_percent, created_at_ms
+	) values (?, 'codex', 'five-hour', 'five_hour', 'fixed', 'all',
+		'api_query', 'legacy-workspace', 3_000, 'exact', 99, 3_000)`, legacyWorkspaceKey); err != nil {
+		t.Fatalf("insert legacy workspace snapshot: %v", err)
+	}
+
+	alice := account("alice")
+	bob := account("bob")
+	aliceKey, aliceOK := usageidentity.AccountKey(alice.identityFields("codex"))
+	bobKey, bobOK := usageidentity.AccountKey(bob.identityFields("codex"))
+	if !aliceOK || !bobOK || aliceKey == bobKey {
+		t.Fatalf("member account keys = alice:%q/%v bob:%q/%v", aliceKey, aliceOK, bobKey, bobOK)
+	}
+	for _, test := range []struct {
+		name    string
+		rowKey  string
+		account AccountTarget
+		want    float64
+	}{
+		{name: "Alice", rowKey: "alice", account: alice, want: 10},
+		{name: "Bob", rowKey: "bob", account: bob, want: 20},
+	} {
+		result, err := service.Query(ctx, QueryRequest{Accounts: []QueryAccount{{
+			RowKey: test.rowKey, Provider: "codex", Account: test.account,
+		}}})
+		if err != nil {
+			t.Fatalf("query %s snapshot: %v", test.name, err)
+		}
+		if len(result.Items) != 1 || result.Items[0].AccountKey == legacyWorkspaceKey || len(result.Items[0].Windows) != 1 {
+			t.Fatalf("%s query included legacy/fan-out data: %#v", test.name, result)
+		}
+		if result.Items[0].Windows[0].UsedPercent == nil || *result.Items[0].Windows[0].UsedPercent != test.want {
+			t.Fatalf("%s used percent = %#v, want %v", test.name, result.Items[0].Windows[0], test.want)
+		}
+	}
+	var aliceRows, bobRows, legacyRows int
+	if err := db.QueryRow(`select count(*) from account_quota_snapshots where account_key = ?`, aliceKey).Scan(&aliceRows); err != nil {
+		t.Fatalf("count Alice snapshots: %v", err)
+	}
+	if err := db.QueryRow(`select count(*) from account_quota_snapshots where account_key = ?`, bobKey).Scan(&bobRows); err != nil {
+		t.Fatalf("count Bob snapshots: %v", err)
+	}
+	if err := db.QueryRow(`select count(*) from account_quota_snapshots where account_key = ?`, legacyWorkspaceKey).Scan(&legacyRows); err != nil {
+		t.Fatalf("count legacy snapshots: %v", err)
+	}
+	if aliceRows != 1 || bobRows != 1 || legacyRows != 1 {
+		t.Fatalf("quota snapshot rows were migrated/fanned out: Alice=%d Bob=%d legacy=%d", aliceRows, bobRows, legacyRows)
+	}
+}
+
+func TestQueryBridgesLegacyCodexPreviousCycleOnlyForConsistentPersonalPlan(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		previousPlan      string
+		legacyCurrentPlan string
+		memberCurrentPlan string
+		mixedMemberPlan   string
+		memberStartOffset int64
+		wantBridge        bool
+	}{
+		{name: "Plus", previousPlan: "plus", legacyCurrentPlan: "plus", memberCurrentPlan: "plus", wantBridge: true},
+		{name: "Free", previousPlan: "free", legacyCurrentPlan: "free", memberCurrentPlan: "free", wantBridge: true},
+		{name: "Pro", previousPlan: "pro", legacyCurrentPlan: "pro", memberCurrentPlan: "pro", wantBridge: true},
+		{name: "Go", previousPlan: "go", legacyCurrentPlan: "go", memberCurrentPlan: "go", wantBridge: true},
+		{name: "normalized personal plan", previousPlan: " Plus ", legacyCurrentPlan: "PLUS", memberCurrentPlan: "plus", wantBridge: true},
+		{name: "Team", previousPlan: "team", legacyCurrentPlan: "team", memberCurrentPlan: "team"},
+		{name: "Business", previousPlan: "business", legacyCurrentPlan: "business", memberCurrentPlan: "business"},
+		{name: "Enterprise", previousPlan: "enterprise", legacyCurrentPlan: "enterprise", memberCurrentPlan: "enterprise"},
+		{name: "Edu", previousPlan: "edu", legacyCurrentPlan: "edu", memberCurrentPlan: "edu"},
+		{name: "unknown plan", previousPlan: "", legacyCurrentPlan: "", memberCurrentPlan: ""},
+		{name: "future plan", previousPlan: "starter", legacyCurrentPlan: "starter", memberCurrentPlan: "starter"},
+		{name: "plan changed", previousPlan: "free", legacyCurrentPlan: "plus", memberCurrentPlan: "plus"},
+		{name: "mixed member cycle", previousPlan: "plus", legacyCurrentPlan: "plus", memberCurrentPlan: "plus", mixedMemberPlan: "team"},
+		{name: "current boundary mismatch", previousPlan: "plus", legacyCurrentPlan: "plus", memberCurrentPlan: "plus", memberStartOffset: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, path := newQuotaSnapshotTestServiceWithPath(t, 250_000)
+			account := AccountTarget{
+				AuthFileSnapshot:      "member.json",
+				AuthProviderSnapshot:  "codex",
+				AuthAccountIDSnapshot: "workspace-1",
+				AuthIndex:             "auth-member",
+				AccountSnapshot:       "member@example.com",
+				Source:                "member.json",
+			}
+			memberKey, memberOK := usageidentity.AccountKey(account.identityFields("codex"))
+			legacyKey, legacyOK := usageidentity.LegacyCodexWorkspaceAccountKey("codex", "workspace-1")
+			if !memberOK || !legacyOK || memberKey == legacyKey {
+				t.Fatalf("quota bridge keys = member:%q/%v legacy:%q/%v", memberKey, memberOK, legacyKey, legacyOK)
+			}
+
+			const durationSeconds = int64(100)
+			const previousStartMS = int64(100_000)
+			const currentStartMS = int64(200_000)
+			const currentEndMS = int64(300_000)
+			writeQuotaLifecycleSnapshotForKey(t, service, legacyKey, "legacy-previous", 150_000,
+				previousStartMS, currentStartMS, durationSeconds, 70, test.previousPlan)
+			writeQuotaLifecycleSnapshotForKey(t, service, legacyKey, "legacy-current", 220_000,
+				currentStartMS, currentEndMS, durationSeconds, 90, test.legacyCurrentPlan)
+			memberStartMS := currentStartMS + test.memberStartOffset
+			memberEndMS := currentEndMS + test.memberStartOffset
+			writeQuotaLifecycleSnapshotForKey(t, service, memberKey, "member-current", 221_000,
+				memberStartMS, memberEndMS, durationSeconds, 11, test.memberCurrentPlan)
+			if test.mixedMemberPlan != "" {
+				writeQuotaLifecycleSnapshotForKey(t, service, memberKey, "member-current-mixed", 222_000,
+					memberStartMS, memberEndMS, durationSeconds, 12, test.mixedMemberPlan)
+			}
+
+			result, err := service.Query(context.Background(), QueryRequest{Accounts: []QueryAccount{{
+				RowKey: "member", Provider: "codex", Account: account,
+			}}, NowMS: 250_000})
+			if err != nil {
+				t.Fatalf("query bridged quota lifecycle: %v", err)
+			}
+			if len(result.Items) != 1 || len(result.Items[0].Windows) != 1 {
+				t.Fatalf("quota bridge result = %#v", result)
+			}
+			window := result.Items[0].Windows[0]
+			wantUsedPercent := 11.0
+			if test.mixedMemberPlan != "" {
+				wantUsedPercent = 12
+			}
+			if window.UsedPercent == nil || *window.UsedPercent != wantUsedPercent {
+				t.Fatalf("member current usage was replaced by legacy workspace data: %#v", window)
+			}
+			if gotBridge := window.PreviousCycle != nil; gotBridge != test.wantBridge {
+				t.Fatalf("previous cycle bridged = %v, want %v: %#v", gotBridge, test.wantBridge, window.PreviousCycle)
+			}
+			if test.wantBridge {
+				if window.CurrentCycle == nil || window.PreviousCycle.ActualStartMS != previousStartMS ||
+					window.PreviousCycle.ActualEndMS == nil || *window.PreviousCycle.ActualEndMS != currentStartMS ||
+					window.PreviousCycle.EndReason != "scheduled" ||
+					window.PreviousCycle.ActivationID == window.CurrentCycle.ActivationID {
+					t.Fatalf("bridged previous cycle = %#v current=%#v", window.PreviousCycle, window.CurrentCycle)
+				}
+			}
+
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatalf("open quota bridge database: %v", err)
+			}
+			defer db.Close()
+			var legacySnapshots, memberSnapshots int
+			if err := db.QueryRow(`select count(*) from account_quota_snapshots where account_key = ?`, legacyKey).Scan(&legacySnapshots); err != nil {
+				t.Fatalf("count legacy quota snapshots: %v", err)
+			}
+			if err := db.QueryRow(`select count(*) from account_quota_snapshots where account_key = ?`, memberKey).Scan(&memberSnapshots); err != nil {
+				t.Fatalf("count member quota snapshots: %v", err)
+			}
+			wantMemberSnapshots := 1
+			if test.mixedMemberPlan != "" {
+				wantMemberSnapshots = 2
+			}
+			if legacySnapshots != 2 || memberSnapshots != wantMemberSnapshots {
+				t.Fatalf("quota query rewrote snapshots: legacy=%d member=%d", legacySnapshots, memberSnapshots)
+			}
+		})
+	}
+}
+
+func TestQueryKeepsMemberPreviousCycleInsteadOfLegacyWorkspaceCycle(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 250_000)
+	account := AccountTarget{
+		AuthFileSnapshot:      "member.json",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "workspace-1",
+		AuthIndex:             "auth-member",
+		AccountSnapshot:       "member@example.com",
+		Source:                "member.json",
+	}
+	memberKey, _ := usageidentity.AccountKey(account.identityFields("codex"))
+	legacyKey, _ := usageidentity.LegacyCodexWorkspaceAccountKey("codex", "workspace-1")
+	for _, accountKey := range []string{legacyKey, memberKey} {
+		writeQuotaLifecycleSnapshotForKey(t, service, accountKey, accountKey+"-previous", 150_000,
+			100_000, 200_000, 100, 70, "plus")
+		writeQuotaLifecycleSnapshotForKey(t, service, accountKey, accountKey+"-current", 220_000,
+			200_000, 300_000, 100, 10, "plus")
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{Accounts: []QueryAccount{{
+		RowKey: "member", Provider: "codex", Account: account,
+	}}, NowMS: 250_000})
+	if err != nil {
+		t.Fatalf("query member lifecycle: %v", err)
+	}
+	if len(result.Items) != 1 || len(result.Items[0].Windows) != 1 {
+		t.Fatalf("member lifecycle result = %#v", result)
+	}
+	window := result.Items[0].Windows[0]
+	if window.CurrentCycle == nil || window.PreviousCycle == nil ||
+		window.PreviousCycle.ActivationID != window.CurrentCycle.ActivationID {
+		t.Fatalf("member previous cycle was replaced by legacy workspace cycle: current=%#v previous=%#v", window.CurrentCycle, window.PreviousCycle)
+	}
+}
+
+func TestLegacyCodexQuotaBridgeAcceptsOnlyReliableClosedCycleReasons(t *testing.T) {
+	currentStartMS := int64(200_000)
+	currentEndMS := int64(300_000)
+	previousEndMS := currentStartMS
+	durationSeconds := int64(100)
+	cycle := func(id, activationID int64, state, endReason string, startMS int64, endMS *int64) *model.AccountQuotaCycle {
+		return &model.AccountQuotaCycle{
+			ID:               id,
+			ActivationID:     activationID,
+			State:            state,
+			ScheduledStartMS: &startMS,
+			ScheduledEndMS:   endMS,
+			ActualStartMS:    startMS,
+			ActualEndMS:      endMS,
+			DurationSeconds:  &durationSeconds,
+			BoundaryAccuracy: "exact",
+			EndReason:        endReason,
+		}
+	}
+	for _, test := range []struct {
+		endReason string
+		want      bool
+	}{
+		{endReason: "scheduled", want: true},
+		{endReason: "provider_reset", want: true},
+		{endReason: "early_reset", want: true},
+		{endReason: "mode_changed"},
+		{endReason: "window_removed"},
+		{endReason: ""},
+	} {
+		t.Run(test.endReason, func(t *testing.T) {
+			current := model.AccountQuotaWindowState{
+				WindowMode:   "fixed",
+				Availability: "active",
+				CurrentCycle: cycle(3, 2, "active", "", currentStartMS, nil),
+			}
+			legacy := model.AccountQuotaWindowState{
+				WindowMode:    "fixed",
+				Availability:  "active",
+				CurrentCycle:  cycle(2, 1, "active", "", currentStartMS, nil),
+				PreviousCycle: cycle(1, 1, "closed", test.endReason, 100_000, &previousEndMS),
+			}
+			current.CurrentCycle.ScheduledEndMS = &currentEndMS
+			legacy.CurrentCycle.ScheduledEndMS = &currentEndMS
+			if got := legacyCodexQuotaBridgeCyclesMatch(current, legacy); got != test.want {
+				t.Fatalf("legacyCodexQuotaBridgeCyclesMatch(%q) = %v, want %v", test.endReason, got, test.want)
+			}
+		})
+	}
+}
+
 func TestWriteQueryDoesNotMergeOlderResetCreditsAfterNewZeroCount(t *testing.T) {
 	service := newQuotaSnapshotTestService(t, 20_000)
 	cycleStart := int64(10_000)
@@ -155,6 +509,375 @@ func TestWriteQueryDoesNotMergeOlderResetCreditsAfterNewZeroCount(t *testing.T) 
 	}
 	if _, ok := window.FieldSources["reset_credits"]; ok {
 		t.Fatalf("cleared reset credits retained stale field source: %#v", window.FieldSources)
+	}
+}
+
+func TestResetCreditsExplicitEmptyOverridesOldRecords(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	two := int64(2)
+	used := 20.0
+
+	// T1: available=2, credits=[A, B] @ 10_000
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 10_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+			ResetCredits: []ResetCredit{
+				{ID: "credit-a", ExpiresAtMS: 100_000},
+				{ID: "credit-b", ExpiresAtMS: 200_000},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T1: %v", err)
+	}
+
+	// T2: available=2, credits=[] (explicit empty) @ 20_000
+	_, err = service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 20_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+			ResetCredits: []ResetCredit{},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T2: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 20_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCreditsAvailable == nil || *window.ResetCreditsAvailable != 2 {
+		t.Fatalf("available count = %v, want 2", window.ResetCreditsAvailable)
+	}
+	if len(window.ResetCredits) != 0 {
+		t.Fatalf("expected 0 reset credits, got %#v", window.ResetCredits)
+	}
+	source, ok := window.FieldSources["reset_credits"]
+	if !ok {
+		t.Fatalf("missing reset_credits field source: %#v", window.FieldSources)
+	}
+	if source.ObservedAtMS != 20_000 {
+		t.Fatalf("reset_credits field source observedAtMS = %d, want 20_000", source.ObservedAtMS)
+	}
+}
+
+func TestResetCreditsOmittedFieldAllowsFallback(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	two := int64(2)
+	used := 20.0
+
+	// T1: credits=[A, B] @ 10_000
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 10_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+			ResetCredits: []ResetCredit{
+				{ID: "credit-a", ExpiresAtMS: 100_000},
+				{ID: "credit-b", ExpiresAtMS: 200_000},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T1: %v", err)
+	}
+
+	// T2: only count=2 updated, reset_credits omitted (nil) @ 20_000
+	_, err = service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 20_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T2: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 20_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCreditsAvailable == nil || *window.ResetCreditsAvailable != 2 {
+		t.Fatalf("available count = %v, want 2", window.ResetCreditsAvailable)
+	}
+	if len(window.ResetCredits) != 2 {
+		t.Fatalf("expected 2 fallback reset credits, got %#v", window.ResetCredits)
+	}
+	source, ok := window.FieldSources["reset_credits"]
+	if !ok {
+		t.Fatalf("missing reset_credits field source: %#v", window.FieldSources)
+	}
+	if source.ObservedAtMS != 10_000 {
+		t.Fatalf("fallback reset_credits field source observedAtMS = %d, want 10_000", source.ObservedAtMS)
+	}
+}
+
+func TestResetCreditsNewerZeroCountBlocksOldDetails(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	two := int64(2)
+	zero := int64(0)
+	used := 20.0
+
+	// T1: count=2, credits=[A, B] @ 10_000
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 10_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+			ResetCredits: []ResetCredit{
+				{ID: "credit-a", ExpiresAtMS: 100_000},
+				{ID: "credit-b", ExpiresAtMS: 200_000},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T1: %v", err)
+	}
+
+	// T2: count=0, credits omitted (nil) @ 20_000
+	_, err = service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 20_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &zero,
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T2: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 20_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCreditsAvailable == nil || *window.ResetCreditsAvailable != 0 {
+		t.Fatalf("available count = %v, want 0", window.ResetCreditsAvailable)
+	}
+	if countSource, ok := window.FieldSources["reset_credits_available"]; !ok || countSource.ObservedAtMS != 20_000 {
+		t.Fatalf("expected reset_credits_available source @ 20_000, got %#v", window.FieldSources)
+	}
+	if len(window.ResetCredits) != 0 {
+		t.Fatalf("expected 0 reset credits, got %#v", window.ResetCredits)
+	}
+	if _, ok := window.FieldSources["reset_credits"]; ok {
+		t.Fatalf("expected no reset_credits field source, got %#v", window.FieldSources)
+	}
+}
+
+func TestResetCreditsOlderZeroCountDoesNotClearNewerDetails(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	zero := int64(0)
+	used := 20.0
+
+	// T1: count=0, credits omitted @ 10_000
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 10_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &zero,
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T1: %v", err)
+	}
+
+	// T2: count omitted, credits=[A] @ 20_000
+	_, err = service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 20_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used,
+			ResetCredits: []ResetCredit{
+				{ID: "credit-a", ExpiresAtMS: 100_000},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write T2: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 20_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCreditsAvailable == nil || *window.ResetCreditsAvailable != 0 {
+		t.Fatalf("available count = %v, want 0", window.ResetCreditsAvailable)
+	}
+	countSource, ok := window.FieldSources["reset_credits_available"]
+	if !ok || countSource.ObservedAtMS != 10_000 {
+		t.Fatalf("expected reset_credits_available field source at 10_000, got %#v", window.FieldSources)
+	}
+	if len(window.ResetCredits) != 1 || window.ResetCredits[0].ID != "credit-a" {
+		t.Fatalf("expected newer reset credits [credit-a] preserved, got %#v", window.ResetCredits)
+	}
+	creditsSource, ok := window.FieldSources["reset_credits"]
+	if !ok || creditsSource.ObservedAtMS != 20_000 {
+		t.Fatalf("expected reset_credits field source at 20_000, got %#v", window.FieldSources)
+	}
+}
+
+func TestResetCreditsSameObservationZeroCountDominatesConflictingDetails(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	zero := int64(0)
+	used := 20.0
+
+	// Single observation @ 20_000: count=0 conflicting with credits=[A]
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 20_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &zero,
+			ResetCredits: []ResetCredit{
+				{ID: "credit-a", ExpiresAtMS: 100_000},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 20_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCreditsAvailable == nil || *window.ResetCreditsAvailable != 0 {
+		t.Fatalf("available count = %v, want 0", window.ResetCreditsAvailable)
+	}
+	if window.ResetCredits == nil || len(window.ResetCredits) != 0 {
+		t.Fatalf("expected explicit empty reset credits slice, got %#v", window.ResetCredits)
+	}
+	creditsSource, ok := window.FieldSources["reset_credits"]
+	if !ok || creditsSource.ObservedAtMS != 20_000 {
+		t.Fatalf("expected reset_credits field source at 20_000 to be preserved, got %#v", window.FieldSources)
+	}
+}
+
+func TestResetCreditsExplicitEmptySurvivesPersistence(t *testing.T) {
+	service := newQuotaSnapshotTestService(t, 20_000)
+	cycleStart := int64(1_000)
+	cycleEnd := int64(19_001_000)
+	duration := int64(19_000)
+	two := int64(2)
+	used := 20.0
+
+	// Write explicit empty credits []
+	_, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{{
+		Provider: "codex", Account: quotaSnapshotTestAccount(),
+		Windows: []WindowInput{{
+			ProviderWindowID: "rate_limit:five_hour", WindowKind: "five_hour",
+			WindowMode: "fixed", ModelScopeKind: "all", Source: "api_query",
+			ObservedAtMS: 15_000, BoundaryAccuracy: "exact",
+			CycleStartMS: &cycleStart, CycleEndMS: &cycleEnd, DurationSeconds: &duration,
+			UsedPercent: &used, ResetCreditsAvailable: &two,
+			ResetCredits: []ResetCredit{},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("write explicit empty: %v", err)
+	}
+
+	result, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotaSnapshotTestAccount(),
+		}},
+		NowMS: 15_000,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	window := result.Items[0].Windows[0]
+	if window.ResetCredits == nil || len(window.ResetCredits) != 0 {
+		t.Fatalf("expected non-nil empty slice, got %#v", window.ResetCredits)
+	}
+	source, ok := window.FieldSources["reset_credits"]
+	if !ok || source.ObservedAtMS != 15_000 {
+		t.Fatalf("expected reset_credits field source at 15_000, got %#v", window.FieldSources)
+	}
+
+	// Verify JSON marshaling of Window retains "reset_credits":[]
+	data, err := json.Marshal(window)
+	if err != nil {
+		t.Fatalf("marshal window: %v", err)
+	}
+	if !strings.Contains(string(data), `"reset_credits":[]`) {
+		t.Fatalf("window json = %s, want explicit empty reset_credits array", string(data))
 	}
 }
 
@@ -3545,6 +4268,166 @@ func TestQuotaLifecycleScheduledRolloverUsesScheduledBoundaryAfterIdleGap(t *tes
 	}
 }
 
+func TestQuotaLifecycleTreatsNegativeBoundaryJitterAsScheduledRollover(t *testing.T) {
+	const durationSeconds = int64(7 * 24 * 60 * 60)
+	oldStartMS := quotaLifecycleBaseMS
+	oldEndMS := oldStartMS + durationSeconds*1000
+	nextStartMS := oldEndMS - 5*1000
+	nextEndMS := nextStartMS + durationSeconds*1000
+	observedAtMS := oldEndMS + 5*60*1000
+	service := newQuotaSnapshotTestService(t, observedAtMS+quotaLifecycleHourMS)
+
+	first := quotaLifecycleFixedWindow("weekly", "weekly", oldStartMS, durationSeconds, 20)
+	writeQuotaLifecycleObservation(t, service, "complete", oldStartMS+quotaLifecycleHourMS, []WindowInput{first})
+
+	next := quotaLifecycleFixedWindow("weekly", "weekly", nextStartMS, durationSeconds, 8)
+	next.Source = "api_query"
+	next.BoundaryAccuracy = "derived"
+	if _, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{
+		quotaLifecycleWriteEntryWithObservation(
+			"complete", "api_query", "api-negative-jitter", "codex:quota-windows",
+			observedAtMS, []WindowInput{next},
+		),
+	}}); err != nil {
+		t.Fatalf("write negative-jitter observation: %v", err)
+	}
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.PreviousCycle == nil {
+		t.Fatalf("negative-jitter rollover did not expose both cycles: %#v", window)
+	}
+	if window.CurrentCycle.ID == window.PreviousCycle.ID {
+		t.Fatalf("negative-jitter rollover reused the active cycle: %#v", window)
+	}
+	if window.PreviousCycle.State != "closed" || window.PreviousCycle.EndReason != "scheduled" ||
+		window.PreviousCycle.ActualEndMS == nil || *window.PreviousCycle.ActualEndMS != oldEndMS {
+		t.Fatalf("negative-jitter previous cycle = %#v", window.PreviousCycle)
+	}
+	if window.CurrentCycle.ActualStartMS != oldEndMS ||
+		window.CurrentCycle.ScheduledStartMS == nil || *window.CurrentCycle.ScheduledStartMS != nextStartMS ||
+		window.CurrentCycle.ScheduledEndMS == nil || *window.CurrentCycle.ScheduledEndMS != nextEndMS {
+		t.Fatalf("negative-jitter current cycle = %#v", window.CurrentCycle)
+	}
+	if window.CurrentCycle.ActualStartMS != *window.PreviousCycle.ActualEndMS {
+		t.Fatalf("negative-jitter transition has overlap or gap: %#v", window)
+	}
+}
+
+func TestQuotaLifecycleNegativeBoundaryJitterCanonicalizesIndependentActualTransition(t *testing.T) {
+	const durationSeconds = int64(5 * 60 * 60)
+	oldStartMS := quotaLifecycleBaseMS
+	oldEndMS := oldStartMS + durationSeconds*1000
+	actualTransitionMS := oldStartMS + 4*quotaLifecycleHourMS
+	nextStartMS := oldEndMS - 5*1000
+	nextEndMS := nextStartMS + durationSeconds*1000
+	observedAtMS := oldEndMS + 5*60*1000
+	service := newQuotaSnapshotTestService(t, observedAtMS+quotaLifecycleHourMS)
+
+	initial := quotaLifecycleFixedWindow("five-hour", "five_hour", oldStartMS, durationSeconds, 75)
+	writeQuotaLifecycleObservation(t, service, "complete", oldStartMS+quotaLifecycleHourMS, []WindowInput{initial})
+
+	reset := quotaLifecycleFixedWindow("five-hour", "five_hour", oldStartMS, durationSeconds, 1)
+	reset.Source = "response_header"
+	reset.BoundaryAccuracy = "derived"
+	if _, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{
+		quotaLifecycleWriteEntryWithObservation(
+			"complete", "response_header", "header-early-reset", "codex:quota-windows",
+			actualTransitionMS, []WindowInput{reset},
+		),
+	}}); err != nil {
+		t.Fatalf("write independent actual transition: %v", err)
+	}
+
+	resetted := queryQuotaLifecycleWindows(t, service, false)["five-hour"]
+	if resetted.CurrentCycle == nil || resetted.CurrentCycle.ActualStartMS != actualTransitionMS ||
+		resetted.CurrentCycle.ScheduledStartMS == nil || *resetted.CurrentCycle.ScheduledStartMS != oldStartMS {
+		t.Fatalf("independent actual transition was not established: %#v", resetted)
+	}
+	oldCycleID := resetted.CurrentCycle.ID
+
+	next := quotaLifecycleFixedWindow("five-hour", "five_hour", nextStartMS, durationSeconds, 8)
+	next.Source = "api_query"
+	next.BoundaryAccuracy = "derived"
+	if _, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{
+		quotaLifecycleWriteEntryWithObservation(
+			"complete", "api_query", "api-negative-jitter-after-reset", "codex:quota-windows",
+			observedAtMS, []WindowInput{next},
+		),
+	}}); err != nil {
+		t.Fatalf("write negative-jitter observation after actual transition: %v", err)
+	}
+
+	window := queryQuotaLifecycleWindows(t, service, false)["five-hour"]
+	if window.CurrentCycle == nil || window.PreviousCycle == nil || window.PreviousCycle.ID != oldCycleID {
+		t.Fatalf("negative-jitter rollover lost the independent transition cycle: %#v", window)
+	}
+	if window.PreviousCycle.ActualStartMS != actualTransitionMS ||
+		window.PreviousCycle.ActualEndMS == nil || *window.PreviousCycle.ActualEndMS != oldEndMS ||
+		window.PreviousCycle.EndReason != "scheduled" {
+		t.Fatalf("negative-jitter closed cycle crossed the provider reset: %#v", window.PreviousCycle)
+	}
+	if window.CurrentCycle.ActualStartMS != oldEndMS ||
+		window.CurrentCycle.ScheduledStartMS == nil || *window.CurrentCycle.ScheduledStartMS != nextStartMS ||
+		window.CurrentCycle.ScheduledEndMS == nil || *window.CurrentCycle.ScheduledEndMS != nextEndMS {
+		t.Fatalf("negative-jitter next cycle did not use the canonical transition: %#v", window.CurrentCycle)
+	}
+	if window.CurrentCycle.ActualStartMS != *window.PreviousCycle.ActualEndMS {
+		t.Fatalf("negative-jitter transition has overlap or gap after actual reset: %#v", window)
+	}
+}
+
+func TestQuotaLifecycleDoesNotUseProvisionalZeroAPINegativeJitterForScheduledRollover(t *testing.T) {
+	const durationSeconds = int64(7 * 24 * 60 * 60)
+	oldStartMS := quotaLifecycleBaseMS
+	oldEndMS := oldStartMS + durationSeconds*1000
+	provisionalStartMS := oldEndMS - 5*1000
+	observedAtMS := oldEndMS + 30*1000
+	service, path := newQuotaSnapshotTestServiceWithPath(t, observedAtMS+quotaLifecycleHourMS)
+
+	oldCycle := quotaLifecycleFixedWindow("weekly", "weekly", oldStartMS, durationSeconds, 65)
+	writeQuotaLifecycleObservation(t, service, "complete", oldStartMS+quotaLifecycleHourMS, []WindowInput{oldCycle})
+	initial := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if initial.CurrentCycle == nil {
+		t.Fatalf("initial provisional-zero lifecycle = %#v", initial)
+	}
+	oldCycleID := initial.CurrentCycle.ID
+
+	provisional := quotaLifecycleFixedWindow("weekly", "weekly", provisionalStartMS, durationSeconds, 0)
+	provisional.BoundaryAccuracy = "derived"
+	if _, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{
+		quotaLifecycleWriteEntryWithObservation(
+			"complete", "api_query", "api-negative-jitter-provisional", "codex:quota-windows",
+			observedAtMS, []WindowInput{provisional},
+		),
+	}}); err != nil {
+		t.Fatalf("write provisional negative-jitter API boundary: %v", err)
+	}
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.CurrentCycle.ID != oldCycleID ||
+		window.CurrentCycle.State != "active" || window.PreviousCycle != nil {
+		t.Fatalf("provisional negative-jitter API boundary changed lifecycle = %#v", window)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open provisional lifecycle database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var cycleCount, provisionalSnapshotCount int
+	if err := db.QueryRow(`select count(*) from account_quota_cycles`).Scan(&cycleCount); err != nil {
+		t.Fatalf("count provisional lifecycle cycles: %v", err)
+	}
+	if err := db.QueryRow(`select count(*) from account_quota_snapshots
+		where source_observation_id = 'api-negative-jitter-provisional'
+			and cycle_id is null and boundary_accuracy = 'unknown'`).Scan(&provisionalSnapshotCount); err != nil {
+		t.Fatalf("count unassigned provisional snapshot: %v", err)
+	}
+	if cycleCount != 1 || provisionalSnapshotCount != 1 {
+		t.Fatalf("cycle_count=%d provisional_snapshot_count=%d, want 1 and 1", cycleCount, provisionalSnapshotCount)
+	}
+}
+
 func TestQuotaLifecycleExposesFiveHourAndWeeklyScheduledGapsAsPrevious(t *testing.T) {
 	const gapMS = int64(8 * 60 * 1000)
 	weeklyStartMS := quotaLifecycleBaseMS
@@ -3570,16 +4453,17 @@ func TestQuotaLifecycleExposesFiveHourAndWeeklyScheduledGapsAsPrevious(t *testin
 	})
 
 	windows := queryQuotaLifecycleWindows(t, service, false)
-	for id, bounds := range map[string][2]int64{
-		"five-hour": {fiveHourStartMS, fiveHourEndMS},
-		"weekly":    {weeklyStartMS, weeklyEndMS},
+	for id, bounds := range map[string][3]int64{
+		"five-hour": {fiveHourStartMS, fiveHourEndMS, fiveHourNextStartMS},
+		"weekly":    {weeklyStartMS, weeklyEndMS, weeklyNextStartMS},
 	} {
-		wantStart, wantEnd := bounds[0], bounds[1]
+		wantStart, wantEnd, wantCurrentStart := bounds[0], bounds[1], bounds[2]
 		window := windows[id]
 		if window.CurrentCycle == nil || window.PreviousCycle == nil ||
 			window.PreviousCycle.ActualStartMS != wantStart || window.PreviousCycle.ActualEndMS == nil ||
 			*window.PreviousCycle.ActualEndMS != wantEnd || window.PreviousCycle.EndReason != "scheduled" ||
-			window.PreviousCycle.ActivationID != window.CurrentCycle.ActivationID {
+			window.PreviousCycle.ActivationID != window.CurrentCycle.ActivationID ||
+			window.CurrentCycle.ActualStartMS != wantCurrentStart {
 			t.Fatalf("%s scheduled gap previous lifecycle = %#v", id, window)
 		}
 	}
@@ -4816,4 +5700,341 @@ func queryQuotaLifecycleWindows(t *testing.T, service *Service, includeInactive 
 		windows[window.ProviderWindowID] = window
 	}
 	return windows
+}
+
+func TestDevinQuotaSnapshotLifecycle(t *testing.T) {
+	var (
+		baseMS         = int64(1_780_000_000_000)
+		dailyDuration  = int64(86400)
+		weeklyDuration = int64(604800)
+	)
+	service := newQuotaSnapshotTestService(t, baseMS+2*3600*1000)
+	devinAccount := AccountTarget{
+		AuthFileSnapshot:     "devin.json",
+		AuthProviderSnapshot: "devin",
+		AuthIndex:            "auth-devin-1",
+		AccountSnapshot:      "devin-user@example.com",
+	}
+
+	dailyEndMS := baseMS + dailyDuration*1000
+	weeklyEndMS := baseMS + weeklyDuration*1000
+	dailyUsed1 := 20.0
+	weeklyUsed1 := 40.0
+	obs1AtMS := baseMS + 3600*1000
+
+	// 1. Initial write with Devin Daily and Weekly windows under complete observation
+	entry1 := WriteEntry{
+		RowKey:   "row-devin",
+		Provider: "devin",
+		Account:  devinAccount,
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: "devin-obs-1",
+			ObservedAtMS:        obs1AtMS,
+			InventoryScopeKey:   "devin:quota-windows",
+			InventoryMode:       "complete",
+		},
+		Windows: []WindowInput{
+			{
+				ProviderWindowID: "devin:daily",
+				WindowKind:       "daily",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs1AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &dailyEndMS,
+				DurationSeconds:  &dailyDuration,
+				UsedPercent:      &dailyUsed1,
+			},
+			{
+				ProviderWindowID: "devin:weekly",
+				WindowKind:       "weekly",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs1AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &weeklyEndMS,
+				DurationSeconds:  &weeklyDuration,
+				UsedPercent:      &weeklyUsed1,
+			},
+		},
+	}
+
+	writeRes1, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{entry1}})
+	if err != nil {
+		t.Fatalf("devin snapshot write 1 failed: %v", err)
+	}
+	if len(writeRes1.Items) != 1 || writeRes1.Items[0].InsertedCount != 2 {
+		t.Fatalf("unexpected write 1 result: %+v", writeRes1)
+	}
+
+	// Query after first observation
+	queryRes1, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{
+			{
+				RowKey:   "row-devin",
+				Provider: "devin",
+				Account:  devinAccount,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("devin snapshot query 1 failed: %v", err)
+	}
+	if len(queryRes1.Items) != 1 || len(queryRes1.Items[0].Windows) != 2 {
+		t.Fatalf("unexpected query 1 windows count: %#v", queryRes1.Items)
+	}
+
+	windows1 := make(map[string]Window)
+	for _, w := range queryRes1.Items[0].Windows {
+		windows1[w.ProviderWindowID] = w
+	}
+
+	daily1, ok := windows1["devin:daily"]
+	if !ok {
+		t.Fatalf("devin:daily window missing in query 1")
+	}
+	if daily1.WindowMode != "fixed" || daily1.WindowKind != "daily" || daily1.DurationSeconds == nil || *daily1.DurationSeconds != dailyDuration {
+		t.Fatalf("devin:daily window properties invalid: %#v", daily1)
+	}
+	if daily1.CurrentCycle == nil || daily1.CurrentCycle.ActualStartMS != baseMS || daily1.CurrentCycle.ScheduledEndMS == nil || *daily1.CurrentCycle.ScheduledEndMS != dailyEndMS {
+		t.Fatalf("devin:daily current cycle 1 invalid: %#v", daily1.CurrentCycle)
+	}
+	if daily1.PreviousCycle != nil {
+		t.Fatalf("devin:daily previous cycle 1 should be nil, got: %#v", daily1.PreviousCycle)
+	}
+
+	weekly1, ok := windows1["devin:weekly"]
+	if !ok {
+		t.Fatalf("devin:weekly window missing in query 1")
+	}
+	if weekly1.WindowMode != "fixed" || weekly1.WindowKind != "weekly" || weekly1.DurationSeconds == nil || *weekly1.DurationSeconds != weeklyDuration {
+		t.Fatalf("devin:weekly window properties invalid: %#v", weekly1)
+	}
+	if weekly1.CurrentCycle == nil || weekly1.CurrentCycle.ActualStartMS != baseMS || weekly1.CurrentCycle.ScheduledEndMS == nil || *weekly1.CurrentCycle.ScheduledEndMS != weeklyEndMS {
+		t.Fatalf("devin:weekly current cycle 1 invalid: %#v", weekly1.CurrentCycle)
+	}
+	if weekly1.PreviousCycle != nil {
+		t.Fatalf("devin:weekly previous cycle 1 should be nil, got: %#v", weekly1.PreviousCycle)
+	}
+
+	// 2. Second observation: daily cycle rollover
+	secondDailyStartMS := dailyEndMS
+	secondDailyEndMS := secondDailyStartMS + dailyDuration*1000
+	obs2AtMS := secondDailyStartMS + 1800*1000
+	service.now = func() time.Time { return time.UnixMilli(obs2AtMS) }
+
+	dailyUsed2 := 5.0
+	weeklyUsed2 := 45.0
+
+	entry2 := WriteEntry{
+		RowKey:   "row-devin",
+		Provider: "devin",
+		Account:  devinAccount,
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: "devin-obs-2",
+			ObservedAtMS:        obs2AtMS,
+			InventoryScopeKey:   "devin:quota-windows",
+			InventoryMode:       "complete",
+		},
+		Windows: []WindowInput{
+			{
+				ProviderWindowID: "devin:daily",
+				WindowKind:       "daily",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs2AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &secondDailyStartMS,
+				CycleEndMS:       &secondDailyEndMS,
+				DurationSeconds:  &dailyDuration,
+				UsedPercent:      &dailyUsed2,
+			},
+			{
+				ProviderWindowID: "devin:weekly",
+				WindowKind:       "weekly",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     obs2AtMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &weeklyEndMS,
+				DurationSeconds:  &weeklyDuration,
+				UsedPercent:      &weeklyUsed2,
+			},
+		},
+	}
+
+	writeRes2, err := service.Write(context.Background(), WriteRequest{Entries: []WriteEntry{entry2}})
+	if err != nil {
+		t.Fatalf("devin snapshot write 2 failed: %v", err)
+	}
+	if len(writeRes2.Items) != 1 || writeRes2.Items[0].InsertedCount != 2 {
+		t.Fatalf("unexpected write 2 result: %+v", writeRes2)
+	}
+
+	// Query after cycle rollover
+	queryRes2, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{
+			{
+				RowKey:   "row-devin",
+				Provider: "devin",
+				Account:  devinAccount,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("devin snapshot query 2 failed: %v", err)
+	}
+
+	windows2 := make(map[string]Window)
+	for _, w := range queryRes2.Items[0].Windows {
+		windows2[w.ProviderWindowID] = w
+	}
+
+	daily2 := windows2["devin:daily"]
+	if daily2.CurrentCycle == nil || daily2.CurrentCycle.ActualStartMS != secondDailyStartMS || daily2.CurrentCycle.ScheduledEndMS == nil || *daily2.CurrentCycle.ScheduledEndMS != secondDailyEndMS {
+		t.Fatalf("devin:daily new current cycle invalid: %#v", daily2.CurrentCycle)
+	}
+	if daily2.PreviousCycle == nil {
+		t.Fatalf("devin:daily expected previous cycle after rollover, got nil")
+	}
+	if daily2.PreviousCycle.ActualStartMS != baseMS || daily2.PreviousCycle.ActualEndMS == nil || *daily2.PreviousCycle.ActualEndMS != dailyEndMS {
+		t.Fatalf("devin:daily previous cycle boundaries invalid: %#v", daily2.PreviousCycle)
+	}
+	if daily2.PreviousCycle.EndReason != "scheduled" {
+		t.Fatalf("devin:daily previous cycle end reason = %q, want scheduled", daily2.PreviousCycle.EndReason)
+	}
+	if daily2.PreviousCycle.DurationSeconds == nil || *daily2.PreviousCycle.DurationSeconds != dailyDuration {
+		t.Fatalf("devin:daily previous cycle duration invalid: %#v", daily2.PreviousCycle.DurationSeconds)
+	}
+
+	weekly2 := windows2["devin:weekly"]
+	if weekly2.CurrentCycle == nil || weekly2.CurrentCycle.ActualStartMS != baseMS || weekly2.CurrentCycle.ScheduledEndMS == nil || *weekly2.CurrentCycle.ScheduledEndMS != weeklyEndMS {
+		t.Fatalf("devin:weekly current cycle should remain active: %#v", weekly2.CurrentCycle)
+	}
+	if weekly2.PreviousCycle != nil {
+		t.Fatalf("devin:weekly previous cycle should still be nil: %#v", weekly2.PreviousCycle)
+	}
+}
+
+func TestQuotaSnapshotMetaWindowLifecycle(t *testing.T) {
+	baseMS := int64(1_773_000_000_000)
+	service := newQuotaSnapshotTestService(t, baseMS)
+
+	metaAccount := AccountTarget{
+		AuthFileSnapshot:     "meta.json",
+		AuthProviderSnapshot: "meta",
+		AuthIndex:            "auth-meta-1",
+		AccountSnapshot:      "meta-user@example.com",
+	}
+
+	windowDuration := int64(18000)
+	windowEndMS := baseMS + (windowDuration * 1000)
+	weeklyEndMS := baseMS + (7 * 24 * 3600 * 1000)
+	usedWindow := 25.0
+	usedWeekly := 10.0
+
+	entry := WriteEntry{
+		RowKey:   "row-meta",
+		Provider: "meta",
+		Account:  metaAccount,
+		Observation: &ObservationInput{
+			Source:              "api_query",
+			SourceObservationID: "meta-obs-1",
+			ObservedAtMS:        baseMS,
+			InventoryScopeKey:   "meta:quota-windows",
+			InventoryMode:       "complete",
+		},
+		Windows: []WindowInput{
+			{
+				ProviderWindowID: "meta:window",
+				WindowKind:       "window",
+				WindowMode:       "fixed",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     baseMS,
+				BoundaryAccuracy: "exact",
+				CycleStartMS:     &baseMS,
+				CycleEndMS:       &windowEndMS,
+				DurationSeconds:  &windowDuration,
+				UsedPercent:      &usedWindow,
+			},
+			{
+				ProviderWindowID: "meta:weekly",
+				WindowKind:       "weekly",
+				WindowMode:       "unknown",
+				ModelScopeKind:   "all",
+				Source:           "api_query",
+				ObservedAtMS:     baseMS,
+				BoundaryAccuracy: "exact",
+				CycleEndMS:       &weeklyEndMS,
+				UsedPercent:      &usedWeekly,
+			},
+		},
+	}
+
+	res, err := service.Write(context.Background(), WriteRequest{
+		Entries: []WriteEntry{entry},
+	})
+	if err != nil {
+		t.Fatalf("meta snapshot write failed: %v", err)
+	}
+	if len(res.Items) != 1 || res.Items[0].InsertedCount != 2 {
+		t.Fatalf("meta write counts = %+v, want 1 item with 2 snapshots", res)
+	}
+
+	queryRes, err := service.Query(context.Background(), QueryRequest{
+		Accounts: []QueryAccount{
+			{
+				RowKey:   "row-meta",
+				Provider: "meta",
+				Account:  metaAccount,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("meta snapshot query failed: %v", err)
+	}
+	if len(queryRes.Items) != 1 || len(queryRes.Items[0].Windows) != 2 {
+		t.Fatalf("unexpected query windows count: %#v", queryRes.Items)
+	}
+
+	windows := map[string]Window{}
+	for _, w := range queryRes.Items[0].Windows {
+		windows[w.ProviderWindowID] = w
+	}
+
+	w1, ok := windows["meta:window"]
+	if !ok {
+		t.Fatalf("meta:window missing in query")
+	}
+	if w1.UsedPercent == nil || *w1.UsedPercent != usedWindow || w1.WindowMode != "fixed" {
+		t.Fatalf("meta:window properties invalid: %#v", w1)
+	}
+
+	w2, ok := windows["meta:weekly"]
+	if !ok {
+		t.Fatalf("meta:weekly missing in query")
+	}
+	if w2.UsedPercent == nil || *w2.UsedPercent != usedWeekly || w2.WindowMode != "unknown" {
+		t.Fatalf("meta:weekly properties invalid: %#v", w2)
+	}
+
+	// Reject unknown provider
+	unknownEntry := entry
+	unknownEntry.Provider = "unknown_provider"
+	_, err = service.Write(context.Background(), WriteRequest{
+		Entries: []WriteEntry{unknownEntry},
+	})
+	if err == nil {
+		t.Fatalf("expected unknown provider to be rejected")
+	}
 }

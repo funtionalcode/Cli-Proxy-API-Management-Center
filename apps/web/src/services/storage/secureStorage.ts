@@ -79,15 +79,15 @@ class ObfuscatedStorageService {
   }
 
   /**
-   * 迁移旧的明文缓存为加密格式
+   * 迁移旧的明文缓存为混淆格式
    */
   migratePlaintextKeys(keys: string[]): void {
     keys.forEach((key) => {
       const raw = localStorage.getItem(key);
       if (!raw) return;
 
-      // 如果已经是加密格式，跳过
-      if (raw.startsWith('enc::v1::')) {
+      // 如果已经是混淆格式（v1 或 v2），跳过，避免二次混淆
+      if (isObfuscated(raw)) {
         return;
       }
 

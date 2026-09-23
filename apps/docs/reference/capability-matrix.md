@@ -47,8 +47,13 @@ Docker 和原生包提供相同的完整模式能力，只是安装方式不同�
 | Claude                               | Provider、OAuth/Auth File                     | 基础额度、周额度、模型级 scoped limits（取决于返回字段） | 配额读取，不执行模型请求    |
 | xAI/Grok OAuth                       | Provider/Auth File/OAuth                      | CLI billing、付费 OAuth identity fallback、请求事件证据  | 本地与服务端                |
 | xAI API Key                          | `xai-api-key` 配置、优先级、模型和密钥测试    | 请求结果与 Provider 返回信息                             | Provider key test           |
+| Muse / Meta OAuth                    | OAuth/Auth File（Device Flow）                 | `meta:window`、`meta:weekly`、reset/周期元数据            | 配额读取，不执行模型请求    |
+| Meta API Key                         | `meta-api-key`、优先级、模型和密钥测试         | 请求结果与 Provider 返回信息                             | Provider key test           |
 | Gemini / Vertex / Antigravity / Kimi | Provider、Auth File 或 OAuth（按 CPA 能力）   | Provider 特定 quota 或最近请求证据                       | 取决于 CPA 与 Provider 接口 |
+| Devin                                | Provider、Auth File、OAuth、`devin.sensitive-words` | 日/周额度百分比、精确 reset、Devin 计划名称与起止时间    | 配额读取，不执行模型请求    |
 | OpenAI-compatible                    | Base URL、API Key、Header、模型映射和密钥测试 | 请求状态、延迟、失败摘要和成本                           | 不假设存在统一 quota API    |
+
+完整 Muse / Meta 支持需要 CPA `v7.3.4+`。OAuth DCA 与 `meta-api-key` 是两类独立凭证，不能互换。
 
 ## 数据与自动化边界
 

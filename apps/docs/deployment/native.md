@@ -85,6 +85,20 @@ cd .\cpa-manager-plus_vX.Y.Z_windows_amd64
 .\cpa-manager-plus.exe
 ```
 
+查看当前二进制版本不会启动 Manager Server，也不需要读取配置或数据库：
+
+```bash
+./cpa-manager-plus --version
+```
+
+Windows PowerShell：
+
+```powershell
+.\cpa-manager-plus.exe --version
+```
+
+也可以使用简写参数 `-v`。
+
 打开：
 
 ```text

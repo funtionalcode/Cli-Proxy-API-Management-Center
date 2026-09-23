@@ -2,6 +2,8 @@ package usagehourly
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
 	"sort"
 	"testing"
@@ -339,8 +341,9 @@ func newReaderTestStore(t *testing.T) *store.Store {
 }
 
 func readerEvent(hash string, timestampMS int64, model string, failed bool, inputTokens, outputTokens int64, latencyMS *int64) usage.Event {
+	sum := sha256.Sum256([]byte(hash))
 	return usage.Event{
-		EventHash:    hash,
+		EventHash:    hex.EncodeToString(sum[:]),
 		TimestampMS:  timestampMS,
 		Timestamp:    time.UnixMilli(timestampMS).UTC().Format(time.RFC3339Nano),
 		Model:        model,

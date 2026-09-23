@@ -4,6 +4,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     get: vi.fn(),
     getRaw: vi.fn(),
+    post: vi.fn(),
     postForm: vi.fn(),
     patch: vi.fn(),
     put: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('./client', () => ({
   apiClient: {
     get: mocks.get,
     getRaw: mocks.getRaw,
+    post: mocks.post,
     postForm: mocks.postForm,
     patch: mocks.patch,
     put: mocks.put,
@@ -33,10 +35,67 @@ import { sha256RawTextHex } from '@/utils/apiKeyHash';
 beforeEach(() => {
   mocks.get.mockReset();
   mocks.getRaw.mockReset();
+  mocks.post.mockReset();
   mocks.postForm.mockReset();
   mocks.patch.mockReset();
   mocks.put.mockReset();
   mocks.delete.mockReset();
+});
+
+describe('authFilesApi OAuth excluded model normalization', () => {
+  it.each([
+    { 'oauth-excluded-models': null },
+    { 'oauth-excluded-models': {} },
+    { items: null },
+    { items: {} },
+    {},
+    null,
+  ])('returns an empty map for %j', async (payload) => {
+    mocks.get.mockResolvedValue(payload);
+
+    await expect(authFilesApi.getOauthExcludedModels()).resolves.toEqual({});
+    expect(mocks.get).toHaveBeenCalledWith('/oauth-excluded-models');
+  });
+
+  it.each([
+    { 'oauth-excluded-models': { ' Codex ': [' model-a ', 'MODEL-A', 'model-b'] } },
+    { items: { ' Codex ': [' model-a ', 'MODEL-A', 'model-b'] } },
+    { ' Codex ': [' model-a ', 'MODEL-A', 'model-b'] },
+    { codex: ' model-a, MODEL-A\nmodel-b ' },
+  ])('preserves supported response formats and normalization for %j', async (payload) => {
+    mocks.get.mockResolvedValue(payload);
+
+    await expect(authFilesApi.getOauthExcludedModels()).resolves.toEqual({
+      codex: ['model-a', 'model-b'],
+    });
+  });
+
+  it('does not fall through an explicit null wrapper to items or provider keys', async () => {
+    mocks.get.mockResolvedValue({
+      'oauth-excluded-models': null,
+      items: { codex: ['model-a'] },
+      codex: ['model-b'],
+    });
+
+    await expect(authFilesApi.getOauthExcludedModels()).resolves.toEqual({});
+  });
+
+  it('does not fall through an explicit null items wrapper to provider keys', async () => {
+    mocks.get.mockResolvedValue({ items: null, codex: ['model-a'] });
+
+    await expect(authFilesApi.getOauthExcludedModels()).resolves.toEqual({});
+  });
+
+  it('prefers the canonical wrapper over items', async () => {
+    mocks.get.mockResolvedValue({
+      'oauth-excluded-models': { codex: ['model-a'] },
+      items: { codex: ['model-b'] },
+    });
+
+    await expect(authFilesApi.getOauthExcludedModels()).resolves.toEqual({
+      codex: ['model-a'],
+    });
+  });
 });
 
 describe('authFilesApi OAuth model alias normalization', () => {
@@ -234,6 +293,54 @@ describe('authFilesApi list normalization', () => {
     });
   });
 
+  it('scopes credential lookups and filters full responses from older CPA builds', async () => {
+    mocks.get.mockResolvedValue({
+      files: [
+        {
+          name: 'shared.json',
+          id: 'runtime-1',
+          auth_index: 'auth-1',
+          type: 'codex',
+        },
+        {
+          name: 'shared.json',
+          id: 'runtime-2',
+          auth_index: 'auth-2',
+          type: 'codex',
+        },
+        {
+          name: 'unrelated.json',
+          id: 'runtime-3',
+          auth_index: 'auth-2',
+          type: 'codex',
+        },
+      ],
+    });
+    const requestScope = {
+      apiBase: 'http://old-cpa.local:8317',
+      managementKey: 'old-cpa-key',
+    };
+
+    const result = await authFilesApi.lookup(
+      { name: 'shared.json', authIndex: 'auth-2' },
+      requestScope
+    );
+
+    expect(mocks.get).toHaveBeenCalledWith('/auth-files', {
+      baseURL: 'http://old-cpa.local:8317/v0/management',
+      headers: { Authorization: 'Bearer old-cpa-key' },
+      cpampScopedRequest: true,
+      params: { name: 'shared.json', auth_index: 'auth-2' },
+    });
+    expect(result).toEqual([
+      expect.objectContaining({
+        name: 'shared.json',
+        id: 'runtime-2',
+        auth_index: 'auth-2',
+      }),
+    ]);
+  });
+
   it('preserves same-name auth file rows when authIndex differs', async () => {
     mocks.get.mockResolvedValue({
       files: [
@@ -268,6 +375,85 @@ describe('authFilesApi list normalization', () => {
       }),
     ]);
     expect(result.total).toBe(2);
+  });
+
+  it('preserves same-name auth file rows when authIndex matches but runtime IDs differ', async () => {
+    mocks.get.mockResolvedValue({
+      files: [
+        {
+          name: 'shared.json',
+          id: 'runtime-a',
+          type: 'codex',
+          authIndex: 'auth-1',
+          account: 'alice@example.com',
+        },
+        {
+          name: 'shared.json',
+          id: 'runtime-b',
+          type: 'codex',
+          authIndex: 'auth-1',
+          account: 'bob@example.com',
+        },
+      ],
+    });
+
+    const result = await authFilesApi.list();
+
+    expect(result.files).toEqual([
+      expect.objectContaining({
+        name: 'shared.json',
+        id: 'runtime-a',
+        authIndex: 'auth-1',
+        account: 'alice@example.com',
+      }),
+      expect.objectContaining({
+        name: 'shared.json',
+        id: 'runtime-b',
+        authIndex: 'auth-1',
+        account: 'bob@example.com',
+      }),
+    ]);
+    expect(result.total).toBe(2);
+  });
+
+  it('merges same-name auth file representations when authIndex and runtime ID match', async () => {
+    mocks.get.mockResolvedValue({
+      files: [
+        {
+          name: 'shared.json',
+          id: 'runtime-a',
+          type: 'codex',
+          authIndex: 'auth-1',
+          source: 'runtime',
+          status: 'ok',
+        },
+        {
+          name: 'shared.json',
+          id: 'runtime-a',
+          type: 'codex',
+          authIndex: 'auth-1',
+          source: 'file',
+          path: '/auth/shared.json',
+          size: 123,
+        },
+      ],
+    });
+
+    const result = await authFilesApi.list();
+
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({
+        name: 'shared.json',
+        id: 'runtime-a',
+        authIndex: 'auth-1',
+        source: 'file',
+        path: '/auth/shared.json',
+        size: 123,
+        status: 'ok',
+      })
+    );
+    expect(result.total).toBe(1);
   });
 
   it('still merges duplicate same-name rows when authIndex is absent', async () => {
@@ -1499,6 +1685,116 @@ describe('authFilesApi patchFieldsForAuthIndexes', () => {
 
     expect(mocks.postForm).not.toHaveBeenCalled();
   });
+
+  it('rejects conflicting Codex member evidence before reuploading the source file', async () => {
+    mocks.getRaw.mockResolvedValue({
+      data: new Blob([
+        JSON.stringify({
+          type: 'codex',
+          auth_index: 'auth-1',
+          account_id: 'workspace-a',
+          accountSnapshot: 'alice@example.com',
+          account_snapshot: 'bob@example.com',
+        }),
+      ]),
+    });
+    const target = {
+      name: 'codex.json',
+      runtimeId: 'runtime-1',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      accountId: 'workspace-a',
+    };
+
+    await expect(
+      authFilesApi.patchFieldsForAuthIndexes('codex.json', [target], [target], { priority: 10 })
+    ).rejects.toThrow('Auth file patch target changed');
+
+    expect(mocks.postForm).not.toHaveBeenCalled();
+  });
+
+  it('allows missing Codex Workspace and member evidence for a uniquely located source record', async () => {
+    const rawText = JSON.stringify({
+      type: 'codex',
+      auth_index: 'auth-1',
+      priority: 1,
+    });
+    mocks.getRaw.mockResolvedValue({ data: new Blob([rawText]) });
+    mocks.postForm.mockResolvedValue({
+      status: 'ok',
+      uploaded: 1,
+      files: ['codex.json'],
+      failed: [],
+    });
+    const target = {
+      name: 'codex.json',
+      runtimeId: 'runtime-auth-1',
+      authIndex: 'auth-1',
+      provider: 'codex',
+      accountId: 'workspace-a',
+      accountSnapshot: 'alice@example.com',
+    };
+
+    await expect(
+      authFilesApi.patchFieldsForAuthIndexes('codex.json', [target], [target], { priority: 10 })
+    ).resolves.toBeUndefined();
+
+    await expect(getUploadedFile().text()).resolves.toBe(
+      JSON.stringify({ type: 'codex', auth_index: 'auth-1', priority: 10 })
+    );
+  });
+
+  it('uses a runtime locator when the Codex member snapshot is only a display value', async () => {
+    const rawText = JSON.stringify({
+      type: 'codex',
+      account_id: 'workspace-a',
+      account: 'Alice',
+      priority: 1,
+    });
+    mocks.getRaw.mockResolvedValue({ data: new Blob([rawText]) });
+    mocks.postForm.mockResolvedValue({
+      status: 'ok',
+      uploaded: 1,
+      files: ['codex.json'],
+      failed: [],
+    });
+    const target = {
+      name: 'codex.json',
+      runtimeId: 'runtime-auth-1',
+      provider: 'codex',
+      accountId: 'workspace-a',
+      accountSnapshot: 'Alice',
+    };
+
+    await expect(
+      authFilesApi.patchFieldsForAuthIndexes('codex.json', [target], [target], { priority: 10 })
+    ).resolves.toBeUndefined();
+
+    await expect(getUploadedFile().text()).resolves.toBe(
+      JSON.stringify({ type: 'codex', account_id: 'workspace-a', account: 'Alice', priority: 10 })
+    );
+  });
+
+  it('rejects a weak Codex member snapshot without a credential locator', async () => {
+    const rawText = JSON.stringify({
+      type: 'codex',
+      account_id: 'workspace-a',
+      account: 'Alice',
+    });
+    mocks.getRaw.mockResolvedValue({ data: new Blob([rawText]) });
+    const target = {
+      name: 'codex.json',
+      provider: 'codex',
+      accountId: 'workspace-a',
+      accountSnapshot: 'Alice',
+    };
+
+    await expect(
+      authFilesApi.patchFieldsForAuthIndexes('codex.json', [target], [target], { priority: 10 })
+    ).rejects.toThrow('Auth file patch target changed');
+
+    expect(mocks.postForm).not.toHaveBeenCalled();
+  });
 });
 
 describe('applyAuthFileFieldsPatchToRecord', () => {
@@ -1652,5 +1948,40 @@ describe('applyAuthFileFieldsPatchToRecord', () => {
       cloak_sensitive_words: 'canonical',
       cloak_cache_user_id: 'false',
     });
+  });
+});
+
+describe('authFilesApi resetQuota', () => {
+  it('posts /reset-quota with normalized auth_index and scope', async () => {
+    mocks.post.mockResolvedValueOnce({
+      status: 'ok',
+      auth_index: 'idx-1',
+      models: ['gpt-6-astra'],
+    });
+
+    const result = await authFilesApi.resetQuota('  idx-1  ', {
+      apiBase: 'http://cpa.local:8317',
+      managementKey: 'secret',
+    });
+
+    expect(result).toEqual({
+      status: 'ok',
+      auth_index: 'idx-1',
+      models: ['gpt-6-astra'],
+    });
+    expect(mocks.post).toHaveBeenCalledWith(
+      '/reset-quota',
+      { auth_index: 'idx-1' },
+      expect.objectContaining({
+        baseURL: 'http://cpa.local:8317/v0/management',
+        cpampScopedRequest: true,
+      })
+    );
+  });
+
+  it('returns noop when auth_index is empty', async () => {
+    const result = await authFilesApi.resetQuota('   ');
+    expect(result).toEqual({ status: 'noop', auth_index: '', models: [] });
+    expect(mocks.post).not.toHaveBeenCalled();
   });
 });

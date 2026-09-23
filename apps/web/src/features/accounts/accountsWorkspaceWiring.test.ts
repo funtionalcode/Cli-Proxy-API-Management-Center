@@ -167,35 +167,45 @@ describe('accounts workspace wiring', () => {
     [
       en,
       [
-        'Credential / Account',
+        'Credential',
+        'Plan',
         'Availability',
         'Recent Requests',
-        'Historical Usage',
-        'Quota Details',
+        'Quota',
         'Actions',
       ],
     ],
     [
       ru,
       [
-        'Учётные данные / аккаунт',
+        'Учётные данные',
+        'Тариф',
         'Доступность',
         'Последние запросы',
-        'История использования',
-        'Сведения о квоте',
+        'Использование',
         'Действия',
       ],
     ],
-    [zhCN, ['凭证/账号', '可用状态', '最近请求', '历史用量', '额度信息', '操作']],
-    [zhTW, ['憑證/帳號', '可用狀態', '最近請求', '歷史用量', '額度資訊', '操作']],
+    [zhCN, ['凭证', '套餐', '可用状态', '最近请求', '额度', '操作']],
+    [zhTW, ['憑證', '方案', '可用狀態', '最近請求', '額度', '操作']],
   ])('localizes the six credential list headers', (locale, expectedHeaders) => {
     expect([
       locale.accounts.list_header_credential,
+      locale.accounts.list_header_plan,
       locale.accounts.list_header_availability,
       locale.accounts.list_header_recent_requests,
-      locale.accounts.list_header_historical_usage,
       locale.accounts.list_header_quota,
       locale.accounts.list_header_actions,
     ]).toEqual(expectedHeaders);
+  });
+
+  it.each([
+    [en, 'Edit priority', 'View mode'],
+    [ru, 'Редактировать приоритет', 'Режим отображения'],
+    [zhCN, '编辑优先级', '视图模式'],
+    [zhTW, '編輯優先順序', '檢視模式'],
+  ])('defines accounts priority_edit and view_mode_switcher across all locales', (locale, priorityEdit, viewModeSwitcher) => {
+    expect(locale.accounts.priority_edit).toBe(priorityEdit);
+    expect(locale.accounts.view_mode_switcher).toBe(viewModeSwitcher);
   });
 });

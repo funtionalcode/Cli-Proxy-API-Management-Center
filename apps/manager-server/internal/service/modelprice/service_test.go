@@ -259,6 +259,62 @@ func TestPriceMutationsNotifyPricingRollup(t *testing.T) {
 	}
 }
 
+func TestSyncPreservesManualPriceOnExactMatch(t *testing.T) {
+	ctx := context.Background()
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"gpt-test": {
+			Prompt: 9, Completion: 18, PromptConfigured: true, CompletionConfigured: true,
+			Source: "manual",
+			ContextTiers: []store.ModelPriceContextTier{
+				{ThresholdTokens: 200_000, Prompt: 27, Completion: 36, PromptConfigured: true, CompletionConfigured: true},
+			},
+			ServiceTiers: []store.ModelPriceServiceTier{
+				{Mode: "fast", ServiceTier: "priority", Prompt: 45, Completion: 54, PromptConfigured: true, CompletionConfigured: true},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save manual price: %v", err)
+	}
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"gpt-test":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
+			"fresh-model":{"input_cost_per_token":0.000003,"output_cost_per_token":0.000004}
+		}`))
+	}))
+	t.Cleanup(source.Close)
+	syncURL := source.URL
+
+	result, err := New(st, &syncURL).Sync(ctx, SyncRequest{Models: []string{"gpt-test", "fresh-model"}})
+	if err != nil {
+		t.Fatalf("sync prices: %v", err)
+	}
+	if result.Imported != 1 || len(result.Preserved) != 0 {
+		t.Fatalf("sync result = %#v", result)
+	}
+	if _, matched := result.Matched["gpt-test"]; matched {
+		t.Fatalf("manual price reported as matched: %#v", result.Matched)
+	}
+	manual := result.Prices["gpt-test"]
+	if manual.Source != "manual" || manual.Prompt != 9 || manual.Completion != 18 || manual.SyncedAtMS != nil {
+		t.Fatalf("manual price was overwritten: %#v", manual)
+	}
+	if len(manual.ContextTiers) != 1 || manual.ContextTiers[0].ThresholdTokens != 200_000 ||
+		manual.ContextTiers[0].Prompt != 27 || manual.ContextTiers[0].Completion != 36 {
+		t.Fatalf("manual context tier was overwritten: %#v", manual.ContextTiers)
+	}
+	if len(manual.ServiceTiers) != 1 || manual.ServiceTiers[0].Mode != "fast" ||
+		manual.ServiceTiers[0].ServiceTier != "priority" || manual.ServiceTiers[0].Prompt != 45 ||
+		manual.ServiceTiers[0].Completion != 54 {
+		t.Fatalf("manual service tier was overwritten: %#v", manual.ServiceTiers)
+	}
+	if fresh := result.Prices["fresh-model"]; fresh.Source != SyncSourceLiteLLM || fresh.Prompt != 3 || fresh.Completion != 4 {
+		t.Fatalf("fresh model was not imported: %#v", fresh)
+	}
+}
+
 func TestModelsDevPriceCacheReusesETagConcurrently(t *testing.T) {
 	const etag = `"catalog-v1"`
 	var requestCount atomic.Int32
@@ -1042,8 +1098,8 @@ func TestUsageSummaryUsesConfiguredRecentLimit(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	st := testutil.NewStore(t, cfg)
 	if _, err := st.UsageEvents.InsertBatch(context.Background(), []usage.Event{
-		{EventHash: "older", TimestampMS: 100, Timestamp: "2026-01-01T00:00:00Z", Model: "gpt-old", CreatedAtMS: 100},
-		{EventHash: "newer", TimestampMS: 200, Timestamp: "2026-01-01T00:00:01Z", Model: "gpt-new", ResolvedModel: "gpt-resolved", CreatedAtMS: 200},
+		{EventHash: "0000000000000000000000000000000000000000000000000000000000000001", TimestampMS: 100, Timestamp: "2026-01-01T00:00:00Z", Model: "gpt-old", CreatedAtMS: 100},
+		{EventHash: "0000000000000000000000000000000000000000000000000000000000000002", TimestampMS: 200, Timestamp: "2026-01-01T00:00:01Z", Model: "gpt-new", ResolvedModel: "gpt-resolved", CreatedAtMS: 200},
 	}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
@@ -1382,5 +1438,618 @@ func TestFilterSelectionFeedbackKeepsEverythingWithoutStoredPrices(t *testing.T)
 
 	if len(filtered.Candidates) != 1 || len(filtered.Unmatched) != 1 {
 		t.Fatalf("filtered = %#v", filtered)
+	}
+}
+
+func TestSyncExplicitPlusRuntimeUnion(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"test-client-key"},
+			})
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer test-client-key" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "runtime-model"},
+					{"id": "used-model"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/used-model":    map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+			"openai/saved-model":   map[string]any{"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000004},
+			"openai/runtime-model": map[string]any{"input_cost_per_token": 0.000005, "output_cost_per_token": 0.000006},
+		})
+	}))
+	defer priceServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{"used-model", "saved-model"},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if res.RuntimeModelCount != 2 {
+		t.Fatalf("expected RuntimeModelCount=2, got %d", res.RuntimeModelCount)
+	}
+	if res.RuntimeModelDiscoveryError != "" {
+		t.Fatalf("unexpected discovery error: %s", res.RuntimeModelDiscoveryError)
+	}
+	if res.Imported != 3 {
+		t.Fatalf("expected 3 imported, got %d", res.Imported)
+	}
+	if _, ok := res.Prices["used-model"]; !ok {
+		t.Errorf("missing used-model in prices")
+	}
+	if _, ok := res.Prices["saved-model"]; !ok {
+		t.Errorf("missing saved-model in prices")
+	}
+	if _, ok := res.Prices["runtime-model"]; !ok {
+		t.Errorf("missing runtime-model in prices")
+	}
+}
+
+func TestSyncZeroHistoryWithRuntimeModels(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"client-key"},
+			})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "gpt-runtime"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/gpt-runtime": map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+		})
+	}))
+	defer priceServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if res.Imported != 1 {
+		t.Fatalf("expected Imported=1, got %d", res.Imported)
+	}
+	if res.RuntimeModelCount != 1 {
+		t.Fatalf("expected RuntimeModelCount=1, got %d", res.RuntimeModelCount)
+	}
+	if _, ok := res.Prices["gpt-runtime"]; !ok {
+		t.Errorf("gpt-runtime price missing")
+	}
+}
+
+func TestSyncRuntimeDiscoveryFailureWithExplicitModels(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer cpaServer.Close()
+
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/used-model": map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+		})
+	}))
+	defer priceServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{"used-model"},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("expected sync to succeed with fallback, got: %v", err)
+	}
+
+	if res.RuntimeModelDiscoveryError == "" {
+		t.Fatalf("expected non-empty RuntimeModelDiscoveryError")
+	}
+	if res.Imported != 1 {
+		t.Fatalf("expected 1 imported, got %d", res.Imported)
+	}
+	if _, ok := res.Prices["used-model"]; !ok {
+		t.Errorf("missing used-model in prices")
+	}
+}
+
+func TestSyncRuntimeDiscoveryFailureSafeNoop(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "cpa down", http.StatusInternalServerError)
+	}))
+	defer cpaServer.Close()
+
+	var priceServerHits int32
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&priceServerHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/model-a": map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+			"openai/model-b": map[string]any{"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000004},
+			"openai/model-c": map[string]any{"input_cost_per_token": 0.000005, "output_cost_per_token": 0.000006},
+		})
+	}))
+	defer priceServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("sync returned unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&priceServerHits) != 0 {
+		t.Fatalf("price server was hit %d times, expected 0", atomic.LoadInt32(&priceServerHits))
+	}
+	if res.Imported != 0 {
+		t.Fatalf("expected Imported=0, got %d", res.Imported)
+	}
+	if len(res.Prices) != 0 {
+		t.Fatalf("expected 0 prices in store, got %d", len(res.Prices))
+	}
+	if res.RuntimeModelDiscoveryError == "" {
+		t.Fatalf("expected RuntimeModelDiscoveryError to be non-empty")
+	}
+}
+
+func TestSyncLegacyEmptyModelsBehavior(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	var priceServerHits int32
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&priceServerHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/model-a": map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+		})
+	}))
+	defer priceServer.Close()
+
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               nil,
+		IncludeRuntimeModels: false,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if atomic.LoadInt32(&priceServerHits) == 0 {
+		t.Fatalf("expected price server to be hit for legacy empty models request")
+	}
+	if res.Imported != 1 {
+		t.Fatalf("expected 1 imported for legacy empty request, got %d", res.Imported)
+	}
+}
+
+func TestSyncManualPriceProtectionWithRuntimeModels(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	// Pre-populate manual price
+	if err := st.SaveModelPrices(context.Background(), map[string]store.ModelPrice{
+		"gpt-runtime": {
+			Prompt:     10.0,
+			Completion: 20.0,
+			Source:     "manual",
+		},
+	}); err != nil {
+		t.Fatalf("save manual price: %v", err)
+	}
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"client-key"},
+			})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "gpt-runtime"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	priceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/gpt-runtime": map[string]any{"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+		})
+	}))
+	defer priceServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	syncURL := priceServer.URL
+	svc := New(st, &syncURL, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	prices, err := st.LoadModelPrices(context.Background())
+	if err != nil {
+		t.Fatalf("load prices: %v", err)
+	}
+	runtimePrice := prices["gpt-runtime"]
+	if runtimePrice.Source != "manual" || runtimePrice.Prompt != 10.0 || runtimePrice.Completion != 20.0 {
+		t.Fatalf("manual price was overwritten: %#v", runtimePrice)
+	}
+	if res.Imported != 0 {
+		t.Fatalf("expected 0 imported due to manual price preservation, got %d", res.Imported)
+	}
+}
+
+func TestSyncPreferredSourceFailurePreservationWithRuntimeModels(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	// Pre-populate preferred source price (models.dev)
+	if err := st.SaveModelPrices(context.Background(), map[string]store.ModelPrice{
+		"gpt-runtime": {
+			Prompt:        1.0,
+			Completion:    2.0,
+			Source:        SyncSourceModelsDev,
+			SourceModelID: "openai/gpt-runtime",
+		},
+	}); err != nil {
+		t.Fatalf("save models.dev price: %v", err)
+	}
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"client-key"},
+			})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "gpt-runtime"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	failingModelsDevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "models.dev failure", http.StatusInternalServerError)
+	}))
+	defer failingModelsDevServer.Close()
+
+	litellmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"openai/gpt-runtime": map[string]any{"input_cost_per_token": 0.00005, "output_cost_per_token": 0.00006},
+		})
+	}))
+	defer litellmServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	modelsDevURL := failingModelsDevServer.URL
+	litellmURL := litellmServer.URL
+	svc := NewMultiSourceWithModelsDev(st, &modelsDevURL, &litellmURL, nil, resolver)
+
+	res, err := svc.Sync(context.Background(), SyncRequest{
+		Models:               []string{},
+		IncludeRuntimeModels: true,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if len(res.Preserved) != 1 || res.Preserved[0] != "gpt-runtime" {
+		t.Fatalf("expected gpt-runtime to be preserved, got %#v", res.Preserved)
+	}
+	prices, err := st.LoadModelPrices(context.Background())
+	if err != nil {
+		t.Fatalf("load prices: %v", err)
+	}
+	p := prices["gpt-runtime"]
+	if p.Source != SyncSourceModelsDev || p.Prompt != 1.0 {
+		t.Fatalf("expected models.dev price to be preserved, got %#v", p)
+	}
+}
+
+func TestRuntimeModelPricingStatus(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	initialPrices := map[string]store.ModelPrice{
+		"synced-model": {
+			Prompt:     1.0,
+			Completion: 2.0,
+			Source:     SyncSourceLiteLLM,
+		},
+		"manual-model": {
+			Prompt:     0.5,
+			Completion: 1.5,
+			Source:     "manual",
+		},
+	}
+	if err := st.SaveModelPrices(context.Background(), initialPrices); err != nil {
+		t.Fatalf("save initial prices: %v", err)
+	}
+
+	remoteCalled := false
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteCalled = true
+		http.Error(w, "should not call remote price sources", http.StatusInternalServerError)
+	}))
+	defer remoteServer.Close()
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"secret-key-1", "secret-key-2"},
+			})
+		case "/v1/models":
+			if r.Header.Get("Authorization") != "Bearer secret-key-1" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "zebra-model"},
+					{"id": "synced-model"},
+					{"id": "alpha-model"},
+					{"id": "manual-model"},
+					{"id": "alpha-model"},
+					{"id": "   "},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-secret-key",
+		},
+	}
+	remoteURL := remoteServer.URL
+	svc := New(st, &remoteURL, resolver)
+
+	status, err := svc.RuntimeModelPricingStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeModelPricingStatus failed: %v", err)
+	}
+
+	if remoteCalled {
+		t.Fatal("RuntimeModelPricingStatus must not call remote price sources")
+	}
+
+	expectedModels := []string{"alpha-model", "manual-model", "synced-model", "zebra-model"}
+	if len(status.Models) != len(expectedModels) {
+		t.Fatalf("expected %d models, got %d: %#v", len(expectedModels), len(status.Models), status.Models)
+	}
+	for i, m := range expectedModels {
+		if status.Models[i] != m {
+			t.Fatalf("expected model at %d to be %s, got %s", i, m, status.Models[i])
+		}
+	}
+	if status.Count != 4 {
+		t.Fatalf("expected count 4, got %d", status.Count)
+	}
+
+	expectedUnpriced := []string{"alpha-model", "zebra-model"}
+	if len(status.UnpricedModels) != len(expectedUnpriced) {
+		t.Fatalf("expected %d unpriced models, got %d: %#v", len(expectedUnpriced), len(status.UnpricedModels), status.UnpricedModels)
+	}
+	for i, m := range expectedUnpriced {
+		if status.UnpricedModels[i] != m {
+			t.Fatalf("expected unpriced model at %d to be %s, got %s", i, m, status.UnpricedModels[i])
+		}
+	}
+	if status.UnpricedCount != 2 {
+		t.Fatalf("expected unpricedCount 2, got %d", status.UnpricedCount)
+	}
+
+	storedPrices, err := st.LoadModelPrices(context.Background())
+	if err != nil {
+		t.Fatalf("load prices: %v", err)
+	}
+	if len(storedPrices) != 2 {
+		t.Fatalf("expected 2 stored prices, got %d", len(storedPrices))
+	}
+}
+
+func TestRuntimeModelPricingStatus_AllUnpricedWhenNoPrices(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"test-key"},
+			})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "m1"},
+					{"id": "m2"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	svc := New(st, nil, resolver)
+
+	status, err := svc.RuntimeModelPricingStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeModelPricingStatus failed: %v", err)
+	}
+	if status.Count != 2 || status.UnpricedCount != 2 {
+		t.Fatalf("expected count=2 and unpricedCount=2, got count=%d, unpriced=%d", status.Count, status.UnpricedCount)
+	}
+	if len(status.UnpricedModels) != 2 || status.UnpricedModels[0] != "m1" || status.UnpricedModels[1] != "m2" {
+		t.Fatalf("unexpected unpriced models: %#v", status.UnpricedModels)
+	}
+}
+
+func TestRuntimeModelPricingStatus_ZeroModels(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api-keys": []string{"test-key"},
+			})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cpaServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	svc := New(st, nil, resolver)
+
+	status, err := svc.RuntimeModelPricingStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeModelPricingStatus failed: %v", err)
+	}
+	if status.Count != 0 || status.UnpricedCount != 0 {
+		t.Fatalf("expected count=0, unpricedCount=0, got %d, %d", status.Count, status.UnpricedCount)
+	}
+	if status.Models == nil || status.UnpricedModels == nil {
+		t.Fatal("expected models and unpricedModels to be non-nil empty slices")
+	}
+}
+
+func TestRuntimeModelPricingStatus_DiscoveryFailure(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "cpa internal error", http.StatusInternalServerError)
+	}))
+	defer cpaServer.Close()
+
+	resolver := staticSetupResolver{
+		setup: store.Setup{
+			CPAUpstreamURL: cpaServer.URL,
+			ManagementKey:  "mgmt-key",
+		},
+	}
+	svc := New(st, nil, resolver)
+
+	_, err := svc.RuntimeModelPricingStatus(context.Background())
+	if err == nil {
+		t.Fatal("expected error on discovery failure, got nil")
 	}
 }

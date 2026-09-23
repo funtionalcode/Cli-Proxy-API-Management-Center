@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -36,27 +37,31 @@ const minCandidateScore = 0.55
 const minWeakCandidateScore = 0.34
 const defaultSyncSourceTimeout = 10 * time.Second
 const defaultSyncProxyResolutionTimeout = 5 * time.Second
+const defaultRuntimeModelDiscoveryTimeout = 5 * time.Second
 
 type UpdateRequest struct {
 	Prices map[string]store.ModelPrice `json:"prices"`
 }
 
 type SyncRequest struct {
-	Models []string `json:"models"`
+	Models               []string `json:"models"`
+	IncludeRuntimeModels bool     `json:"includeRuntimeModels,omitempty"`
 }
 
 type SyncResult struct {
-	Source        string                      `json:"source"`
-	Sources       []string                    `json:"sources,omitempty"`
-	Imported      int                         `json:"imported"`
-	Skipped       int                         `json:"skipped"`
-	Matched       map[string]store.ModelPrice `json:"matched,omitempty"`
-	Candidates    []SyncCandidateSet          `json:"candidates,omitempty"`
-	Unmatched     []string                    `json:"unmatched,omitempty"`
-	Preserved     []string                    `json:"preserved,omitempty"`
-	ProxyUsed     bool                        `json:"proxyUsed,omitempty"`
-	SourceResults []SyncSourceResult          `json:"sourceResults,omitempty"`
-	Prices        map[string]store.ModelPrice `json:"prices"`
+	Source                     string                      `json:"source"`
+	Sources                    []string                    `json:"sources,omitempty"`
+	Imported                   int                         `json:"imported"`
+	Skipped                    int                         `json:"skipped"`
+	Matched                    map[string]store.ModelPrice `json:"matched,omitempty"`
+	Candidates                 []SyncCandidateSet          `json:"candidates,omitempty"`
+	Unmatched                  []string                    `json:"unmatched,omitempty"`
+	Preserved                  []string                    `json:"preserved,omitempty"`
+	ProxyUsed                  bool                        `json:"proxyUsed,omitempty"`
+	SourceResults              []SyncSourceResult          `json:"sourceResults,omitempty"`
+	Prices                     map[string]store.ModelPrice `json:"prices"`
+	RuntimeModelCount          int                         `json:"runtimeModelCount,omitempty"`
+	RuntimeModelDiscoveryError string                      `json:"runtimeModelDiscoveryError,omitempty"`
 }
 
 type SyncSourceResult struct {
@@ -83,13 +88,14 @@ type SetupResolver interface {
 }
 
 type Service struct {
-	store                 *store.Store
-	syncSources           []priceSyncSource
-	syncSourceTimeout     time.Duration
-	syncProxyTimeout      time.Duration
-	setupResolver         SetupResolver
-	notifierMu            sync.RWMutex
-	pricesChangedNotifier func()
+	store                        *store.Store
+	syncSources                  []priceSyncSource
+	syncSourceTimeout            time.Duration
+	syncProxyTimeout             time.Duration
+	runtimeModelDiscoveryTimeout time.Duration
+	setupResolver                SetupResolver
+	notifierMu                   sync.RWMutex
+	pricesChangedNotifier        func()
 }
 
 type modelPriceMatchMetadata struct {
@@ -258,11 +264,12 @@ func newMultiSource(
 		})
 	}
 	return &Service{
-		store:             store,
-		syncSources:       sources,
-		syncSourceTimeout: defaultSyncSourceTimeout,
-		syncProxyTimeout:  defaultSyncProxyResolutionTimeout,
-		setupResolver:     resolver,
+		store:                        store,
+		syncSources:                  sources,
+		syncSourceTimeout:            defaultSyncSourceTimeout,
+		syncProxyTimeout:             defaultSyncProxyResolutionTimeout,
+		runtimeModelDiscoveryTimeout: defaultRuntimeModelDiscoveryTimeout,
+		setupResolver:                resolver,
 	}
 }
 
@@ -301,26 +308,71 @@ func (s *Service) Replace(ctx context.Context, prices map[string]store.ModelPric
 }
 
 func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error) {
+	effectiveModels := req.Models
+	runtimeModelCount := 0
+	var runtimeDiscoveryErr error
+
+	if req.IncludeRuntimeModels {
+		knownModels := normalizedRequestedModels(req.Models)
+		discoveryTimeout := s.runtimeModelDiscoveryTimeout
+		if discoveryTimeout <= 0 {
+			discoveryTimeout = defaultRuntimeModelDiscoveryTimeout
+		}
+		discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+		runtimeModels, err := s.DiscoverRuntimeModels(discoveryCtx)
+		cancel()
+
+		if err != nil {
+			runtimeDiscoveryErr = err
+			effectiveModels = knownModels
+		} else {
+			runtimeModelCount = len(runtimeModels)
+			allModels := make([]string, 0, len(knownModels)+len(runtimeModels))
+			allModels = append(allModels, knownModels...)
+			allModels = append(allModels, runtimeModels...)
+			effectiveModels = normalizedRequestedModels(allModels)
+		}
+
+		if len(effectiveModels) == 0 {
+			prices, err := s.store.LoadModelPrices(ctx)
+			if err != nil {
+				return SyncResult{}, err
+			}
+			discoveryErrStr := ""
+			if runtimeDiscoveryErr != nil {
+				discoveryErrStr = runtimeDiscoveryErr.Error()
+			}
+			return SyncResult{
+				Prices:                     prices,
+				RuntimeModelCount:          runtimeModelCount,
+				RuntimeModelDiscoveryError: discoveryErrStr,
+			}, nil
+		}
+	}
+
 	client, proxyUsed, err := s.syncHTTPClient(ctx)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	remotePrices, skipped, sources, sourceResults, err := s.fetchAllModelPrices(ctx, client, req.Models)
+	remotePrices, skipped, sources, sourceResults, err := s.fetchAllModelPrices(ctx, client, effectiveModels)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	selection := selectModelPriceCollection(remotePrices, req.Models)
+	selection := selectModelPriceCollection(remotePrices, effectiveModels)
 	preserved := []string(nil)
 	if hasFailedSyncSource(sourceResults) {
 		existingPrices, err := s.store.LoadModelPrices(ctx)
 		if err != nil {
 			return SyncResult{}, err
 		}
-		selection, preserved = preserveFailedSourcePrices(selection, existingPrices, sourceResults, req.Models)
+		selection, preserved = preserveFailedSourcePrices(selection, existingPrices, sourceResults, effectiveModels)
 	}
 	result, err := s.store.UpsertSyncedModelPrices(ctx, selection.Prices)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	for _, modelID := range result.Preserved {
+		delete(selection.Matched, modelID)
 	}
 	if result.Imported > 0 {
 		s.notifyPricesChanged()
@@ -330,19 +382,111 @@ func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error)
 		return SyncResult{}, err
 	}
 	selection = filterSelectionFeedback(selection, prices)
+	discoveryErrStr := ""
+	if runtimeDiscoveryErr != nil {
+		discoveryErrStr = runtimeDiscoveryErr.Error()
+	}
 	return SyncResult{
-		Source:        syncResultSource(sources),
-		Sources:       sources,
-		Imported:      result.Imported,
-		Skipped:       result.Skipped + skipped,
-		Matched:       selection.Matched,
-		Candidates:    selection.Candidates,
-		Unmatched:     selection.Unmatched,
-		Preserved:     preserved,
-		ProxyUsed:     proxyUsed,
-		SourceResults: sourceResults,
-		Prices:        prices,
+		Source:                     syncResultSource(sources),
+		Sources:                    sources,
+		Imported:                   result.Imported,
+		Skipped:                    result.Skipped + skipped,
+		Matched:                    selection.Matched,
+		Candidates:                 selection.Candidates,
+		Unmatched:                  selection.Unmatched,
+		Preserved:                  preserved,
+		ProxyUsed:                  proxyUsed,
+		SourceResults:              sourceResults,
+		Prices:                     prices,
+		RuntimeModelCount:          runtimeModelCount,
+		RuntimeModelDiscoveryError: discoveryErrStr,
 	}, nil
+}
+
+type RuntimeModelPricingStatus struct {
+	Models         []string `json:"models"`
+	UnpricedModels []string `json:"unpricedModels"`
+	Count          int      `json:"count"`
+	UnpricedCount  int      `json:"unpricedCount"`
+}
+
+func (s *Service) RuntimeModelPricingStatus(ctx context.Context) (RuntimeModelPricingStatus, error) {
+	discoveryTimeout := s.runtimeModelDiscoveryTimeout
+	if discoveryTimeout <= 0 {
+		discoveryTimeout = defaultRuntimeModelDiscoveryTimeout
+	}
+	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	models, err := s.DiscoverRuntimeModels(discoveryCtx)
+	cancel()
+	if err != nil {
+		return RuntimeModelPricingStatus{}, err
+	}
+
+	prices, err := s.store.LoadModelPrices(ctx)
+	if err != nil {
+		return RuntimeModelPricingStatus{}, err
+	}
+
+	normalizedModels := normalizedRequestedModels(models)
+	sort.Strings(normalizedModels)
+
+	unpricedModels := make([]string, 0, len(normalizedModels))
+	for _, m := range normalizedModels {
+		if _, exists := prices[m]; !exists {
+			unpricedModels = append(unpricedModels, m)
+		}
+	}
+
+	if normalizedModels == nil {
+		normalizedModels = []string{}
+	}
+	if unpricedModels == nil {
+		unpricedModels = []string{}
+	}
+
+	return RuntimeModelPricingStatus{
+		Models:         normalizedModels,
+		UnpricedModels: unpricedModels,
+		Count:          len(normalizedModels),
+		UnpricedCount:  len(unpricedModels),
+	}, nil
+}
+
+func (s *Service) DiscoverRuntimeModels(ctx context.Context) ([]string, error) {
+	if s.setupResolver == nil {
+		return nil, errors.New("runtime model discovery failed: missing setup resolver")
+	}
+	setup, ok, err := s.setupResolver.ResolveSetup(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("runtime model discovery failed: %w", err)
+	}
+	if !ok {
+		return nil, errors.New("runtime model discovery failed: setup not configured")
+	}
+	upstreamURL := strings.TrimSpace(setup.CPAUpstreamURL)
+	managementKey := strings.TrimSpace(setup.ManagementKey)
+	if upstreamURL == "" || managementKey == "" {
+		return nil, errors.New("runtime model discovery failed: CPA upstream URL or management key is missing")
+	}
+
+	apiKeys, err := cpa.FetchAPIKeys(ctx, upstreamURL, managementKey)
+	if err != nil {
+		return nil, fmt.Errorf("runtime model discovery failed: %w", err)
+	}
+
+	apiKey := ""
+	for _, key := range apiKeys {
+		if strings.TrimSpace(key) != "" {
+			apiKey = strings.TrimSpace(key)
+			break
+		}
+	}
+
+	models, err := cpa.FetchModels(ctx, upstreamURL, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("runtime model discovery failed: %w", err)
+	}
+	return models, nil
 }
 
 func (s *Service) SyncFromLiteLLM(ctx context.Context, req SyncRequest) (SyncResult, error) {

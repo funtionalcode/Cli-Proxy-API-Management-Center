@@ -1,9 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  MODEL_THINKING_LEVELS_CLEAR_MARKER,
+  MODEL_THINKING_LEVELS_EDIT_MARKER,
+  hasModelThinkingLevelsEditMarker,
+  markModelThinkingLevelsForClear,
+  markModelThinkingLevelsForEdit,
+  type ProviderKeyConfig,
+} from '@/types';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     get: vi.fn(),
     put: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -11,14 +20,24 @@ vi.mock('./client', () => ({
   apiClient: {
     get: mocks.get,
     put: mocks.put,
+    delete: mocks.delete,
   },
 }));
 
-import { providersApi, verifyClaudeFingerprintInRawConfig } from './providers';
+import {
+  assertValidMetaApiKey,
+  assertValidMetaProviderConfig,
+  hasMetaDcaAuthorizationHeader,
+  isMetaDcaCredential,
+  providersApi,
+  serializeMetaProviderKey,
+  verifyClaudeFingerprintInRawConfig,
+} from './providers';
 
 beforeEach(() => {
   mocks.get.mockReset();
   mocks.put.mockReset();
+  mocks.delete.mockReset();
 });
 
 describe('providersApi auth-index preservation', () => {
@@ -884,6 +903,339 @@ describe('providersApi v1.16 provider fields', () => {
     ]);
   });
 
+  it('merges custom thinking levels without dropping raw-only thinking fields', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [
+            {
+              name: 'openai-model',
+              thinking: {
+                levels: ['high'],
+                'future-option': { enabled: true },
+                'future-value': 123,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: { levels: ['high', 'max'] },
+          },
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: {
+              levels: ['high', 'max'],
+              'future-option': { enabled: true },
+              'future-value': 123,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('removes only thinking levels when leaving them unconfigured', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [
+            {
+              name: 'openai-model',
+              thinking: { levels: ['high'], 'future-option': { enabled: true } },
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [markModelThinkingLevelsForClear({ name: 'openai-model' })],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: { 'future-option': { enabled: true } },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('removes only thinking levels when no future thinking fields remain', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [{ name: 'openai-model', thinking: { levels: ['high'] } }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [markModelThinkingLevelsForClear({ name: 'openai-model' })],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model' }],
+      },
+    ]);
+  });
+
+  it('preserves an explicitly empty thinking container during a normal save', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [{ name: 'openai-model', thinking: {} }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [{ name: 'openai-model', thinking: {} }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model', thinking: {} }],
+      },
+    ]);
+  });
+
+  it('keeps an explicitly empty thinking container when levels are cleared', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [{ name: 'openai-model', thinking: {} }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [markModelThinkingLevelsForClear({ name: 'openai-model', thinking: {} })],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model', thinking: {} }],
+      },
+    ]);
+  });
+
+  it('preserves unknown thinking levels and future fields during a custom update', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [
+            {
+              name: 'openai-model',
+              thinking: {
+                levels: ['high', 'ultra'],
+                'future-option': { enabled: true },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [{ name: 'openai-model', thinking: { levels: ['max', 'ultra'] } }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: {
+              levels: ['max', 'ultra'],
+              'future-option': { enabled: true },
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('does not leak a clear marker or null when raw config loading fails', async () => {
+    mocks.get.mockRejectedValueOnce(new Error('forbidden'));
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [
+          markModelThinkingLevelsForClear({
+            name: 'openai-model',
+            thinking: { 'future-option': { enabled: true } },
+          }),
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model', thinking: { 'future-option': { enabled: true } } }],
+      },
+    ]);
+    const written = mocks.put.mock.calls[0]?.[1];
+    expect(JSON.stringify(written)).not.toContain('null');
+    const writtenModel = (written as Array<{ models?: unknown[] }>)[0]?.models?.[0];
+    expect(writtenModel && Reflect.ownKeys(writtenModel)).not.toContain(
+      MODEL_THINKING_LEVELS_CLEAR_MARKER
+    );
+  });
+
+  it('serializes custom thinking levels on the OpenAI create path', async () => {
+    mocks.get.mockResolvedValueOnce({ 'openai-compatibility': [] });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.createOpenAIProvider({
+      name: 'new-openai',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEntries: [],
+      models: [
+        markModelThinkingLevelsForEdit({
+          name: 'new-model',
+          thinking: { levels: ['high', 'max'], zero_allowed: true },
+        }),
+      ],
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'new-openai',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'new-model', thinking: { levels: ['high', 'max'] } }],
+      },
+    ]);
+  });
+
+  it('does not write a legacy raw thinking null value back to CPA', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+          models: [{ name: 'openai-model', thinking: null }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        models: [{ name: 'openai-model' }],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model' }],
+      },
+    ]);
+  });
+
   it('lets explicit false values override preserved raw booleans', async () => {
     mocks.get.mockResolvedValueOnce({
       'openai-compatibility': [
@@ -1011,6 +1363,195 @@ describe('providersApi v1.16 provider fields', () => {
   });
 });
 
+it('preserves legacy thinking flags when levels are cleared', async () => {
+  mocks.get.mockResolvedValueOnce({
+    'openai-compatibility': [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: {
+              levels: ['high'],
+              zero_allowed: true,
+              'dynamic-allowed': true,
+              future: { enabled: true },
+            },
+          },
+        ],
+      },
+    ],
+  });
+  mocks.put.mockResolvedValue({});
+
+  await providersApi.saveOpenAIProviders([
+    {
+      name: 'openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEntries: [],
+      models: [
+        markModelThinkingLevelsForClear({
+          name: 'openai-model',
+          thinking: {
+            zero_allowed: true,
+            'dynamic-allowed': true,
+          },
+        }),
+      ],
+    },
+  ]);
+
+  expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+    {
+      name: 'openai-compatible',
+      'base-url': 'https://api.example.com/v1',
+      'api-key-entries': [],
+      models: [
+        {
+          name: 'openai-model',
+          thinking: {
+            zero_allowed: true,
+            'dynamic-allowed': true,
+            future: { enabled: true },
+          },
+        },
+      ],
+    },
+  ]);
+});
+
+it('preserves untouched thinking level order during an unrelated save', async () => {
+  mocks.get.mockResolvedValueOnce({
+    'openai-compatibility': [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [{ name: 'openai-model', thinking: { levels: ['high', 'low'] } }],
+      },
+    ],
+  });
+  mocks.put.mockResolvedValue({});
+
+  await providersApi.saveOpenAIProviders([
+    {
+      name: 'openai-compatible',
+      baseUrl: 'https://api.example.com/v2',
+      apiKeyEntries: [],
+      models: [{ name: 'openai-model', thinking: { levels: ['high', 'low'] } }],
+    },
+  ]);
+
+  expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+    {
+      name: 'openai-compatible',
+      'base-url': 'https://api.example.com/v2',
+      'api-key-entries': [],
+      models: [{ name: 'openai-model', thinking: { levels: ['high', 'low'] } }],
+    },
+  ]);
+});
+
+it('uses custom levels as the authority and removes legacy capability aliases', async () => {
+  mocks.get.mockResolvedValueOnce({
+    'openai-compatibility': [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'openai-model',
+            thinking: {
+              levels: ['low'],
+              zero_allowed: true,
+              'zero-allowed': true,
+              zeroAllowed: true,
+              dynamic_allowed: true,
+              'dynamic-allowed': true,
+              dynamicAllowed: true,
+              future: { enabled: true },
+            },
+          },
+        ],
+      },
+    ],
+  });
+  mocks.put.mockResolvedValue({});
+
+  const model = markModelThinkingLevelsForEdit({
+    name: 'openai-model',
+    thinking: {
+      levels: ['high', 'none', 'auto'],
+    },
+  });
+  expect(hasModelThinkingLevelsEditMarker(model)).toBe(true);
+
+  await providersApi.saveOpenAIProviders([
+    {
+      name: 'openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEntries: [],
+      models: [model],
+    },
+  ]);
+
+  expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+    {
+      name: 'openai-compatible',
+      'base-url': 'https://api.example.com/v1',
+      'api-key-entries': [],
+      models: [
+        {
+          name: 'openai-model',
+          thinking: {
+            levels: ['high', 'none', 'auto'],
+            future: { enabled: true },
+          },
+        },
+      ],
+    },
+  ]);
+});
+
+it('strips edit markers and legacy aliases when raw config is unavailable', async () => {
+  mocks.get.mockRejectedValueOnce(new Error('forbidden'));
+  mocks.put.mockResolvedValue({});
+
+  const model = markModelThinkingLevelsForEdit({
+    name: 'openai-model',
+    thinking: {
+      levels: ['high', 'max'],
+      zeroAllowed: true,
+      'dynamic-allowed': true,
+    },
+  });
+  await providersApi.saveOpenAIProviders([
+    {
+      name: 'openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEntries: [],
+      models: [model],
+    },
+  ]);
+
+  expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+    {
+      name: 'openai-compatible',
+      'base-url': 'https://api.example.com/v1',
+      'api-key-entries': [],
+      models: [{ name: 'openai-model', thinking: { levels: ['high', 'max'] } }],
+    },
+  ]);
+  const writtenModel = (mocks.put.mock.calls[0]?.[1] as Array<{ models?: unknown[] }>)[0]
+    ?.models?.[0];
+  expect(writtenModel && Reflect.ownKeys(writtenModel)).not.toContain(
+    MODEL_THINKING_LEVELS_EDIT_MARKER
+  );
+});
+
 describe('providersApi optimistic provider mutations', () => {
   it('appends to the latest Gemini list without dropping concurrent records', async () => {
     mocks.get.mockResolvedValueOnce({
@@ -1112,6 +1653,61 @@ describe('providersApi optimistic provider mutations', () => {
         'api-key-entries': [],
       },
       { name: 'concurrent', 'base-url': 'https://other.example/v1' },
+    ]);
+  });
+
+  it('merges thinking fields on the OpenAI update path', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'openai-compatibility': [
+        {
+          name: 'target',
+          'base-url': 'https://old.example/v1',
+          'api-key-entries': [],
+          models: [
+            {
+              name: 'target-model',
+              thinking: {
+                levels: ['high'],
+                'future-option': { enabled: true },
+                nested: { value: 1 },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.updateOpenAIProvider('target', 0, {
+      name: 'target',
+      baseUrl: 'https://new.example/v1',
+      apiKeyEntries: [],
+      models: [
+        {
+          name: 'target-model',
+          thinking: {
+            levels: ['high', 'max'],
+          },
+        },
+      ],
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
+      {
+        name: 'target',
+        'base-url': 'https://new.example/v1',
+        'api-key-entries': [],
+        models: [
+          {
+            name: 'target-model',
+            thinking: {
+              levels: ['high', 'max'],
+              'future-option': { enabled: true },
+              nested: { value: 1 },
+            },
+          },
+        ],
+      },
     ]);
   });
 });
@@ -1255,3 +1851,272 @@ describe('verifyClaudeFingerprintInRawConfig', () => {
     ).toBe('confirmed');
   });
 });
+
+describe('providersApi meta provider management', () => {
+  it('assertValidMetaApiKey rejects empty key and DCA token format', () => {
+    expect(() => assertValidMetaApiKey('')).toThrow('Meta API key is required');
+    expect(() => assertValidMetaApiKey('   ')).toThrow('Meta API key is required');
+    expect(() => assertValidMetaApiKey(undefined)).toThrow('Meta API key is required');
+    expect(() => assertValidMetaApiKey('dca:eyJhbGciOi...')).toThrow(
+      'DCA tokens cannot be used as Meta API keys'
+    );
+    expect(() => assertValidMetaApiKey('DCA:token-123')).toThrow(
+      'DCA tokens cannot be used as Meta API keys'
+    );
+    expect(() => assertValidMetaApiKey('meta-valid-api-key')).not.toThrow();
+  });
+
+  it('serializeMetaProviderKey omits unsupported fields like websockets and cloak', () => {
+    const serialized = serializeMetaProviderKey({
+      apiKey: 'meta-test-key',
+      baseUrl: 'https://api.meta.ai/v1',
+      prefix: 'meta-team',
+      websockets: true,
+      cloak: {
+        sensitiveWords: ['secret'],
+      },
+      models: [{ name: 'llama-3.3-70b-instruct' }],
+      priority: 10,
+    } as unknown as ProviderKeyConfig);
+
+    expect(serialized).toEqual({
+      'api-key': 'meta-test-key',
+      'base-url': 'https://api.meta.ai/v1',
+      prefix: 'meta-team',
+      models: [{ name: 'llama-3.3-70b-instruct' }],
+      priority: 10,
+    });
+    expect(serialized).not.toHaveProperty('websockets');
+    expect(serialized).not.toHaveProperty('cloak');
+  });
+
+  it('getMetaConfigs reads and normalizes meta-api-key section', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'meta-api-key': [
+        {
+          'api-key': 'meta-key-1',
+          'base-url': 'https://api.meta.ai/v1',
+          prefix: 'team-meta',
+          priority: 5,
+        },
+      ],
+    });
+
+    const configs = await providersApi.getMetaConfigs();
+    expect(configs).toHaveLength(1);
+    expect(configs[0]).toMatchObject({
+      apiKey: 'meta-key-1',
+      baseUrl: 'https://api.meta.ai/v1',
+      prefix: 'team-meta',
+      priority: 5,
+    });
+  });
+
+  it('createMetaConfig appends a new record and rejects DCA tokens', async () => {
+    expect(() =>
+      providersApi.createMetaConfig({
+        apiKey: 'dca:forbidden-token',
+        baseUrl: 'https://api.meta.ai/v1',
+      })
+    ).toThrow('DCA tokens cannot be used as Meta API keys');
+
+    mocks.get.mockResolvedValueOnce({
+      'meta-api-key': [
+        {
+          'api-key': 'meta-key-existing',
+          'base-url': 'https://api.meta.ai/v1',
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.createMetaConfig({
+      apiKey: 'meta-key-new',
+      baseUrl: 'https://api.meta.ai/v1',
+      prefix: 'meta-new',
+    });
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      '/meta-api-key',
+      expect.arrayContaining([
+        expect.objectContaining({ 'api-key': 'meta-key-existing' }),
+        expect.objectContaining({ 'api-key': 'meta-key-new', prefix: 'meta-new' }),
+      ])
+    );
+  });
+
+  it('updateMetaConfig preserves unknown fields in raw record', async () => {
+    mocks.get.mockResolvedValueOnce({
+      'meta-api-key': [
+        {
+          'api-key': 'meta-key-1',
+          'base-url': 'https://api.meta.ai/v1',
+          'future-meta-flag': 'keep-me',
+          models: [{ name: 'llama-3.3-70b-instruct', customProp: 'preserve' }],
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.updateMetaConfig(
+      { apiKey: 'meta-key-1', baseUrl: 'https://api.meta.ai/v1' },
+      {
+        apiKey: 'meta-key-1-updated',
+        baseUrl: 'https://api.meta.ai/v1',
+        prefix: 'updated-prefix',
+        models: [{ name: 'llama-3.3-70b-instruct' }],
+      }
+    );
+
+    expect(mocks.put).toHaveBeenCalledWith('/meta-api-key', [
+      expect.objectContaining({
+        'api-key': 'meta-key-1-updated',
+        prefix: 'updated-prefix',
+        'future-meta-flag': 'keep-me',
+        models: [
+          expect.objectContaining({
+            name: 'llama-3.3-70b-instruct',
+            customProp: 'preserve',
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it('isMetaDcaCredential correctly detects DCA credentials in plain and Bearer format', () => {
+    expect(isMetaDcaCredential('dca:test-token')).toBe(true);
+    expect(isMetaDcaCredential('DCA:test-token')).toBe(true);
+    expect(isMetaDcaCredential('Bearer dca:test-token')).toBe(true);
+    expect(isMetaDcaCredential('bearer   dca:test-token')).toBe(true);
+    expect(isMetaDcaCredential('BEARER DCA:TEST-TOKEN')).toBe(true);
+
+    expect(isMetaDcaCredential('Bearer meta-valid-token')).toBe(false);
+    expect(isMetaDcaCredential('meta-valid-token')).toBe(false);
+    expect(isMetaDcaCredential('Basic dca:test-token')).toBe(false);
+    expect(isMetaDcaCredential('Bearer ')).toBe(false);
+    expect(isMetaDcaCredential('')).toBe(false);
+    expect(isMetaDcaCredential(null)).toBe(false);
+    expect(isMetaDcaCredential(undefined)).toBe(false);
+  });
+
+  it('hasMetaDcaAuthorizationHeader is case-insensitive and ignores non-Authorization headers', () => {
+    expect(hasMetaDcaAuthorizationHeader({ Authorization: 'Bearer dca:test' })).toBe(true);
+    expect(hasMetaDcaAuthorizationHeader({ authorization: 'dca:test' })).toBe(true);
+    expect(hasMetaDcaAuthorizationHeader({ AUTHORIZATION: 'Bearer DCA:TEST' })).toBe(true);
+    expect(
+      hasMetaDcaAuthorizationHeader([{ key: 'Authorization', value: 'Bearer dca:test' }])
+    ).toBe(true);
+
+    expect(hasMetaDcaAuthorizationHeader({ Authorization: 'Bearer meta-valid-token' })).toBe(false);
+    expect(hasMetaDcaAuthorizationHeader({ 'X-Authorization': 'Bearer dca:test' })).toBe(false);
+    expect(hasMetaDcaAuthorizationHeader({ 'User-Agent': 'dca-client' })).toBe(false);
+    expect(hasMetaDcaAuthorizationHeader({})).toBe(false);
+    expect(hasMetaDcaAuthorizationHeader(null)).toBe(false);
+  });
+
+  it('assertValidMetaProviderConfig validates both apiKey and custom Authorization header', () => {
+    expect(() =>
+      assertValidMetaProviderConfig({
+        apiKey: 'dca:test',
+        baseUrl: 'https://api.meta.ai/v1',
+      })
+    ).toThrow('DCA tokens cannot be used as Meta API keys');
+
+    expect(() =>
+      assertValidMetaProviderConfig({
+        apiKey: 'meta-valid',
+        baseUrl: 'https://api.meta.ai/v1',
+        headers: { Authorization: 'Bearer dca:test' },
+      })
+    ).toThrow('DCA tokens cannot be used as Meta authorization headers');
+
+    expect(() =>
+      assertValidMetaProviderConfig({
+        apiKey: 'meta-valid',
+        baseUrl: 'https://api.meta.ai/v1',
+        headers: { authorization: 'dca:test' },
+      })
+    ).toThrow('DCA tokens cannot be used as Meta authorization headers');
+
+    expect(() =>
+      assertValidMetaProviderConfig({
+        apiKey: 'meta-valid',
+        baseUrl: 'https://api.meta.ai/v1',
+        headers: { Authorization: 'Bearer meta-valid-token' },
+      })
+    ).not.toThrow();
+  });
+
+  it('createMetaConfig rejects custom DCA Authorization header without calling put', async () => {
+    expect(() =>
+      providersApi.createMetaConfig({
+        apiKey: 'meta-valid-key',
+        baseUrl: 'https://api.meta.ai/v1',
+        headers: { Authorization: 'Bearer dca:forbidden' },
+      })
+    ).toThrow('DCA tokens cannot be used as Meta authorization headers');
+
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it('updateMetaConfig rejects custom DCA Authorization header without calling put', async () => {
+    expect(() =>
+      providersApi.updateMetaConfig(
+        { apiKey: 'meta-key-1', baseUrl: 'https://api.meta.ai/v1' },
+        {
+          apiKey: 'meta-key-1-updated',
+          baseUrl: 'https://api.meta.ai/v1',
+          headers: { authorization: 'dca:forbidden' },
+        }
+      )
+    ).toThrow('DCA tokens cannot be used as Meta authorization headers');
+
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it('saveMetaConfigs rejects DCA Authorization header and serializes valid custom Authorization', async () => {
+    await expect(
+      providersApi.saveMetaConfigs([
+        {
+          apiKey: 'meta-valid-key',
+          baseUrl: 'https://api.meta.ai/v1',
+          headers: { Authorization: 'Bearer dca:forbidden' },
+        },
+      ])
+    ).rejects.toThrow('DCA tokens cannot be used as Meta authorization headers');
+
+    expect(mocks.put).not.toHaveBeenCalled();
+
+    mocks.get.mockResolvedValueOnce({ 'meta-api-key': [] });
+    mocks.put.mockResolvedValueOnce({});
+
+    await providersApi.saveMetaConfigs([
+      {
+        apiKey: 'meta-valid-key',
+        baseUrl: 'https://api.meta.ai/v1',
+        headers: { Authorization: 'Bearer meta-custom-valid' },
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      '/meta-api-key',
+      expect.arrayContaining([
+        expect.objectContaining({
+          'api-key': 'meta-valid-key',
+          headers: { Authorization: 'Bearer meta-custom-valid' },
+        }),
+      ])
+    );
+  });
+
+  it('deleteMetaConfig removes the matching provider record', async () => {
+    mocks.delete.mockResolvedValue({});
+
+    await providersApi.deleteMetaConfig('meta-key-1', 'https://api.meta.ai/v1');
+
+    expect(mocks.delete).toHaveBeenCalledWith(
+      '/meta-api-key?api-key=meta-key-1&base-url=https%3A%2F%2Fapi.meta.ai%2Fv1'
+    );
+  });
+});
+

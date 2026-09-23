@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -192,4 +193,96 @@ func readStringField(raw map[string]any, keys ...string) string {
 		return strings.TrimSpace(fmt.Sprint(value))
 	}
 	return ""
+}
+
+func FetchAPIKeys(ctx context.Context, baseURL string, managementKey string) ([]string, error) {
+	normalizedURL := NormalizeBaseURL(baseURL)
+	if normalizedURL == "" {
+		return nil, errors.New("CPA base URL cannot be empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizedURL+"/v0/management/api-keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(managementKey))
+	client := &http.Client{Timeout: 30 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("management API api-keys request failed: %s", res.Status)
+	}
+
+	var payload struct {
+		APIKeys []string `json:"api-keys"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(payload.APIKeys))
+	seen := make(map[string]struct{}, len(payload.APIKeys))
+	for _, rawKey := range payload.APIKeys {
+		trimmed := strings.TrimSpace(rawKey)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	return keys, nil
+}
+
+func FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+	normalizedURL := NormalizeBaseURL(baseURL)
+	if normalizedURL == "" {
+		return nil, errors.New("CPA base URL cannot be empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizedURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	trimmedKey := strings.TrimSpace(apiKey)
+	if trimmedKey != "" {
+		req.Header.Set("Authorization", "Bearer "+trimmedKey)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("runtime models request failed: %s", res.Status)
+	}
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{}, len(payload.Data))
+	models := make([]string, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		trimmedID := strings.TrimSpace(item.ID)
+		if trimmedID == "" {
+			continue
+		}
+		if _, exists := seen[trimmedID]; exists {
+			continue
+		}
+		seen[trimmedID] = struct{}{}
+		models = append(models, trimmedID)
+	}
+	sort.Strings(models)
+	return models, nil
 }

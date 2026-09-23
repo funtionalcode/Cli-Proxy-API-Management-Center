@@ -63,7 +63,7 @@ describe('PR check classifier', () => {
     });
   });
 
-  it('runs release validation for release content and its validator', () => {
+  it('runs release validation for release content and its validators', () => {
     expect(classifyChangedFiles(['docs/release-notes/v1.2.3-zh.md'])).toEqual({
       ...noChecks,
       release_content: true,
@@ -72,11 +72,16 @@ describe('PR check classifier', () => {
       ...noChecks,
       release_content: true,
     });
-    expect(classifyChangedFiles(['bin/release/validate-release.mjs'])).toEqual({
-      ...noChecks,
-      frontend: true,
-      release_content: true,
-    });
+    for (const filePath of [
+      'bin/release/validate-release.mjs',
+      'bin/release/validate-release-contributors.mjs',
+    ]) {
+      expect(classifyChangedFiles([filePath])).toEqual({
+        ...noChecks,
+        frontend: true,
+        release_content: true,
+      });
+    }
   });
 
   it('runs Node tests for every release automation script', () => {

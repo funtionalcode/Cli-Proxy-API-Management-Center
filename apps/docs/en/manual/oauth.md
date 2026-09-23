@@ -11,6 +11,8 @@ The page shows login methods based on CPA and plugin capabilities. Common entrie
 - Antigravity OAuth
 - Kimi OAuth
 - xAI OAuth
+- Devin OAuth
+- Muse / Meta OAuth (Device Flow)
 - iFlow OAuth
 - Plugin-provided OAuth
 - Vertex credential import
@@ -26,6 +28,19 @@ Some entries appear only when the runtime supports them. If an entry is missing,
 5. Send one low-cost request and confirm it in [Monitoring](./monitoring.md).
 
 OAuth success does not guarantee request success. After saving, still check provider configuration, auth-file binding, model rules, and quota state.
+
+## Muse / Meta Device Flow
+
+Muse / Meta uses a device authorization flow and does not require a localhost browser callback:
+
+1. Click the **Muse (Meta)** login entry.
+2. Open the verification page and enter the device code shown by CPAMP.
+3. Complete authorization with Meta, then return to CPAMP; the panel polls the auth state and saves the auth file.
+4. Open [Accounts](./accounts.md) to confirm the account and refresh quota when needed.
+
+Muse / Meta OAuth stores an account credential whose DCA is used only for authentication and account/quota flows. It is **not** a Meta inference API key. Do not place a `dca:` credential in an AI Provider API key or `Authorization` header; model inference uses a separate `meta-api-key` configuration.
+
+Accounts does not currently expose one-click Meta reauthorization. Return to OAuth Login and repeat Device Flow when reauthorization is needed. Full Muse / Meta support requires CPA `v7.3.4+`.
 
 ## Remote Browser Callback
 

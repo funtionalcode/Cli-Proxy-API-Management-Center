@@ -85,6 +85,20 @@ cd .\cpa-manager-plus_vX.Y.Z_windows_amd64
 .\cpa-manager-plus.exe
 ```
 
+Print the current binary version without starting Manager Server or reading its configuration or database:
+
+```bash
+./cpa-manager-plus --version
+```
+
+Windows PowerShell:
+
+```powershell
+.\cpa-manager-plus.exe --version
+```
+
+The short `-v` flag is also supported.
+
 Open:
 
 ```text

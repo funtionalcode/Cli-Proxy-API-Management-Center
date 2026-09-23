@@ -44,10 +44,14 @@ import {
 import { formatQuotaResetTime } from './formatters';
 import {
   buildXaiBillingSummary,
+  buildCodexQuotaWindows,
   fetchXaiQuota,
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
+  fetchCodexQuotaSummary,
+  fetchCodexResetCredits,
+  fetchDevinQuota,
   fetchKimiQuota,
   mergeXaiBillingSummaries,
   probeXaiBilling,
@@ -55,6 +59,7 @@ import {
   probeXaiQuota,
 } from './providerRequests';
 import { XaiProbeError } from './xaiErrors';
+import { resolveCodexResetCreditsObservationCount } from './resetCredits';
 
 const t = ((key: string) => key) as TFunction;
 
@@ -74,6 +79,299 @@ beforeEach(() => {
   mocks.getSubscription.mockReset();
   mocks.getSubscription.mockResolvedValue(null);
   mocks.request.mockReset();
+});
+
+describe('buildCodexQuotaWindows', () => {
+  it('records progress provenance only for windows with observed usage', () => {
+    const windows = buildCodexQuotaWindows(
+      {
+        rate_limit: {
+          primary_window: { used_percent: 50, limit_window_seconds: 18_000 },
+          secondary_window: { limit_window_seconds: 604_800 },
+        },
+      },
+      t,
+      'plus',
+      1_000
+    );
+
+    expect(windows.find((window) => window.id === 'five-hour')).toMatchObject({
+      usedPercent: 50,
+      observedAtMs: 1_000,
+      quotaProgressObservedAtMs: 1_000,
+    });
+    expect(windows.find((window) => window.id === 'weekly')).toMatchObject({
+      usedPercent: null,
+      observedAtMs: 1_000,
+      quotaProgressObservedAtMs: null,
+    });
+  });
+});
+
+describe('fetchCodexQuotaSummary', () => {
+  it('fetches only usage summary and does not call rate limit reset credits endpoint', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        plan_type: 'team',
+        rate_limit: {
+          primary_window: { used_percent: 45, limit_window_seconds: 18_000 },
+        },
+      },
+    });
+
+    const result = await fetchCodexQuotaSummary(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request.mock.calls[0][0].url).toBe(CODEX_USAGE_URL);
+    expect(result.planType).toBe('team');
+    expect(result.rateLimitResetCreditsAvailableCount).toBeNull();
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.rateLimitResetCreditsError).toBeNull();
+    expect(result.resetCreditsEvidenceAtMs).toBeNull();
+    expect(result.resetCreditsCountEvidenceAtMs).toBeNull();
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeNull();
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].usedPercent).toBe(45);
+  });
+
+  it('Test 1: records resetCreditsCountEvidenceAtMs from summary and keeps resetCreditsDetailEvidenceAtMs null', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        plan_type: 'plus',
+        rate_limit_reset_credits: { available_count: 3 },
+        rate_limit: {
+          primary_window: { used_percent: 20, limit_window_seconds: 18_000 },
+        },
+      },
+    });
+
+    const result = await fetchCodexQuotaSummary(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(3);
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.resetCreditsCountEvidenceAtMs).toBe(result.observedAtMs);
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeNull();
+  });
+});
+
+describe('fetchCodexResetCredits', () => {
+  it('fetches rate limit reset credits successfully and records evidence timestamp', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        available_count: 2,
+        credits: [
+          {
+            id: 'credit-1',
+            reset_type: 'codex_rate_limits',
+            status: 'available',
+            granted_at: '2026-06-01T00:00:00Z',
+            expires_at: '2026-06-30T00:00:00Z',
+          },
+        ],
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+        id_token: { account_id: 'acct-1' },
+      },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({
+      authIndex: 'auth-1',
+      method: 'GET',
+      url: CODEX_RATE_LIMIT_RESET_CREDITS_URL,
+    });
+    expect(result.availableCount).toBe(2);
+    expect(result.credits).toHaveLength(1);
+    expect(result.error).toBeNull();
+    expect(result.observedAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsCountEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeTypeOf('number');
+  });
+
+  it('returns graceful error when reset credit endpoint returns 502', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 502,
+      hasStatusCode: true,
+      header: {},
+      bodyText: 'Bad Gateway',
+      body: null,
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.availableCount).toBeNull();
+    expect(result.credits).toEqual([]);
+    expect(result.creditsObserved).toBe(false);
+    expect(result.error).toBe('502 Bad Gateway');
+    expect(result.resetCreditsEvidenceAtMs).toBeUndefined();
+  });
+
+  it('throws error when auth index is missing', async () => {
+    await expect(
+      fetchCodexResetCredits({ name: 'codex.json', type: 'codex' }, t)
+    ).rejects.toThrow('codex_quota.missing_auth_index');
+  });
+
+  it('Test 7: count-only detail endpoint returns error=null, creditsObserved=false, count evidence timestamp, detail evidence null', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        available_count: 2,
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.availableCount).toBe(2);
+    expect(result.creditsObserved).toBe(false);
+    expect(result.credits).toEqual([]);
+    expect(result.resetCreditsCountEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeNull();
+    expect(result.resetCreditsEvidenceAtMs).toBeTypeOf('number');
+  });
+
+  it('Test 8: malformed credits with valid count is accepted as count-only observation', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        available_count: 2,
+        credits: 'bad',
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.availableCount).toBe(2);
+    expect(result.creditsObserved).toBe(false);
+    expect(result.credits).toEqual([]);
+    expect(result.resetCreditsCountEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeNull();
+  });
+
+  it('Test 9: malformed credits without valid count returns invalid payload error and no evidence', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        credits: 'bad',
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.error).toBe('codex_quota.reset_credits_invalid_payload');
+    expect(result.creditsObserved).toBe(false);
+    expect(result.availableCount).toBeNull();
+    expect(result.credits).toEqual([]);
+    expect(result.resetCreditsCountEvidenceAtMs).toBeUndefined();
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeUndefined();
+    expect(result.resetCreditsEvidenceAtMs).toBeUndefined();
+  });
+
+  it('Test 10: explicit empty credits array provides valid detail evidence and resolves count to 0', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        credits: [],
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.creditsObserved).toBe(true);
+    expect(result.credits).toEqual([]);
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsCountEvidenceAtMs).toBeTypeOf('number');
+    const resolvedCount = resolveCodexResetCreditsObservationCount(
+      result.availableCount,
+      result.credits,
+      result.creditsObserved
+    );
+    expect(resolvedCount).toBe(0);
+  });
 });
 
 describe('fetchCodexQuota', () => {
@@ -158,6 +456,9 @@ describe('fetchCodexQuota', () => {
     expect(result.rateLimitResetCreditsAvailableCount).toBe(2);
     expect(result.rateLimitResetCredits).toHaveLength(1);
     expect(result.rateLimitResetCreditsError).toBeNull();
+    expect(result.resetCreditsEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsCountEvidenceAtMs).toBeTypeOf('number');
+    expect(result.resetCreditsDetailEvidenceAtMs).toBeTypeOf('number');
     expect(result.quotaInventoryObserved).toBe(false);
     expect(result.subscriptionActiveUntil).toBe(1_788_220_799);
     expect(result).toMatchObject({
@@ -341,6 +642,171 @@ describe('fetchCodexQuota', () => {
     expect(result.rateLimitResetCredits).toEqual([]);
     expect(result.rateLimitResetCreditsError).toBe('codex_quota.reset_credits_invalid_payload');
   });
+
+  it('Test F: resolves count to 0 when detail endpoint omits available_count but has empty credits array', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          rate_limit: {
+            reset_credits: {
+              available_count: 2,
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          credits: [],
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(0);
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.rateLimitResetCreditsError).toBeNull();
+  });
+
+  it('Test G: standalone detail endpoint resolves count to 0 when available_count is omitted with empty credits', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        credits: [],
+      },
+    });
+
+    const result = await fetchCodexResetCredits(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    const count = resolveCodexResetCreditsObservationCount(
+      result.availableCount,
+      result.credits
+    );
+    expect(count).toBe(0);
+    expect(result.credits).toEqual([]);
+    expect(result.error).toBeNull();
+  });
+
+  it('Test H: resolves count to credits.length when detail endpoint omits available_count with non-empty credits', async () => {
+    const creditA = {
+      id: 'c-1',
+      status: 'available',
+      reset_type: 'codex_rate_limits',
+      expires_at: '2026-08-01T00:00:00Z',
+    };
+    const creditB = {
+      id: 'c-2',
+      status: 'available',
+      reset_type: 'codex_rate_limits',
+      expires_at: '2026-08-02T00:00:00Z',
+    };
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          rate_limit: {
+            reset_credits: {
+              available_count: 1,
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          credits: [creditA, creditB],
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(2);
+    expect(result.rateLimitResetCredits).toHaveLength(2);
+    expect(result.rateLimitResetCreditsError).toBeNull();
+  });
+
+  it('Test I: gives precedence to explicit available_count even if different from credits array length', async () => {
+    const creditA = {
+      id: 'c-1',
+      status: 'available',
+      reset_type: 'codex_rate_limits',
+      expires_at: '2026-08-01T00:00:00Z',
+    };
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          rate_limit: {
+            reset_credits: {
+              available_count: 1,
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          available_count: 5,
+          credits: [creditA],
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(5);
+    expect(result.rateLimitResetCredits).toHaveLength(1);
+    expect(result.rateLimitResetCreditsError).toBeNull();
+  });
 });
 
 describe('fetchClaudeQuota', () => {
@@ -422,6 +888,43 @@ describe('fetchClaudeQuota', () => {
       id: 'iguana-necktie',
       labelKey: 'claude_quota.iguana_necktie',
     });
+  });
+
+  it('preserves usage windows and marks rateLimited when profile returns 429', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: {
+            utilization: 25,
+            resets_at: '2026-07-01T10:00:00Z',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 429,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Too Many Requests',
+        body: null,
+      });
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude-429.json',
+        type: 'claude',
+        authIndex: 'claude-429',
+      },
+      t
+    );
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].id).toBe('five-hour');
+    expect(result.planType).toBeNull();
+    expect(result.rateLimited).toBe(true);
   });
 
   it('restores base windows from a limits-only response before scoped weekly rows', async () => {
@@ -1933,7 +2436,7 @@ describe('buildXaiBillingSummary', () => {
     });
   });
 
-  it('treats an omitted weekly percentage as zero only for a complete valid period', () => {
+  it('keeps omitted weekly usage unknown even when the period window is valid', () => {
     expect(
       buildXaiBillingSummary({
         currentPeriod: {
@@ -1942,7 +2445,7 @@ describe('buildXaiBillingSummary', () => {
           end: '2026-08-20T00:00:00Z',
         },
       })
-    ).toMatchObject({ periodType: 'weekly', usagePercent: 0 });
+    ).toMatchObject({ periodType: 'weekly', usagePercent: null });
 
     expect(
       buildXaiBillingSummary({
@@ -1952,6 +2455,17 @@ describe('buildXaiBillingSummary', () => {
         },
       })
     ).toMatchObject({ periodType: 'weekly', usagePercent: null });
+
+    expect(
+      buildXaiBillingSummary({
+        currentPeriod: {
+          type: 'USAGE_PERIOD_TYPE_WEEKLY',
+          start: '2026-08-13T00:00:00Z',
+          end: '2026-08-20T00:00:00Z',
+        },
+        creditUsagePercent: 0,
+      })
+    ).toMatchObject({ periodType: 'weekly', usagePercent: 0 });
   });
 
   it('treats nested protobuf zero placeholders as absent billing evidence', () => {
@@ -1971,7 +2485,7 @@ describe('buildXaiBillingSummary', () => {
     });
 
     expect(summary).toMatchObject({
-      usagePercent: 0,
+      usagePercent: null,
       usedCents: null,
       includedUsedCents: null,
       onDemandCapCents: null,
@@ -2078,6 +2592,30 @@ describe('buildXaiBillingSummary', () => {
       billingPeriodEnd: '2026-08-01T00:00:00Z',
     });
   });
+
+  it('does not treat zero on-demand evidence as a billing boundary', () => {
+    const summary = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'USAGE_PERIOD_TYPE_WEEKLY',
+        start: '2026-09-05T00:00:00Z',
+        end: '2026-09-12T00:00:00Z',
+      },
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      billingPeriodStart: '2026-09-05T00:00:00Z',
+      billingPeriodEnd: '2026-09-12T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      periodType: 'weekly',
+      usagePercent: null,
+      onDemandCapCents: 0,
+      onDemandUsedCents: 0,
+      usedCents: null,
+    });
+    expect(summary?.billingPeriodStart).toBeUndefined();
+    expect(summary?.billingPeriodEnd).toBeUndefined();
+  });
 });
 
 describe('mergeXaiBillingSummaries', () => {
@@ -2134,7 +2672,7 @@ describe('mergeXaiBillingSummaries', () => {
 
     expect(mergeXaiBillingSummaries(weekly, legacy)).toMatchObject({
       periodType: 'weekly',
-      usagePercent: 0,
+      usagePercent: null,
       monthlyLimitCents: 10_000,
       usedCents: 12_500,
       includedUsedCents: 10_000,
@@ -2143,6 +2681,37 @@ describe('mergeXaiBillingSummaries', () => {
       onDemandUsedCents: 2_500,
       onDemandUsedPercent: 50,
       billingPeriodEnd: '2026-09-01T00:00:00Z',
+    });
+  });
+
+  it('keeps weekly and monthly billing reset boundaries separate', () => {
+    const weekly = buildXaiBillingSummary({
+      currentPeriod: {
+        type: 'USAGE_PERIOD_TYPE_WEEKLY',
+        start: '2026-09-05T00:00:00Z',
+        end: '2026-09-12T00:00:00Z',
+      },
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      billingPeriodStart: '2026-09-05T00:00:00Z',
+      billingPeriodEnd: '2026-09-12T00:00:00Z',
+    });
+    const monthly = buildXaiBillingSummary({
+      monthlyLimit: { val: 0 },
+      used: { val: 0 },
+      billingPeriodStart: '2026-09-01T00:00:00Z',
+      billingPeriodEnd: '2026-10-01T00:00:00Z',
+    });
+
+    expect(mergeXaiBillingSummaries(weekly, monthly)).toMatchObject({
+      periodType: 'weekly',
+      usagePercent: null,
+      periodStart: '2026-09-05T00:00:00Z',
+      periodEnd: '2026-09-12T00:00:00Z',
+      monthlyLimitCents: 0,
+      billingPeriodStart: '2026-09-01T00:00:00Z',
+      billingPeriodEnd: '2026-10-01T00:00:00Z',
+      usedPercent: null,
     });
   });
 
@@ -2319,6 +2888,138 @@ describe('fetchXaiQuota', () => {
       usedCents: 3000,
       billingPeriodEnd: '2026-08-01T00:00:00Z',
     });
+  });
+
+  it('preserves partial monthly summary and sets rateLimited when weekly billing returns 429', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 429,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Too Many Requests',
+        body: null,
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          config: {
+            monthly_limit: 10000,
+            used: 3000,
+            on_demand_cap: 5000,
+            billing_period_end: '2026-08-01T00:00:00Z',
+          },
+        },
+      });
+
+    const result = await fetchXaiQuota(
+      {
+        name: 'xai-429.json',
+        type: 'xai',
+        authIndex: 'xai-429',
+      },
+      t
+    );
+
+    expect(result.partial).toBe(true);
+    expect(result.monthlyLimitCents).toBe(10000);
+    expect(result.rateLimited).toBe(true);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ statusCode: 429 }),
+      ])
+    );
+  });
+
+  it('preserves the usable weekly summary and marks rateLimited when monthly billing returns 429', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          config: {
+            current_period: {
+              type: 'weekly',
+              start: '2026-07-01T00:00:00Z',
+              end: '2026-07-08T00:00:00Z',
+            },
+            credit_usage_percent: 40,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 429,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Too Many Requests',
+        body: null,
+      });
+
+    const result = await fetchXaiQuota({ name: 'xai-monthly-429.json', type: 'xai', authIndex: 'xai-monthly-429' }, t);
+
+    expect(result).toMatchObject({
+      periodType: 'weekly',
+      usagePercent: 40,
+      partial: false,
+      rateLimited: true,
+    });
+  });
+
+  it('exposes a monthly 429 when weekly billing has no usable summary', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 500,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'weekly unavailable',
+        body: null,
+      })
+      .mockResolvedValueOnce({
+        statusCode: 429,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Too Many Requests',
+        body: null,
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'xai-billing-429.json', type: 'xai', authIndex: 'xai-billing-429' }, t)
+    ).rejects.toMatchObject({ status: 429, envelope: { statusCode: 429 } });
+  });
+
+  it('does not classify an ordinary monthly failure as rateLimited', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          config: {
+            current_period: {
+              type: 'weekly',
+              start: '2026-07-01T00:00:00Z',
+              end: '2026-07-08T00:00:00Z',
+            },
+            credit_usage_percent: 12,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 500,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'monthly unavailable',
+        body: null,
+      });
+
+    const result = await fetchXaiQuota({ name: 'xai-monthly-500.json', type: 'xai', authIndex: 'xai-monthly-500' }, t);
+
+    expect(result.rateLimited).not.toBe(true);
   });
 
   it('keeps monthly billing data when weekly billing fails', async () => {
@@ -3218,6 +3919,48 @@ describe('fetchAntigravityQuota', () => {
     expect(result.quotaInventoryObserved).toBe(true);
   });
 
+  it('preserves quota groups and marks rateLimited when subscription returns 429', async () => {
+    const error429 = new Error('Too Many Requests') as Error & { status?: number };
+    error429.status = 429;
+    mocks.getSubscription.mockRejectedValueOnce(error429);
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        groups: [
+          {
+            displayName: 'Gemini models',
+            buckets: [
+              {
+                bucketId: 'gemini-weekly',
+                displayName: 'Weekly limit',
+                window: 'weekly',
+                remainingFraction: 0.8,
+                resetTime: '2026-07-02T00:00:00Z',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await fetchAntigravityQuota(
+      {
+        name: 'antigravity-429.json',
+        type: 'antigravity',
+        authIndex: 'ag-429',
+        project_id: 'project-429',
+      },
+      t
+    );
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.subscription).toBeNull();
+    expect(result.rateLimited).toBe(true);
+  });
+
   it('keeps Antigravity quota and subscription requests on the captured CPA scope', async () => {
     mocks.getSubscription.mockResolvedValue(null);
     mocks.request.mockResolvedValueOnce({
@@ -3335,6 +4078,30 @@ describe('fetchAntigravityQuota', () => {
     });
   });
 
+  it('fails fast on 429 response without retrying other fallback URLs', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 429,
+      hasStatusCode: true,
+      header: {},
+      bodyText: 'rate limit exceeded',
+      body: null,
+    });
+
+    await expect(
+      fetchAntigravityQuota(
+        {
+          name: 'antigravity.json',
+          type: 'antigravity',
+          authIndex: 'ag-1',
+          project_id: 'project-1',
+        },
+        t
+      )
+    ).rejects.toThrow();
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat unrecognized successful endpoint payloads as a complete inventory', async () => {
     mocks.request.mockResolvedValue({
       statusCode: 200,
@@ -3389,3 +4156,114 @@ describe('CODEX_REQUEST_HEADERS', () => {
     );
   });
 });
+
+describe('fetchDevinQuota', () => {
+  it('sends POST request to GetUserStatus with exact contract and no Authorization headers', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        userStatus: {
+          planStatus: {
+            planInfo: { planName: 'Pro' },
+            dailyQuotaRemainingPercent: 54,
+            dailyQuotaResetAtUnix: 1726400000,
+          },
+        },
+      },
+    });
+
+    const file = { name: 'devin.json', type: 'devin', authIndex: 'devin-001' };
+    const requestScope = { apiBase: 'https://cpa.example.com', managementKey: 'test-key' };
+    const result = await fetchDevinQuota(file, t, requestScope);
+
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    const [payload, config] = mocks.request.mock.calls[0];
+
+    expect(payload).toEqual({
+      authIndex: 'devin-001',
+      method: 'POST',
+      url: 'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus',
+      header: {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1',
+      },
+      data: JSON.stringify({
+        metadata: {
+          ideName: 'chisel',
+          ideVersion: '3000.10.21',
+          apiKey: '$TOKEN$',
+          locale: 'en',
+          os: 'darwin',
+          extensionVersion: '3000.10.21',
+          clientName: 'chisel',
+        },
+      }),
+    });
+
+    // Ensure NO Authorization or X-Api-Key headers exist on the proxied upstream request
+    expect(payload.header['Authorization']).toBeUndefined();
+    expect(payload.header['X-Api-Key']).toBeUndefined();
+
+    // Verify requestScope is captured in axios config for CPA management call
+    expect(config?.baseURL).toBe('https://cpa.example.com/v0/management');
+    expect(config?.headers?.['Authorization']).toBe('Bearer test-key');
+    expect(config?.cpampScopedRequest).toBe(true);
+
+    expect(result.plan).toBe('Pro');
+    expect(result.windows[0].remainingPercent).toBe(54);
+    expect(result.windows[0].resetAtMs).toBe(1726400000000);
+  });
+
+  it('rejects without network request when identity is missing', async () => {
+    // Missing authIndex
+    await expect(
+      fetchDevinQuota({ name: 'devin.json', type: 'devin' }, t)
+    ).rejects.toThrow('devin_quota.missing_identity');
+
+    // Missing fileName
+    await expect(
+      fetchDevinQuota({ name: '', type: 'devin', authIndex: 'devin-1' }, t)
+    ).rejects.toThrow('devin_quota.missing_identity');
+
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it('preserves error status codes like 429 and 401', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 429,
+      hasStatusCode: true,
+      header: {},
+      bodyText: 'Rate limit exceeded',
+    });
+
+    const promise = fetchDevinQuota(
+      { name: 'devin.json', type: 'devin', authIndex: 'devin-1' },
+      t
+    );
+    await expect(promise).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('throws empty_data on 200 response without quota observations', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        userStatus: {
+          planStatus: {
+            planInfo: { planName: 'Pro' },
+          },
+        },
+      },
+    });
+
+    await expect(
+      fetchDevinQuota({ name: 'devin.json', type: 'devin', authIndex: 'devin-1' }, t)
+    ).rejects.toThrow('devin_quota.empty_data');
+  });
+});
+

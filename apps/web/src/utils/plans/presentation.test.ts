@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TFunction } from 'i18next';
 import enResource from '@/i18n/locales/en.json';
+import zhCnResource from '@/i18n/locales/zh-CN.json';
 import {
   getCanonicalPlanFilterLabel,
   getCanonicalPlanType,
@@ -270,5 +271,39 @@ describe('Plan Presentation', () => {
         known: true,
       });
     }
+  });
+
+  it('unifies presentation across providers to canonical plan labels even if provider keys differ', () => {
+    const zhT = ((key: string, options?: { defaultValue?: string }) => {
+      if (key === 'plans.claude.pro') return '专业版';
+      if (key === 'plans.antigravity.pro') return 'Pro';
+      return options?.defaultValue ?? key;
+    }) as TFunction;
+
+    const claudePro = getPlanPresentation({ provider: 'claude', planType: 'pro', t: zhT });
+    const agPro = getPlanPresentation({ provider: 'antigravity', planType: 'pro', t: zhT });
+    expect(claudePro?.shortLabel).toBe('Pro');
+    expect(agPro?.shortLabel).toBe('Pro');
+    expect(claudePro?.shortLabel).toBe(getCanonicalPlanFilterLabel('pro', zhT));
+  });
+
+  it('resolves Antigravity, Claude, and Codex plans as standard English terms under zh-CN', () => {
+    const resolveZhKey = (key: string): string => {
+      const segments = key.split('.');
+      let node: unknown = zhCnResource;
+      for (const segment of segments) {
+        if (typeof node !== 'object' || node === null) return key;
+        node = (node as Record<string, unknown>)[segment];
+      }
+      return typeof node === 'string' ? node : key;
+    };
+    const zhT = ((key: string, options?: { defaultValue?: string }) =>
+      resolveZhKey(key) || options?.defaultValue || key) as TFunction;
+
+    expect(getPlanPresentation({ provider: 'antigravity', planType: 'free', t: zhT })?.shortLabel).toBe('Free');
+    expect(getPlanPresentation({ provider: 'claude', planType: 'free', t: zhT })?.shortLabel).toBe('Free');
+    expect(getPlanPresentation({ provider: 'claude', planType: 'pro', t: zhT })?.shortLabel).toBe('Pro');
+    expect(getPlanPresentation({ provider: 'claude', planType: 'team', t: zhT })?.shortLabel).toBe('Team');
+    expect(getPlanPresentation({ provider: 'codex', planType: 'free', t: zhT })?.shortLabel).toBe('Free');
   });
 });

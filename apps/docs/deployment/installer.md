@@ -229,7 +229,7 @@ bash install-cpamp.sh
 
 ## 重跑和覆盖
 
-以下 `CPAMP_OPERATION` 操作模式用于 Docker 部署；原生包继续使用原有的版本和覆盖参数。
+以下 `CPAMP_OPERATION` 操作模式用于已有部署维护；原生包已有部署的非交互升级同样需要设置 `CPAMP_OPERATION=upgrade`（或直接运行 `bash install-cpamp.sh update`）。
 
 脚本会在写文件前检查安装目录和 Docker 数据卷。检测到已有部署时，交互模式会提供：
 
@@ -247,6 +247,12 @@ CPAMP_OPERATION=upgrade \
 CPAMP_NON_INTERACTIVE=1 \
 CPAMP_CONFIRM=1 \
 bash install-cpamp.sh
+```
+
+原生包已有部署同样支持此命令，并兼容历史位置参数写法（等价于 `CPAMP_OPERATION=upgrade`）：
+
+```bash
+bash install-cpamp.sh update
 ```
 
 非交互修复管理员登录：

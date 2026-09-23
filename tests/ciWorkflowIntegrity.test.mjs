@@ -7,6 +7,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const workflowDir = path.join(repoRoot, '.github', 'workflows');
 const readWorkflow = (name) => readFileSync(path.join(workflowDir, name), 'utf8');
 const dependabotConfig = readFileSync(path.join(repoRoot, '.github', 'dependabot.yml'), 'utf8');
+const pullRequestTemplate = readFileSync(
+  path.join(repoRoot, '.github', 'pull_request_template.md'),
+  'utf8'
+);
 const telegramScript = readFileSync(
   path.join(repoRoot, 'bin', 'release', 'send-telegram-release.sh'),
   'utf8'
@@ -39,23 +43,32 @@ describe('GitHub Actions workflow integrity', () => {
     }
   });
 
-  it('retargets non-dev pull requests without executing contributor code', () => {
+  it('retargets unsupported pull request targets without executing contributor code', () => {
     const workflow = readWorkflow('main-promotion.yml');
     const targetJob = jobBlock(workflow, 'retarget');
 
     expect(workflow).toContain('pull_request_target:');
     expect(workflow).toContain('branches-ignore:');
+    expect(workflow).toMatch(/branches-ignore:\s*\n\s+- dev\s*\n\s+- v2/);
     expect(workflow).toContain("github.event.pull_request.base.ref != 'dev'");
+    expect(workflow).toContain("github.event.pull_request.base.ref != 'v2'");
     expect(workflow).toContain(
       'github.event.pull_request.head.repo.full_name != github.repository'
     );
     expect(targetJob).toContain('PR_TARGET_APP_ID');
     expect(targetJob).toContain('PR_TARGET_PRIVATE_KEY');
     expect(targetJob).toContain('permission-pull-requests: write');
+    expect(targetJob).toContain('const targetsV2 = current.base.ref === "v2";');
+    expect(targetJob).toContain('targetsDev || targetsV2 || isDevPromotion');
     expect(targetJob).toContain('github.rest.pulls.update');
     expect(targetJob).toContain('base: "dev"');
     expect(targetJob).not.toContain('actions/checkout@');
     expect(targetJob).not.toContain('github.event.pull_request.head.sha');
+  });
+
+  it('documents dev and v2 as supported pull request targets', () => {
+    expect(pullRequestTemplate).toContain('Community and 1.x maintenance PRs must target `dev`');
+    expect(pullRequestTemplate).toContain('Approved v2 implementation\n> PRs target `v2`');
   });
 
   it('keeps the main promotion check on the pull request merge commit', () => {
@@ -102,6 +115,22 @@ describe('GitHub Actions workflow integrity', () => {
     expect(requiredJob).toContain('- release-content');
     expect(requiredJob).toContain("RELEASE_CONTENT_RESULT: ${{ needs['release-content'].result }}");
     expect(requiredJob).toContain('"Release Content:${RELEASE_CONTENT_RESULT}"');
+  });
+
+  it('prevents metadata-action from moving the mutable latest tag', () => {
+    for (const workflowName of ['release.yml', 'release-publish-recovery.yml']) {
+      const workflow = readWorkflow(workflowName);
+      expect(workflow).toContain('flavor: |\n            latest=false');
+    }
+  });
+
+  it('runs repository-level release and installer tests from the root test entry', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    expect(packageJson.scripts.test).toContain('test:web');
+    expect(packageJson.scripts.test).toContain('test:repo');
+    expect(packageJson.scripts['test:repo']).toBe(
+      'vitest run tests/*.test.mjs --exclude tests/nativeControlScripts.test.mjs'
+    );
   });
 
   it('uses NUL-delimited Git paths before classification and release validation', () => {

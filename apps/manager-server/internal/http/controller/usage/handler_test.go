@@ -76,3 +76,19 @@ func TestParseImportSessionPath(t *testing.T) {
 		}
 	}
 }
+
+func TestImportAcceptsLegacyNoncanonicalEventHash(t *testing.T) {
+	st := testutil.NewStore(t, testutil.NewConfig(t))
+	handler := &Handler{App: &app.Context{UsageService: usagesvc.New(st)}}
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/usage/import", strings.NewReader(`{"event_hash":"legacy-short-hash","timestamp_ms":1,"timestamp":"2026-01-01T00:00:00Z","model":"gpt-test"}`))
+	recorder := httptest.NewRecorder()
+
+	handler.Import(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK for legacy event hash compatibility, got status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"added":1`) {
+		t.Fatalf("expected imported event in response, got body = %s", recorder.Body.String())
+	}
+}

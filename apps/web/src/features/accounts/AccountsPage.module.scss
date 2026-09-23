@@ -78,19 +78,113 @@
 
 @container monitoring-page (max-width: 1240px) {
   .metricsGrid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@container monitoring-page (max-width: 900px) {
-  .metricsGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @container monitoring-page (max-width: 768px) {
   .metricsGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-rows: auto;
+    gap: 6px;
+
+    :global(.card) {
+      min-height: unset !important;
+      height: auto !important;
+      padding: 7px 8px !important;
+      border-radius: 10px !important;
+    }
+
+    [class*='summaryCardChart'] {
+      display: none !important;
+    }
+
+    [class*='summaryMeta'] {
+      display: none !important;
+    }
+
+    [class*='summaryCardHeader'] {
+      gap: 4px;
+    }
+
+    [class*='summaryIcon'] {
+      width: 20px !important;
+      height: 20px !important;
+      flex: 0 0 20px !important;
+      border-radius: 5px !important;
+
+      svg {
+        width: 12px !important;
+        height: 12px !important;
+      }
+    }
+
+    [class*='summaryLabel'] {
+      font-size: 10.5px !important;
+      line-height: 1.2 !important;
+    }
+
+    [class*='summaryCardBody'] {
+      margin-top: 2px !important;
+    }
+
+    [class*='summaryValue'] {
+      font-size: 18px !important;
+      line-height: 1.15 !important;
+    }
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .metricsGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-auto-rows: auto !important;
+    gap: 6px !important;
+
+    :global(.card) {
+      min-height: unset !important;
+      height: auto !important;
+      padding: 7px 8px !important;
+      border-radius: 10px !important;
+    }
+
+    [class*='summaryCardChart'] {
+      display: none !important;
+    }
+
+    [class*='summaryMeta'] {
+      display: none !important;
+    }
+
+    [class*='summaryCardHeader'] {
+      gap: 4px !important;
+    }
+
+    [class*='summaryIcon'] {
+      width: 20px !important;
+      height: 20px !important;
+      flex: 0 0 20px !important;
+      border-radius: 5px !important;
+
+      svg {
+        width: 12px !important;
+        height: 12px !important;
+      }
+    }
+
+    [class*='summaryLabel'] {
+      font-size: 10.5px !important;
+      line-height: 1.2 !important;
+    }
+
+    [class*='summaryCardBody'] {
+      margin-top: 2px !important;
+    }
+
+    [class*='summaryValue'] {
+      font-size: 18px !important;
+      line-height: 1.15 !important;
+    }
   }
 }
 
@@ -254,12 +348,12 @@
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: 64px 1px 54px;
+  grid-template-columns: 68px 1px 54px;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 131px;
-  min-width: 131px;
+  width: 136px;
+  min-width: 136px;
   white-space: nowrap;
 
   :global(.btn) {
@@ -276,7 +370,7 @@
 .accountCardList {
   display: grid;
   gap: 8px;
-  min-width: 0;
+  min-width: 1240px;
   padding: 10px 12px;
 }
 
@@ -284,14 +378,16 @@
 .accountCard {
   display: grid;
   grid-template-columns:
-    minmax(140px, 180px)
+    minmax(140px, 1.1fr)
+    76px
     96px
-    144px
-    196px
-    minmax(190px, 1fr)
-    124px;
-  column-gap: clamp(10px, 0.8vw, 14px);
+    minmax(124px, 0.3fr)
+    minmax(160px, 0.35fr)
+    minmax(280px, 3fr)
+    146px;
+  column-gap: 8px;
   min-width: 0;
+  box-sizing: border-box;
 }
 
 .accountCardHeader {
@@ -313,13 +409,19 @@
   > span:nth-child(2),
   > span:nth-child(3),
   > span:nth-child(4),
-  > span:last-child {
+  > span:nth-child(5) {
     justify-content: center;
     text-align: center;
   }
 
+  > span:last-child {
+    justify-content: center;
+    text-align: center;
+    box-sizing: border-box;
+  }
+
   > span:first-child,
-  > span:nth-child(5) {
+  > span:nth-child(6) {
     justify-content: flex-start;
     text-align: left;
   }
@@ -346,18 +448,664 @@
   }
 }
 
+.accountGridList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.accountGridCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 15px;
+  min-width: 0;
+  min-height: 250px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--primary-color) 32%, var(--border-color));
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  }
+
+  &.accountCardSelected {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 1px var(--primary-color);
+  }
+
+  &.accountCardBulkSelected {
+    border-color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 4%, var(--bg-primary));
+  }
+
+  &.accountCardSelectionMode {
+    cursor: pointer;
+  }
+
+  &.accountGridCardDisabled {
+    opacity: 0.76;
+    background: color-mix(in srgb, var(--bg-primary) 88%, var(--accounts-muted-surface));
+  }
+}
+
+.accountGridCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.accountGridCardIdentity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.accountGridCardCheckbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.accountGridCardHeaderRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+
+  .badge {
+    font-size: 11px;
+    min-height: 20px;
+    padding: 0 7px;
+    font-weight: 700;
+  }
+}
+
+.accountGridCardMetaSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.accountGridCardMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.accountGridCardMetaBadges {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+
+  .accountPriorityButton,
+  .accountPriorityInput {
+    margin-left: 2px;
+  }
+
+  .accountPriorityButton {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 8.5px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    border: 1px solid color-mix(in srgb, var(--accounts-border) 80%, transparent);
+    background: var(--accounts-surface);
+    color: var(--accounts-muted);
+    cursor: pointer;
+    transition:
+      border-color 0.14s ease,
+      background-color 0.14s ease,
+      color 0.14s ease;
+
+    &:hover:not(:disabled) {
+      border-color: color-mix(in srgb, var(--accounts-primary) 40%, var(--accounts-border));
+      background: color-mix(in srgb, var(--accounts-primary) 6%, var(--accounts-surface));
+      color: var(--accounts-primary);
+    }
+  }
+
+  .accountPriorityMetaDanger {
+    border-color: color-mix(in srgb, var(--error-color) 35%, var(--accounts-border));
+    color: var(--error-color);
+    background: color-mix(in srgb, var(--error-color) 6%, var(--accounts-surface));
+  }
+}
+
+.accountPlanBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 8.5px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  background: color-mix(in srgb, var(--accounts-primary) 9%, var(--accounts-muted-surface));
+  color: var(--accounts-primary);
+  border: 1px solid color-mix(in srgb, var(--accounts-primary) 18%, transparent);
+}
+
+.accountPlanBadgeSep {
+  opacity: 0.85;
+  margin: 0 1px;
+}
+
+.accountPlanBadgeDaysNormal {
+  color: var(--accounts-primary);
+}
+
+.accountPlanBadgeDaysWarning {
+  color: var(--warning-color, #d97706);
+  font-weight: 700;
+}
+
+.accountPlanBadgeDaysDanger {
+  color: var(--danger-color, #ef4444);
+  font-weight: 750;
+}
+
+.accountResetCreditsButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8.5px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 35%, var(--accounts-border));
+  background: color-mix(in srgb, var(--primary-color) 7%, var(--accounts-surface));
+  color: var(--primary-color);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease,
+    color 0.14s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 60%, var(--accounts-border));
+    background: color-mix(in srgb, var(--primary-color) 14%, var(--accounts-surface));
+  }
+
+  &:active {
+    opacity: 0.85;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+  }
+
+  .accountResetCreditsIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+
+    svg {
+      display: block;
+    }
+  }
+
+  .accountResetCreditsCount {
+    font-size: 11.5px;
+    font-weight: 750;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .accountResetCreditsLabel {
+    font-size: 10.5px;
+    font-weight: 550;
+    opacity: 0.88;
+    line-height: 1;
+  }
+}
+
+.accountGridCardNoteRow,
+.accountGridCardNote {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  height: 18px;
+  font-size: 11.5px;
+  color: var(--accounts-muted);
+  line-height: 18px;
+  user-select: text;
+  box-sizing: border-box;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+
+  &:hover {
+    background: color-mix(in srgb, var(--accounts-primary) 8%, transparent);
+    color: var(--accounts-primary);
+
+    .accountGridCardNoteIcon {
+      color: var(--accounts-primary);
+      opacity: 1;
+    }
+
+    .accountGridCardNotePlaceholder {
+      color: var(--accounts-primary);
+      opacity: 0.85;
+    }
+  }
+
+  &.accountGridCardNoteRowEmpty {
+    opacity: 0.6;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+
+  &.accountGridCardNoteReadOnly {
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+      color: var(--accounts-muted);
+
+      .accountGridCardNoteIcon {
+        color: var(--accounts-muted);
+        opacity: 0.65;
+      }
+
+      .accountGridCardNotePlaceholder {
+        color: var(--accounts-muted);
+        opacity: 1;
+      }
+    }
+
+    &.accountGridCardNoteRowEmpty {
+      opacity: 0.6;
+
+      &:hover {
+        opacity: 0.6;
+      }
+    }
+  }
+
+  .accountGridCardNoteIcon {
+    flex-shrink: 0;
+    opacity: 0.65;
+    color: var(--accounts-muted);
+    transition: opacity 0.14s ease, color 0.14s ease;
+  }
+
+  .accountGridCardNoteText {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .accountGridCardNotePlaceholder {
+    font-style: normal;
+    opacity: 0.7;
+    user-select: none;
+    transition: color 0.14s ease, opacity 0.14s ease;
+  }
+}
+
+.accountGridCardNoteEditRow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  height: 18px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  box-sizing: border-box;
+
+  .accountGridCardNoteIcon {
+    flex-shrink: 0;
+    opacity: 0.85;
+    color: var(--accounts-primary);
+  }
+}
+
+.accountGridCardNoteInput {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-primary);
+  background: var(--accounts-surface);
+  border: 1px solid var(--accounts-primary);
+  border-radius: 3px;
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accounts-primary) 25%, transparent);
+
+  &::placeholder {
+    color: var(--accounts-muted);
+    opacity: 0.6;
+  }
+}
+
+
+.accountGridCardRecentStatus {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 60%, transparent);
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: color 0.15s ease, opacity 0.15s ease;
+
+  &:hover {
+    .accountGridCardRecentStatusTitleGroup {
+      .accountGridCardRecentStatusIcon,
+      .accountGridCardRecentStatusTitle {
+        color: var(--accounts-primary);
+      }
+    }
+  }
+}
+
+.accountGridCardQuota {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+  margin-top: auto;
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 60%, transparent);
+  box-sizing: border-box;
+
+  .quotaWindowCard {
+    width: 100%;
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .quotaEmptyState {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    color: var(--accounts-muted);
+    font-size: 12px;
+  }
+}
+
+.accountGridCardQuotaList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+
+  > .quotaWindowCard + .quotaWindowCard {
+    padding-top: 7px;
+    border-top: 1px dashed color-mix(in srgb, var(--accounts-border) 65%, transparent);
+  }
+
+  .accountGridCardQuotaGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .accountGridCardQuotaGroup + .accountGridCardQuotaGroup {
+    padding-top: 8px;
+    border-top: 1px dashed color-mix(in srgb, var(--accounts-border) 52%, transparent);
+  }
+}
+
+.accountGridCardRecentStatusHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.accountGridCardRecentStatusTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+
+  .accountGridCardRecentStatusIcon {
+    color: var(--accounts-muted);
+    flex-shrink: 0;
+  }
+
+  .accountGridCardRecentStatusTitle {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accounts-text);
+    white-space: nowrap;
+  }
+}
+
+.accountGridCardRecentStatusMetrics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.accountGridCardRecentStatusPillSuccess {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--data-green-base, #10b981);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+
+  .metricDot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+}
+
+.accountGridCardRecentStatusPillFailure {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accounts-muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+
+  .metricDot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+  }
+
+  &.hasFailure {
+    color: var(--error-color, #ef4444);
+
+    .metricDot {
+      opacity: 1;
+    }
+  }
+}
+
+.accountGridCardRecentStatusBar {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+
+  .statusBar {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .statusBlocks {
+    gap: 2.5px;
+  }
+
+  .statusBlock {
+    height: 6px;
+    border-radius: 999px;
+  }
+
+  .statusRate {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 7px;
+    min-width: 44px;
+    height: 20px;
+    line-height: 16px;
+  }
+}
+
+.accountGridCardRecentStatusMessage {
+  display: grid;
+  gap: 3px;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--accounts-danger) 28%, var(--accounts-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accounts-danger) 7%, var(--accounts-surface));
+
+  .accountGridCardRecentStatusMessageLabel {
+    color: var(--accounts-danger);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    line-height: 1.2;
+  }
+
+  .accountGridCardRecentStatusMessageText {
+    margin: 0;
+    color: var(--accounts-text);
+    font-size: 11px;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+}
+
+.accountGridCardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 65%, transparent);
+  min-width: 0;
+}
+
+.accountGridCardActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  min-width: 0;
+
+  .accountIconButton,
+  .rowDetailButton {
+    height: 28px;
+    min-height: 28px !important;
+    border-radius: 7px;
+  }
+
+  .accountIconButton {
+    width: 28px;
+    padding: 0;
+  }
+}
+
+.accountGridCardSecondaryActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.accountGridCardPrimaryActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
 @media (min-width: 1360px) {
+  .accountCardList {
+    min-width: 1320px;
+  }
+
   .accountCardHeader,
   .accountCard {
     grid-template-columns:
-      minmax(180px, 1.15fr)
-      104px
-      150px
-      196px
-      minmax(268px, 2fr)
-      176px;
-    justify-content: space-between;
-    column-gap: clamp(16px, 1.15vw, 22px);
+      minmax(150px, 1.1fr)
+      70px
+      96px
+      minmax(112px, 0.3fr)
+      minmax(178px, 0.35fr)
+      minmax(300px, 3fr)
+      175px;
+    column-gap: 10px;
   }
 
   .rowActions {
@@ -367,18 +1115,40 @@
   }
 }
 
+@media (min-width: 1680px) {
+  .accountCardList {
+    min-width: 1500px;
+  }
+
+  .accountCardHeader,
+  .accountCard {
+    grid-template-columns:
+      minmax(180px, 1.3fr)
+      80px
+      96px
+      minmax(124px, 0.3fr)
+      minmax(186px, 0.35fr)
+      minmax(380px, 3fr)
+      182px;
+    column-gap: 12px;
+  }
+
+  .rowActions {
+    grid-template-columns: 104px 1px 54px;
+    width: 172px;
+    min-width: 172px;
+  }
+}
+
 @media (max-width: $breakpoint-tablet) {
+  .viewModeSwitcher {
+    display: none !important;
+  }
+
   .accountCardHeader {
     display: none;
   }
 
-  .accountCardHealth::before,
-  .accountCardLatestRequest::before,
-  .accountCardEvidence::before,
-  .accountCardBusiness::before,
-  .accountCardRecommendation::before {
-    display: none;
-  }
 }
 
 .accountCardSelected {
@@ -402,9 +1172,9 @@
 }
 
 .accountCardIdentity,
+.accountCardPlan,
 .accountCardHealth,
 .accountCardLatestRequest,
-.accountCardEvidence,
 .accountCardBusiness,
 .accountCardRecommendation {
   box-sizing: border-box;
@@ -412,51 +1182,76 @@
   min-width: 0;
 }
 
-.accountCardIdentity,
-.accountCardHealth,
-.accountCardLatestRequest,
-.accountCardEvidence,
-.accountCardBusiness {
-  padding-right: 6px;
-}
-
-.accountCardHealth,
-.accountCardLatestRequest,
-.accountCardEvidence,
-.accountCardBusiness,
-.accountCardRecommendation {
-  position: relative;
-  padding-left: 10px;
-}
-
-.accountCardHealth::before,
-.accountCardLatestRequest::before,
-.accountCardEvidence::before,
-.accountCardBusiness::before,
-.accountCardRecommendation::before {
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 0;
-  width: 1px;
-  border-radius: $radius-full;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in srgb, var(--accounts-strong-border) 68%, transparent),
-    transparent
-  );
-  content: '';
-  opacity: 0.68;
-  pointer-events: none;
-}
-
 .accountCardIdentity {
   position: relative;
   display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.accountProviderLogo {
+  display: flex;
+  align-items: center;
   justify-content: center;
+  width: 35px;
+  height: 35px;
+  flex-shrink: 0;
+
+  img {
+    width: 100%;
+    height: 100%;
+    max-width: 35px;
+    max-height: 35px;
+    object-fit: contain;
+  }
+}
+
+.accountProviderFallback {
+  color: var(--accounts-muted);
+}
+
+.accountIdentityText {
+  display: flex;
   flex-direction: column;
-  gap: 6px;
+  justify-content: center;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.accountCardPlan {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  gap: 5px;
+  text-align: center;
+}
+
+.accountPlanName {
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+.accountPlanRemaining {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--accounts-muted);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
 }
 
 .accountIdentityBadgeRow,
@@ -607,7 +1402,14 @@
   .badge {
     min-height: 24px;
     padding-inline: 10px;
+    padding-block: 3px;
     font-size: 13px;
+    line-height: 1.25;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   small {
@@ -629,12 +1431,92 @@
   gap: 6px;
 }
 
+.accountCardDetailTrigger {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--primary-color) 48%, transparent);
+    outline-offset: -2px;
+    border-radius: 6px;
+  }
+}
+
 .accountHistoryGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 76px));
-  justify-content: center;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: stretch;
   gap: 10px 8px;
   min-width: 0;
+}
+
+.accountGridCardHistory {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  height: auto;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accounts-border) 65%, transparent);
+
+  .accountHistoryGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .accountHistoryMetric {
+    display: grid;
+    grid-template-columns: 17px minmax(0, 1fr);
+    gap: 1px 3px;
+    min-height: 48px;
+    padding: 7px 4px;
+    border: 1px solid color-mix(in srgb, var(--accounts-border) 72%, transparent);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--accounts-surface) 42%, transparent);
+    box-sizing: border-box;
+
+    strong {
+      grid-column: 1 / -1;
+      text-align: left;
+      font-size: 12px;
+    }
+
+    .accountHistoryMetricLabel {
+      font-size: 10px;
+      line-height: 1.15;
+    }
+  }
+
+  .accountHistoryFootnote {
+    max-width: 100%;
+  }
+}
+
+.accountGridCardHistoryTitle,
+.accountHistoryMetricLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountGridCardHistoryTitle {
+  font-weight: 700;
 }
 
 .accountHistoryMetric {
@@ -642,14 +1524,15 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
-  max-width: 76px;
   color: var(--text-primary);
 
   strong {
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     font-size: 12.75px;
     font-weight: 800;
+    font-variant-numeric: tabular-nums;
     line-height: 1.15;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -737,6 +1620,66 @@
   color: var(--accounts-danger);
 }
 
+.accountPriorityButton {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px 5px;
+  margin: -1px -5px;
+  font-family: inherit;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+    border-color: color-mix(in srgb, var(--primary-color) 24%, transparent);
+    color: var(--primary-color);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.65;
+  }
+}
+
+.accountPriorityInput {
+  display: inline-block;
+  width: 58px;
+  height: 20px;
+  min-height: 20px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  font-family: inherit;
+  line-height: 18px;
+  text-align: center;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--primary-color);
+  border-radius: 4px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 20%, transparent);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+  &:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 32%, transparent);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
 .accountCardBusiness {
   display: flex;
   justify-content: center;
@@ -808,6 +1751,26 @@
   .rowActions {
     align-self: center;
     justify-content: center;
+  }
+}
+
+@media (min-width: 1025px) {
+  .accountCardRecommendation::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    border-radius: $radius-full;
+    background: linear-gradient(
+      180deg,
+      transparent,
+      color-mix(in srgb, var(--accounts-strong-border) 68%, transparent),
+      transparent
+    );
+    opacity: 0.68;
+    pointer-events: none;
   }
 }
 
@@ -961,76 +1924,276 @@
 }
 
 .quotaWindowGrid {
-  --quota-window-label-width: 40px;
-  --quota-window-track-width: 168px;
-  --quota-window-percent-width: 42px;
-  --quota-window-reset-width: 98px;
-
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: center;
-  gap: 9px;
+  gap: 10px;
   position: relative;
   height: 100%;
   min-width: 0;
 }
 
-.quotaWindowGridHasMore {
-  padding-right: 34px;
+.quotaWindowGrid > .quotaWindowCard:only-child,
+.quotaWindowGrid > .quotaWindowCard:nth-child(3):last-child {
+  grid-column: 1 / -1;
 }
 
 .quotaWindowCard {
   display: grid;
+  grid-template-rows: auto 6px auto;
   align-content: center;
+  row-gap: 8px;
   min-width: 0;
   padding: 0;
 
   & + & {
-    padding-top: 8px;
-    border-top: 1px solid color-mix(in srgb, var(--border-color) 34%, transparent);
+    position: relative;
   }
 }
 
-.quotaWindowPrimaryLine {
-  display: grid;
-  grid-template-columns:
-    var(--quota-window-label-width)
-    minmax(44px, 1fr)
-    var(--quota-window-percent-width)
-    minmax(0, var(--quota-window-reset-width));
+.quotaWindowHeader {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  justify-content: start;
-  width: 100%;
-  max-width: 100%;
+  justify-content: space-between;
+  gap: 6px;
   min-width: 0;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
-.quotaWindowSummary {
+.quotaWindowLabel {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: var(--quota-window-label-width);
-  min-width: var(--quota-window-label-width);
-  height: 20px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accounts-brand) 18%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accounts-brand) 8%, transparent);
-  overflow: hidden;
-  color: var(--accounts-brand);
-  font-size: 11px;
-  font-weight: 800;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accounts-muted-surface) 80%, var(--accounts-surface));
+  border: 1px solid color-mix(in srgb, var(--accounts-border) 65%, transparent);
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text-secondary);
   line-height: 1;
+  letter-spacing: 0.01em;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 120px;
 }
 
 .quotaWindowPercent {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2.5px;
   color: var(--text-primary);
   font-size: 12px;
-  font-weight: 800;
-  text-align: right;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.quotaWindowPercentPrefix {
+  font-size: 10px;
+  font-weight: 550;
+  color: var(--accounts-muted);
+  line-height: 1;
+  user-select: none;
+}
+
+.quotaWindowPercentValue {
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.quotaWindowMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.quotaWindowSep {
+  display: inline-block;
+  width: 1px;
+  height: 9px;
+  background-color: color-mix(in srgb, var(--accounts-muted) 55%, transparent);
+  border-radius: 0.5px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.quotaWindowResetTime {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  margin-left: auto;
+  color: var(--accounts-muted);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.quotaWindowResetCredits {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  color: var(--primary-color);
+  font-size: 12px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  user-select: none;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+
+.quotaWindowResetCreditsIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  flex-shrink: 0;
+
+  svg {
+    display: block;
+  }
+}
+
+.quotaWindowResetCreditsCount {
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.quotaWindowUsageLine {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 2px;
+  flex-wrap: wrap;
+  min-height: 15px;
+  min-width: 0;
+  line-height: 1;
+}
+
+.quotaUsageGroup,
+.quotaForecastGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.quotaForecastGroup {
+  opacity: 0.82;
+  transition: opacity 0.14s ease;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.quotaUsageIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3.5px;
+  background: color-mix(in srgb, var(--accounts-brand) 12%, transparent);
+  color: var(--accounts-brand);
+  line-height: 1;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.quotaForecastIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3.5px;
+  background: color-mix(in srgb, var(--accounts-indigo) 14%, transparent);
+  color: var(--accounts-indigo);
+  line-height: 1;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.quotaUsageLabel,
+.quotaForecastLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accounts-muted);
+  user-select: none;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quotaWindowCost {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quotaWindowSlash {
+  color: color-mix(in srgb, var(--accounts-muted) 65%, transparent);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  user-select: none;
+}
+
+.quotaWindowTokenCompact {
+  font-size: 11px;
+  font-weight: 450;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quotaWindowCostPredicted {
+  font-size: 11px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-primary) 70%, var(--accounts-muted));
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quotaWindowTokenPredictedCompact {
+  font-size: 11px;
+  font-weight: 450;
+  color: var(--accounts-muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quotaSlotEmpty {
+  display: inline-block;
+  min-width: 0;
+}
+
+.quotaWindowUsagePlaceholder {
+  display: block;
+  height: 16px;
 }
 
 .quotaMatrix {
@@ -1090,7 +2253,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1;
   text-overflow: ellipsis;
@@ -1098,41 +2261,53 @@
 }
 
 .quotaMatrixTrack {
+  display: block;
   height: 4px;
   min-width: 0;
 }
 
 .quotaMatrixPercent {
   color: var(--text-primary);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 850;
   line-height: 1;
   text-align: right;
 }
 
-.quotaMoreButton {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 26px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid color-mix(in srgb, var(--accounts-border) 82%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accounts-muted-surface) 82%, var(--accounts-surface));
-  color: var(--accounts-muted);
-  font-size: 11px;
-  font-weight: 800;
-  cursor: pointer;
+@media (min-width: #{$breakpoint-tablet + 1}) and (max-width: 1535px) {
+  .quotaWindowPrimaryLineScoped {
+    --quota-window-label-width: 64px;
+    gap: 6px;
+  }
 
-  &:hover {
-    border-color: color-mix(in srgb, var(--accounts-primary) 36%, var(--accounts-border));
-    background: color-mix(in srgb, var(--accounts-primary) 8%, var(--accounts-surface));
-    color: var(--accounts-primary);
+  .quotaWindowSummaryScoped {
+    gap: 2px;
+    padding-inline: 4px;
+  }
+
+  .quotaMatrixRow {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .quotaMatrixWindowLabel {
+    width: 28px;
+    min-width: 28px;
+    font-size: 9px;
+  }
+
+  .quotaMatrixCells {
+    gap: 4px;
+  }
+
+  .quotaMatrixCell {
+    grid-template-columns: 35px minmax(0, 1fr) 26px;
+    gap: 3px;
+  }
+
+  .quotaMatrixGroupLabel,
+  .quotaMatrixPercent {
+    font-size: 11px;
   }
 }
 
@@ -4725,6 +5900,77 @@
   height: 18px;
 }
 
+.toolbarRightActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.viewModeSwitcher {
+  display: inline-flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: 0;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--accounts-border);
+  background: color-mix(in srgb, var(--accounts-surface) 80%, var(--accounts-muted-surface));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-sizing: border-box;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.viewModeButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 100%;
+  min-height: 100% !important;
+  padding: 0 13px;
+  border: 0;
+  border-left: 1px solid var(--accounts-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accounts-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease;
+
+  &:first-child {
+    border-left: 0;
+  }
+
+  &:hover {
+    color: var(--accounts-text);
+    background: color-mix(in srgb, var(--accounts-primary) 6%, transparent);
+  }
+
+  &.viewModeButtonActive {
+    border-left-color: transparent;
+    background: color-mix(in srgb, var(--accounts-primary) 12%, var(--accounts-surface));
+    color: var(--accounts-primary);
+    font-weight: 700;
+    box-shadow: none;
+  }
+
+  &.viewModeButtonActive + .viewModeButton {
+    border-left-color: transparent;
+  }
+}
+
 .mobileFilterLayer {
   @include accounts-theme-vars;
   position: fixed;
@@ -4795,6 +6041,9 @@
 
 .mobileFilterDisplayMode {
   display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -5273,6 +6522,17 @@
     border-left: 0;
   }
 
+  .accountCardEvidence,
+  .accountCardBusiness {
+    padding-top: 8px;
+  }
+
+  .accountCardDetailTrigger.accountCardEvidence,
+  .accountCardDetailTrigger.accountCardBusiness {
+    padding-inline: 0;
+    padding-top: 8px;
+  }
+
   .accountCardHealth,
   .accountCardLatestRequest,
   .accountCardEvidence,
@@ -5330,9 +6590,15 @@
     align-items: stretch;
   }
 
-  .accountCardList {
+  .accountCardList,
+  .accountGridList {
     padding: 10px 8px 8px;
     scroll-margin-top: 56px;
+  }
+
+  .accountGridList {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .accountCard {
@@ -5395,6 +6661,11 @@
     border-top: 1px solid color-mix(in srgb, var(--accounts-border) 64%, transparent);
   }
 
+  .accountCardDetailTrigger.accountCardEvidence,
+  .accountCardDetailTrigger.accountCardBusiness {
+    padding-top: 8px;
+  }
+
   .accountCardLine,
   .quotaCellHeader {
     align-items: flex-start;
@@ -5434,7 +6705,7 @@
     width: 32px;
     min-width: 32px;
     height: 18px;
-    font-size: 9.5px;
+    font-size: 11px;
   }
 
   .quotaMatrixCells {
@@ -5478,18 +6749,6 @@
     > .badge {
       justify-self: stretch;
     }
-  }
-
-  .quotaWindowGridHasMore {
-    padding-right: 0;
-    padding-bottom: 28px;
-  }
-
-  .quotaMoreButton {
-    top: auto;
-    right: auto;
-    bottom: 0;
-    left: 0;
   }
 
   .batchActions {

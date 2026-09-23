@@ -7,6 +7,7 @@ import (
 	"time"
 
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -36,6 +37,7 @@ const (
 	usageDerivedMonitoringProjectionTask
 	usageDerivedMonitoringMetadataTask
 	usageDerivedMonitoringStatsTask
+	usageDerivedCodexLegacyIdentityTask
 	usageDerivedTaskCount
 )
 
@@ -160,6 +162,9 @@ func (w *UsagePricingRollupWorker) catchUpTask(ctx context.Context, task int, no
 	case usageDerivedMonitoringStatsTask:
 		result, err := w.store.CatchUpUsageMonitoringStats(ctx, w.batchLimit, nowMS)
 		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
+	case usageDerivedCodexLegacyIdentityTask:
+		result, err := w.store.CatchUpCodexLegacyIdentityEvidence(ctx, w.batchLimit, nowMS)
+		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
 	default:
 		result, err := w.store.CatchUpUsagePricing(ctx, w.batchLimit, nowMS)
 		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
@@ -196,6 +201,8 @@ func (w *UsagePricingRollupWorker) recordTaskFailure(ctx context.Context, task i
 		return w.store.RecordUsageMonitoringFailure(ctx, monitoringrepo.MetadataRollupName, rollupErr, nowMS)
 	case usageDerivedMonitoringStatsTask:
 		return w.store.RecordUsageMonitoringFailure(ctx, monitoringrepo.StatsRollupName, rollupErr, nowMS)
+	case usageDerivedCodexLegacyIdentityTask:
+		return w.store.RecordUsageMonitoringFailure(ctx, usageevent.CodexLegacyIdentityRollupName, rollupErr, nowMS)
 	default:
 		return w.store.RecordUsagePricingFailure(ctx, rollupErr, nowMS)
 	}
@@ -209,6 +216,8 @@ func usageDerivedTaskName(task int) string {
 		return "monitoring metadata"
 	case usageDerivedMonitoringStatsTask:
 		return "monitoring stats"
+	case usageDerivedCodexLegacyIdentityTask:
+		return "Codex legacy identity evidence"
 	default:
 		return "pricing"
 	}

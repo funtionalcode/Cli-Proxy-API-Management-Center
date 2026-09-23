@@ -199,6 +199,7 @@ export interface CodexRateLimitResetCredit {
 export interface CodexResetCreditsSummary {
   availableCount: number | null;
   credits: CodexRateLimitResetCredit[];
+  creditsObserved: boolean;
   invalidPayload: boolean;
 }
 
@@ -368,6 +369,7 @@ export interface CodexQuotaWindow {
   limitWindowSeconds?: number | null;
   observationSource?: QuotaObservationSource;
   observedAtMs?: number | null;
+  quotaProgressObservedAtMs?: number | null;
   modelScope?: QuotaModelScope;
   providerWindowAliases?: string[];
 }
@@ -392,6 +394,10 @@ export interface CodexQuotaState extends CredentialScopedQuotaState {
   rateLimitResetCreditsAvailableCount?: number | null;
   rateLimitResetCredits?: CodexRateLimitResetCredit[];
   rateLimitResetCreditsError?: string | null;
+  resetCreditsEvidenceAtMs?: number | null;
+  resetCreditsCountEvidenceAtMs?: number | null;
+  resetCreditsDetailEvidenceAtMs?: number | null;
+  resetCreditsDetailStale?: boolean;
   error?: string;
   errorStatus?: number;
   observedFromUsageHeaders?: boolean;
@@ -603,6 +609,7 @@ export interface XaiBillingSummary {
   officialApiHealth?: XaiOfficialApiHealth;
   partial?: boolean;
   diagnostics?: XaiBillingDiagnostic[];
+  rateLimited?: boolean;
 }
 
 export interface XaiQuotaState extends CredentialScopedQuotaState {
@@ -611,3 +618,53 @@ export interface XaiQuotaState extends CredentialScopedQuotaState {
   error?: string;
   errorStatus?: number;
 }
+
+export interface DevinQuotaWindow {
+  id: 'daily' | 'weekly';
+  label?: string;
+  remainingPercent: number | null;
+  resetAtMs: number | null;
+  periodHours: number;
+}
+
+export interface DevinQuotaData {
+  windows: DevinQuotaWindow[];
+  observedAtMs: number | null;
+  plan: string | null;
+  planStartMs: number | null;
+  planEndMs: number | null;
+}
+
+export interface DevinQuotaState
+  extends CredentialScopedQuotaState,
+    DevinQuotaData {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  error?: string;
+  errorStatus?: number;
+}
+
+export interface MetaQuotaWindow {
+  id: 'window' | 'weekly';
+  usedPercent: number | null;
+  resetAtMs: number | null;
+  resetAccuracy: QuotaResetAccuracy;
+  limitWindowSeconds: number | null;
+  quotaProgressObservedAtMs: number | null;
+}
+
+export interface MetaQuotaData {
+  windows: MetaQuotaWindow[];
+  observedAtMs: number;
+  plan: string | null;
+  isSubscriptionActive: boolean | null;
+  quotaInventoryObserved: boolean;
+}
+
+export interface MetaQuotaState
+  extends CredentialScopedQuotaState,
+    MetaQuotaData {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  error?: string;
+  errorStatus?: number;
+}
+

@@ -47,8 +47,13 @@ Docker and native packages provide the same Full Mode capabilities; only the ins
 | Claude                               | Provider and OAuth/Auth File                               | Base quota, weekly quota, and model-scoped limits when returned       | Quota read without model requests |
 | xAI/Grok OAuth                       | Provider/Auth File/OAuth                                   | CLI billing, paid OAuth identity fallback, and request-event evidence | Local and server                  |
 | xAI API Key                          | `xai-api-key`, priority, models, and key testing           | Request results and provider responses                                | Provider key test                 |
+| Muse / Meta OAuth                    | OAuth/Auth File (Device Flow)                              | `meta:window`, `meta:weekly`, and reset/period metadata                | Quota read without model requests |
+| Meta API Key                         | `meta-api-key`, priority, models, and key testing          | Request results and provider responses                                | Provider key test                 |
 | Gemini / Vertex / Antigravity / Kimi | Provider, auth file, or OAuth depending on CPA             | Provider-specific quota or recent request evidence                    | Depends on CPA and provider APIs  |
+| Devin                                | Provider, Auth File, OAuth, `devin.sensitive-words`        | Daily/weekly quota percentages, exact reset, Devin plan metadata      | Quota read without model requests |
 | OpenAI-compatible                    | Base URL, API key, headers, model mapping, and key testing | Request status, latency, redacted failures, and cost                  | No assumed common quota API       |
+
+Full Muse / Meta support requires CPA `v7.3.4+`. OAuth DCA credentials and `meta-api-key` inference credentials are separate and are not interchangeable.
 
 ## Data And Automation Boundaries
 

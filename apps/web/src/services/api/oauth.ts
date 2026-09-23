@@ -4,19 +4,34 @@
 
 import { apiClient, createScopedApiRequestConfig, type ApiClientRequestScope } from './client';
 
-export type BuiltInOAuthProvider = 'codex' | 'anthropic' | 'antigravity' | 'kimi' | 'xai';
+export type BuiltInOAuthProvider =
+  | 'codex'
+  | 'anthropic'
+  | 'antigravity'
+  | 'kimi'
+  | 'xai'
+  | 'devin'
+  | 'meta';
 export type OAuthProvider = BuiltInOAuthProvider | (string & {});
 
 export interface OAuthStartResponse {
   url: string;
   state?: string;
+  user_code?: string;
+  flow?: string;
+  expires_in?: number;
 }
 
 export interface OAuthCallbackResponse {
   status: 'ok';
 }
 
-const WEBUI_SUPPORTED: string[] = ['codex', 'anthropic', 'antigravity', 'xai'];
+export interface OAuthCancelResponse {
+  status: 'ok';
+  cancelled: boolean;
+}
+
+const WEBUI_SUPPORTED: string[] = ['codex', 'anthropic', 'antigravity', 'xai', 'devin'];
 
 export const oauthApi = {
   startAuth: (provider: OAuthProvider, requestScope?: ApiClientRequestScope) => {
@@ -50,4 +65,10 @@ export const oauthApi = {
       requestScope ? createScopedApiRequestConfig(requestScope) : undefined
     );
   },
+
+  cancelSession: (state: string, requestScope?: ApiClientRequestScope) =>
+    apiClient.delete<OAuthCancelResponse>('/oauth-session', {
+      ...(requestScope ? createScopedApiRequestConfig(requestScope) : {}),
+      params: { state },
+    }),
 };

@@ -23,6 +23,7 @@ import { useQuotaStore } from './useQuotaStore';
 import { useUsageServiceStore } from './useUsageServiceStore';
 import { detectApiBaseFromLocation, normalizeApiBase } from '@/utils/connection';
 import { sha256Hex } from '@/utils/apiKeyHash';
+import { getObfuscationVersion } from '@/utils/encryption';
 
 interface AuthStoreState extends AuthState {
   sessionMode: AuthSessionMode | '';
@@ -50,6 +51,81 @@ interface RestoreSessionOptions {
 }
 
 let restoreSessionPromise: Promise<RestoreSessionResult> | null = null;
+
+const LEGACY_AUTH_KEYS = ['apiBase', 'apiUrl', 'managementKey'] as const;
+
+type PendingLegacyAuthSnapshot = {
+  auth: string | null;
+  apiBase: string | null;
+  apiUrl: string | null;
+  managementKey: string | null;
+};
+
+/**
+ * 认证持久化写门控：当存在未经验证的 v1 混淆数据时，延迟/阻止写入 localStorage，
+ * 防止因 User-Agent 变动导致错误解密出的 credential 被提前覆写固化为 v2。
+ */
+let deferAuthPersistence = false;
+let pendingLegacyAuthSnapshot: PendingLegacyAuthSnapshot | null = null;
+let pendingLegacyRestoreInFlight = false;
+
+function captureLegacyAuthSnapshot(): PendingLegacyAuthSnapshot {
+  try {
+    return {
+      auth: localStorage.getItem(STORAGE_KEY_AUTH),
+      apiBase: localStorage.getItem('apiBase'),
+      apiUrl: localStorage.getItem('apiUrl'),
+      managementKey: localStorage.getItem('managementKey'),
+    };
+  } catch {
+    return {
+      auth: null,
+      apiBase: null,
+      apiUrl: null,
+      managementKey: null,
+    };
+  }
+}
+
+function legacyAuthSnapshotMatches(snapshot: PendingLegacyAuthSnapshot | null): boolean {
+  if (!snapshot) return false;
+  try {
+    return (
+      localStorage.getItem(STORAGE_KEY_AUTH) === snapshot.auth &&
+      localStorage.getItem('apiBase') === snapshot.apiBase &&
+      localStorage.getItem('apiUrl') === snapshot.apiUrl &&
+      localStorage.getItem('managementKey') === snapshot.managementKey
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isV1StoredValue(key: string): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return getObfuscationVersion(raw || '') === 'v1';
+  } catch {
+    return false;
+  }
+}
+
+function hasPendingV1AuthStorage(): boolean {
+  if (isV1StoredValue(STORAGE_KEY_AUTH)) {
+    return true;
+  }
+  return LEGACY_AUTH_KEYS.some((key) => isV1StoredValue(key));
+}
+
+function clearLegacyAuthKeys(): void {
+  LEGACY_AUTH_KEYS.forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore storage access errors
+    }
+  });
+}
 
 const sessionMatchesExpectedRuntime = ({
   expectedMode,
@@ -96,7 +172,24 @@ export const useAuthStore = create<AuthStoreState>()(
         if (restoreSessionPromise) return restoreSessionPromise;
 
         restoreSessionPromise = (async () => {
-          obfuscatedStorage.migratePlaintextKeys(['apiBase', 'apiUrl', 'managementKey']);
+          if (pendingLegacyAuthSnapshot !== null) {
+            if (!legacyAuthSnapshotMatches(pendingLegacyAuthSnapshot)) {
+              // Hydration 期间建立的 snapshot 在进入 restoreSession 前已被其他上下文修改（如另一 tab 成功登录）。
+              // 当前 tab 的内存状态已失效，保持 deferAuthPersistence = true 阻断覆盖写，直接放弃本次旧自动恢复。
+              set({
+                connectionStatus: 'disconnected',
+              });
+              return false;
+            }
+            deferAuthPersistence = true;
+          } else if (hasPendingV1AuthStorage()) {
+            deferAuthPersistence = true;
+            pendingLegacyAuthSnapshot = captureLegacyAuthSnapshot();
+          } else {
+            deferAuthPersistence = false;
+            pendingLegacyAuthSnapshot = null;
+            obfuscatedStorage.migratePlaintextKeys(['apiBase', 'apiUrl', 'managementKey']);
+          }
 
           const wasLoggedIn = localStorage.getItem('isLoggedIn') === 'true';
           const legacyBase =
@@ -147,19 +240,67 @@ export const useAuthStore = create<AuthStoreState>()(
           apiClient.setConfig({ apiBase: resolvedBase, managementKey: resolvedKey });
 
           if (wasLoggedIn && resolvedBase && resolvedKey) {
+            const isLegacyRestore = pendingLegacyAuthSnapshot !== null;
+            if (isLegacyRestore) {
+              pendingLegacyRestoreInFlight = true;
+            }
             try {
               const restoredSessionMode = options?.expectedMode ?? (sessionMode || undefined);
-              const result = await get().login({
+              const result = (await get().login({
                 apiBase: resolvedBase,
                 managementKey: resolvedKey,
                 rememberPassword: resolvedRememberPassword,
                 sessionMode: restoredSessionMode,
                 sessionPanelBase: options?.expectedPanelBase || get().sessionPanelBase,
-              });
+              })) as LoginResult & { stale?: boolean };
+              if (result?.stale) {
+                return false;
+              }
               return result.recoveryMode ? result : {};
             } catch (error) {
               console.warn('Auto login failed:', error);
+
+              const status =
+                error && typeof error === 'object' && 'status' in error && typeof (error as { status: unknown }).status === 'number'
+                  ? (error as { status: number }).status
+                  : error && typeof error === 'object' && 'statusCode' in error && typeof (error as { statusCode: unknown }).statusCode === 'number'
+                    ? (error as { statusCode: number }).statusCode
+                    : undefined;
+
+              if (status === 401) {
+                const isStaleLegacyRestore =
+                  pendingLegacyAuthSnapshot !== null &&
+                  !legacyAuthSnapshotMatches(pendingLegacyAuthSnapshot);
+
+                if (!isStaleLegacyRestore) {
+                  pendingLegacyAuthSnapshot = null;
+                  deferAuthPersistence = false;
+                  clearLegacyAuthKeys();
+                  try {
+                    localStorage.removeItem('isLoggedIn');
+                  } catch {
+                    // ignore
+                  }
+                  set({
+                    isAuthenticated: false,
+                    managementKey: '',
+                    rememberPassword: false,
+                    connectionStatus: 'disconnected',
+                  });
+                } else {
+                  // 请求期间 shared storage 已被其他上下文更新（如另一个标签页成功登录并写入 v2），
+                  // 当前 401 属于已失效的旧请求结果，不得破坏共享存储中的最新状态。
+                  // 保持 deferAuthPersistence = true 以阻断对 storage 的覆盖写。
+                  set({
+                    isAuthenticated: false,
+                    connectionStatus: 'disconnected',
+                  });
+                }
+              }
+
               return false;
+            } finally {
+              pendingLegacyRestoreInFlight = false;
             }
           }
 
@@ -180,7 +321,33 @@ export const useAuthStore = create<AuthStoreState>()(
         );
         const quotaCacheScope = sha256Hex(`${apiBase}\u0000${managementKey}`);
 
-        const markAuthenticated = (result: LoginResult = {}) => {
+        const markAuthenticated = (
+          result: LoginResult = {},
+          onAccepted?: () => void
+        ) => {
+          if (pendingLegacyRestoreInFlight) {
+            if (
+              pendingLegacyAuthSnapshot &&
+              !legacyAuthSnapshotMatches(pendingLegacyAuthSnapshot)
+            ) {
+              // 自动恢复请求期间 shared storage 已被其他上下文更新，当前旧 auto-restore 成功结果已失效，
+              // 不得向共享存储提交认证结果或清除 legacy keys。
+              // 保持 deferAuthPersistence = true 阻断覆盖写。
+              // 注意：不得调用 clearUsageServiceConfig()，stale transaction 严禁修改任何 shared persistent store。
+              set({
+                isAuthenticated: false,
+                connectionStatus: 'disconnected',
+              });
+              return { ...result, stale: true } as LoginResult & { stale?: boolean };
+            }
+          }
+
+          pendingLegacyAuthSnapshot = null;
+          deferAuthPersistence = false;
+          clearLegacyAuthKeys();
+
+          onAccepted?.();
+
           useQuotaStore.getState().activateQuotaCacheScope(quotaCacheScope);
           apiClient.setConfig({ apiBase, managementKey });
           set({
@@ -225,18 +392,22 @@ export const useAuthStore = create<AuthStoreState>()(
               throw error;
             }
             await usageServiceApi.getManagerConfig(apiBase, managementKey);
-            useConfigStore.getState().clearCache();
-            useUsageServiceStore.getState().setUsageServiceConfig(
-              {
-                enabled: true,
-                serviceBase: apiBase,
-              },
-              {
-                panelBase: sessionPanelBase || apiBase,
-                panelHostMode: 'manager_embedded',
+            return markAuthenticated(
+              { recoveryMode: 'manager_config' },
+              () => {
+                useConfigStore.getState().clearCache();
+                useUsageServiceStore.getState().setUsageServiceConfig(
+                  {
+                    enabled: true,
+                    serviceBase: apiBase,
+                  },
+                  {
+                    panelBase: sessionPanelBase || apiBase,
+                    panelHostMode: 'manager_embedded',
+                  }
+                );
               }
             );
-            return markAuthenticated({ recoveryMode: 'manager_config' });
           }
 
           // 登录成功
@@ -259,6 +430,10 @@ export const useAuthStore = create<AuthStoreState>()(
 
       // 登出
       logout: () => {
+        pendingLegacyRestoreInFlight = false;
+        pendingLegacyAuthSnapshot = null;
+        deferAuthPersistence = false;
+        clearLegacyAuthKeys();
         restoreSessionPromise = null;
         useConfigStore.getState().clearCache();
         useModelsStore.getState().clearCache();
@@ -343,10 +518,19 @@ export const useAuthStore = create<AuthStoreState>()(
       name: STORAGE_KEY_AUTH,
       storage: createJSONStorage(() => ({
         getItem: (name) => {
+          if (isV1StoredValue(name)) {
+            deferAuthPersistence = true;
+            if (!pendingLegacyAuthSnapshot) {
+              pendingLegacyAuthSnapshot = captureLegacyAuthSnapshot();
+            }
+          }
           const data = obfuscatedStorage.getItem<AuthStoreState>(name);
           return data ? JSON.stringify(data) : null;
         },
         setItem: (name, value) => {
+          if (deferAuthPersistence) {
+            return;
+          }
           obfuscatedStorage.setItem(name, JSON.parse(value));
         },
         removeItem: (name) => {
@@ -367,8 +551,16 @@ export const useAuthStore = create<AuthStoreState>()(
 );
 
 // 监听全局未授权事件
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('unauthorized', () => {
+    // pending v1 credential verification 期间，
+    // 中间请求的 401 不一定代表当前 remembered credential 无效，
+    // 尤其 manager_embedded 场景可能是保存的 CPA Management Key 失效；
+    // 此时由 restoreSession / login 错误捕获流程最终裁决认证结果，避免提前 logout 导致写门控过早解除。
+    if (deferAuthPersistence) {
+      return;
+    }
+
     useAuthStore.getState().logout();
   });
 

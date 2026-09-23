@@ -4,8 +4,10 @@ import type { AccountDisplayMode } from '@/features/monitoring/accountOverviewSt
 import {
   isGenericMonitoringProviderLabel,
   isKeyDisambiguatedLabel,
+  isProviderLikeMonitoringLabel,
   isRedundantMonitoringLabel,
 } from '@/features/monitoring/model/sourceDisplay';
+import { isOpaqueUsageSourceId } from '@/utils/usage';
 
 const hasReadableRealtimeValue = (value: string | null | undefined) => {
   const trimmed = String(value || '').trim();
@@ -27,7 +29,18 @@ export const buildRealtimeSourceDisplay = (
     | 'source'
     | 'sourceMasked'
   > &
-    Partial<Pick<MonitoringEventRow, 'clientIp' | 'userAgent' | 'xForwardedFor'>>,
+    Partial<
+      Pick<
+        MonitoringEventRow,
+        | 'clientIp'
+        | 'userAgent'
+        | 'xForwardedFor'
+        | 'sessionId'
+        | 'parentSessionId'
+        | 'generate'
+        | 'stream'
+      >
+    >,
   t: TFunction,
   accountDisplayMode: AccountDisplayMode = 'masked'
 ) => {
@@ -41,32 +54,45 @@ export const buildRealtimeSourceDisplay = (
   const maskedSource = firstReadable(row.sourceMasked, row.accountMasked, row.authLabel, row.source);
   const source = accountDisplayMode === 'full' ? fullSource : maskedSource;
   const nonGenericChannel =
-    channel && !isGenericMonitoringProviderLabel(channel) ? channel : '';
-  const nonGenericSource = source && !isGenericMonitoringProviderLabel(source) ? source : '';
+    channel && !isProviderLikeMonitoringLabel(channel, provider) ? channel : '';
+  const nonGenericSource =
+    source && !isProviderLikeMonitoringLabel(source, provider) ? source : '';
+  const readableNonGenericSource =
+    nonGenericSource && !isOpaqueUsageSourceId(nonGenericSource) ? nonGenericSource : '';
+  const readableAccount = account && !isOpaqueUsageSourceId(account) ? account : '';
   const keyDisambiguatedSource =
-    nonGenericSource &&
-    (isKeyDisambiguatedLabel(nonGenericSource, channel) ||
-      isKeyDisambiguatedLabel(nonGenericSource, host) ||
-      isKeyDisambiguatedLabel(nonGenericSource, account))
-      ? nonGenericSource
+    readableNonGenericSource &&
+    (isKeyDisambiguatedLabel(readableNonGenericSource, channel) ||
+      isKeyDisambiguatedLabel(readableNonGenericSource, host) ||
+      isKeyDisambiguatedLabel(readableNonGenericSource, readableAccount))
+      ? readableNonGenericSource
       : '';
+  const opaqueSource = isOpaqueUsageSourceId(source)
+    ? source
+    : isOpaqueUsageSourceId(row.source)
+    ? row.source
+    : isOpaqueUsageSourceId(account)
+    ? account
+    : '';
   const primary =
     firstReadable(
       keyDisambiguatedSource,
       nonGenericChannel,
       host,
-      nonGenericSource,
+      readableNonGenericSource,
+      readableAccount,
       provider && !isGenericMonitoringProviderLabel(provider) ? provider : '',
-      account || '',
       channel,
-      provider
+      provider,
+      opaqueSource
     ) || '-';
   const metaCandidate = provider
     ? { value: provider, label: t('monitoring.filter_provider') }
     : [
         { value: host, label: t('monitoring.column_host') },
-        { value: account, label: '' },
-        { value: source, label: t('monitoring.source') },
+        { value: readableAccount, label: '' },
+        { value: readableNonGenericSource, label: t('monitoring.source') },
+        { value: opaqueSource, label: t('monitoring.source') },
       ].find(
         (candidate) =>
           candidate.value && !isRedundantMonitoringLabel(candidate.value, primary)
@@ -78,6 +104,12 @@ export const buildRealtimeSourceDisplay = (
   const clientIp = row.clientIp?.trim() || '';
   const xForwardedFor = row.xForwardedFor?.trim() || '';
   const userAgent = row.userAgent?.trim() || '';
+  const sessionId = row.sessionId?.trim() || '';
+  const parentSessionId = row.parentSessionId?.trim() || '';
+  const generateText =
+    typeof row.generate === 'boolean' ? t(row.generate ? 'common.yes' : 'common.no') : '';
+  const streamText =
+    typeof row.stream === 'boolean' ? t(row.stream ? 'common.yes' : 'common.no') : '';
   const requestMetadata =
     accountDisplayMode === 'full'
       ? [
@@ -89,6 +121,18 @@ export const buildRealtimeSourceDisplay = (
             : '',
           hasReadableRealtimeValue(userAgent)
             ? `${t('monitoring.user_agent')}: ${userAgent}`
+            : '',
+          hasReadableRealtimeValue(sessionId)
+            ? `${t('monitoring.session_id')}: ${sessionId}`
+            : '',
+          hasReadableRealtimeValue(parentSessionId)
+            ? `${t('monitoring.parent_session_id')}: ${parentSessionId}`
+            : '',
+          hasReadableRealtimeValue(generateText)
+            ? `${t('monitoring.generate')}: ${generateText}`
+            : '',
+          hasReadableRealtimeValue(streamText)
+            ? `${t('monitoring.stream')}: ${streamText}`
             : '',
         ]
       : [];

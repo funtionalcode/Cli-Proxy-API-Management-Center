@@ -188,7 +188,13 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		coalesce(header_quota_plan_type, ''),
 		coalesce(header_error_kind, ''),
 		coalesce(header_error_code, ''),
-		coalesce(header_trace_id, '')
+		coalesce(header_trace_id, ''),
+		coalesce(response_model, ''),
+		coalesce(session_id, ''),
+		coalesce(parent_session_id, ''),
+		coalesce(access_token_sha256, ''),
+		generate,
+		stream
 	from usage_events
 	where id in (select value from json_each(?))
 	order by timestamp_ms desc, id desc`, string(encoded))
@@ -202,6 +208,8 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 		var item EventPageItem
 		var failed int
 		var responseMetadataJSON string
+		var responseModel, sessionID, parentSessionID, accessTokenSHA256 sql.NullString
+		var generateVal, streamVal sql.NullInt64
 		if err := rows.Scan(
 			&item.ID,
 			&item.RequestID,
@@ -247,10 +255,28 @@ func loadEventPageItemsByCandidates(ctx context.Context, tx *sql.Tx, candidates 
 			&item.HeaderErrorKind,
 			&item.HeaderErrorCode,
 			&item.HeaderTraceID,
+			&responseModel,
+			&sessionID,
+			&parentSessionID,
+			&accessTokenSHA256,
+			&generateVal,
+			&streamVal,
 		); err != nil {
 			return nil, err
 		}
 		item.Failed = failed != 0
+		item.ResponseModel = responseModel.String
+		item.SessionID = sessionID.String
+		item.ParentSessionID = parentSessionID.String
+		item.AccessTokenSHA256 = accessTokenSHA256.String
+		if generateVal.Valid {
+			v := generateVal.Int64 != 0
+			item.Generate = &v
+		}
+		if streamVal.Valid {
+			v := streamVal.Int64 != 0
+			item.Stream = &v
+		}
 		item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(item.AuthProviderSnapshot, item.AuthProjectIDSnapshot)
 		item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
 		items = append(items, item)

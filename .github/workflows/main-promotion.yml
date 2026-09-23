@@ -13,6 +13,7 @@ on:
   pull_request_target:
     branches-ignore:
       - dev
+      - v2
     types:
       - opened
       - edited
@@ -29,6 +30,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.pull_request.base.ref != 'dev' &&
+      github.event.pull_request.base.ref != 'v2' &&
       (github.event.pull_request.base.ref != 'main' ||
        github.event.pull_request.head.repo.full_name != github.repository ||
        github.event.pull_request.head.ref != 'dev')
@@ -77,13 +79,14 @@ jobs:
             });
 
             const targetsDev = current.base.ref === "dev";
+            const targetsV2 = current.base.ref === "v2";
             const isDevPromotion =
               current.base.ref === "main" &&
               current.head.repo?.full_name === repository &&
               current.head.ref === "dev";
 
-            if (targetsDev || isDevPromotion) {
-              core.info("Pull request target already satisfies the dev integration policy.");
+            if (targetsDev || targetsV2 || isDevPromotion) {
+              core.info("Pull request target already satisfies the integration policy.");
               return;
             }
 

@@ -373,6 +373,14 @@
   min-width: 0;
 }
 
+.usageSummaryCardExtra {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+
 .usageSummaryIcon {
   display: inline-flex;
   align-items: center;

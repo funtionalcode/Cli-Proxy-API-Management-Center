@@ -1,8 +1,17 @@
 import type { TFunction } from 'i18next';
 import type { AuthFilesApiRequestScope } from '@/services/api';
 import type { AuthFileItem } from '@/types';
-import { buildQuotaFailureState, getScopedQuotaState, type QuotaConfig } from './quotaConfigs';
-import { captureQuotaCacheGeneration, commitIfQuotaCacheCurrent } from '@/stores';
+import {
+  buildQuotaFailureState,
+  getScopedQuotaState,
+  type QuotaConfig,
+  type QuotaFetchContext,
+} from './quotaConfigs';
+import {
+  captureQuotaCacheGeneration,
+  commitIfQuotaCacheCurrent,
+  isQuotaCacheGenerationCurrent,
+} from '@/stores';
 
 export type QuotaUpdater<T> = T | ((previous: T) => T);
 export type QuotaSetter<T> = (updater: QuotaUpdater<Record<string, T>>) => void;
@@ -20,6 +29,7 @@ export type QuotaRefreshResult<TState, TData> =
       data: null;
       state: TState;
       error: string;
+      errorStatus?: number;
     };
 
 export const refreshQuotaWithConfig = async <TState, TData>({
@@ -46,9 +56,12 @@ export const refreshQuotaWithConfig = async <TState, TData>({
   const generation = (quotaRefreshGenerations.get(requestKey) ?? 0) + 1;
   quotaRefreshGenerations.set(requestKey, generation);
   const isSharedGenerationCurrent = () => quotaRefreshGenerations.get(requestKey) === generation;
-  const commitIfRefreshCurrent = (commit: () => void) =>
+  const isRefreshCurrent = () =>
     isCurrent() &&
     isSharedGenerationCurrent() &&
+    isQuotaCacheGenerationCurrent(cacheGeneration);
+  const commitIfRefreshCurrent = (commit: () => void) =>
+    isRefreshCurrent() &&
     commitIfQuotaCacheCurrent(cacheGeneration, commit);
 
   // A cached quota remains the active evidence while it is being refreshed.
@@ -65,23 +78,34 @@ export const refreshQuotaWithConfig = async <TState, TData>({
   }
 
   try {
-    const data = await config.fetchQuota(file, t, requestScope);
-    if (!isCurrent() || !isSharedGenerationCurrent()) return null;
-    const state = config.buildSuccessState(data, file);
+    const context: QuotaFetchContext = {
+      isCurrent: isRefreshCurrent,
+    };
+    const data =
+      config.type === 'meta'
+        ? await config.fetchQuota(file, t, requestScope, context)
+        : await config.fetchQuota(file, t, requestScope);
+    if (!isRefreshCurrent()) return null;
+    let state = config.buildSuccessState(data, file, currentState);
     const committed = commitIfRefreshCurrent(() => {
-      setQuota((previous) => ({
-        ...previous,
-        [storeKey]: state,
-      }));
+      setQuota((previous) => {
+        const previousState = getScopedQuotaState(config, previous, file) ?? currentState;
+        state = config.buildSuccessState(data, file, previousState);
+        return {
+          ...previous,
+          [storeKey]: state,
+        };
+      });
     });
     return committed ? { status: 'success', data, state } : null;
   } catch (error: unknown) {
-    if (!isCurrent() || !isSharedGenerationCurrent()) return null;
+    if (!isRefreshCurrent()) return null;
     const message = error instanceof Error ? error.message : t('common.unknown_error');
-    const status =
+    const rawStatus =
       typeof error === 'object' && error !== null && 'status' in error
         ? Number((error as { status?: unknown }).status)
         : undefined;
+    const errorStatus = Number.isFinite(rawStatus) ? rawStatus : undefined;
     let state: TState | undefined;
     const committed = commitIfRefreshCurrent(() => {
       setQuota((previous) => {
@@ -89,7 +113,7 @@ export const refreshQuotaWithConfig = async <TState, TData>({
         state = buildQuotaFailureState(
           config,
           message,
-          Number.isFinite(status) ? status : undefined,
+          errorStatus,
           file,
           previousState
         );
@@ -99,6 +123,8 @@ export const refreshQuotaWithConfig = async <TState, TData>({
         };
       });
     });
-    return committed && state ? { status: 'error', data: null, state, error: message } : null;
+    return committed && state
+      ? { status: 'error', data: null, state, error: message, errorStatus }
+      : null;
   }
 };

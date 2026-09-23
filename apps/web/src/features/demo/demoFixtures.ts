@@ -16,6 +16,7 @@ import type {
   MonitoringAnalyticsRequest,
   MonitoringAnalyticsResponse,
   QuotaCooldownInfo,
+  RuntimeModelPricingStatusResponse,
   UsageHeaderSnapshotsResponse,
   UsageServiceInfo,
   UsageServiceStatus,
@@ -33,7 +34,9 @@ import type {
   ClaudeQuotaState,
   CodexQuotaState,
   CredentialScopedQuotaState,
+  DevinQuotaState,
   KimiQuotaState,
+  MetaQuotaState,
   XaiQuotaState,
 } from '@/types';
 import type { ModelInfo } from '@/utils/models';
@@ -58,7 +61,9 @@ export type DemoQuotaStoreState = {
   antigravityQuota: Record<string, AntigravityQuotaState>;
   claudeQuota: Record<string, ClaudeQuotaState>;
   codexQuota: Record<string, CodexQuotaState>;
+  devinQuota: Record<string, DevinQuotaState>;
   kimiQuota: Record<string, KimiQuotaState>;
+  metaQuota: Record<string, MetaQuotaState>;
   xaiQuota: Record<string, XaiQuotaState>;
 };
 
@@ -67,6 +72,19 @@ const clone = <T>(value: T): T => {
     return structuredClone(value);
   }
   return JSON.parse(JSON.stringify(value)) as T;
+};
+
+let demoEvidenceEpochMs: number | null = null;
+
+export const resetDemoEvidenceEpoch = (): void => {
+  demoEvidenceEpochMs = null;
+};
+
+export const getDemoEvidenceEpochMs = (): number => {
+  if (demoEvidenceEpochMs === null) {
+    demoEvidenceEpochMs = Date.now();
+  }
+  return demoEvidenceEpochMs;
 };
 
 const now = () => Date.now();
@@ -170,7 +188,8 @@ const buildDemoScopedAccountStats = (
 const isDemoOAuthAccountProvider = (provider: unknown) =>
   typeof provider === 'string' && demoOAuthAccountProviders.has(provider);
 
-const demoResetIso = (offsetMs: number) => new Date(now() + offsetMs).toISOString();
+const demoResetIso = (offsetMs: number, baseMs: number = getDemoEvidenceEpochMs()) =>
+  new Date(baseMs + offsetMs).toISOString();
 const formatDemoQuotaResetAtMs = (resetAtMs: number) => {
   const value = new Date(resetAtMs);
   const month = String(value.getMonth() + 1).padStart(2, '0');
@@ -179,12 +198,12 @@ const formatDemoQuotaResetAtMs = (resetAtMs: number) => {
   const minutes = String(value.getMinutes()).padStart(2, '0');
   return `${month}/${dayOfMonth} ${hours}:${minutes}`;
 };
-const demoQuotaResetMetadata = (offsetMs: number) => ({
-  resetAtMs: now() + offsetMs,
+const demoQuotaResetMetadata = (offsetMs: number, baseMs: number = getDemoEvidenceEpochMs()) => ({
+  resetAtMs: baseMs + offsetMs,
   resetAccuracy: 'estimated' as const,
 });
-const demoQuotaReset = (offsetMs: number) => {
-  const metadata = demoQuotaResetMetadata(offsetMs);
+const demoQuotaReset = (offsetMs: number, baseMs: number = getDemoEvidenceEpochMs()) => {
+  const metadata = demoQuotaResetMetadata(offsetMs, baseMs);
   return {
     resetLabel: formatDemoQuotaResetAtMs(metadata.resetAtMs),
     ...metadata,
@@ -402,6 +421,17 @@ const initialRawConfig: Record<string, unknown> = {
       models: [{ name: 'grok-4.5', alias: 'Grok Team' }],
     },
   ],
+  'meta-api-key': [
+    {
+      'api-key': 'meta-demo-team-key',
+      'auth-index': 'meta-api-team-01',
+      prefix: 'meta-team',
+      'base-url': 'https://api.meta.ai/v1',
+      priority: 15,
+      weight: 3,
+      models: [{ name: 'llama-3.3-70b-instruct', alias: 'Meta Llama 3.3' }],
+    },
+  ],
   'claude-api-key': [
     {
       'api-key': 'claude-demo-team-key',
@@ -521,6 +551,7 @@ const demoAuthFiles: AuthFilesResponse = {
       account_snapshot: 'Platform Team',
       account_id: 'acct_codex_team',
       priority: 90,
+      note: '生产主力通道 · VIP集群',
       id_token: {
         plan_type: 'team',
         chatgpt_subscription_active_until: demoResetIso(23 * day),
@@ -547,9 +578,10 @@ const demoAuthFiles: AuthFilesResponse = {
       label: 'codex',
       account_id: 'acct_codex_email',
       priority: 88,
+      note: '研发支持个人席位',
       id_token: {
         plan_type: 'plus',
-        chatgpt_subscription_active_until: demoResetIso(18 * day),
+        chatgpt_subscription_active_until: demoResetIso(5 * day),
       },
       plan_type: 'plus',
       success: 640,
@@ -571,9 +603,10 @@ const demoAuthFiles: AuthFilesResponse = {
       account_snapshot: 'Pro 20x Workspace',
       account_id: 'acct_codex_pro_20x',
       priority: 84,
+      note: '高并发推理池 · 临期需续费',
       id_token: {
         plan_type: 'pro',
-        chatgpt_subscription_active_until: demoResetIso(45 * day),
+        chatgpt_subscription_active_until: demoResetIso(2 * day),
       },
       plan_type: 'pro',
       success: 1260,
@@ -588,14 +621,15 @@ const demoAuthFiles: AuthFilesResponse = {
       authIndex: 'codex-fallback-02',
       disabled: true,
       status: 'cooldown',
-      statusMessage: 'Primary quota window reached; CPAMP cooldown active',
+      statusMessage: '5 小时配额已耗尽，处于 CPAMP 冷却保护中',
       size: 4710,
       modified: now() - 6 * hour,
       account: 'Automation Pool',
       label: 'Codex Fallback Pool',
       account_snapshot: 'Automation Pool',
       account_id: 'acct_codex_auto',
-      priority: 45,
+      priority: -10,
+      note: '夜间降级兜底池',
       id_token: {
         plan_type: 'team',
         chatgpt_subscription_active_until: demoResetIso(12 * day),
@@ -616,7 +650,7 @@ const demoAuthFiles: AuthFilesResponse = {
       authIndex: 'codex-expired-oauth-03',
       disabled: false,
       status: 'auth_error',
-      statusMessage: 'HTTP 401 from quota refresh; reauth required',
+      statusMessage: 'OAuth 授权凭据已失效，请重新登录授权',
       size: 4688,
       modified: now() - 5 * hour,
       account: 'Design Tools Seat',
@@ -624,6 +658,7 @@ const demoAuthFiles: AuthFilesResponse = {
       account_snapshot: 'Design Tools Seat',
       account_id: 'acct_codex_design',
       priority: 35,
+      note: '离职人员留存凭证',
       id_token: { plan_type: 'free' },
       success: 284,
       failed: 29,
@@ -642,6 +677,7 @@ const demoAuthFiles: AuthFilesResponse = {
       label: 'Claude Team',
       account_snapshot: 'Research Team',
       priority: 80,
+      note: '算法组 Claude 专享专线',
       plan_type: 'pro',
       success: 1520,
       failed: 9,
@@ -718,7 +754,6 @@ const demoAuthFiles: AuthFilesResponse = {
       account: 'oc0demo01@yijihwjw.com',
       label: 'xai',
       priority: 45,
-      plan_type: 'pro',
       success: 294,
       failed: 4,
       recent_requests: demoRecentRequests(5, { failureEvery: 11 }),
@@ -738,7 +773,6 @@ const demoAuthFiles: AuthFilesResponse = {
       account: 'oc1demo02@yijihwjw.com',
       label: 'xai',
       priority: 38,
-      plan_type: 'pro',
       success: 188,
       failed: 3,
       recent_requests: demoRecentRequests(6, { failureEvery: 16, surgeEvery: 8 }),
@@ -917,7 +951,6 @@ const demoAuthFiles: AuthFilesResponse = {
       label: 'xAI PAYG Buffer',
       account_snapshot: 'xAI PAYG Buffer',
       priority: 42,
-      plan_type: 'pro',
       success: 436,
       failed: 10,
       recent_requests: demoRecentRequests(4, { failureEvery: 12, surgeEvery: 6 }),
@@ -936,7 +969,6 @@ const demoAuthFiles: AuthFilesResponse = {
       label: 'xAI Cap Reached',
       account_snapshot: 'xAI Cap Reached',
       priority: 18,
-      plan_type: 'pro',
       success: 118,
       failed: 32,
       recent_requests: demoRecentRequests(2, { failureEvery: 3, failureSize: 2, idlePrefix: 1 }),
@@ -3906,6 +3938,39 @@ const buildMonitoringAnalytics = (
       },
     },
   };
+  const gptModelMatchedEvent: DemoMonitoringEventRow = {
+    request_id: 'demo-gpt-model-matched',
+    event_hash: 'demo-event-gpt-model-matched',
+    timestamp_ms: analyticsNow - minute / 4,
+    model: 'gpt-5.6-sol',
+    analytics_model: 'gpt-5.6',
+    requested_model: 'gpt-5.6-sol',
+    resolved_model: 'gpt-5.6-terra',
+    response_model: 'gpt-5.6-terra',
+    endpoint: '/v1/chat/completions',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    auth_index: 'openai-primary',
+    auth_file_snapshot: 'openai-primary.json',
+    source: 'gateway',
+    source_hash: 'src_openai_primary',
+    api_key_hash: 'hash_openai_primary',
+    account_snapshot: 'OpenAI Compatible',
+    auth_label_snapshot: 'OpenAI Primary',
+    auth_provider_snapshot: 'openai',
+    service_tier: 'standard',
+    executor_type: 'dashboard',
+    input_tokens: 1_420,
+    output_tokens: 512,
+    cached_tokens: 0,
+    cache_read_tokens: 280,
+    cache_creation_tokens: 40,
+    reasoning_tokens: 0,
+    total_tokens: 1_932,
+    latency_ms: 920,
+    ttft_ms: 180,
+    failed: false,
+  };
   const reasoningSuffixEvents: DemoMonitoringEventRow[] = [
     {
       request_id: 'demo-deepseek-reasoning-max',
@@ -3915,6 +3980,12 @@ const buildMonitoringAnalytics = (
       analytics_model: 'deepseek-chat',
       requested_model: 'deepseek-chat(max)',
       resolved_model: 'deepseek-chat-202608',
+      response_model: 'deepseek-v4-flash',
+      session_id: 'demo-session-model-mismatch',
+      parent_session_id: 'demo-parent-session',
+      access_token_sha256: 'demo-access-token-sha256',
+      generate: true,
+      stream: false,
       endpoint: '/v1/chat/completions',
       method: 'POST',
       path: '/v1/chat/completions',
@@ -4007,6 +4078,7 @@ const buildMonitoringAnalytics = (
     },
   ];
   const events: DemoMonitoringEventRow[] = [
+    gptModelMatchedEvent,
     ...reasoningSuffixEvents,
     xaiFreeUsageEvent,
     xaiSuccessfulRateLimitEvent,
@@ -5549,7 +5621,7 @@ export const getDemoMonitoringAnalytics = (request?: MonitoringAnalyticsRequest)
 export const getDemoAccountHistory = (
   request: MonitoringAccountHistoryRequest
 ): MonitoringAccountHistoryResponse => {
-  const generatedAtMS = now();
+  const generatedAtMS = getDemoEvidenceEpochMs();
   const historyByKey = buildDemoAccountHistoryIndex(generatedAtMS);
   const latestID = 184_260;
 
@@ -5586,7 +5658,7 @@ export const getDemoAccountHistory = (
 export const getDemoAccountWindowUsage = (
   request: MonitoringAccountWindowUsageRequest
 ): MonitoringAccountWindowUsageResponse => {
-  const generatedAtMS = now();
+  const generatedAtMS = getDemoEvidenceEpochMs();
   const historyByKey = buildDemoAccountHistoryIndex(generatedAtMS);
 
   return clone({
@@ -5626,6 +5698,13 @@ export const getDemoAccountWindowUsage = (
       );
       const successCalls = Math.max(0, totalRequests - failureCalls);
 
+      const resolvedLastSeenMs =
+        window.period === 'previous' || window.period === 'previous_equal_range'
+          ? Math.min(generatedAtMS, window.to_ms)
+          : typeof history.last_seen_ms === 'number' && Number.isFinite(history.last_seen_ms)
+            ? Math.min(history.last_seen_ms, window.to_ms)
+            : Math.min(generatedAtMS - 15 * minute, window.to_ms);
+
       return {
         request_key: window.request_key,
         row_key: window.row_key,
@@ -5641,7 +5720,7 @@ export const getDemoAccountWindowUsage = (
         total_tokens: Math.max(1, Math.round(history.total_tokens * ratio)),
         total_cost: round2(history.total_cost * ratio),
         success_rate: totalRequests > 0 ? successCalls / totalRequests : null,
-        last_seen_ms: Math.min(generatedAtMS, window.to_ms),
+        last_seen_ms: resolvedLastSeenMs,
         sync_status: 'ready',
         scope_match_status: 'complete',
         unmatched_requests: 0,
@@ -5651,6 +5730,15 @@ export const getDemoAccountWindowUsage = (
 };
 export const getDemoModelPrices = () => clone(demoModelPrices);
 export const getDemoModelPriceUsageSummary = () => clone(demoModelPriceUsageSummary);
+export const getDemoRuntimeModelPricingStatus = (): RuntimeModelPricingStatusResponse => {
+  const models = Object.keys(demoModelPrices.prices).sort();
+  return {
+    models,
+    unpricedModels: [],
+    count: models.length,
+    unpricedCount: 0,
+  };
+};
 export const getDemoUsagePayload = () => {
   const dashboard = dashboardBase();
   return {
@@ -5759,7 +5847,10 @@ export const getDemoUsageServiceStatus = (): UsageServiceStatus => ({
   databaseMaintenance: getDemoDatabaseMaintenanceStatus(),
 });
 
-const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
+const getDemoQuotaStoreStateByFileName = (
+  baseNow = getDemoEvidenceEpochMs()
+): DemoQuotaStoreState => ({
+  metaQuota: {},
   codexQuota: {
     'codex-team-01.json': {
       status: 'success',
@@ -5767,22 +5858,120 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
       authFileKey: 'codex-team-01.json::codex-team-01',
       authFileName: 'codex-team-01.json',
       authIndex: 'codex-team-01',
-      fetchedAtMs: now() - 8 * minute,
-      subscriptionActiveUntil: demoResetIso(23 * day),
+      fetchedAtMs: baseNow - 5 * minute,
+      resetCreditsEvidenceAtMs: baseNow - 5 * minute,
+      subscriptionActiveUntil: demoResetIso(23 * day, baseNow),
+      rateLimitResetCreditsAvailableCount: 2,
+      rateLimitResetCredits: [
+        {
+          id: 'demo-credit-1',
+          status: 'available',
+          grantedAt: demoResetIso(-day, baseNow),
+          expiresAt: demoResetIso(6 * day, baseNow),
+        },
+        {
+          id: 'demo-credit-2',
+          status: 'available',
+          grantedAt: demoResetIso(-12 * hour, baseNow),
+          expiresAt: demoResetIso(14 * day, baseNow),
+        },
+      ],
       windows: [
         {
           id: 'five-hour',
           label: '5 小时限额',
           usedPercent: 36,
-          ...demoQuotaReset(2 * hour + 18 * minute),
+          ...demoQuotaReset(2 * hour + 18 * minute, baseNow),
           limitWindowSeconds: 18_000,
         },
         {
           id: 'weekly',
           label: '周限额',
           usedPercent: 41,
-          ...demoQuotaReset(3 * day + 8 * hour),
+          ...demoQuotaReset(3 * day + 8 * hour, baseNow),
           limitWindowSeconds: 604_800,
+        },
+      ],
+    },
+    'codex-email-user.json': {
+      status: 'success',
+      planType: 'plus',
+      authFileKey: 'codex-email-user.json::codex-email-user-01',
+      authFileName: 'codex-email-user.json',
+      authIndex: 'codex-email-user-01',
+      fetchedAtMs: baseNow - 4 * minute,
+      resetCreditsEvidenceAtMs: baseNow - 4 * minute,
+      subscriptionActiveUntil: demoResetIso(5 * day, baseNow),
+      rateLimitResetCreditsAvailableCount: 0,
+      rateLimitResetCredits: [],
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5 小时限额',
+          usedPercent: 48,
+          ...demoQuotaReset(3 * hour + 15 * minute, baseNow),
+          limitWindowSeconds: 18_000,
+        },
+        {
+          id: 'weekly',
+          label: '周限额',
+          usedPercent: 56,
+          ...demoQuotaReset(4 * day + 12 * hour, baseNow),
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    },
+    'codex-pro-20x-01.json': {
+      status: 'success',
+      planType: 'pro',
+      authFileKey: 'codex-pro-20x-01.json::codex-pro-20x-01',
+      authFileName: 'codex-pro-20x-01.json',
+      authIndex: 'codex-pro-20x-01',
+      fetchedAtMs: baseNow - 4 * minute,
+      resetCreditsEvidenceAtMs: baseNow - 4 * minute,
+      subscriptionActiveUntil: demoResetIso(2 * day, baseNow),
+      rateLimitResetCreditsAvailableCount: 3,
+      rateLimitResetCredits: [
+        {
+          id: 'demo-pro-credit-1',
+          status: 'available',
+          grantedAt: demoResetIso(-2 * day, baseNow),
+          expiresAt: demoResetIso(3 * day + 4 * hour, baseNow),
+        },
+        {
+          id: 'demo-pro-credit-2',
+          status: 'available',
+          grantedAt: demoResetIso(-day, baseNow),
+          expiresAt: demoResetIso(9 * day, baseNow),
+        },
+        {
+          id: 'demo-pro-credit-3',
+          status: 'available',
+          grantedAt: demoResetIso(-6 * hour, baseNow),
+          expiresAt: demoResetIso(18 * day, baseNow),
+        },
+      ],
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5 小时限额',
+          usedPercent: 88,
+          ...demoQuotaReset(2 * hour + 45 * minute, baseNow),
+          limitWindowSeconds: 18_000,
+        },
+        {
+          id: 'weekly',
+          label: '周限额',
+          usedPercent: 68,
+          ...demoQuotaReset(5 * day + 6 * hour, baseNow),
+          limitWindowSeconds: 604_800,
+        },
+        {
+          id: 'monthly',
+          label: '月限额',
+          usedPercent: 35,
+          ...demoQuotaReset(24 * day + 6 * hour, baseNow),
+          limitWindowSeconds: 2_592_000,
         },
       ],
     },
@@ -5792,20 +5981,30 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
       authFileKey: 'codex-fallback-02.json::codex-fallback-02',
       authFileName: 'codex-fallback-02.json',
       authIndex: 'codex-fallback-02',
-      fetchedAtMs: now() - 18 * minute,
+      fetchedAtMs: baseNow - 15 * minute,
+      resetCreditsEvidenceAtMs: baseNow - 15 * minute,
+      rateLimitResetCreditsAvailableCount: 1,
+      rateLimitResetCredits: [
+        {
+          id: 'demo-fallback-credit-1',
+          status: 'available',
+          grantedAt: demoResetIso(-day, baseNow),
+          expiresAt: demoResetIso(2 * day, baseNow),
+        },
+      ],
       windows: [
         {
           id: 'five-hour',
           label: '5 小时限额',
           usedPercent: 100,
-          ...demoQuotaReset(68 * minute),
+          ...demoQuotaReset(68 * minute, baseNow),
           limitWindowSeconds: 18_000,
         },
         {
           id: 'weekly',
           label: '周限额',
           usedPercent: 72,
-          ...demoQuotaReset(2 * day + 4 * hour),
+          ...demoQuotaReset(2 * day + 4 * hour, baseNow),
           limitWindowSeconds: 604_800,
         },
       ],
@@ -5816,7 +6015,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
       authFileKey: 'codex-expired-oauth-03.json::codex-expired-oauth-03',
       authFileName: 'codex-expired-oauth-03.json',
       authIndex: 'codex-expired-oauth-03',
-      failedAtMs: now() - 3 * minute,
+      failedAtMs: baseNow - 3 * minute,
       errorStatus: 401,
       error:
         '额度获取失败：401 Your authentication token has been invalidated. Please try signing in again.',
@@ -5827,6 +6026,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     'claude-team-01.json': {
       status: 'success',
       planType: 'pro',
+      fetchedAtMs: baseNow - 8 * minute,
       windows: [
         {
           id: 'five-hour',
@@ -5834,7 +6034,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           labelKey: 'claude_quota.five_hour',
           usedPercent: 44,
           resetLabel: '2h',
-          ...demoQuotaResetMetadata(2 * hour),
+          ...demoQuotaResetMetadata(2 * hour, baseNow),
+          limitWindowSeconds: 18_000,
         },
         {
           id: 'seven-day',
@@ -5842,13 +6043,15 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           labelKey: 'claude_quota.seven_day',
           usedPercent: 31,
           resetLabel: '3d',
-          ...demoQuotaResetMetadata(3 * day),
+          ...demoQuotaResetMetadata(3 * day, baseNow),
+          limitWindowSeconds: 604_800,
         },
       ],
     },
     'claude-research-02.json': {
       status: 'success',
       planType: 'pro',
+      fetchedAtMs: baseNow - 15 * minute,
       windows: [
         {
           id: 'five-hour',
@@ -5856,7 +6059,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           labelKey: 'claude_quota.five_hour',
           usedPercent: 88,
           resetLabel: '1h 12m',
-          ...demoQuotaResetMetadata(hour + 12 * minute),
+          ...demoQuotaResetMetadata(hour + 12 * minute, baseNow),
+          limitWindowSeconds: 18_000,
         },
         {
           id: 'seven-day',
@@ -5864,7 +6068,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           labelKey: 'claude_quota.seven_day',
           usedPercent: 48,
           resetLabel: '3d 04h',
-          ...demoQuotaResetMetadata(3 * day + 4 * hour),
+          ...demoQuotaResetMetadata(3 * day + 4 * hour, baseNow),
+          limitWindowSeconds: 604_800,
         },
         {
           id: 'seven-day-sonnet',
@@ -5872,13 +6077,15 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           labelKey: 'claude_quota.seven_day_sonnet',
           usedPercent: 74,
           resetLabel: '2d 09h',
-          ...demoQuotaResetMetadata(2 * day + 9 * hour),
+          ...demoQuotaResetMetadata(2 * day + 9 * hour, baseNow),
+          limitWindowSeconds: 604_800,
         },
       ],
     },
     'claude-extra-usage-03.json': {
       status: 'success',
       planType: 'pro',
+      fetchedAtMs: baseNow - 18 * minute,
       windows: [
         {
           id: 'five-hour',
@@ -5887,6 +6094,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           usedPercent: 62,
           resetLabel: '2h 35m',
           ...demoQuotaResetMetadata(2 * hour + 35 * minute),
+          limitWindowSeconds: 18_000,
         },
         {
           id: 'seven-day',
@@ -5895,6 +6103,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           usedPercent: 58,
           resetLabel: '4d 06h',
           ...demoQuotaResetMetadata(4 * day + 6 * hour),
+          limitWindowSeconds: 604_800,
         },
         {
           id: 'seven-day-opus',
@@ -5903,6 +6112,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           usedPercent: 91,
           resetLabel: '1d 12h',
           ...demoQuotaResetMetadata(day + 12 * hour),
+          limitWindowSeconds: 604_800,
         },
       ],
       extraUsage: {
@@ -5916,6 +6126,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
   antigravityQuota: {
     'antigravity-builder.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 6 * minute,
       subscription: { plan: 'pro', tierName: 'Pro', tierId: 'g1-pro' },
       groups: [
         {
@@ -5966,6 +6177,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     },
     'antigravity-daily-exhausted.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 20 * minute,
       subscription: { plan: 'pro', tierName: 'Pro', tierId: 'g1-pro' },
       groups: [
         {
@@ -5979,7 +6191,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
               label: 'Five Hour Limit',
               window: '5h',
               remainingFraction: 0,
-              resetTime: demoResetIso(6 * hour),
+              resetTime: demoResetIso(2 * hour + 45 * minute),
               description: 'You have used all of your 5-hour Gemini pool.',
             },
             {
@@ -6017,6 +6229,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     },
     'antigravity-monthly-low.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 15 * minute,
       subscription: { plan: 'pro', tierName: 'Pro', tierId: 'g1-pro' },
       groups: [
         {
@@ -6068,6 +6281,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     },
     'antigravity-free-weekly.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 8 * minute,
       subscription: { plan: 'free', tierName: 'Free', tierId: 'g1-free' },
       groups: [
         {
@@ -6104,6 +6318,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     },
     'antigravity-pro-matrix.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 25 * minute,
       subscription: { plan: 'pro', tierName: 'Pro', tierId: 'g1-pro' },
       groups: [
         {
@@ -6158,6 +6373,7 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
   kimiQuota: {
     'kimi-coding.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 10 * minute,
       rows: [
         {
           id: 'summary',
@@ -6165,7 +6381,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 214,
           limit: 2048,
           resetHint: '6d 4h',
-          ...demoQuotaResetMetadata(6 * day + 4 * hour),
+          ...demoQuotaResetMetadata(6 * day + 4 * hour, baseNow),
+          limitWindowSeconds: 604_800,
         },
         {
           id: 'limit-0',
@@ -6174,12 +6391,14 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 139,
           limit: 200,
           resetHint: '3h 12m',
-          ...demoQuotaResetMetadata(3 * hour + 12 * minute),
+          ...demoQuotaResetMetadata(3 * hour + 12 * minute, baseNow),
+          limitWindowSeconds: 18_000,
         },
       ],
     },
     'kimi-healthy.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 8 * minute,
       rows: [
         {
           id: 'summary',
@@ -6187,7 +6406,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 320,
           limit: 7168,
           resetHint: '5d 18h',
-          ...demoQuotaResetMetadata(5 * day + 18 * hour),
+          ...demoQuotaResetMetadata(5 * day + 18 * hour, baseNow),
+          limitWindowSeconds: 604_800,
         },
         {
           id: 'limit-0',
@@ -6196,12 +6416,14 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 18,
           limit: 200,
           resetHint: '4h 26m',
-          ...demoQuotaResetMetadata(4 * hour + 26 * minute),
+          ...demoQuotaResetMetadata(4 * hour + 26 * minute, baseNow),
+          limitWindowSeconds: 18_000,
         },
       ],
     },
     'kimi-exhausted.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 5 * minute,
       rows: [
         {
           id: 'summary',
@@ -6209,7 +6431,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 1810,
           limit: 2048,
           resetHint: '2d 03h',
-          ...demoQuotaResetMetadata(2 * day + 3 * hour),
+          ...demoQuotaResetMetadata(2 * day + 3 * hour, baseNow),
+          limitWindowSeconds: 604_800,
         },
         {
           id: 'limit-0',
@@ -6218,7 +6441,8 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
           used: 200,
           limit: 200,
           resetHint: '2h',
-          ...demoQuotaResetMetadata(2 * hour),
+          ...demoQuotaResetMetadata(2 * hour, baseNow),
+          limitWindowSeconds: 18_000,
         },
       ],
     },
@@ -6226,11 +6450,12 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
   xaiQuota: {
     'xai-ops.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 10 * minute,
       billing: {
         periodType: 'weekly',
         usagePercent: 42,
-        periodStart: demoResetIso(-2 * day),
-        periodEnd: demoResetIso(5 * day),
+        periodStart: demoResetIso(-2 * day, baseNow),
+        periodEnd: demoResetIso(5 * day, baseNow),
         productUsage: [
           { product: 'Grok Code Fast', usagePercent: 37 },
           { product: 'Grok Code Thinking', usagePercent: 52 },
@@ -6246,11 +6471,12 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
     },
     'xai-payg-buffer.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 12 * minute,
       billing: {
         periodType: 'monthly',
         usagePercent: 100,
-        periodStart: demoResetIso(-18 * day),
-        periodEnd: demoResetIso(12 * day),
+        periodStart: demoResetIso(-18 * day, baseNow),
+        periodEnd: demoResetIso(12 * day, baseNow),
         productUsage: [],
         monthlyLimitCents: 100_000,
         usedCents: 126_000,
@@ -6258,18 +6484,19 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
         onDemandCapCents: 100_000,
         onDemandUsedCents: 26_000,
         onDemandUsedPercent: 26,
-        billingPeriodStart: demoResetIso(-18 * day),
-        billingPeriodEnd: demoResetIso(12 * day),
+        billingPeriodStart: demoResetIso(-18 * day, baseNow),
+        billingPeriodEnd: demoResetIso(12 * day, baseNow),
         usedPercent: 100,
       },
     },
     'xai-payg-cap.json': {
       status: 'success',
+      fetchedAtMs: baseNow - 15 * minute,
       billing: {
         periodType: 'monthly',
         usagePercent: 100,
-        periodStart: demoResetIso(-20 * day),
-        periodEnd: demoResetIso(10 * day),
+        periodStart: demoResetIso(-20 * day, baseNow),
+        periodEnd: demoResetIso(10 * day, baseNow),
         productUsage: [],
         monthlyLimitCents: 100_000,
         usedCents: 150_000,
@@ -6277,12 +6504,13 @@ const getDemoQuotaStoreStateByFileName = (): DemoQuotaStoreState => ({
         onDemandCapCents: 50_000,
         onDemandUsedCents: 50_000,
         onDemandUsedPercent: 100,
-        billingPeriodStart: demoResetIso(-20 * day),
-        billingPeriodEnd: demoResetIso(10 * day),
+        billingPeriodStart: demoResetIso(-20 * day, baseNow),
+        billingPeriodEnd: demoResetIso(10 * day, baseNow),
         usedPercent: 100,
       },
     },
   },
+  devinQuota: {},
 });
 
 const scopeDemoQuotaRecord = <TState extends CredentialScopedQuotaState>(
@@ -6307,8 +6535,8 @@ const scopeDemoQuotaRecord = <TState extends CredentialScopedQuotaState>(
   return scoped;
 };
 
-export const getDemoQuotaStoreState = (): DemoQuotaStoreState => {
-  const raw = getDemoQuotaStoreStateByFileName();
+export const getDemoQuotaStoreState = (baseNow = getDemoEvidenceEpochMs()): DemoQuotaStoreState => {
+  const raw = getDemoQuotaStoreStateByFileName(baseNow);
   const filesByName = new Map<string, AuthFileItem[]>();
   getDemoAuthFiles().files.forEach((file) => {
     const candidates = filesByName.get(file.name) ?? [];
@@ -6319,7 +6547,9 @@ export const getDemoQuotaStoreState = (): DemoQuotaStoreState => {
     antigravityQuota: scopeDemoQuotaRecord(raw.antigravityQuota, filesByName),
     claudeQuota: scopeDemoQuotaRecord(raw.claudeQuota, filesByName),
     codexQuota: scopeDemoQuotaRecord(raw.codexQuota, filesByName),
+    devinQuota: scopeDemoQuotaRecord(raw.devinQuota, filesByName),
     kimiQuota: scopeDemoQuotaRecord(raw.kimiQuota, filesByName),
+    metaQuota: scopeDemoQuotaRecord(raw.metaQuota, filesByName),
     xaiQuota: scopeDemoQuotaRecord(raw.xaiQuota, filesByName),
   };
 };
@@ -6936,7 +7166,7 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
           balance: isCodexPro20x ? 42.6 : 18.4,
         },
         rate_limit_reset_credits: {
-          available_count: isCodexPro20x ? 3 : 2,
+          available_count: isCodexPro20x ? 3 : isCodexRecovered ? 1 : 2,
         },
         subscription_active_until: matchedAuthFile
           ? matchedSubscriptionActiveUntil
@@ -6945,7 +7175,7 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
     }
   } else if (requestUrl.includes('/rate-limit-reset-credits')) {
     body = {
-      available_count: isCodexPro20x ? 3 : 2,
+      available_count: isCodexPro20x ? 3 : isCodexRecovered ? 1 : 2,
       credits: isCodexPro20x
         ? [
             {
@@ -6970,22 +7200,32 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
               expires_at: new Date(now() + 18 * day).toISOString(),
             },
           ]
-        : [
-            {
-              id: 'demo-credit-1',
-              reset_type: 'codex_rate_limits',
-              status: 'available',
-              granted_at: new Date(now() - day).toISOString(),
-              expires_at: new Date(now() + 6 * day).toISOString(),
-            },
-            {
-              id: 'demo-credit-2',
-              reset_type: 'codex_rate_limits',
-              status: 'available',
-              granted_at: new Date(now() - 12 * hour).toISOString(),
-              expires_at: new Date(now() + 14 * day).toISOString(),
-            },
-          ],
+        : isCodexRecovered
+          ? [
+              {
+                id: 'demo-fallback-credit-1',
+                reset_type: 'codex_rate_limits',
+                status: 'available',
+                granted_at: new Date(now() - day).toISOString(),
+                expires_at: new Date(now() + 2 * day).toISOString(),
+              },
+            ]
+          : [
+              {
+                id: 'demo-credit-1',
+                reset_type: 'codex_rate_limits',
+                status: 'available',
+                granted_at: new Date(now() - day).toISOString(),
+                expires_at: new Date(now() + 6 * day).toISOString(),
+              },
+              {
+                id: 'demo-credit-2',
+                reset_type: 'codex_rate_limits',
+                status: 'available',
+                granted_at: new Date(now() - 12 * hour).toISOString(),
+                expires_at: new Date(now() + 14 * day).toISOString(),
+              },
+            ],
     };
   } else if (requestUrl.includes('anthropic.com/api/oauth/profile')) {
     body =

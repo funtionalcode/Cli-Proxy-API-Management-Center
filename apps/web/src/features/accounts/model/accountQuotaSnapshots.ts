@@ -20,6 +20,7 @@ import type {
   AccountQuotaWindowKind,
   AccountQuotaWindowSource,
 } from './accountQuotaDisplayWindows';
+import { remainingPercentFromUsed } from './accountQuotaDisplayWindows';
 import {
   CODEX_MAIN_QUOTA_SCOPE_KEY,
   canonicalizeCodexProviderWindowIdForScope,
@@ -27,7 +28,12 @@ import {
   isCodexLegacyAllScopeReplacement,
   isCodexMainProviderWindowId,
   inferCodexQuotaScopeFromProviderWindowId,
+  shouldClearInheritedCodexQuotaProgress,
 } from '@/utils/quota/codexQuota';
+import {
+  resolveCodexResetCreditsCountEvidenceAtMs,
+  resolveCodexResetCreditsDetailEvidenceAtMs,
+} from '@/utils/quota';
 
 const INCOMPLETE_MODEL_SCOPE_KIND = 'feature';
 const INCOMPLETE_MODEL_SCOPE_KEY = 'scope_unknown';
@@ -86,6 +92,93 @@ const snapshotFieldTieBreakKey = (snapshot: AccountQuotaSnapshotWindow, field: s
     snapshot.window_kind,
   ].join('\u0000');
 
+const isFiniteQuotaProgress = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const isValidQuotaProgressObservedAtMs = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+const resolveSnapshotQuotaProgressObservedAtMs = (
+  snapshot: AccountQuotaSnapshotWindow
+): number | null => {
+  if (!isFiniteQuotaProgress(snapshot.used_percent)) return null;
+  const quotaObservedAtMs = snapshot.field_sources?.quota?.observed_at_ms;
+  if (isValidQuotaProgressObservedAtMs(quotaObservedAtMs)) {
+    return quotaObservedAtMs;
+  }
+  return isValidQuotaProgressObservedAtMs(snapshot.observed_at_ms) ? snapshot.observed_at_ms : null;
+};
+
+const resolveSnapshotQuotaEvidenceObservedAtMs = (
+  snapshot: AccountQuotaSnapshotWindow
+): number | null => {
+  const fieldObservedAtMs = snapshot.field_sources?.quota?.observed_at_ms;
+  if (isValidQuotaProgressObservedAtMs(fieldObservedAtMs)) return fieldObservedAtMs;
+  return isValidQuotaProgressObservedAtMs(snapshot.observed_at_ms) ? snapshot.observed_at_ms : null;
+};
+
+type SnapshotQuotaEvidenceKind = 'used-bearing' | 'remaining-only' | 'metadata-only';
+
+const snapshotQuotaEvidenceKind = (
+  snapshot: AccountQuotaSnapshotWindow
+): SnapshotQuotaEvidenceKind => {
+  if (isFiniteQuotaProgress(snapshot.used_percent)) return 'used-bearing';
+  if (isFiniteQuotaProgress(snapshot.remaining_percent)) return 'remaining-only';
+  return 'metadata-only';
+};
+
+const resolveDefinitionQuotaEvidenceObservedAtMs = (
+  definition: AccountQuotaWindowDefinition
+): number | null => {
+  if (isFiniteQuotaProgress(definition.usedPercent)) {
+    if (definition.quotaProgressObservedAtMs !== undefined) {
+      return isValidQuotaProgressObservedAtMs(definition.quotaProgressObservedAtMs)
+        ? definition.quotaProgressObservedAtMs
+        : null;
+    }
+  }
+  if (
+    isFiniteQuotaProgress(definition.usedPercent) ||
+    isFiniteQuotaProgress(definition.remainingPercent)
+  ) {
+    return isValidQuotaProgressObservedAtMs(definition.observedAtMs)
+      ? definition.observedAtMs
+      : null;
+  }
+  return null;
+};
+
+type CodexSnapshotCycleRelationship = 'same' | 'different' | 'unknown';
+
+const resolveCodexSnapshotCycleRelationship = (
+  definition: AccountQuotaWindowDefinition,
+  snapshot: AccountQuotaSnapshotWindow
+): CodexSnapshotCycleRelationship => {
+  if (definition.currentCycle && snapshot.current_cycle) {
+    return definition.currentCycle.id === snapshot.current_cycle.id &&
+      definition.currentCycle.activationId === snapshot.current_cycle.activation_id
+      ? 'same'
+      : 'different';
+  }
+
+  return shouldClearInheritedCodexQuotaProgress(
+    {
+      providerWindowId: definition.providerWindowId,
+      endMs: definition.currentCycle?.scheduledEndMs ?? definition.cycleEndMs,
+      durationSeconds: definition.currentCycle?.durationSeconds ?? definition.durationSeconds,
+      boundaryAccuracy: definition.currentCycle?.boundaryAccuracy ?? definition.boundaryAccuracy,
+    },
+    {
+      providerWindowId: snapshot.provider_window_id,
+      endMs: snapshot.current_cycle?.scheduled_end_ms ?? snapshot.cycle_end_ms,
+      durationSeconds: snapshot.current_cycle?.duration_seconds ?? snapshot.duration_seconds,
+      boundaryAccuracy: snapshot.current_cycle?.boundary_accuracy ?? snapshot.boundary_accuracy,
+    }
+  )
+    ? 'different'
+    : 'unknown';
+};
+
 const compareSnapshotFieldFreshness =
   (field: string) => (left: AccountQuotaSnapshotWindow, right: AccountQuotaSnapshotWindow) => {
     const observedAtDelta =
@@ -101,7 +194,42 @@ export const mergeCodexResetCreditsFromQuotaSnapshots = (
   quota: CodexQuotaState | undefined,
   snapshots: AccountQuotaSnapshotWindow[]
 ): CodexQuotaState | undefined => {
-  const localObservedAt = quota?.fetchedAtMs ?? quota?.observedAtMs ?? 0;
+  const hasLocalCountEvidence =
+    typeof quota?.resetCreditsCountEvidenceAtMs === 'number' &&
+    Number.isFinite(quota.resetCreditsCountEvidenceAtMs) &&
+    quota.resetCreditsCountEvidenceAtMs > 0;
+  const localCountEvidenceAtMs =
+    resolveCodexResetCreditsCountEvidenceAtMs(quota) ?? 0;
+
+  const hasLocalDetailEvidence =
+    typeof quota?.resetCreditsDetailEvidenceAtMs === 'number' &&
+    Number.isFinite(quota.resetCreditsDetailEvidenceAtMs) &&
+    quota.resetCreditsDetailEvidenceAtMs > 0;
+  const localDetailEvidenceAtMs =
+    resolveCodexResetCreditsDetailEvidenceAtMs(quota) ?? 0;
+
+  const localResetInvalidationAtMs =
+    quota?.resetCreditsDetailStale === true &&
+    typeof quota?.resetCreditsEvidenceAtMs === 'number' &&
+    Number.isFinite(quota.resetCreditsEvidenceAtMs) &&
+    quota.resetCreditsEvidenceAtMs > 0
+      ? quota.resetCreditsEvidenceAtMs
+      : 0;
+
+  const localCountInvalidationBoundaryAtMs = Math.max(
+    localCountEvidenceAtMs,
+    localResetInvalidationAtMs
+  );
+
+  const localDetailInvalidationBoundaryAtMs =
+    quota?.resetCreditsDetailStale === true
+      ? Math.max(
+          localDetailEvidenceAtMs,
+          localCountEvidenceAtMs,
+          localResetInvalidationAtMs
+        )
+      : localDetailEvidenceAtMs;
+
   const usableSnapshots = snapshots.filter(
     (snapshot) =>
       snapshot.stale !== true &&
@@ -125,36 +253,95 @@ export const mergeCodexResetCreditsFromQuotaSnapshots = (
   const creditsObservedAt = creditsSnapshot
     ? snapshotFieldObservedAt(creditsSnapshot, 'reset_credits')
     : 0;
+
+  const localIsZeroCountAtOrAfterSnapshot =
+    quota?.rateLimitResetCreditsAvailableCount === 0 &&
+    localCountEvidenceAtMs >= creditsObservedAt;
+
   const useSnapshotCount =
     countSnapshot !== undefined &&
-    (quota?.rateLimitResetCreditsAvailableCount === undefined ||
-      countObservedAt >= localObservedAt);
+    ((quota?.rateLimitResetCreditsAvailableCount === undefined ||
+      quota?.rateLimitResetCreditsAvailableCount === null) &&
+    !hasLocalCountEvidence &&
+    localCountInvalidationBoundaryAtMs === 0
+      ? true
+      : countObservedAt >= localCountInvalidationBoundaryAtMs);
+
   const useSnapshotCredits =
     creditsSnapshot !== undefined &&
-    (quota?.rateLimitResetCredits === undefined || creditsObservedAt >= localObservedAt);
+    !localIsZeroCountAtOrAfterSnapshot &&
+    (quota?.resetCreditsDetailStale === true
+      ? creditsObservedAt >= localDetailInvalidationBoundaryAtMs
+      : quota?.rateLimitResetCredits === undefined &&
+        !hasLocalDetailEvidence &&
+        localDetailInvalidationBoundaryAtMs === 0
+        ? true
+        : creditsObservedAt >= localDetailInvalidationBoundaryAtMs);
+
   if (!useSnapshotCount && !useSnapshotCredits) return quota;
 
-  const clearCreditsFromNewZeroCount =
-    useSnapshotCount &&
-    countSnapshot?.reset_credits_available === 0 &&
-    countObservedAt >= creditsObservedAt;
+  const activeCount = useSnapshotCount
+    ? (countSnapshot.reset_credits_available ?? null)
+    : (quota?.rateLimitResetCreditsAvailableCount ?? null);
+  const activeCountObservedAt = useSnapshotCount ? countObservedAt : localCountEvidenceAtMs;
+  const activeCreditsObservedAt = useSnapshotCredits ? creditsObservedAt : localDetailEvidenceAtMs;
+
+  const clearCreditsFromZeroCount =
+    activeCount === 0 && activeCountObservedAt >= activeCreditsObservedAt;
+
+  const finalCredits = clearCreditsFromZeroCount
+    ? []
+    : useSnapshotCredits
+      ? (creditsSnapshot.reset_credits ?? []).map((credit) => ({
+          id: credit.id,
+          status: 'available',
+          grantedAt: '',
+          expiresAt: new Date(credit.expires_at_ms).toISOString(),
+        }))
+      : (quota?.rateLimitResetCredits ?? []);
+
+  const detailSupersedesCount =
+    useSnapshotCredits &&
+    !clearCreditsFromZeroCount &&
+    creditsObservedAt > 0 &&
+    creditsObservedAt > activeCountObservedAt;
+
+  const finalCount = detailSupersedesCount ? finalCredits.length : activeCount;
+  const finalCountEvidenceAtMs = detailSupersedesCount
+    ? creditsObservedAt
+    : Math.max(
+        localCountEvidenceAtMs,
+        useSnapshotCount ? countObservedAt : 0
+      );
+
+  const finalDetailEvidenceAtMs = clearCreditsFromZeroCount
+    ? null
+    : useSnapshotCredits
+      ? creditsObservedAt
+      : localDetailEvidenceAtMs > 0
+        ? localDetailEvidenceAtMs
+        : null;
 
   const base: CodexQuotaState = quota ?? { status: 'success', windows: [] };
   const next: CodexQuotaState = {
     ...base,
-    rateLimitResetCreditsAvailableCount: useSnapshotCount
-      ? (countSnapshot.reset_credits_available ?? null)
-      : base.rateLimitResetCreditsAvailableCount,
-    rateLimitResetCredits: clearCreditsFromNewZeroCount
-      ? []
+    rateLimitResetCreditsAvailableCount: finalCount,
+    rateLimitResetCredits: finalCredits,
+    resetCreditsCountEvidenceAtMs: finalCountEvidenceAtMs > 0 ? finalCountEvidenceAtMs : null,
+    resetCreditsDetailEvidenceAtMs: finalDetailEvidenceAtMs,
+    resetCreditsDetailStale: clearCreditsFromZeroCount
+      ? false
       : useSnapshotCredits
-        ? (creditsSnapshot.reset_credits ?? []).map((credit) => ({
-            id: credit.id,
-            status: 'available',
-            grantedAt: '',
-            expiresAt: new Date(credit.expires_at_ms).toISOString(),
-          }))
-        : base.rateLimitResetCredits,
+        ? false
+        : (quota?.resetCreditsDetailStale ?? false),
+    resetCreditsEvidenceAtMs: Math.max(
+      localCountEvidenceAtMs,
+      localDetailEvidenceAtMs,
+      localResetInvalidationAtMs,
+      useSnapshotCount ? countObservedAt : 0,
+      useSnapshotCredits ? creditsObservedAt : 0,
+      finalCountEvidenceAtMs
+    ),
   };
   return next;
 };
@@ -188,6 +375,31 @@ const toSnapshotWindow = (
     scopeComplete && hasModels ? definition.boundaryAccuracy : ('unknown' as const);
   const windowMode = scopeComplete && hasModels ? definition.windowMode : ('unknown' as const);
   const resetCredits = definition.provider === 'codex' ? toResetCredits(codexQuota) : [];
+  const snapshotObservedAtMs = observation?.observed_at_ms ?? definition.observedAtMs ?? nowMs;
+  const quotaProgressBelongsToObservation =
+    isFiniteQuotaProgress(definition.usedPercent) &&
+    isValidQuotaProgressObservedAtMs(definition.quotaProgressObservedAtMs) &&
+    definition.quotaProgressObservedAtMs === snapshotObservedAtMs;
+  const remainingOnlyBelongsToObservation =
+    !isFiniteQuotaProgress(definition.usedPercent) &&
+    isFiniteQuotaProgress(definition.remainingPercent) &&
+    isValidQuotaProgressObservedAtMs(definition.observedAtMs) &&
+    definition.observedAtMs === snapshotObservedAtMs;
+  const countEvidenceAtMs = resolveCodexResetCreditsCountEvidenceAtMs(codexQuota);
+  const countBelongsToObservation =
+    definition.provider === 'codex' &&
+    typeof codexQuota?.rateLimitResetCreditsAvailableCount === 'number' &&
+    countEvidenceAtMs !== null &&
+    countEvidenceAtMs >= snapshotObservedAtMs;
+
+  const detailEvidenceAtMs = codexQuota?.resetCreditsDetailEvidenceAtMs ?? null;
+  const detailIsStale = codexQuota?.resetCreditsDetailStale === true;
+  const detailBelongsToObservation =
+    definition.provider === 'codex' &&
+    !detailIsStale &&
+    detailEvidenceAtMs !== null &&
+    detailEvidenceAtMs >= snapshotObservedAtMs;
+
   return {
     provider_window_id: definition.providerWindowId,
     provider_window_aliases: definition.providerWindowAliases,
@@ -198,18 +410,23 @@ const toSnapshotWindow = (
     model_ids: persistedModelIDs,
     source: observation?.source ?? definition.observationSource,
     source_observation_id: observation?.source_observation_id,
-    observed_at_ms: observation?.observed_at_ms ?? definition.observedAtMs ?? nowMs,
+    observed_at_ms: snapshotObservedAtMs,
     boundary_accuracy: boundaryAccuracy,
     cycle_start_ms: definition.cycleStartMs ?? undefined,
     cycle_end_ms: definition.cycleEndMs ?? undefined,
     duration_seconds: definition.durationSeconds ?? undefined,
-    used_percent: definition.usedPercent ?? undefined,
-    remaining_percent: definition.remainingPercent ?? undefined,
-    reset_credits_available:
-      definition.provider === 'codex'
-        ? (codexQuota?.rateLimitResetCreditsAvailableCount ?? undefined)
-        : undefined,
-    reset_credits: resetCredits.length > 0 ? resetCredits : undefined,
+    ...(quotaProgressBelongsToObservation
+      ? {
+          used_percent: definition.usedPercent ?? undefined,
+          remaining_percent: definition.remainingPercent ?? undefined,
+        }
+      : remainingOnlyBelongsToObservation
+        ? { remaining_percent: definition.remainingPercent ?? undefined }
+        : {}),
+    reset_credits_available: countBelongsToObservation
+      ? (codexQuota?.rateLimitResetCreditsAvailableCount ?? undefined)
+      : undefined,
+    reset_credits: detailBelongsToObservation ? resetCredits : undefined,
     plan_type: definition.provider === 'codex' ? (codexQuota?.planType ?? undefined) : undefined,
     relationship_kind: definition.relationshipKind,
     container_provider_window_id: definition.containerProviderWindowId,
@@ -356,7 +573,7 @@ export const buildAccountQuotaSnapshotQueryAccounts = (
   );
   return rows.flatMap((row) => {
     const target = targets.get(row.selectionKey);
-    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai'].includes(row.provider)) {
+    if (!target || !['codex', 'claude', 'antigravity', 'kimi', 'xai', 'devin', 'meta'].includes(row.provider)) {
       return [];
     }
     return [
@@ -374,14 +591,12 @@ const normalizedSnapshotModelIDs = (modelIDs: string[] | undefined): string[] =>
     new Set((modelIDs ?? []).map((model) => model.trim().toLowerCase()).filter(Boolean))
   ).sort();
 
-const snapshotScopeParts = (
-  window: {
-    provider_window_id: string;
-    model_scope_kind: string;
-    model_scope_key?: string;
-    model_ids?: string[];
-  }
-) => {
+const snapshotScopeParts = (window: {
+  provider_window_id: string;
+  model_scope_kind: string;
+  model_scope_key?: string;
+  model_ids?: string[];
+}) => {
   if (isIncompleteModelScopeSnapshot(window)) {
     return [window.provider_window_id.trim(), 'models', ''];
   }
@@ -391,14 +606,12 @@ const snapshotScopeParts = (
   return [window.provider_window_id.trim(), kind, key, ...models];
 };
 
-const snapshotScopeKey = (
-  window: {
-    provider_window_id: string;
-    model_scope_kind: string;
-    model_scope_key?: string;
-    model_ids?: string[];
-  }
-) => snapshotScopeParts(window).join('\u0000');
+const snapshotScopeKey = (window: {
+  provider_window_id: string;
+  model_scope_kind: string;
+  model_scope_key?: string;
+  model_ids?: string[];
+}) => snapshotScopeParts(window).join('\u0000');
 
 const snapshotDisplayKey = (snapshot: AccountQuotaSnapshotWindow): string =>
   [
@@ -504,9 +717,18 @@ export const mergeAccountQuotaSnapshotWindows = (
             model_ids: undefined,
           }
         : snapshot;
-    return providerWindowId === snapshot.provider_window_id && normalizedSnapshot === snapshot
+    const semanticNormalizedSnapshot =
+      options.provider === 'claude' && snapshot.provider_window_id === 'extra-usage'
+        ? {
+            ...normalizedSnapshot,
+            window_kind: 'billing',
+            window_mode: 'non_window' as const,
+          }
+        : normalizedSnapshot;
+    return providerWindowId === snapshot.provider_window_id &&
+      semanticNormalizedSnapshot === snapshot
       ? snapshot
-      : { ...normalizedSnapshot, provider_window_id: providerWindowId };
+      : { ...semanticNormalizedSnapshot, provider_window_id: providerWindowId };
   });
   const scopedProviderWindowIds = new Set<string>();
   const scopedProviderWindowAliases = new Set<string>();
@@ -531,20 +753,16 @@ export const mergeAccountQuotaSnapshotWindows = (
       definition.modelScope.complete === false ||
       !scopedProviderWindowIds.has(definition.providerWindowId)
   );
-  const compatibleSnapshots = canonicalSnapshots.filter(
-    (snapshot) => {
-      if (snapshot.model_scope_kind.trim().toLowerCase() !== 'all') return true;
-      if (options.provider !== 'codex') return true;
-      const isKnownScopedLegacy = isCodexKnownScopedProviderWindowId(
-        snapshot.provider_window_id
-      );
-      return (
-        !isKnownScopedLegacy &&
-        !scopedProviderWindowIds.has(snapshot.provider_window_id) &&
-        !scopedProviderWindowAliases.has(snapshot.provider_window_id)
-      );
-    }
-  );
+  const compatibleSnapshots = canonicalSnapshots.filter((snapshot) => {
+    if (snapshot.model_scope_kind.trim().toLowerCase() !== 'all') return true;
+    if (options.provider !== 'codex') return true;
+    const isKnownScopedLegacy = isCodexKnownScopedProviderWindowId(snapshot.provider_window_id);
+    return (
+      !isKnownScopedLegacy &&
+      !scopedProviderWindowIds.has(snapshot.provider_window_id) &&
+      !scopedProviderWindowAliases.has(snapshot.provider_window_id)
+    );
+  });
   const snapshotsByKey = new Map<string, AccountQuotaSnapshotWindow>();
   compatibleSnapshots.forEach((snapshot) => {
     const key = snapshotScopeKey(snapshot);
@@ -558,39 +776,136 @@ export const mergeAccountQuotaSnapshotWindows = (
     if (definition.modelScope.kind === 'all' && definition.modelScope.complete === false) {
       return definition;
     }
-    const key = snapshotScopeKey(
-      {
-        provider_window_id: definition.providerWindowId,
-        model_scope_kind: definition.modelScope.kind,
-        model_scope_key: definition.modelScope.key,
-        model_ids: definition.modelScope.models,
-      },
-    );
+    const key = snapshotScopeKey({
+      provider_window_id: definition.providerWindowId,
+      model_scope_kind: definition.modelScope.kind,
+      model_scope_key: definition.modelScope.key,
+      model_ids: definition.modelScope.models,
+    });
     const snapshot = snapshotsByKey.get(key);
     if (!snapshot) return definition;
     matchedSnapshotKeys.add(key);
-    if (
-      definition.observedAtMs !== null &&
-      Number.isFinite(definition.observedAtMs) &&
-      snapshot.observed_at_ms < definition.observedAtMs
-    ) {
-      return definition;
-    }
+    const snapshotMetadataIsNewer =
+      definition.observedAtMs === null ||
+      !Number.isFinite(definition.observedAtMs) ||
+      snapshot.observed_at_ms >= definition.observedAtMs;
     const currentCycle = snapshotCycleDefinition(snapshot.current_cycle);
+    const isCodex = definition.provider === 'codex' || options.provider === 'codex';
+    const cycleRelationship = isCodex
+      ? resolveCodexSnapshotCycleRelationship(definition, snapshot)
+      : 'unknown';
+    const definitionUsedPercent = isFiniteQuotaProgress(definition.usedPercent)
+      ? definition.usedPercent
+      : null;
+    const definitionRemainingPercent = isFiniteQuotaProgress(definition.remainingPercent)
+      ? definition.remainingPercent
+      : definitionUsedPercent !== null
+        ? remainingPercentFromUsed(definitionUsedPercent)
+        : null;
+    const snapshotUsedPercent = isFiniteQuotaProgress(snapshot.used_percent)
+      ? snapshot.used_percent
+      : null;
+    const snapshotRemainingPercent = isFiniteQuotaProgress(snapshot.remaining_percent)
+      ? snapshot.remaining_percent
+      : null;
+    const definitionQuotaProgressObservedAtMs =
+      resolveDefinitionQuotaEvidenceObservedAtMs(definition);
+    const snapshotQuotaProgressObservedAtMs = resolveSnapshotQuotaProgressObservedAtMs(snapshot);
+    const snapshotQuotaEvidenceObservedAtMs = resolveSnapshotQuotaEvidenceObservedAtMs(snapshot);
+    const liveQuotaEvidenceObservedAtMs = definitionQuotaProgressObservedAtMs;
+    const isMeta = definition.provider === 'meta' || options.provider === 'meta';
+    const liveObservedAtMs = definition.observedAtMs;
+    const isMetaNewerLiveUnknown =
+      isMeta &&
+      definition.quotaProgressObservedAtMs === null &&
+      typeof liveObservedAtMs === 'number' &&
+      Number.isFinite(liveObservedAtMs) &&
+      snapshotQuotaEvidenceObservedAtMs !== null &&
+      liveObservedAtMs > snapshotQuotaEvidenceObservedAtMs;
+
+    const snapshotQuotaIsAtLeastLive =
+      !isMetaNewerLiveUnknown &&
+      (liveQuotaEvidenceObservedAtMs === null ||
+        (snapshotQuotaEvidenceObservedAtMs !== null &&
+          snapshotQuotaEvidenceObservedAtMs >= liveQuotaEvidenceObservedAtMs));
+    const differentCodexCycle = cycleRelationship === 'different';
+    const snapshotCanSupersedeDifferentCycle = differentCodexCycle && snapshotMetadataIsNewer;
+    const quotaEvidenceKind = snapshotQuotaEvidenceKind(snapshot);
+
+    if (differentCodexCycle && !snapshotCanSupersedeDifferentCycle) return definition;
+
+    let mergedUsedPercent = definitionUsedPercent;
+    let mergedRemainingPercent = definitionRemainingPercent;
+    let quotaProgressObservedAtMs =
+      definitionUsedPercent !== null ? definitionQuotaProgressObservedAtMs : null;
+    let quotaChanged = false;
+
+    if (snapshotCanSupersedeDifferentCycle) {
+      quotaChanged = true;
+      if (quotaEvidenceKind === 'used-bearing') {
+        mergedUsedPercent = snapshotUsedPercent;
+        mergedRemainingPercent =
+          snapshotRemainingPercent ?? remainingPercentFromUsed(snapshotUsedPercent);
+        quotaProgressObservedAtMs = snapshotQuotaProgressObservedAtMs;
+      } else if (quotaEvidenceKind === 'remaining-only') {
+        mergedUsedPercent = null;
+        mergedRemainingPercent = snapshotRemainingPercent;
+        quotaProgressObservedAtMs = null;
+      } else {
+        mergedUsedPercent = null;
+        mergedRemainingPercent = null;
+        quotaProgressObservedAtMs = null;
+      }
+    } else if (quotaEvidenceKind === 'used-bearing' && snapshotQuotaIsAtLeastLive) {
+      quotaChanged = true;
+      mergedUsedPercent = snapshotUsedPercent;
+      mergedRemainingPercent =
+        snapshotRemainingPercent ?? remainingPercentFromUsed(snapshotUsedPercent);
+      quotaProgressObservedAtMs = snapshotQuotaProgressObservedAtMs;
+    } else if (quotaEvidenceKind === 'remaining-only' && snapshotQuotaIsAtLeastLive) {
+      quotaChanged = true;
+      mergedUsedPercent = null;
+      mergedRemainingPercent = snapshotRemainingPercent;
+      quotaProgressObservedAtMs = null;
+    }
+
+    const useSnapshotMetadata = snapshotMetadataIsNewer || snapshotCanSupersedeDifferentCycle;
+    if (!useSnapshotMetadata && !quotaChanged) return definition;
+    const mergedModelScope = useSnapshotMetadata
+      ? snapshotModelScope(snapshot)
+      : definition.modelScope;
     return {
       ...definition,
-      windowMode: snapshot.window_mode,
-      observationSource: snapshot.source,
-      observedAtMs: snapshot.observed_at_ms,
-      boundaryAccuracy: snapshot.boundary_accuracy,
-      cycleStartMs: currentCycle?.actualStartMs ?? snapshot.cycle_start_ms ?? null,
-      cycleEndMs: currentCycle?.scheduledEndMs ?? snapshot.cycle_end_ms ?? null,
-      durationSeconds: currentCycle?.durationSeconds ?? snapshot.duration_seconds ?? null,
-      remainingPercent: snapshot.remaining_percent ?? definition.remainingPercent,
-      usedPercent: snapshot.used_percent ?? definition.usedPercent,
-      modelScope: snapshotModelScope(snapshot),
-      stale: snapshot.stale,
-      ...snapshotLifecycleDefinition(snapshot),
+      ...(useSnapshotMetadata
+        ? {
+            windowMode: snapshot.window_mode,
+            observationSource: snapshot.source,
+            observedAtMs: snapshot.observed_at_ms,
+            boundaryAccuracy: snapshot.boundary_accuracy,
+            cycleStartMs: currentCycle?.actualStartMs ?? snapshot.cycle_start_ms ?? null,
+            cycleEndMs: currentCycle?.scheduledEndMs ?? snapshot.cycle_end_ms ?? null,
+            durationSeconds: currentCycle?.durationSeconds ?? snapshot.duration_seconds ?? null,
+            modelScope: mergedModelScope,
+            stale: snapshot.stale,
+            ...snapshotLifecycleDefinition(snapshot),
+          }
+        : {}),
+      remainingPercent: mergedRemainingPercent,
+      usedPercent: mergedUsedPercent,
+      quotaProgressObservedAtMs,
+      display: {
+        ...definition.display,
+        ...(useSnapshotMetadata
+          ? {
+              observationSource: snapshot.source,
+              observedAtMs: snapshot.observed_at_ms,
+              modelScope: mergedModelScope,
+            }
+          : {}),
+        quotaProgressObservedAtMs,
+        remainingPercent: mergedRemainingPercent,
+        usedPercent: mergedUsedPercent,
+      },
     };
   });
   const unmatchedSnapshots = Array.from(snapshotsByKey.entries())
@@ -620,9 +935,7 @@ export const mergeAccountQuotaSnapshotWindows = (
   });
 };
 
-const snapshotModelScope = (
-  snapshot: AccountQuotaSnapshotWindow
-): QuotaModelScope => {
+const snapshotModelScope = (snapshot: AccountQuotaSnapshotWindow): QuotaModelScope => {
   if (isIncompleteModelScopeSnapshot(snapshot)) {
     return { kind: 'models', models: [], complete: false };
   }
@@ -729,7 +1042,9 @@ const snapshotDefinition = (
     options.provider === 'claude' ||
     options.provider === 'antigravity' ||
     options.provider === 'kimi' ||
-    options.provider === 'xai'
+    options.provider === 'meta' ||
+    options.provider === 'xai' ||
+    options.provider === 'devin'
       ? options.provider
       : 'summary';
   const resetAtMs = snapshot.cycle_end_ms ?? null;
@@ -739,12 +1054,19 @@ const snapshotDefinition = (
   const durationSeconds =
     lifecycle.currentCycle?.durationSeconds ?? snapshot.duration_seconds ?? null;
   const modelScope = snapshotModelScope(snapshot);
+  const usedPercent = isFiniteQuotaProgress(snapshot.used_percent) ? snapshot.used_percent : null;
+  const remainingPercent = isFiniteQuotaProgress(snapshot.remaining_percent)
+    ? snapshot.remaining_percent
+    : usedPercent !== null
+      ? remainingPercentFromUsed(usedPercent)
+      : null;
+  const quotaProgressObservedAtMs = resolveSnapshotQuotaProgressObservedAtMs(snapshot);
   const display: AccountQuotaDisplayWindow = {
     key,
     label: options.getLabel?.(snapshot) ?? snapshot.provider_window_id,
     kind: snapshotWindowKind(snapshot.window_kind),
-    remainingPercent: snapshot.remaining_percent ?? null,
-    usedPercent: snapshot.used_percent ?? null,
+    remainingPercent,
+    usedPercent,
     resetLabel: '-',
     resetAtMs: currentEndMs,
     resetAccuracy: snapshotResetAccuracy(snapshot.boundary_accuracy),
@@ -758,6 +1080,7 @@ const snapshotDefinition = (
     source: provider,
     observationSource: snapshot.source,
     observedAtMs: snapshot.observed_at_ms,
+    quotaProgressObservedAtMs,
     windowMode: snapshot.window_mode,
     cycleStartMs: currentStartMs,
     cycleEndMs: currentEndMs,
@@ -775,12 +1098,13 @@ const snapshotDefinition = (
     providerWindowAliases: snapshot.provider_window_aliases,
     observationSource: snapshot.source,
     observedAtMs: snapshot.observed_at_ms,
+    quotaProgressObservedAtMs,
     boundaryAccuracy: snapshot.boundary_accuracy,
     cycleStartMs: currentStartMs,
     cycleEndMs: currentEndMs,
     durationSeconds,
-    remainingPercent: snapshot.remaining_percent ?? null,
-    usedPercent: snapshot.used_percent ?? null,
+    remainingPercent,
+    usedPercent,
     stale: snapshot.stale,
     ...lifecycle,
     display,

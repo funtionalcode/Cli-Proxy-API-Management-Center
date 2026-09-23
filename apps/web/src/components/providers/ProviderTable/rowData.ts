@@ -19,6 +19,7 @@ export type ProviderKind =
   | 'interactions'
   | 'codex'
   | 'xai'
+  | 'meta'
   | 'claude'
   | 'vertex'
   | 'openai';
@@ -28,6 +29,7 @@ export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'interactions',
   'codex',
   'xai',
+  'meta',
   'claude',
   'vertex',
   'openai',
@@ -61,7 +63,7 @@ interface ProviderRowBase {
 export type ProviderRow =
   | (ProviderRowBase & { kind: 'gemini'; raw: GeminiKeyConfig })
   | (ProviderRowBase & { kind: 'interactions'; raw: GeminiKeyConfig })
-  | (ProviderRowBase & { kind: 'codex' | 'xai' | 'claude' | 'vertex'; raw: ProviderKeyConfig })
+  | (ProviderRowBase & { kind: 'codex' | 'xai' | 'meta' | 'claude' | 'vertex'; raw: ProviderKeyConfig })
   | (ProviderRowBase & { kind: 'openai'; raw: OpenAIProviderConfig });
 
 export interface BuildProviderRowsInput {
@@ -69,6 +71,7 @@ export interface BuildProviderRowsInput {
   interactions?: GeminiKeyConfig[];
   codex: ProviderKeyConfig[];
   xai?: ProviderKeyConfig[];
+  meta?: ProviderKeyConfig[];
   claude: ProviderKeyConfig[];
   vertex: ProviderKeyConfig[];
   openai: OpenAIProviderConfig[];
@@ -94,7 +97,7 @@ const getKeyConfigSortName = (config: GeminiKeyConfig | ProviderKeyConfig): stri
     .find(Boolean) ?? '';
 
 function buildKeyConfigRow(
-  kind: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'vertex',
+  kind: 'gemini' | 'interactions' | 'codex' | 'xai' | 'meta' | 'claude' | 'vertex',
   config: GeminiKeyConfig | ProviderKeyConfig,
   originalIndex: number,
   usageByProvider: ProviderRecentUsageMap
@@ -169,6 +172,7 @@ export function buildProviderRows({
   interactions = [],
   codex,
   xai = [],
+  meta = [],
   claude,
   vertex,
   openai,
@@ -181,6 +185,7 @@ export function buildProviderRows({
     ),
     ...codex.map((config, index) => buildKeyConfigRow('codex', config, index, usageByProvider)),
     ...xai.map((config, index) => buildKeyConfigRow('xai', config, index, usageByProvider)),
+    ...meta.map((config, index) => buildKeyConfigRow('meta', config, index, usageByProvider)),
     ...claude.map((config, index) => buildKeyConfigRow('claude', config, index, usageByProvider)),
     ...vertex.map((config, index) => buildKeyConfigRow('vertex', config, index, usageByProvider)),
     ...openai.map((provider, index) => buildOpenAIRow(provider, index, usageByProvider)),

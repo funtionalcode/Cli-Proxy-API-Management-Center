@@ -591,19 +591,6 @@ export function buildKimiQuotaRows(
     idPrefix = '',
     scope?: unknown
   ) => {
-    if (usage && typeof usage === 'object') {
-      const summary = toKimiUsageRow(
-        usage as Record<string, unknown>,
-        {
-          labelKey: 'kimi_quota.weekly_limit',
-        },
-        observedAtMs
-      );
-      if (summary) {
-        rows.push({ id: `${idPrefix}summary`, ...summary, ...applyKimiScopeLabel(summary, scope) });
-      }
-    }
-
     if (Array.isArray(limits)) {
       limits.forEach((item, idx) => {
         const detail = (item.detail && typeof item.detail === 'object' ? item.detail : item) as
@@ -638,6 +625,39 @@ export function buildKimiQuotaRows(
           });
         }
       });
+    }
+
+    if (usage && typeof usage === 'object') {
+      const summary = toKimiUsageRow(
+        usage as Record<string, unknown>,
+        {
+          labelKey: 'kimi_quota.weekly_limit',
+        },
+        observedAtMs
+      );
+      if (summary) {
+        const isTopLevel = idPrefix === '';
+        const scopedDuration = toInt((usage as Record<string, unknown>).duration);
+        const scopedTimeUnit = (usage as Record<string, unknown>).timeUnit;
+        const limitWindowSeconds = isTopLevel
+          ? 7 * 24 * 60 * 60
+          : scopedDuration !== null
+            ? kimiDurationSeconds(scopedDuration, scopedTimeUnit)
+            : null;
+        const resolvedScope =
+          (typeof (usage as Record<string, unknown>).scope === 'string' &&
+            ((usage as Record<string, unknown>).scope as string).trim()) ||
+          (typeof scope === 'string' && scope.trim()) ||
+          undefined;
+
+        rows.push({
+          id: `${idPrefix}summary`,
+          ...summary,
+          ...applyKimiScopeLabel(summary, scope),
+          scope: resolvedScope,
+          limitWindowSeconds,
+        });
+      }
     }
   };
 

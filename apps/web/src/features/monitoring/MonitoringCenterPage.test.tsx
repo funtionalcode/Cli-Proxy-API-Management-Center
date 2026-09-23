@@ -398,21 +398,20 @@ describe('MonitoringCenterPage account card', () => {
   it('keeps the provider metadata line when it matches the realtime primary label', () => {
     const display = buildRealtimeSourceDisplay(
       {
-        account: 'Edge Experiments',
-        accountMasked: 'Edge Experiments',
-        authLabel: 'DeepSeek Ops',
+        account: '',
+        accountMasked: '',
+        authLabel: '',
         channel: 'deepseek',
         channelHost: '-',
         provider: 'deepseek',
-        source: 'Edge Experiments',
-        sourceMasked: 'Edge Experiments',
+        source: 'deepseek',
+        sourceMasked: 'deepseek',
       },
       t
     );
 
     expect(display.primary).toBe('deepseek');
     expect(display.meta).toBe('Provider: deepseek');
-    expect(display.meta).not.toContain('Edge Experiments');
   });
 
   it('shows one realtime source meta value by priority', () => {

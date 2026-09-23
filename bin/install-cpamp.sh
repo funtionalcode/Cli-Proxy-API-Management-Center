@@ -11,6 +11,7 @@ non_interactive="${CPAMP_NON_INTERACTIVE:-0}"
 skip_execute="${CPAMP_SKIP_EXECUTE:-0}"
 lang_code="${CPAMP_LANG:-}"
 operation="${CPAMP_OPERATION:-}"
+positional_operation=""
 
 os_name="unknown"
 arch_name="unknown"
@@ -77,6 +78,7 @@ native_admin_key_file=""
 native_config_data_dir=""
 native_config_db_path=""
 native_config_data_key_path=""
+native_config_data_dir_declared="0"
 native_config_db_declared="0"
 native_config_data_key_declared="0"
 native_run_data_dir=""
@@ -332,6 +334,8 @@ text() {
     en-US:repair_restart_failed) printf 'Admin key reset succeeded, but CPAMP failed to restart. Run docker compose up -d from the install directory.' ;;
     zh-CN:repair_verify_failed) printf '管理员密钥修复后验证仍失败，请确认面板和修复命令使用同一个 Docker 数据卷。' ;;
     en-US:repair_verify_failed) printf 'Admin key repair completed, but verification still failed. Confirm that the panel and repair command use the same Docker volume.' ;;
+    zh-CN:legacy_native_layout) printf '检测到旧版 Native Manager 数据布局，继续使用安装目录中的持久化数据：%s' "$2" ;;
+    en-US:legacy_native_layout) printf 'Detected a legacy native Manager data layout; using the installer-managed persistent data directory: %s' "$2" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -585,15 +589,53 @@ detect_existing_installation() {
   fi
 }
 
-normalize_operation() {
-  case "$operation" in
-    '') ;;
-    install|new|fresh) operation="install" ;;
-    upgrade|update) operation="upgrade" ;;
-    repair|recover|reset-admin-key) operation="repair" ;;
-    regenerate|overwrite|reconfigure) operation="regenerate" ;;
-    *) die "Unsupported CPAMP_OPERATION: $operation" ;;
+canonicalize_operation_name() {
+  local value="$1"
+  case "$value" in
+    '') printf '%s\n' "" ;;
+    install|new|fresh) printf '%s\n' "install" ;;
+    upgrade|update) printf '%s\n' "upgrade" ;;
+    repair|recover|reset-admin-key) printf '%s\n' "repair" ;;
+    regenerate|overwrite|reconfigure) printf '%s\n' "regenerate" ;;
+    *) return 1 ;;
   esac
+}
+
+normalize_operation() {
+  local env_canonical=""
+  local arg_canonical=""
+
+  if [ -n "$operation" ]; then
+    env_canonical="$(canonicalize_operation_name "$operation")" ||
+      die "Unsupported CPAMP_OPERATION: $operation"
+  fi
+
+  if [ -n "$positional_operation" ]; then
+    arg_canonical="$(canonicalize_operation_name "$positional_operation")" ||
+      die "Unsupported operation argument: $positional_operation"
+  fi
+
+  if [ -n "$env_canonical" ] && [ -n "$arg_canonical" ]; then
+    if [ "$env_canonical" != "$arg_canonical" ]; then
+      die "Conflicting CPAMP operations: CPAMP_OPERATION=$operation and argument=$positional_operation"
+    fi
+    operation="$env_canonical"
+  elif [ -n "$arg_canonical" ]; then
+    operation="$arg_canonical"
+  elif [ -n "$env_canonical" ]; then
+    operation="$env_canonical"
+  fi
+  positional_operation=""
+}
+
+parse_arguments() {
+  if [ "$#" -gt 1 ]; then
+    die "Unexpected arguments: $*"
+  fi
+  if [ "$#" -eq 1 ]; then
+    positional_operation="$1"
+  fi
+  normalize_operation
 }
 
 choose_new_project_name() {
@@ -1178,6 +1220,75 @@ resolve_native_runtime_paths() {
     native_db_path="$native_config_db_path"
     native_data_key_path="$native_config_data_key_path"
   fi
+}
+
+reconcile_legacy_native_manager_paths() {
+  local canonical_data_dir="$install_dir/data"
+  local canonical_db_path="$canonical_data_dir/usage.sqlite"
+  local canonical_data_key_path="$canonical_data_dir/data.key"
+  local legacy_runtime_data_dir="$native_existing_config_dir/data"
+  local resolved_canonical_key=""
+
+  # Condition A: If the currently resolved DB path already exists as any filesystem object (including symlinks/dangling symlinks/directories), do not fallback
+  if [ -e "$native_db_path" ] || [ -L "$native_db_path" ]; then
+    return 0
+  fi
+
+  # Condition B: If run.sh or systemd service explicitly declared any Manager path authority, do not fallback
+  if [ "$native_run_data_dir_declared" = "1" ] ||
+     [ "$native_run_db_path_declared" = "1" ] ||
+     [ "$native_run_data_key_path_declared" = "1" ] ||
+     [ "$native_service_data_dir_declared" = "1" ] ||
+     [ "$native_service_db_path_declared" = "1" ] ||
+     [ "$native_service_data_key_path_declared" = "1" ]; then
+    return 0
+  fi
+
+  # Condition C: If config.json explicitly declared dbPath, do not fallback
+  if [ "$native_config_db_declared" = "1" ]; then
+    return 0
+  fi
+
+  # Condition D: Only fallback if config.json dataDir is missing or resolves to legacy runtime data dir
+  if [ "$native_config_data_dir" != "$legacy_runtime_data_dir" ]; then
+    return 0
+  fi
+
+  # data.key authority: If config.json explicitly declared dataKeyPath, it must resolve to canonical data.key
+  if [ -d "$canonical_data_dir" ]; then
+    resolved_canonical_key="$(cd "$canonical_data_dir" 2>/dev/null && pwd -P)/data.key"
+  fi
+  if [ "$native_config_data_key_declared" = "1" ]; then
+    if [ "$native_config_data_key_path" != "$canonical_data_key_path" ] &&
+       { [ -z "$resolved_canonical_key" ] || [ "$native_config_data_key_path" != "$resolved_canonical_key" ]; }; then
+      return 0
+    fi
+  fi
+
+  # Legacy runtime dataset remnants: if any SQLite dataset artifact or data.key exists in legacy runtime data dir, do not fallback
+  local remnant=""
+  for remnant in \
+    "$legacy_runtime_data_dir/usage.sqlite" \
+    "$legacy_runtime_data_dir/usage.sqlite-wal" \
+    "$legacy_runtime_data_dir/usage.sqlite-shm" \
+    "$legacy_runtime_data_dir/usage.sqlite-journal" \
+    "$legacy_runtime_data_dir/data.key"; do
+    if [ -e "$remnant" ] || [ -L "$remnant" ]; then
+      return 0
+    fi
+  done
+
+  # Logical dataset check: both canonical usage.sqlite and data.key must be regular readable files
+  if [ ! -f "$canonical_db_path" ] || [ ! -r "$canonical_db_path" ] ||
+     [ ! -f "$canonical_data_key_path" ] || [ ! -r "$canonical_data_key_path" ]; then
+    return 0
+  fi
+
+  native_data_dir="$canonical_data_dir"
+  native_db_path="$canonical_db_path"
+  native_data_key_path="$canonical_data_key_path"
+
+  say "$(text legacy_native_layout "$canonical_data_dir")"
 }
 
 require_native_manager_data_files() {
@@ -2043,8 +2154,10 @@ load_existing_native_config() {
   normalize_port "$cpamp_port" || die "Invalid CPAMP port in existing native config: $cpamp_port"
 
   if json_key_declared "$native_existing_config_file" dataDir; then
+    native_config_data_dir_declared="1"
     raw_data_dir="$(require_json_string_value "$native_existing_config_file" dataDir)"
   else
+    native_config_data_dir_declared="0"
     raw_data_dir="./data"
   fi
   native_data_dir="$(resolve_native_config_path "$raw_data_dir" "$config_dir")"
@@ -2068,6 +2181,7 @@ load_existing_native_config() {
   native_config_db_path="$native_db_path"
   native_config_data_key_path="$native_data_key_path"
   resolve_native_runtime_paths
+  reconcile_legacy_native_manager_paths
   require_native_manager_data_files
 
   raw_admin_key_file="$(require_json_string_value "$native_existing_config_file" adminKeyFile)"
@@ -3626,8 +3740,10 @@ resolve_latest_version() {
     printf '%s\n' "$resolved"
     return
   fi
-  effective_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest")"
-  resolved="${effective_url##*/}"
+  resolved="$(curl --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 30 --max-filesize 128 -fsSL "https://raw.githubusercontent.com/${repo}/update-channel/stable-version.txt")"
+  if ! printf '%s\n' "$resolved" | LC_ALL=C grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+    die "Invalid stable update channel; specify CPAMP_VERSION explicitly."
+  fi
   validate_version_value "$(text version)" "$resolved"
   printf '%s\n' "$resolved"
 }
@@ -4495,6 +4611,7 @@ post_install_message() {
 }
 
 main() {
+  parse_arguments "$@"
   detect_environment
   require_interactive_tty
   if [ -z "$lang_code" ] && [ "$non_interactive" != "1" ]; then

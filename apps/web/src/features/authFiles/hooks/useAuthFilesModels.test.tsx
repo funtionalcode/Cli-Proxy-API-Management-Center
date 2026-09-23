@@ -10,7 +10,8 @@ const { mocks } = vi.hoisted(() => ({
     getModelsForAuthFile: vi.fn(),
     getModelDefinitions: vi.fn(),
     showNotification: vi.fn(),
-    t: (key: string) => key,
+    t: (key: string, options?: { message?: string }) =>
+      options?.message ? `${key}:${options.message}` : key,
   },
 }));
 
@@ -91,6 +92,7 @@ describe('useAuthFilesModels', () => {
     expect(mocks.getModelDefinitions).toHaveBeenCalledWith('codex');
     expect(latest?.modelsList).toEqual([{ id: 'gpt-5-codex' }]);
     expect(latest?.modelDefinitions).toEqual([{ id: 'gpt-5-codex' }, { id: 'gpt-5-mini' }]);
+    expect(mocks.showNotification).not.toHaveBeenCalled();
 
     await act(async () => {
       await latest?.showModels(file);
@@ -116,6 +118,10 @@ describe('useAuthFilesModels', () => {
     expect(mocks.getModelDefinitions).toHaveBeenCalledTimes(2);
     expect(latest?.modelsList).toEqual([{ id: 'gpt-5-mini' }]);
     expect(latest?.modelDefinitions).toEqual([{ id: 'gpt-5-mini' }]);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.models_refresh_success',
+      'success'
+    );
   });
 
   it('only marks an explicit refresh as refreshing', async () => {
@@ -179,6 +185,14 @@ describe('useAuthFilesModels', () => {
     expect(latest?.modelDefinitions).toEqual([{ id: 'gpt-5-codex' }, { id: 'gpt-5-mini' }]);
     expect(latest?.modelsError).toBe('failed');
     expect(latest?.modelDefinitionsError).toBe('failed');
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('notification.load_failed'),
+      'error'
+    );
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      'auth_files.models_refresh_success',
+      'success'
+    );
     expect(latest?.modelsSelectionKey).toBe('shared.json\u0000auth-1');
   });
 
@@ -237,6 +251,52 @@ describe('useAuthFilesModels', () => {
     expect(latest?.modelDefinitions).toEqual([]);
     expect(latest?.modelDefinitionsError).toBe('unsupported');
     expect(mocks.showNotification).not.toHaveBeenCalled();
+  });
+
+  it('reports a partial warning when definitions fail during an explicit refresh', async () => {
+    await mount();
+    await act(async () => {
+      await latest?.showModels(file);
+    });
+    mocks.showNotification.mockReset();
+
+    mocks.getModelsForAuthFile.mockResolvedValueOnce([{ id: 'gpt-5-mini' }]);
+    mocks.getModelDefinitions.mockRejectedValueOnce(new Error('definitions unavailable'));
+    await act(async () => {
+      await latest?.refreshModels(file);
+    });
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.models_refresh_partial:definitions unavailable',
+      'warning'
+    );
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      'auth_files.models_refresh_success',
+      'success'
+    );
+  });
+
+  it('treats unsupported definitions as a successful explicit model refresh', async () => {
+    await mount();
+    await act(async () => {
+      await latest?.showModels(file);
+    });
+    mocks.showNotification.mockReset();
+
+    mocks.getModelsForAuthFile.mockResolvedValueOnce([{ id: 'gpt-5-mini' }]);
+    mocks.getModelDefinitions.mockRejectedValueOnce(new Error('404 Not Found'));
+    await act(async () => {
+      await latest?.refreshModels(file);
+    });
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.models_refresh_success',
+      'success'
+    );
+    expect(mocks.showNotification).not.toHaveBeenCalledWith(
+      expect.stringContaining('models_refresh_partial'),
+      'warning'
+    );
   });
 
   it('classifies an HTTP 404 model endpoint as unsupported even with a generic message', async () => {

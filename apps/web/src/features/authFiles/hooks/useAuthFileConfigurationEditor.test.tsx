@@ -7,14 +7,25 @@ import {
   type UseAuthFileConfigurationEditorResult,
 } from './useAuthFileConfigurationEditor';
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+};
+
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     downloadText: vi.fn(),
     list: vi.fn(),
+    lookup: vi.fn(),
     patchFieldsWithPluginSourceFallback: vi.fn(),
     patchFieldsForAuthIndexes: vi.fn(),
     showNotification: vi.fn(),
-    loadFiles: vi.fn(async () => undefined),
+    reconcileSource: vi.fn(async (_name?: string): Promise<void> => undefined),
     onSaved: vi.fn(),
     t: (key: string, options?: { name?: string }) =>
       options?.name ? `${key}:${options.name}` : key,
@@ -35,6 +46,7 @@ vi.mock('@/services/api', async (importOriginal) => {
       ...actual.authFilesApi,
       downloadText: mocks.downloadText,
       list: mocks.list,
+      lookup: mocks.lookup,
       patchFieldsWithPluginSourceFallback: mocks.patchFieldsWithPluginSourceFallback,
       patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
     },
@@ -91,7 +103,7 @@ describe('useAuthFileConfigurationEditor', () => {
       disableControls: false,
       sourceMemberCount,
       connectionKey,
-      loadFiles: mocks.loadFiles,
+      reconcileSource: mocks.reconcileSource,
       onSaved: mocks.onSaved,
     });
     useEffect(() => {
@@ -105,11 +117,12 @@ describe('useAuthFileConfigurationEditor', () => {
     renderer = null;
     mocks.downloadText.mockReset();
     mocks.list.mockReset();
+    mocks.lookup.mockReset();
     mocks.patchFieldsWithPluginSourceFallback.mockReset();
     mocks.patchFieldsForAuthIndexes.mockReset();
     mocks.showNotification.mockReset();
-    mocks.loadFiles.mockReset();
-    mocks.loadFiles.mockResolvedValue(undefined);
+    mocks.reconcileSource.mockReset();
+    mocks.reconcileSource.mockResolvedValue(undefined);
     mocks.onSaved.mockReset();
     mocks.downloadText.mockResolvedValue(
       JSON.stringify({
@@ -122,6 +135,7 @@ describe('useAuthFileConfigurationEditor', () => {
       })
     );
     mocks.list.mockResolvedValue({ files: [file] });
+    mocks.lookup.mockResolvedValue([file]);
     mocks.patchFieldsWithPluginSourceFallback.mockResolvedValue({ status: 'ok' });
     mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
   });
@@ -163,6 +177,9 @@ describe('useAuthFileConfigurationEditor', () => {
       await latest?.save();
     });
 
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.lookup).toHaveBeenCalledWith({ name: 'xai.json' });
+    expect(mocks.lookup).toHaveBeenCalledWith({ name: 'runtime-xai-1' });
     expect(mocks.patchFieldsWithPluginSourceFallback).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'xai.json',
@@ -178,7 +195,8 @@ describe('useAuthFileConfigurationEditor', () => {
         }),
       ]
     );
-    expect(mocks.loadFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.downloadText).toHaveBeenCalledWith('xai.json');
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('xai.json');
     expect(mocks.onSaved).toHaveBeenCalledWith('xai.json');
     expect(mocks.showNotification).toHaveBeenCalledWith('accounts.config_saved_success', 'success');
     expect(latest?.state?.record).toMatchObject({ note: 'updated' });
@@ -276,6 +294,9 @@ describe('useAuthFileConfigurationEditor', () => {
         excluded_models: null,
       }
     );
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.lookup).toHaveBeenCalled();
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('xai.json');
     expect(latest?.state?.record).toMatchObject({
       'excluded-models': ['canonical-model'],
     });
@@ -352,7 +373,7 @@ describe('useAuthFileConfigurationEditor', () => {
   });
 
   it('fails closed when the credential identity disappears before saving', async () => {
-    mocks.list.mockResolvedValue({ files: [] });
+    mocks.lookup.mockResolvedValue([]);
     await act(async () => {
       renderer = create(<Harness />);
       await Promise.resolve();
@@ -364,13 +385,174 @@ describe('useAuthFileConfigurationEditor', () => {
       await latest?.save();
     });
 
+    expect(mocks.list).not.toHaveBeenCalled();
     expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
+    expect(mocks.reconcileSource).not.toHaveBeenCalled();
     expect(mocks.showNotification).toHaveBeenCalledWith(
       expect.stringContaining('notification.update_failed'),
       'error'
     );
     expect(latest?.dirty).toBe(true);
     expect(latest?.state?.saving).toBe(false);
+  });
+
+  it.each([
+    ['runtime ID changed', [{ ...file, id: 'runtime-replacement' }] as AuthFileItem[]],
+    ['account ID changed', [{ ...file, account_id: 'account-replacement' }] as AuthFileItem[]],
+    [
+      'cross-source runtime collision',
+      [
+        file,
+        {
+          name: 'other.json',
+          id: 'runtime-xai-1',
+          type: 'xai',
+          provider: 'xai',
+          authIndex: 'auth-2',
+        } as AuthFileItem,
+      ] as AuthFileItem[],
+    ],
+    [
+      'physical selector collision',
+      [
+        file,
+        {
+          name: 'other.json',
+          id: 'xai.json',
+          type: 'xai',
+          provider: 'xai',
+        } as AuthFileItem,
+      ] as AuthFileItem[],
+    ],
+  ])(
+    'fails closed without mutation or reconcile when identity changes: %s',
+    async (_label, refreshedFiles) => {
+      mocks.lookup.mockResolvedValue(refreshedFiles);
+      await act(async () => {
+        renderer = create(<Harness />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      act(() => latest?.updateField('note', 'updated'));
+      await act(async () => {
+        await latest?.save();
+      });
+
+      expect(mocks.list).not.toHaveBeenCalled();
+      expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
+      expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
+      expect(mocks.reconcileSource).not.toHaveBeenCalled();
+      expect(mocks.showNotification).toHaveBeenCalledWith(
+        expect.stringContaining('notification.update_failed'),
+        'error'
+      );
+      expect(latest?.dirty).toBe(true);
+      expect(latest?.state?.saving).toBe(false);
+    }
+  );
+
+  it('fails closed when an unindexed account snapshot changes after preflight lookup', async () => {
+    const unindexedFile = {
+      name: 'unindexed.json',
+      id: 'runtime-unindexed',
+      type: 'xai',
+      provider: 'xai',
+      account: 'original@example.com',
+    } as AuthFileItem;
+    const refreshedFile = {
+      ...unindexedFile,
+      account: 'replacement@example.com',
+    };
+    mocks.downloadText.mockResolvedValue(JSON.stringify({ type: 'xai', note: 'old' }));
+    mocks.lookup.mockResolvedValue([refreshedFile]);
+
+    await act(async () => {
+      renderer = create(<Harness activeFile={unindexedFile} />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    act(() => latest?.updateField('note', 'updated'));
+    await act(async () => {
+      await latest?.save();
+    });
+
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
+    expect(mocks.reconcileSource).not.toHaveBeenCalled();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('notification.update_failed'),
+      'error'
+    );
+    expect(latest?.dirty).toBe(true);
+    expect(latest?.state?.saving).toBe(false);
+  });
+
+  it('saves an editable JSON-array member with full source identities and reconciles the shared source', async () => {
+    const member1 = {
+      name: 'shared.json',
+      id: 'runtime-1',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'auth-1',
+      account_id: 'account-1',
+    } as AuthFileItem;
+    const member2 = {
+      name: 'shared.json',
+      id: 'runtime-2',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'auth-2',
+      account_id: 'account-2',
+    } as AuthFileItem;
+    mocks.downloadText.mockResolvedValue(
+      JSON.stringify([
+        {
+          type: 'xai',
+          auth_index: 'auth-1',
+          account_id: 'account-1',
+          note: 'first',
+        },
+        {
+          type: 'xai',
+          auth_index: 'auth-2',
+          account_id: 'account-2',
+          note: 'second',
+        },
+      ])
+    );
+    mocks.lookup.mockResolvedValue([member1, member2]);
+
+    await act(async () => {
+      renderer = create(<Harness activeFile={member1} sourceMemberCount={2} />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    act(() => latest?.updateField('note', 'updated-first'));
+    setDownloadedRecord({
+      type: 'xai',
+      auth_index: 'auth-1',
+      account_id: 'account-1',
+      note: 'updated-first',
+    });
+
+    await act(async () => {
+      await latest?.save();
+    });
+
+    expect(mocks.patchFieldsWithPluginSourceFallback).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'shared.json', authIndex: 'auth-1' }),
+      { note: 'updated-first' },
+      [
+        expect.objectContaining({ name: 'shared.json', authIndex: 'auth-1' }),
+        expect.objectContaining({ name: 'shared.json', authIndex: 'auth-2' }),
+      ]
+    );
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('shared.json');
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(latest?.dirty).toBe(false);
   });
 
   it('deduplicates repeated save requests for the same credential', async () => {
@@ -401,7 +583,7 @@ describe('useAuthFileConfigurationEditor', () => {
       await Promise.resolve();
     });
 
-    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.list).not.toHaveBeenCalled();
     expect(mocks.patchFieldsWithPluginSourceFallback).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -409,6 +591,7 @@ describe('useAuthFileConfigurationEditor', () => {
       await Promise.all([firstSave, duplicateSave]);
     });
 
+    expect(mocks.reconcileSource).toHaveBeenCalledTimes(1);
     expect(mocks.showNotification).toHaveBeenCalledWith('accounts.config_saved_success', 'success');
   });
 
@@ -439,8 +622,34 @@ describe('useAuthFileConfigurationEditor', () => {
     expect(latest?.dirty).toBe(false);
   });
 
-  it('keeps a successful save successful when the list refresh fails', async () => {
-    mocks.loadFiles.mockRejectedValueOnce(new Error('refresh failed'));
+  it('retains successful save with fallback draft and download warning when raw download fails', async () => {
+    await act(async () => {
+      renderer = create(<Harness />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    act(() => latest?.updateField('note', 'updated-note'));
+    mocks.downloadText.mockRejectedValueOnce(new Error('raw download network error'));
+
+    await act(async () => {
+      await latest?.save();
+    });
+
+    expect(latest?.dirty).toBe(false);
+    expect(latest?.draft?.note).toBe('updated-note');
+    expect(mocks.showNotification).toHaveBeenCalledWith('accounts.config_saved_success', 'success');
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('notification.download_failed'),
+      'warning'
+    );
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('xai.json');
+    expect(mocks.onSaved).toHaveBeenCalledWith('xai.json');
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful save successful when the accounts source reconciliation fails', async () => {
+    mocks.reconcileSource.mockRejectedValueOnce(new Error('reconciliation failed'));
     await act(async () => {
       renderer = create(<Harness />);
       await Promise.resolve();
@@ -469,6 +678,37 @@ describe('useAuthFileConfigurationEditor', () => {
       expect.stringContaining('notification.update_failed'),
       'error'
     );
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('keeps save successful with fallback draft and two warnings when both raw download and reconcile fail', async () => {
+    mocks.reconcileSource.mockRejectedValueOnce(new Error('reconciliation failed'));
+    await act(async () => {
+      renderer = create(<Harness />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    act(() => latest?.updateField('note', 'updated-note'));
+    mocks.downloadText.mockRejectedValueOnce(new Error('raw download failed'));
+
+    await act(async () => {
+      await latest?.save();
+    });
+
+    expect(latest?.dirty).toBe(false);
+    expect(latest?.draft?.note).toBe('updated-note');
+    expect(mocks.showNotification).toHaveBeenCalledWith('accounts.config_saved_success', 'success');
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('notification.download_failed'),
+      'warning'
+    );
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('notification.load_failed'),
+      'warning'
+    );
+    expect(mocks.onSaved).toHaveBeenCalledWith('xai.json');
+    expect(mocks.list).not.toHaveBeenCalled();
   });
 
   it('uses the persisted source record for raw data after saving', async () => {
@@ -526,7 +766,11 @@ describe('useAuthFileConfigurationEditor', () => {
       )
     );
     sibling.name = 'xai-sibling.json';
-    mocks.list.mockResolvedValue({ files: [file, sibling] });
+    mocks.lookup.mockImplementation(async (target: { name: string }) => {
+      if (target.name === sibling.name) return [sibling];
+      if (target.name === file.name) return [file];
+      return [];
+    });
     let resolvePatch!: () => void;
     mocks.patchFieldsWithPluginSourceFallback.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -593,7 +837,11 @@ describe('useAuthFileConfigurationEditor', () => {
         note: primaryDownloadCount === 1 ? 'old' : 'reloaded',
       });
     });
-    mocks.list.mockResolvedValue({ files: [file, sibling] });
+    mocks.lookup.mockImplementation(async (target: { name: string }) => {
+      if (target.name === sibling.name) return [sibling];
+      if (target.name === file.name) return [file];
+      return [];
+    });
     let resolvePatch!: () => void;
     mocks.patchFieldsWithPluginSourceFallback.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -631,7 +879,8 @@ describe('useAuthFileConfigurationEditor', () => {
     await act(async () => {
       await latest?.save();
     });
-    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.lookup).toHaveBeenCalled();
     expect(mocks.patchFieldsWithPluginSourceFallback).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -698,4 +947,109 @@ describe('useAuthFileConfigurationEditor', () => {
     expect(latest?.draft?.note).toBe('connection-b');
     expect(latest?.dirty).toBe(false);
   });
+
+  it.each([
+    ['preflight late'],
+    ['mutation late'],
+    ['raw download late'],
+    ['reconcile late'],
+  ] as const)(
+    'does not contaminate new connection when save finishes late on %s',
+    async (phase) => {
+      const deferredPreflight = createDeferred<AuthFileItem[]>();
+      const deferredMutation = createDeferred<{ status: string }>();
+      const deferredDownload = createDeferred<string>();
+      const deferredReconcile = createDeferred<void>();
+
+      mocks.downloadText.mockImplementation(async () =>
+        JSON.stringify({
+          type: 'xai',
+          auth_index: 'auth-1',
+          account_id: 'account-1',
+          note: 'connection-a',
+        })
+      );
+
+      if (phase === 'preflight late') {
+        mocks.lookup.mockReturnValue(deferredPreflight.promise);
+      } else {
+        mocks.lookup.mockResolvedValue([file]);
+      }
+
+      if (phase === 'mutation late') {
+        mocks.patchFieldsWithPluginSourceFallback.mockReturnValue(deferredMutation.promise);
+      } else {
+        mocks.patchFieldsWithPluginSourceFallback.mockResolvedValue({ status: 'ok' });
+      }
+
+      if (phase === 'reconcile late') {
+        mocks.reconcileSource.mockReturnValue(deferredReconcile.promise);
+      } else {
+        mocks.reconcileSource.mockResolvedValue(undefined);
+      }
+
+      await act(async () => {
+        renderer = create(<Harness connectionKey="connection-a" />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      act(() => latest?.updateField('note', 'save-on-a'));
+
+      if (phase === 'raw download late') {
+        mocks.downloadText.mockReturnValue(deferredDownload.promise);
+      }
+
+      let savePromise!: Promise<void>;
+      act(() => {
+        savePromise = latest!.save();
+      });
+
+      // Switch to connection-b
+      mocks.downloadText.mockImplementation(async () =>
+        JSON.stringify({
+          type: 'xai',
+          auth_index: 'auth-1',
+          account_id: 'account-1',
+          note: 'connection-b',
+        })
+      );
+      mocks.showNotification.mockClear();
+
+      await act(async () => {
+        renderer?.update(<Harness connectionKey="connection-b" />);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await flush();
+
+      expect(latest?.draft?.note).toBe('connection-b');
+
+      // Resolve old connection pending promise
+      await act(async () => {
+        if (phase === 'preflight late') deferredPreflight.resolve([file]);
+        if (phase === 'mutation late') deferredMutation.resolve({ status: 'ok' });
+        if (phase === 'raw download late') {
+          deferredDownload.resolve(
+            JSON.stringify({
+              type: 'xai',
+              auth_index: 'auth-1',
+              account_id: 'account-1',
+              note: 'save-on-a',
+            })
+          );
+        }
+        if (phase === 'reconcile late') deferredReconcile.resolve();
+        await savePromise;
+      });
+
+      // New connection state is NOT overwritten
+      expect(latest?.draft?.note).toBe('connection-b');
+      expect(mocks.onSaved).not.toHaveBeenCalled();
+      expect(mocks.showNotification).not.toHaveBeenCalledWith(
+        'accounts.config_saved_success',
+        'success'
+      );
+    }
+  );
 });

@@ -21,6 +21,7 @@ import type {
   UsageSummaryCardAccent,
   UsageSummaryCardIcon,
 } from '../usageAnalyticsPresentation';
+import { ModelPriceAttentionLink } from '@/features/model-price-attention';
 import styles from '../UsageAnalyticsPage.module.scss';
 
 type UsageSummaryDensity = 'default' | 'compact';
@@ -51,7 +52,7 @@ const summaryAccentClassMap: Record<UsageSummaryCardAccent, string> = {
   teal: styles.summaryAccentTeal,
 };
 
-function UsageSummaryCardView({
+export function UsageSummaryCardView({
   accent = 'blue',
   dataAttributes,
   density = 'default',
@@ -59,6 +60,7 @@ function UsageSummaryCardView({
   icon,
   label,
   meta,
+  showModelPriceAttention,
   tone,
   value,
   valueTitle,
@@ -90,6 +92,11 @@ function UsageSummaryCardView({
         <span className={styles.usageSummaryLabel} title={resolvedLabel}>
           {label}
         </span>
+        {showModelPriceAttention ? (
+          <span className={styles.usageSummaryCardExtra}>
+            <ModelPriceAttentionLink variant="inline" />
+          </span>
+        ) : null}
       </div>
       <div className={styles.usageSummaryCardBody}>
         <span className={styles.usageSummaryValueWrap}>

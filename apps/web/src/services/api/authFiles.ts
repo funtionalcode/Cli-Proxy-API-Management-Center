@@ -7,8 +7,15 @@ import type { AuthFilesResponse } from '@/types/authFile';
 import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
 import {
   readAuthFileStatusAccountId,
+  readAuthFileStatusAccountIdInvalid,
   readAuthFileStatusAccountSnapshot,
+  readAuthFileStatusAuthIndex,
+  readAuthFileStatusCodexMember,
+  readAuthFileStatusCodexMemberInvalid,
+  readAuthFileStatusPhysicalName,
   readAuthFileStatusProvider,
+  readAuthFileStatusRuntimeId,
+  normalizeCodexMemberSnapshot,
 } from '@/utils/authFileStatusMutation';
 import { sha256RawTextHex } from '@/utils/apiKeyHash';
 import { parseTimestampMs } from '@/utils/timestamp';
@@ -28,6 +35,7 @@ export type AuthFileStatusTarget = {
   accountSnapshot?: string | null;
 };
 export type AuthFileDeleteIdentityTarget = AuthFileStatusTarget;
+export type AuthFileLookupTarget = Pick<AuthFileStatusTarget, 'name' | 'authIndex'>;
 export type AuthFilePluginSourceFallbackVerifier = () => Promise<void>;
 export type AuthFileStatusPluginSourceFallbackVerifier = () => Promise<AuthFileStatusTarget[]>;
 type AuthFileEntry = AuthFilesResponse['files'][number];
@@ -444,6 +452,10 @@ const readAuthIndexField = (entry: AuthFileEntry): string => {
 const getAuthFileDedupeKey = (entry: AuthFileEntry): string => {
   const name = readTextField(entry, 'name');
   const authIndex = readAuthIndexField(entry);
+  const runtimeId = readAuthFileStatusRuntimeId(entry);
+  if (name && authIndex && runtimeId) {
+    return `${name}\u0000${authIndex}\u0000${runtimeId}`;
+  }
   if (name && authIndex) return `${name}\u0000${authIndex}`;
   return name || JSON.stringify(entry);
 };
@@ -583,6 +595,27 @@ const buildAuthFilesListParams = (query: AuthFilesListQuery = {}) => {
   if (query.pageSize !== undefined) params.page_size = query.pageSize;
   if (query.includeBalances !== undefined) params.include_balances = query.includeBalances;
   return params;
+};
+
+const filterAuthFileLookupResponse = (
+  files: AuthFileItem[],
+  target: AuthFileLookupTarget
+): AuthFileItem[] => {
+  const name = String(target.name ?? '').trim();
+  const authIndex =
+    target.authIndex === undefined || target.authIndex === null
+      ? ''
+      : String(target.authIndex).trim();
+  if (!name) return [];
+  return files.filter((file) => {
+    if (
+      readAuthFileStatusRuntimeId(file) !== name &&
+      readAuthFileStatusPhysicalName(file) !== name
+    ) {
+      return false;
+    }
+    return !authIndex || readAuthFileStatusAuthIndex(file) === authIndex;
+  });
 };
 
 const parseAuthFileJsonObject = (rawText: string): Record<string, unknown> => {
@@ -885,19 +918,47 @@ const authFileRecordMatchesPatchTarget = (
   target: AuthFileStatusTarget
 ): boolean => {
   const authFileRecord = { name: '', ...record } as AuthFileItem;
+  const credentialLocatorPresent = Boolean(
+    String(target.runtimeId ?? '').trim() || normalizePatchAuthIndex(target.authIndex)
+  );
   const expectedProvider = normalizePatchProviderIdentity(target.provider);
   const actualProvider = normalizePatchProviderIdentity(readAuthFileStatusProvider(authFileRecord));
   if (expectedProvider && actualProvider && actualProvider !== expectedProvider) {
     return false;
   }
+  if (actualProvider === 'codex' && readAuthFileStatusAccountIdInvalid(authFileRecord)) {
+    return false;
+  }
 
   const expectedAccountId = String(target.accountId ?? '').trim();
   if (expectedAccountId) {
-    return readAuthFileStatusAccountId(authFileRecord) === expectedAccountId;
+    if (actualProvider === 'codex') {
+      const currentWorkspace = readAuthFileStatusAccountId(authFileRecord);
+      if (currentWorkspace && currentWorkspace !== expectedAccountId) return false;
+      const expectedSnapshot = String(target.accountSnapshot ?? '').trim();
+      const expectedMember = normalizeCodexMemberSnapshot(expectedSnapshot);
+      if (!expectedMember) {
+        // A Workspace-only target must still carry a credential locator. The
+        // raw source record may be one of several Team members in one file.
+        return credentialLocatorPresent && !readAuthFileStatusCodexMemberInvalid(authFileRecord);
+      }
+      if (readAuthFileStatusCodexMemberInvalid(authFileRecord)) return false;
+      const currentMember = readAuthFileStatusCodexMember(authFileRecord);
+      return !currentMember || currentMember === expectedMember;
+    }
+    if (readAuthFileStatusAccountId(authFileRecord) !== expectedAccountId) return false;
+    return true;
   }
 
   const expectedAccountSnapshot = String(target.accountSnapshot ?? '').trim();
   if (expectedAccountSnapshot) {
+    if (actualProvider === 'codex') {
+      const expectedMember = normalizeCodexMemberSnapshot(expectedAccountSnapshot);
+      if (!credentialLocatorPresent || !expectedMember) return false;
+      if (readAuthFileStatusCodexMemberInvalid(authFileRecord)) return false;
+      const currentMember = readAuthFileStatusCodexMember(authFileRecord);
+      return !currentMember || currentMember === expectedMember;
+    }
     return readAuthFileStatusAccountSnapshot(authFileRecord) === expectedAccountSnapshot;
   }
 
@@ -963,7 +1024,12 @@ const normalizeOauthExcludedModels = (payload: unknown): Record<string, string[]
   if (!payload || typeof payload !== 'object') return {};
 
   const record = payload as Record<string, unknown>;
-  const source = record['oauth-excluded-models'] ?? record.items ?? payload;
+  // An explicit null wrapper means no exclusions, not a bare provider map.
+  const source = Object.prototype.hasOwnProperty.call(record, 'oauth-excluded-models')
+    ? record['oauth-excluded-models']
+    : Object.prototype.hasOwnProperty.call(record, 'items')
+      ? record.items
+      : payload;
   if (!source || typeof source !== 'object') return {};
 
   const result: Record<string, string[]> = {};
@@ -1154,6 +1220,32 @@ export const authFilesApi = {
         ? await apiClient.get<AuthFilesResponse>('/auth-files', requestConfig)
         : await apiClient.get<AuthFilesResponse>('/auth-files');
     return dedupeAuthFilesResponse(payload);
+  },
+
+  lookup: async (
+    target: AuthFileLookupTarget,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFileItem[]> => {
+    const name = String(target.name ?? '').trim();
+    if (!name) return [];
+    const authIndex =
+      target.authIndex === undefined || target.authIndex === null
+        ? ''
+        : String(target.authIndex).trim();
+    const config = {
+      ...(requestScope ? createScopedApiRequestConfig(requestScope) : {}),
+      params: {
+        name,
+        ...(authIndex ? { auth_index: authIndex } : {}),
+      },
+    };
+    const response = await apiClient.get<AuthFilesResponse>('/auth-files', config);
+    // Older CPA builds may ignore lookup parameters. Always filter the response
+    // locally so a caller cannot mistake a full inventory for a scoped result.
+    return filterAuthFileLookupResponse(dedupeAuthFilesResponse(response).files, {
+      name,
+      ...(authIndex ? { authIndex } : {}),
+    });
   },
 
   setStatus: (
@@ -1597,5 +1689,20 @@ export const authFilesApi = {
       : await apiClient.get<Record<string, unknown>>(endpoint);
     const models = data.models ?? data['models'];
     return normalizeAuthFileModelItems(models);
+  },
+
+  // 重置凭证配额与冷却状态 (清空 CPA 网关内存计时器与 .cds 冷却文件)
+  resetQuota: async (
+    authIndex: string,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<{ status: string; auth_index: string; models: string[] }> => {
+    const normalizedAuthIndex = String(authIndex ?? '').trim();
+    if (!normalizedAuthIndex) {
+      return { status: 'noop', auth_index: '', models: [] };
+    }
+    const payload = { auth_index: normalizedAuthIndex };
+    return requestScope
+      ? apiClient.post('/reset-quota', payload, createScopedApiRequestConfig(requestScope))
+      : apiClient.post('/reset-quota', payload);
   },
 };

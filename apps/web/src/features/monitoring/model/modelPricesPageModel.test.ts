@@ -5,6 +5,7 @@ import {
   buildModelPriceRows,
   buildModelPriceSummary,
   buildSyncPriceModelsFromSummary,
+  createPriceDraft,
   filterModelPriceRows,
   formatContextThreshold,
   formatServiceTierRule,
@@ -12,6 +13,7 @@ import {
   groupModelPriceCandidatesBySource,
   resolveContextTierDisplayPrice,
   resolveServiceTierDisplayPrice,
+  validatePriceDraft,
 } from './modelPricesPageModel';
 
 const usageSummary = {
@@ -54,6 +56,18 @@ describe('modelPricesPageModel', () => {
         model: 'manual-model',
         calls: 0,
         hasPrice: true,
+      }),
+    ]);
+  });
+
+  it('includes runtime models without prior usage in row universe', () => {
+    const rows = buildModelPriceRows(null, {}, [], ['runtime-only-model']);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        model: 'runtime-only-model',
+        calls: 0,
+        hasPrice: false,
+        candidateCount: 0,
       }),
     ]);
   });
@@ -151,6 +165,8 @@ describe('modelPricesPageModel', () => {
         cache: '',
         cacheRead: '',
         cacheCreation: '',
+        contextTiers: [],
+        serviceTiers: [],
       })
     ).toMatchObject({
       prompt: 1,
@@ -175,6 +191,8 @@ describe('modelPricesPageModel', () => {
         cache: '',
         cacheRead: '0',
         cacheCreation: '0',
+        contextTiers: [],
+        serviceTiers: [],
       })
     ).toMatchObject({
       prompt: 0,
@@ -186,6 +204,115 @@ describe('modelPricesPageModel', () => {
       cacheReadConfigured: true,
       cacheCreationConfigured: true,
     });
+  });
+
+  it('round-trips context and service-tier rules through the manual editor', () => {
+    const draft = createPriceDraft('gpt-6-astra', {
+      prompt: 5,
+      completion: 25,
+      cache: 0.5,
+      contextTiers: [
+        {
+          thresholdTokens: 128_000,
+          prompt: 10,
+          completion: 0,
+          cache: 0,
+          promptConfigured: true,
+          completionConfigured: false,
+          cacheConfigured: false,
+        },
+      ],
+      serviceTiers: [
+        {
+          mode: 'fast',
+          serviceTier: 'priority',
+          prompt: 0,
+          completion: 50,
+          cache: 0,
+          promptConfigured: true,
+          completionConfigured: true,
+          cacheConfigured: false,
+        },
+      ],
+    });
+
+    expect(draft.contextTiers[0]).toMatchObject({
+      thresholdTokens: '128000',
+      prompt: '10',
+      completion: '',
+      cache: '',
+    });
+    expect(draft.serviceTiers[0]).toMatchObject({
+      mode: 'fast',
+      serviceTier: 'priority',
+      prompt: '0',
+      completion: '50',
+    });
+    expect(buildPriceFromDraft(draft)).toMatchObject({
+      source: 'manual',
+      contextTiers: [
+        {
+          thresholdTokens: 128_000,
+          prompt: 10,
+          promptConfigured: true,
+          completionConfigured: false,
+          cacheConfigured: false,
+        },
+      ],
+      serviceTiers: [
+        {
+          mode: 'fast',
+          serviceTier: 'priority',
+          prompt: 0,
+          completion: 50,
+          promptConfigured: true,
+          completionConfigured: true,
+        },
+      ],
+    });
+  });
+
+  it('rejects duplicate and incomplete special pricing rules', () => {
+    const baseDraft = createPriceDraft('gpt-6-astra');
+    expect(
+      validatePriceDraft({
+        ...baseDraft,
+        contextTiers: [
+          {
+            thresholdTokens: '128000',
+            prompt: '10',
+            completion: '',
+            cache: '',
+            cacheRead: '',
+            cacheCreation: '',
+          },
+          {
+            thresholdTokens: '128000',
+            prompt: '',
+            completion: '20',
+            cache: '',
+            cacheRead: '',
+            cacheCreation: '',
+          },
+        ],
+      })
+    ).toBe('context_duplicate_threshold');
+    expect(
+      validatePriceDraft({
+        ...baseDraft,
+        serviceTiers: [
+          {
+            mode: 'fast',
+            serviceTier: 'priority',
+            prompt: '',
+            completion: '',
+            cache: '',
+            cacheRead: '',
+            cacheCreation: '',
+          },
+        ],
+      })
+    ).toBe('service_price');
   });
 
   it('formats context tier thresholds compactly', () => {

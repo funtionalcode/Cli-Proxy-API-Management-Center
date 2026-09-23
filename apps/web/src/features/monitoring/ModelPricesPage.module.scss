@@ -47,16 +47,6 @@
   min-width: 0;
 }
 
-.tierClearNotice {
-  grid-column: 1 / -1;
-  padding: 7px 9px;
-  border: 1px solid color-mix(in srgb, var(--warning-color) 35%, var(--pricing-line));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--warning-color) 8%, var(--pricing-surface));
-  color: var(--pricing-muted);
-  font-size: 11px;
-}
-
 .titleGroup {
   flex-wrap: nowrap;
 }
@@ -253,6 +243,96 @@
   flex-wrap: nowrap;
   justify-content: flex-end;
   padding-bottom: 1px;
+}
+
+.pricingRulesEditor {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ruleSection {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--pricing-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pricing-surface) 72%, var(--pricing-surface-muted));
+}
+
+.ruleSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ruleSectionHeader > div {
+  display: grid;
+  gap: 2px;
+}
+
+.ruleSectionHeader strong {
+  font-size: 12px;
+}
+
+.ruleSectionHeader span,
+.ruleEmpty {
+  color: var(--pricing-muted);
+  font-size: 11px;
+}
+
+.ruleSectionHeader :global(.btn > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ruleList {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.contextRuleRow,
+.serviceRuleRow {
+  display: grid;
+  align-items: end;
+  gap: 7px;
+  min-width: 920px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--pricing-line) 70%, transparent);
+}
+
+.contextRuleRow {
+  grid-template-columns: minmax(120px, 1.1fr) repeat(5, minmax(105px, 1fr)) auto;
+}
+
+.serviceRuleRow {
+  grid-template-columns: repeat(2, minmax(110px, 1.1fr)) repeat(5, minmax(105px, 1fr)) auto;
+  min-width: 1060px;
+}
+
+.ruleDeleteButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--pricing-line);
+  border-radius: 9px;
+  background: var(--pricing-surface);
+  color: var(--pricing-muted);
+  cursor: pointer;
+}
+
+.ruleDeleteButton:hover {
+  border-color: color-mix(in srgb, var(--pricing-red) 35%, var(--pricing-line));
+  color: var(--pricing-red);
 }
 
 .tableWrap {
@@ -474,5 +554,10 @@
 
   .candidateControl {
     grid-template-columns: 1fr;
+  }
+
+  .ruleSectionHeader {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

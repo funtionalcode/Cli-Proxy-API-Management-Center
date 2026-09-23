@@ -1,5 +1,9 @@
 import { formatApiKeyHashLabel } from './base';
-import { calculateCacheHitRateFromTotals, getCacheHitTotals } from '@/utils/usage';
+import {
+  calculateCacheHitRateFromTotals,
+  getCacheHitTotals,
+  isOpaqueUsageSourceId,
+} from '@/utils/usage';
 import {
   sanitizeApiKeyDisplayText,
   shouldPreferApiKeyAlias,
@@ -29,14 +33,9 @@ const isEffectiveLabel = (value: string) => {
   return Boolean(trimmed) && trimmed !== '-';
 };
 
-const looksLikeMaskedUsageSource = (value: string) => {
-  const trimmed = value.trim();
-  return trimmed.startsWith('m:') || trimmed.startsWith('k:');
-};
-
 const resolveAccountDisplayName = (account: string, channels: Iterable<string>) => {
   const channelLabels = Array.from(new Set(Array.from(channels).filter(isEffectiveLabel)));
-  if (looksLikeMaskedUsageSource(account) && channelLabels.length === 1) {
+  if (isOpaqueUsageSourceId(account) && channelLabels.length === 1) {
     return channelLabels[0];
   }
   return account || channelLabels[0] || '-';

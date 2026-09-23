@@ -1454,6 +1454,48 @@
   white-space: nowrap !important;
 }
 
+.realtimeModelRoutedText {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+  color: var(--monitor-muted);
+  font-size: 12px;
+}
+
+.realtimeModelResponseLine {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-top: 1px;
+  color: var(--monitor-amber);
+  font-size: 12px;
+}
+
+.realtimeModelResponseText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+  color: var(--monitor-amber);
+}
+
+.realtimeModelMismatchBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--monitor-amber);
+  background: color-mix(in srgb, var(--monitor-amber) 14%, var(--monitor-surface));
+  border: 1px solid color-mix(in srgb, var(--monitor-amber) 30%, transparent);
+  flex-shrink: 0;
+}
+
 .realtimeApiKeyLine {
   display: block;
   max-width: 100%;
@@ -2279,6 +2321,7 @@
   }
 
   .autoRefreshField {
+    height: auto;
     flex-direction: column;
     align-items: stretch;
     padding: 12px;

@@ -1,5 +1,8 @@
 name: Build and Release
 
+run-name: >-
+  Build and Release · ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'tag' }} · ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
 on:
   push:
     tags:
@@ -7,9 +10,30 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag to validate in dry-run mode, for example v1.12.0-rc.1'
+        description: 'Release tag, for example v1.12.0-rc.1'
         required: true
         type: string
+      mode:
+        description: 'Validate only, or publish the exact main commit after a successful dry-run'
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - publish
+      expected_sha:
+        description: 'Exact main commit SHA; required for publish and optional for dry-run'
+        required: false
+        type: string
+      dry_run_id:
+        description: 'Successful Build and Release dry-run ID for the same version and main SHA; required for publish'
+        required: false
+        type: string
+      confirm_publish:
+        description: 'Create the release tag and publish after all guards pass'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -26,6 +50,8 @@ jobs:
       contents: read
     outputs:
       release_tag: ${{ steps.context.outputs.release_tag }}
+      release_version: ${{ steps.context.outputs.release_version }}
+      release_mode: ${{ steps.context.outputs.release_mode }}
       dry_run: ${{ steps.context.outputs.dry_run }}
       prerelease: ${{ steps.context.outputs.prerelease }}
 
@@ -45,18 +71,32 @@ jobs:
           EVENT_REF: ${{ github.ref }}
           EVENT_REF_NAME: ${{ github.ref_name }}
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
 
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             if [ "${EVENT_REF}" != "refs/heads/main" ]; then
-              echo "Release dry-run must be dispatched from main; received ${EVENT_REF}." >&2
+              echo "Release dispatch must run from main; received ${EVENT_REF}." >&2
               exit 1
             fi
             release_tag="${INPUT_VERSION}"
-            dry_run=true
+            release_mode="${INPUT_MODE:-dry-run}"
+            case "${release_mode}" in
+              dry-run)
+                dry_run=true
+                ;;
+              publish)
+                dry_run=false
+                ;;
+              *)
+                echo "Unsupported release dispatch mode: ${release_mode}" >&2
+                exit 1
+                ;;
+            esac
           else
             release_tag="${EVENT_REF_NAME}"
+            release_mode=tag
             dry_run=false
           fi
 
@@ -71,8 +111,11 @@ jobs:
           }
           NODE
           )"
+          release_version="${release_tag#v}"
 
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+          echo "release_mode=${release_mode}" >> "${GITHUB_OUTPUT}"
           echo "dry_run=${dry_run}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
@@ -87,6 +130,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.context.outputs.release_tag }}
           RELEASE_SHA: ${{ github.sha }}
+          RELEASE_MODE: ${{ steps.context.outputs.release_mode }}
           DRY_RUN: ${{ steps.context.outputs.dry_run }}
         run: |
           set -euo pipefail
@@ -96,14 +140,49 @@ jobs:
             --main-ref origin/main
             --dev-ref origin/dev
           )
-          if [ "${DRY_RUN}" = "true" ]; then
+          if [ "${DRY_RUN}" = "true" ] || [ "${RELEASE_MODE}" = "publish" ]; then
             validation_args+=(--dry-run)
           fi
           npm run --silent release:validate -- "${validation_args[@]}"
 
+  release_gate:
+    name: Authorize release tag and publish mode
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      RELEASE_MODE: ${{ needs.preflight.outputs.release_mode }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_SHA: ${{ github.sha }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      DRY_RUN_ID: ${{ inputs.dry_run_id }}
+      CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Authorize exact release ref
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node bin/release/authorize-release-dispatch.mjs
+
   build_release_assets:
     name: Build release assets
-    needs: preflight
+    needs:
+      - preflight
+      - release_gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -133,7 +212,10 @@ jobs:
         run: npm ci
 
       - name: Build all-in-one HTML
-        run: npm run build
+        # Fail before building if the reviewed release metadata is absent.
+        run: |
+          node bin/release/generate-release-info.mjs "${RELEASE_TAG}"
+          npm run build
         env:
           VERSION: ${{ needs.preflight.outputs.release_tag }}
 
@@ -157,6 +239,7 @@ jobs:
           cp "${panel_html}" dist/release/management.html
           cp dist/native/* dist/release/native/
           cp "docs/release-notes/${RELEASE_TAG}-zh.md" dist/release/release-notes.md
+          node bin/release/generate-release-info.mjs "${RELEASE_TAG}" dist/release/release-info.json
           find dist/release -maxdepth 2 -type f -print | sort
 
       - name: Upload release artifact
@@ -473,7 +556,7 @@ jobs:
             --header "X-GitHub-Api-Version: 2022-11-28" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           if [ "${http_code}" != "200" ]; then
-            echo "GitHub Release lookup after asset upload failed with HTTP ${http_code} for id ${RELEASE_ID}." >&2
+            echo "Published GitHub Release lookup after asset upload failed with HTTP ${http_code} for id ${RELEASE_ID}." >&2
             exit 1
           fi
           node bin/release/verify-published-release.mjs \
@@ -496,6 +579,8 @@ jobs:
       packages: write
     env:
       RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+      RELEASE_SHA: ${{ github.sha }}
       DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
       DOCKERHUB_IMAGE: seakee/cpa-manager-plus
       GHCR_IMAGE: ghcr.io/seakee/cpa-manager-plus
@@ -565,14 +650,16 @@ jobs:
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ needs.preflight.outputs.prerelease == 'false' }}
-            type=raw,value=latest,enable=${{ needs.preflight.outputs.prerelease == 'false' }}
+          flavor: |
+            latest=false
           labels: |
             org.opencontainers.image.title=CPA Manager Plus
             org.opencontainers.image.description=CPA Manager Plus Manager Server container image
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
+            org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
 
       - name: Build and publish Manager Server image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -585,6 +672,43 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ env.RELEASE_TAG }}
+            SOURCE_COMMIT=${{ env.RELEASE_SHA }}
+
+      - name: Verify published release image provenance
+        if: env.DRY_RUN != 'true'
+        shell: bash
+        env:
+          PUBLISHED_IMAGES: ${{ steps.docker_targets.outputs.images }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { verifyImage } from './bin/release/publish-update-index.mjs';
+
+          const images = process.env.PUBLISHED_IMAGES.split(/\r?\n/).filter(Boolean);
+          const info = {
+            release: {
+              version: process.env.RELEASE_TAG,
+              source_commit: process.env.RELEASE_SHA,
+            },
+          };
+          let expectedDigest = null;
+          for (const image of images) {
+            const inspected = JSON.parse(
+              execFileSync(
+                'docker',
+                ['buildx', 'imagetools', 'inspect', `${image}:${process.env.RELEASE_TAG}`, '--format', '{{json .}}'],
+                { encoding: 'utf8' }
+              )
+            );
+            const digest = verifyImage(inspected, info);
+            if (expectedDigest && digest !== expectedDigest) {
+              throw new Error(`Registry digest mismatch: ${process.env.RELEASE_TAG}`);
+            }
+            expectedDigest = digest;
+            console.log(`${image}:${process.env.RELEASE_TAG} -> ${digest}`);
+          }
+          NODE
 
       - name: Update DockerHub overview
         if: env.DRY_RUN != 'true' && steps.docker_targets.outputs.dockerhub_enabled == 'true'
@@ -674,7 +798,7 @@ jobs:
             echo "Draft GitHub Release id changed during publication: ${RELEASE_ID} -> ${release_id}." >&2
             exit 1
           fi
-          publish_payload="$(jq -cn --argjson prerelease "${EXPECTED_PRERELEASE}" '{draft: false, prerelease: $prerelease}')"
+          publish_payload="$(jq -cn --argjson prerelease "${EXPECTED_PRERELEASE}" '{draft: false, prerelease: $prerelease, make_latest: "false"}')"
           publish_json="${RUNNER_TEMP}/published-release.json"
           publish_code="$(curl \
             --silent \
@@ -734,11 +858,21 @@ jobs:
             --prerelease "${EXPECTED_PRERELEASE}" \
             --allow-missing-assets false
 
+  publish_update_index:
+    needs: [preflight, publish_github_release]
+    if: needs.preflight.outputs.dry_run != 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/update-index-publish.yml
+    secrets: inherit
+
   notify_telegram:
     name: Notify Telegram
     needs:
       - preflight
       - publish_github_release
+      - publish_update_index
     if: needs.preflight.outputs.dry_run != 'true' && github.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:

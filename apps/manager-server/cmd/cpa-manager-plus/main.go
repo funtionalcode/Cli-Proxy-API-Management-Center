@@ -16,6 +16,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/buildinfo"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/adminreset"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/cpaconnection"
@@ -34,6 +35,13 @@ import (
 )
 
 func main() {
+	if handled, err := writeVersion(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			log.Printf("write version: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "reset-admin-key", "reset-admin-password":
@@ -71,6 +79,14 @@ func main() {
 		}
 	}
 	runServer()
+}
+
+func writeVersion(args []string, stdout io.Writer) (bool, error) {
+	if len(args) != 1 || (args[0] != "-v" && args[0] != "--version") {
+		return false, nil
+	}
+	_, err := fmt.Fprintln(stdout, buildinfo.Version)
+	return true, err
 }
 
 func runManagerDataSnapshotCommand(args []string, stdout io.Writer, stderr io.Writer) error {
@@ -232,6 +248,7 @@ func runServer() {
 	codexInspectionWorker := worker.NewCodexInspectionWorker(serverApp.AppContext().Store, serverApp.AppContext().CodexInspectionService)
 	serverResult := make(chan error, 1)
 	go serveHTTPServer(server, listener, stop, serverResult)
+	go serverApp.AppContext().UpdateCheckService.Run(ctx)
 
 	if err := db.RunDerivedStartupMaintenance(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[startup] post-listen index preparation failed; continuing without blocking background workers: %v", err)

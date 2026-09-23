@@ -11,6 +11,7 @@ import { useThemeStore } from '@/stores';
 import type { DashboardSummaryResponse } from '@/services/api/usageService';
 import { getDataPalette } from '@/utils/dataPalette';
 import { formatCompactNumber, formatDurationMs, formatUsd } from '@/utils/usage';
+import { ModelPriceAttentionLink } from '@/features/model-price-attention';
 import styles from './UsageMetricsCard.module.scss';
 
 interface UsageMetricsCardProps {
@@ -43,17 +44,19 @@ interface MetricCardProps {
   icon: ReactNode;
   color: string;
   loading: boolean;
+  extraAction?: ReactNode;
 }
 
 type MetricStyle = CSSProperties & Record<'--accent-color', string>;
 type RankStyle = CSSProperties & Record<'--share', number>;
 
-function MetricCard({ label, value, subValue, icon, color, loading }: MetricCardProps) {
+function MetricCard({ label, value, subValue, icon, color, loading, extraAction }: MetricCardProps) {
   return (
     <div className={styles.metricCard} style={{ '--accent-color': color } as MetricStyle}>
       <div className={styles.metricHeader}>
         <div className={styles.metricIcon}>{icon}</div>
         <span className={styles.metricLabel}>{label}</span>
+        {extraAction ? <div className={styles.metricExtraAction}>{extraAction}</div> : null}
       </div>
       <div className={styles.metricBody}>
         <div className={styles.metricValue}>{loading ? '...' : value}</div>
@@ -125,6 +128,7 @@ export function UsageMetricsCard({
         : undefined,
       icon: <IconDollarSign size={20} />,
       color: dataPalette.amber,
+      extraAction: <ModelPriceAttentionLink variant="inline" />,
     },
     {
       label: t('dashboard.success_rate'),

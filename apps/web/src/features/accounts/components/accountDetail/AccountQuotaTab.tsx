@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { JSX } from 'react';
 import { Button } from '@/components/ui/Button';
@@ -9,28 +9,19 @@ import {
   IconDollarSign,
   IconRefreshCw,
 } from '@/components/ui/icons';
-import type {
-  AccountDetailQuotaWindow,
-  AccountDetailViewModel,
-} from '@/features/accounts/model/accountDetailViewModel';
+import type { AccountDetailViewModel } from '@/features/accounts/model/accountDetailViewModel';
 import {
-  formatCompactNumber,
+  formatPercent,
   formatQuotaResetTimestamp,
+  getQuotaResetRemainingDuration,
 } from '@/features/accounts/model/accountsPagePresentation';
-import { formatUsd } from '@/utils/usage';
-import { isCodexMainQuotaModelScope } from '@/utils/quota/codexQuota';
+import {
+  getAccountQuotaSemanticGroup,
+} from '@/features/accounts/model/accountQuotaDisplayWindows';
+import { useInterval } from '@/hooks/useInterval';
+import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import { QuotaWindowCard } from '../QuotaWindowCard';
 import styles from '@/features/accounts/AccountsPage.module.scss';
-
-const isIntervalQuotaWindow = (window: AccountDetailQuotaWindow): boolean =>
-  window.windowMode === 'fixed' ||
-  window.windowMode === 'calendar' ||
-  window.windowMode === 'rolling';
-
-const isModelScopedQuotaWindow = (window: AccountDetailQuotaWindow): boolean =>
-  window.modelScope?.kind !== undefined &&
-  window.modelScope.kind !== 'all' &&
-  !(window.source === 'codex' && isCodexMainQuotaModelScope(window.modelScope));
 
 type MetricTone = 'blue' | 'green' | 'teal' | 'amber';
 
@@ -113,6 +104,34 @@ interface AccountQuotaTabProps {
   resetQuotaDisabled: boolean;
 }
 
+const renderResetCreditRemainingText = (
+  expiresAtMs: number,
+  nowMs: number,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string => {
+  const duration = getQuotaResetRemainingDuration(expiresAtMs, nowMs);
+  if (!duration) return '';
+  switch (duration.unit) {
+    case 'day':
+      return t('codex_quota.reset_credit_expiry_remaining_days', {
+        count: duration.value,
+        days: duration.value,
+      });
+    case 'hour':
+      return t('codex_quota.reset_credit_expiry_remaining_hours', {
+        count: duration.value,
+        hours: duration.value,
+      });
+    case 'minute':
+      return t('codex_quota.reset_credit_expiry_remaining_minutes', {
+        count: duration.value,
+        minutes: duration.value,
+      });
+    case 'subminute':
+      return t('codex_quota.reset_credit_expiry_remaining_less_than_minute');
+  }
+};
+
 export function AccountQuotaTab({
   detailView,
   windowUsageError,
@@ -126,12 +145,14 @@ export function AccountQuotaTab({
   const history = detailView.history;
   const allWindows = detailView.quota.windows;
   const standardWindows = allWindows.filter(
-    (window) => isIntervalQuotaWindow(window) && !isModelScopedQuotaWindow(window)
+    (window) => getAccountQuotaSemanticGroup(window) === 'standard'
   );
   const modelWindows = allWindows.filter(
-    (window) => isIntervalQuotaWindow(window) && isModelScopedQuotaWindow(window)
+    (window) => getAccountQuotaSemanticGroup(window) === 'model'
   );
-  const otherQuotaItems = allWindows.filter((window) => !isIntervalQuotaWindow(window));
+  const otherQuotaItems = allWindows.filter(
+    (window) => getAccountQuotaSemanticGroup(window) === 'other'
+  );
 
   const formatNumber = (value: number) => new Intl.NumberFormat(i18n.language).format(value);
   const formatTime = (value: number | null) =>
@@ -147,6 +168,11 @@ export function AccountQuotaTab({
 
   const shouldShowResetRecords = detailView.identity.provider === 'codex';
   const resetCreditsAvailableCount = detailView.quota.resetCreditsAvailableCount;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useInterval(() => setNowMs(Date.now()), shouldShowResetRecords ? 60_000 : null);
+  const visibleResetCreditExpiries = detailView.quota.resetCreditExpiries.filter(
+    (item) => item.expiresAtMs > nowMs
+  );
 
   return (
     <div className={styles.quotaTab} data-account-quota-tab="true">
@@ -207,22 +233,95 @@ export function AccountQuotaTab({
             icon={<IconCheck size={20} />}
             tone="green"
             label={t('accounts.detail_success_rate')}
-            value={
-              history?.successRate !== null && history?.successRate !== undefined
-                ? `${history.successRate.toFixed(2)}%`
-                : '-'
-            }
+            value={formatPercent(history?.successRate, 2)}
           />
         </div>
       </section>
 
       {windowUsageError ? <div className={styles.errorBox}>{windowUsageError}</div> : null}
 
+
+
+      {standardWindows.length > 0 || allWindows.length === 0 ? (
+        <section className={styles.quotaSection} data-quota-window-group="standard">
+          <div className={styles.quotaSectionHeading}>
+            <h3>{t('accounts.detail_quota_standard_title', { defaultValue: '标准额度' })}</h3>
+            <span>
+              {t('accounts.detail_quota_standard_desc', {
+                defaultValue: '账号级配额；窗口边界可用时提供区间统计。',
+              })}
+            </span>
+          </div>
+          {standardWindows.length > 0 ? (
+            <div className={styles.quotaCardList}>
+              {standardWindows.map((window) => (
+                <QuotaWindowCard
+                  key={window.key}
+                  window={window}
+                  mode="standard"
+                  locale={i18n.language}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className={styles.quotaEmpty}>{t('accounts.detail_no_quota_windows')}</p>
+          )}
+        </section>
+      ) : null}
+
+      {modelWindows.length > 0 ? (
+        <section className={styles.quotaSection} data-quota-window-group="model">
+          <div className={styles.quotaSectionHeading}>
+            <h3>{t('accounts.detail_quota_model_title', { defaultValue: '模型额度' })}</h3>
+            <span>
+              {t('accounts.detail_quota_model_desc', {
+                defaultValue: '模型范围配额；窗口边界可用时提供区间统计。',
+              })}
+            </span>
+          </div>
+          <div className={styles.quotaCardList}>
+            {modelWindows.map((window) => (
+              <QuotaWindowCard
+                key={window.key}
+                window={window}
+                mode="model"
+                locale={i18n.language}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {otherQuotaItems.length > 0 ? (
+        <section className={styles.quotaSection} data-quota-window-group="other">
+          <div className={styles.quotaSectionHeading}>
+            <h3>{t('accounts.detail_quota_other_items', { defaultValue: '其他额度项' })}</h3>
+            <span>
+              {t('accounts.detail_quota_other_items_desc', {
+                defaultValue: '金额、产品及其他不属于已识别标准或模型窗口的额度。',
+              })}
+            </span>
+          </div>
+          <div className={styles.quotaCardList}>
+            {otherQuotaItems.map((window) => (
+              <QuotaWindowCard
+                key={window.key}
+                window={window}
+                mode="other"
+                locale={i18n.language}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {shouldShowResetRecords ? (
         <section
+          id="quota-reset-records"
           className={styles.quotaSection}
           data-account-quota-evidence="true"
           data-account-quota-reset-records="true"
+          data-account-detail-anchor="reset-records"
         >
           <div className={styles.quotaResetCard} data-quota-evidence-panel="reset">
             <div className={styles.quotaResetHeader}>
@@ -263,25 +362,26 @@ export function AccountQuotaTab({
                 </Button>
               </div>
             </div>
-            {resetCreditsAvailableCount === 0 ? (
+            {detailView.quota.resetCreditsAvailableCount === 0 ? (
               <div className={styles.quotaResetAvailabilityNote} role="status">
                 {t('codex_quota.reset_credits_unavailable_label')}
               </div>
             ) : null}
-            {detailView.quota.resetCreditExpiries.length > 0 ? (
+            {visibleResetCreditExpiries.length > 0 ? (
               <div className={styles.quotaResetExpirySection}>
                 <span className={styles.quotaResetExpiryLabel}>
                   {t('codex_quota.reset_credits_expected_expiry_label')}
                 </span>
                 <div className={styles.quotaResetExpiryList}>
-                  {detailView.quota.resetCreditExpiries.map((item, index) => (
+                  {visibleResetCreditExpiries.map((item, index) => (
                     <div
                       key={`${item.id}:${item.expiresAtMs}`}
                       className={styles.quotaResetExpiryItem}
                     >
                       <span>{t('codex_quota.reset_credit_expiry_item', { index: index + 1 })}</span>
                       <strong data-quota-reset-credit-expiry={item.id}>
-                        {formatQuotaResetTimestamp(item.expiresAtMs, i18n.language)}
+                        {renderResetCreditRemainingText(item.expiresAtMs, nowMs, t)}{' '}
+                        · {formatQuotaResetTimestamp(item.expiresAtMs, i18n.language)}
                       </strong>
                     </div>
                   ))}
@@ -299,80 +399,6 @@ export function AccountQuotaTab({
           </div>
         </section>
       ) : null}
-
-      {standardWindows.length > 0 || allWindows.length === 0 ? (
-        <section className={styles.quotaSection} data-quota-window-group="standard">
-          <div className={styles.quotaSectionHeading}>
-            <h3>{t('accounts.detail_quota_standard_title', { defaultValue: '标准额度' })}</h3>
-            <span>
-              {t('accounts.detail_quota_standard_desc', {
-                defaultValue: '按时间窗口统计并滚动更新',
-              })}
-            </span>
-          </div>
-          {standardWindows.length > 0 ? (
-            <div className={styles.quotaCardList}>
-              {standardWindows.map((window) => (
-                <QuotaWindowCard
-                  key={window.key}
-                  window={window}
-                  mode="standard"
-                  locale={i18n.language}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className={styles.quotaEmpty}>{t('accounts.detail_no_quota_windows')}</p>
-          )}
-        </section>
-      ) : null}
-
-      {modelWindows.length > 0 ? (
-        <section className={styles.quotaSection} data-quota-window-group="model">
-          <div className={styles.quotaSectionHeading}>
-            <h3>{t('accounts.detail_quota_model_title', { defaultValue: '模型额度' })}</h3>
-            <span>
-              {t('accounts.detail_quota_model_desc', {
-                defaultValue: '按模型及窗口统计的配额信息',
-              })}
-            </span>
-          </div>
-          <div className={styles.quotaCardList}>
-            {modelWindows.map((window) => (
-              <QuotaWindowCard
-                key={window.key}
-                window={window}
-                mode="model"
-                locale={i18n.language}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {otherQuotaItems.length > 0 ? (
-        <section className={styles.quotaSection} data-quota-window-group="other">
-          <div className={styles.quotaSectionHeading}>
-            <h3>{t('accounts.detail_quota_other_items', { defaultValue: '其他额度项' })}</h3>
-            <span>
-              {t('accounts.detail_quota_other_items_desc', {
-                defaultValue: '金额、产品或缺少完整窗口边界的额度不生成区间统计。',
-              })}
-            </span>
-          </div>
-          <div className={styles.quotaCardList}>
-            {otherQuotaItems.map((window) => (
-              <QuotaWindowCard
-                key={window.key}
-                window={window}
-                mode="other"
-                locale={i18n.language}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
     </div>
   );
 }

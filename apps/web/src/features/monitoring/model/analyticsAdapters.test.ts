@@ -81,6 +81,58 @@ describe('buildUsageDetailsFromAnalyticsEvents', () => {
     });
   });
 
+  it('maps request metadata fields including response_model, session_id, parent_session_id, access_token_sha256, generate, and stream', () => {
+    const events: MonitoringAnalyticsEventRow[] = [
+      {
+        event_hash: 'event-metadata',
+        timestamp_ms: 1714000000000,
+        model: 'gpt-4o',
+        requested_model: 'gpt-4o',
+        resolved_model: 'gpt-4o-2024-08-06',
+        response_model: 'gpt-4o-mini',
+        session_id: 'sess-123',
+        parent_session_id: 'parent-sess-456',
+        access_token_sha256: 'sha256-token-abc',
+        generate: true,
+        stream: false,
+        endpoint: 'POST /v1/chat/completions',
+        method: 'POST',
+        path: '/v1/chat/completions',
+        auth_index: '',
+        source: '',
+        source_hash: '',
+        api_key_hash: '',
+        account_snapshot: '',
+        auth_label_snapshot: '',
+        auth_provider_snapshot: '',
+        input_tokens: 10,
+        output_tokens: 5,
+        cached_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 15,
+        latency_ms: 100,
+        ttft_ms: 50,
+        failed: false,
+        fail_status_code: 0,
+        fail_summary: '',
+      },
+    ];
+
+    const details = buildUsageDetailsFromAnalyticsEvents(events);
+
+    expect(details[0]).toMatchObject({
+      __responseModel: 'gpt-4o-mini',
+      response_model: 'gpt-4o-mini',
+      session_id: 'sess-123',
+      parent_session_id: 'parent-sess-456',
+      access_token_sha256: 'sha256-token-abc',
+      generate: true,
+      stream: false,
+    });
+  });
+
   it('derives analytics model when the backend field is absent', () => {
     const events: MonitoringAnalyticsEventRow[] = [
       {

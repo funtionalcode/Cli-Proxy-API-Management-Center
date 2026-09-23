@@ -3,7 +3,9 @@ import type {
   AuthFileItem,
   ClaudeQuotaState,
   CodexQuotaState,
+  DevinQuotaState,
   KimiQuotaState,
+  MetaQuotaState,
   QuotaResetAccuracy,
   XaiBillingSummary,
   XaiQuotaState,
@@ -74,7 +76,9 @@ export interface AccountQuotaStores {
   antigravityQuota: Record<string, AntigravityQuotaState>;
   claudeQuota: Record<string, ClaudeQuotaState>;
   codexQuota: Record<string, CodexQuotaState>;
+  devinQuota: Record<string, DevinQuotaState>;
   kimiQuota: Record<string, KimiQuotaState>;
+  metaQuota: Record<string, MetaQuotaState>;
   xaiQuota: Record<string, XaiQuotaState>;
 }
 
@@ -246,6 +250,7 @@ export const normalizeAccountProvider = (file: AuthFileItem): string => {
   const raw = readString(file.provider) || readString(file.type) || 'unknown';
   const key = raw.toLowerCase().replace(/_/g, '-');
   if (key === 'x-ai' || key === 'grok') return 'xai';
+  if (key === 'muse') return 'meta';
   return key || 'unknown';
 };
 
@@ -529,6 +534,46 @@ const quotaFromUsedWindows = (
 const codexMainQuotaWindows = (quota: CodexQuotaState) =>
   quota.windows.filter(isCodexMainQuotaWindow);
 
+const normalizeXaiPlanType = (planType?: string | null): string =>
+  planType ? planType.trim().toLowerCase().replace(/[\s\-_]+/g, '') : '';
+
+export const isExplicitFreeXaiPlan = (planType?: string | null): boolean => {
+  const normalized = normalizeXaiPlanType(planType);
+  if (!normalized) return false;
+  return (
+    normalized === 'free' ||
+    normalized === 'freetier' ||
+    normalized === 'xaifree' ||
+    normalized === 'xaifreetier'
+  );
+};
+
+export const isConfirmedPaidXaiPlan = (planType?: string | null): boolean => {
+  const normalized = normalizeXaiPlanType(planType);
+  if (!normalized) return false;
+  if (isExplicitFreeXaiPlan(planType)) return false;
+
+  return (
+    normalized.startsWith('supergrok') ||
+    normalized.startsWith('xpremium') ||
+    normalized === 'premium' ||
+    normalized.startsWith('premium+') ||
+    normalized.startsWith('premiumplus')
+  );
+};
+
+// Billing and account entitlement requires a confirmed paid plan.
+// AccountQuotaSummary fails closed for unconfirmed/unknown plans to avoid
+// driving account-level operational health or disable recommendations from partial data.
+export const hasConfirmedXaiBillingEntitlement = (
+  billing: XaiBillingSummary | null | undefined,
+  planType?: string | null
+): boolean => {
+  if (!billing) return false;
+  if (isExplicitFreeXaiPlan(planType)) return false;
+  return isConfirmedPaidXaiPlan(planType);
+};
+
 const quotaFromXaiBilling = (
   billing: XaiBillingSummary | null | undefined,
   planType: string | null,
@@ -537,7 +582,7 @@ const quotaFromXaiBilling = (
   if (!billing) {
     return quotaFromRemainingWindows([{ remainingPercent: null }], planType, options);
   }
-  if (billing.officialApiHealth) {
+  if (billing.officialApiHealth || !hasConfirmedXaiBillingEntitlement(billing, planType)) {
     return quotaFromRemainingWindows([{ remainingPercent: null }], planType, options);
   }
 
@@ -1021,6 +1066,52 @@ export const resolveAccountQuota = (
     return quotaFromXaiBilling(quota.billing, filePlanType, {
       fetchedAtMs: quota.fetchedAtMs,
     });
+  }
+
+  if (provider === 'devin') {
+    const quota = getCredentialScopedQuotaState(stores.devinQuota, file);
+    if (!quota) return emptyQuota(filePlanType);
+    const planType = quota.plan ?? filePlanType;
+    if (quota.status === 'loading') return loadingQuota(planType);
+    if (quota.status === 'error')
+      return quotaFromError(quota.error, planType, quota.errorStatus, quota.failedAtMs);
+    return quotaFromRemainingWindows(
+      quota.windows.map((window) => ({
+        remainingPercent: window.remainingPercent,
+        resetAtMs: window.resetAtMs,
+        resetAccuracy: 'exact',
+      })),
+      planType,
+      { fetchedAtMs: quota.fetchedAtMs }
+    );
+  }
+
+  if (provider === 'meta') {
+    const quota = getCredentialScopedQuotaState(stores.metaQuota, file);
+    if (!quota) return emptyQuota(filePlanType);
+    const planType = quota.plan ?? filePlanType;
+    if (quota.status === 'loading') return loadingQuota(planType);
+    if (quota.status === 'error')
+      return quotaFromError(quota.error, planType, quota.errorStatus, quota.failedAtMs);
+    return quotaFromRemainingWindows(
+      quota.windows.map((window) => ({
+        remainingPercent:
+          typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+            ? Math.max(0, Math.min(100, 100 - window.usedPercent))
+            : null,
+        usedPercent: window.usedPercent,
+        resetAtMs: window.resetAtMs,
+        resetAccuracy: window.resetAccuracy ?? 'unknown',
+      })),
+      planType,
+      {
+        fetchedAtMs: quota.fetchedAtMs,
+        observedAtMs: quota.observedAtMs,
+        observedQuotaAtMs:
+          quota.windows.find((w) => w.quotaProgressObservedAtMs !== null)
+            ?.quotaProgressObservedAtMs ?? undefined,
+      }
+    );
   }
 
   return emptyQuota(filePlanType);

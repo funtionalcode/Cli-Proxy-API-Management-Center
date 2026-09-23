@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -219,8 +221,9 @@ func catchUpUsagePricingSnapshot(t *testing.T, ctx context.Context, db *Store) {
 }
 
 func snapshotTestEvent(hash string, timestampMS, inputTokens int64) usage.Event {
+	sum := sha256.Sum256([]byte(hash))
 	return usage.Event{
-		EventHash:     hash,
+		EventHash:     hex.EncodeToString(sum[:]),
 		TimestampMS:   timestampMS,
 		Timestamp:     time.UnixMilli(timestampMS).UTC().Format(time.RFC3339Nano),
 		Model:         "model-a",

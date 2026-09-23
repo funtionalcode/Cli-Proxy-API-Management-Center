@@ -3,6 +3,7 @@ import {
   buildAccountModelRuleDiff,
   buildAccountModelRuleProjection,
   matchesAccountModelRule,
+  resolveAccountModelRuleIdentity,
   setAccountModelExactRule,
 } from './accountModelRules';
 
@@ -130,5 +131,256 @@ describe('accountModelRules', () => {
       removed: ['model-a'],
       unchanged: ['model-b'],
     });
+  });
+
+  it('resolves prefixed runtime model to canonical rule id using static definitions (Case 1)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+      credentialRules: [],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/gpt-5.5',
+      ruleModelId: 'gpt-5.5',
+      ruleModelIdResolved: true,
+      runtimeAvailable: true,
+    });
+  });
+
+  it('matches canonical exact rule against prefixed runtime model (Case 2)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+      credentialRules: ['gpt-5.5'],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/gpt-5.5',
+      ruleModelId: 'gpt-5.5',
+      scope: 'credential',
+      hasCredentialExactRule: true,
+    });
+  });
+
+  it('does not treat historical prefixed exact rule as matching and moves it to advanced rules (Case 3)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+      credentialRules: ['haochi/gpt-5.5'],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/gpt-5.5',
+      ruleModelId: 'gpt-5.5',
+      scope: 'available',
+      hasCredentialExactRule: false,
+    });
+    expect(projection.advancedCredentialRules).toContain('haochi/gpt-5.5');
+  });
+
+  it('matches canonical wildcard against prefixed runtime model (Case 4)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/gpt-5-codex' }],
+      modelDefinitions: [{ id: 'gpt-5-codex' }],
+      credentialRules: ['gpt-5-*'],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/gpt-5-codex',
+      ruleModelId: 'gpt-5-codex',
+      scope: 'credential',
+      hasCredentialWildcardRule: true,
+      hasCredentialExactRule: false,
+    });
+  });
+
+  it('prioritizes exact definition match over prefix removal for slash model ids (Case 5)', () => {
+    const identity = resolveAccountModelRuleIdentity({
+      modelId: 'haochi/foo',
+      credentialPrefix: 'haochi',
+      modelDefinitions: [{ id: 'haochi/foo' }, { id: 'foo' }],
+    });
+
+    expect(identity).toEqual({
+      ruleModelId: 'haochi/foo',
+      ruleModelIdResolved: true,
+    });
+
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/foo' }],
+      modelDefinitions: [{ id: 'haochi/foo' }, { id: 'foo' }],
+      credentialRules: ['haochi/foo'],
+      globalRules: {},
+    });
+
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/foo',
+      ruleModelId: 'haochi/foo',
+      ruleModelIdResolved: true,
+      hasCredentialExactRule: true,
+      scope: 'credential',
+    });
+  });
+
+  it('does not strip similar prefix without full slash segment (Case 6)', () => {
+    const identity = resolveAccountModelRuleIdentity({
+      modelId: 'haochi2/gpt-5.5',
+      credentialPrefix: 'haochi',
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    expect(identity).toEqual({
+      ruleModelId: 'haochi2/gpt-5.5',
+      ruleModelIdResolved: true,
+    });
+  });
+
+  it('resolves prefix case-insensitively (Case 7)', () => {
+    const identity = resolveAccountModelRuleIdentity({
+      modelId: 'haochi/GPT-5.5',
+      credentialPrefix: 'HaoChi',
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+    });
+
+    expect(identity).toEqual({
+      ruleModelId: 'gpt-5.5',
+      ruleModelIdResolved: true,
+    });
+  });
+
+  it.each(['haochi', 'haochi/', '/haochi', '/haochi/', '  /haochi/  '])(
+    'normalizes equivalent prefix variation "%s" to canonical rule id',
+    (credentialPrefix) => {
+      const identity = resolveAccountModelRuleIdentity({
+        modelId: 'haochi/gpt-5.5',
+        credentialPrefix,
+        modelDefinitions: [{ id: 'gpt-5.5' }],
+      });
+
+      expect(identity).toEqual({
+        ruleModelId: 'gpt-5.5',
+        ruleModelIdResolved: true,
+      });
+
+      const projection = buildAccountModelRuleProjection({
+        provider: 'codex',
+        credentialPrefix,
+        runtimeModels: [{ id: 'haochi/gpt-5.5' }],
+        modelDefinitions: [{ id: 'gpt-5.5' }],
+        credentialRules: [],
+        globalRules: {},
+      });
+
+      expect(projection.rows).toHaveLength(1);
+      expect(projection.rows[0]).toMatchObject({
+        id: 'haochi/gpt-5.5',
+        ruleModelId: 'gpt-5.5',
+        ruleModelIdResolved: true,
+        runtimeAvailable: true,
+      });
+
+      const updatedRules = setAccountModelExactRule(
+        projection.credentialRules,
+        projection.rows[0].ruleModelId,
+        true,
+        projection.rows[0].equivalentRuntimeModelIds
+      );
+
+      expect(updatedRules).toEqual(['gpt-5.5']);
+    }
+  );
+
+  it('fails closed as unknown when prefixed candidate cannot be verified (Case 8)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'haochi/private-model' }],
+      modelDefinitions: [],
+      credentialRules: ['haochi/private-model'],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'haochi/private-model',
+      ruleModelId: 'haochi/private-model',
+      ruleModelIdResolved: false,
+      scope: 'unknown',
+      credentialPatterns: [],
+      globalPatterns: [],
+      hasCredentialExactRule: false,
+      hasCredentialWildcardRule: false,
+    });
+    expect(projection.advancedCredentialRules).toEqual(['haochi/private-model']);
+  });
+
+  it('preserves both runtime routes without merging when force-model-prefix is false (Case 9)', () => {
+    const projection = buildAccountModelRuleProjection({
+      provider: 'codex',
+      credentialPrefix: 'haochi',
+      runtimeModels: [{ id: 'gpt-5.5' }, { id: 'haochi/gpt-5.5' }],
+      modelDefinitions: [{ id: 'gpt-5.5' }],
+      credentialRules: ['gpt-5.5'],
+      globalRules: {},
+    });
+
+    expect(projection.rows).toHaveLength(2);
+    expect(projection.rows[0]).toMatchObject({
+      id: 'gpt-5.5',
+      ruleModelId: 'gpt-5.5',
+      ruleModelIdResolved: true,
+      scope: 'credential',
+      hasCredentialExactRule: true,
+      equivalentRuntimeModelIds: ['gpt-5.5', 'haochi/gpt-5.5'],
+    });
+    expect(projection.rows[1]).toMatchObject({
+      id: 'haochi/gpt-5.5',
+      ruleModelId: 'gpt-5.5',
+      ruleModelIdResolved: true,
+      scope: 'credential',
+      hasCredentialExactRule: true,
+      equivalentRuntimeModelIds: ['gpt-5.5', 'haochi/gpt-5.5'],
+    });
+  });
+
+  it('cleans up legacy prefixed exact rule when disabling model (Case 10)', () => {
+    const result = setAccountModelExactRule(
+      ['haochi/gpt-5.5'],
+      'gpt-5.5',
+      true,
+      ['gpt-5.5', 'haochi/gpt-5.5']
+    );
+
+    expect(result).toEqual(['gpt-5.5']);
+  });
+
+  it('restores exact model by removing canonical and legacy exact rules while keeping wildcards (Case 11)', () => {
+    const result = setAccountModelExactRule(
+      ['gpt-*', 'gpt-5.5', 'haochi/gpt-5.5'],
+      'gpt-5.5',
+      false,
+      ['gpt-5.5', 'haochi/gpt-5.5']
+    );
+
+    expect(result).toEqual(['gpt-*']);
   });
 });

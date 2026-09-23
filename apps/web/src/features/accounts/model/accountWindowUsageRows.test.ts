@@ -14,6 +14,8 @@ const makeRow = (overrides: Partial<AccountRow>): AccountRow =>
     fileName: 'codex.json',
     provider: 'codex',
     authIndex: 'auth-1',
+    authenticationAtMs: 0,
+    rawCredentialStatusSuperseded: false,
     raw: {
       account: 'codex@example.com',
       label: 'Codex Seat',
@@ -191,6 +193,7 @@ describe('accountWindowUsageRows', () => {
       modelScope: { kind: 'all', complete: true },
       observationSource: 'api_query',
       observedAtMs: 30_000,
+      quotaProgressObservedAtMs: 30_000,
       boundaryAccuracy: 'exact',
       cycleStartMs: 20_000,
       cycleEndMs: 38_000,
@@ -268,6 +271,7 @@ describe('accountWindowUsageRows', () => {
       modelScope: { kind: 'all', complete: true },
       observationSource: 'api_query',
       observedAtMs: 30_000,
+      quotaProgressObservedAtMs: 30_000,
       boundaryAccuracy: 'unknown',
       cycleStartMs: 20_000,
       cycleEndMs: 38_000,
@@ -484,6 +488,7 @@ describe('accountWindowUsageRows', () => {
       modelScope: { kind: 'models', models: [], complete: false },
       observationSource: 'api_query',
       observedAtMs: 5_000,
+      quotaProgressObservedAtMs: 5_000,
       boundaryAccuracy: 'exact',
       cycleStartMs: 1_000,
       cycleEndMs: 7_000,
@@ -535,5 +540,123 @@ describe('accountWindowUsageRows', () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0].windowKey).toBe('5h');
+  });
+
+  it('builds current and previous usage target entries for Devin fixed daily window with strong identity', () => {
+    const devinRow = makeRow({
+      selectionKey: 'devin.json\x00auth-devin-1',
+      fileName: 'devin.json',
+      provider: 'devin',
+      authIndex: 'auth-devin-1',
+      raw: {
+        name: 'devin.json',
+        provider: 'devin',
+        auth_index: 'auth-devin-1',
+        account: 'devin@example.com',
+        label: 'Devin Pro',
+      },
+    });
+    const nowMs = 1_780_050_000_000;
+    const currentStartMs = 1_780_000_000_000;
+    const currentEndMs = currentStartMs + 86400 * 1000;
+    const previousStartMs = currentStartMs - 86400 * 1000;
+    const previousEndMs = currentStartMs;
+
+    const definition: AccountQuotaWindowDefinition = {
+      key: 'devin:daily',
+      providerWindowId: 'devin:daily',
+      provider: 'devin',
+      label: 'Daily limit',
+      kind: 'daily',
+      windowMode: 'fixed',
+      modelScope: { kind: 'all', complete: true },
+      observationSource: 'api_query',
+      observedAtMs: nowMs,
+      quotaProgressObservedAtMs: nowMs,
+      boundaryAccuracy: 'exact',
+      cycleStartMs: currentStartMs,
+      cycleEndMs: currentEndMs,
+      durationSeconds: 86400,
+      remainingPercent: 70,
+      usedPercent: 30,
+      stale: false,
+      display: {
+        key: 'devin:daily',
+        label: 'Daily limit',
+        kind: 'daily',
+        remainingPercent: 70,
+        usedPercent: 30,
+        resetLabel: '-',
+        resetAccuracy: 'exact',
+        limitWindowSeconds: 86400,
+        resetAtMs: currentEndMs,
+        fromMs: currentStartMs,
+        toMs: nowMs,
+      },
+      currentCycle: {
+        id: 2,
+        activationId: 1,
+        state: 'active',
+        scheduledStartMs: currentStartMs,
+        scheduledEndMs: currentEndMs,
+        actualStartMs: currentStartMs,
+        actualEndMs: null,
+        durationSeconds: 86400,
+        boundaryAccuracy: 'exact',
+        endReason: '',
+        parentCycleId: null,
+        forecastEligible: true,
+      },
+      previousCycle: {
+        id: 1,
+        activationId: 1,
+        state: 'closed',
+        scheduledStartMs: previousStartMs,
+        scheduledEndMs: previousEndMs,
+        actualStartMs: previousStartMs,
+        actualEndMs: previousEndMs,
+        durationSeconds: 86400,
+        boundaryAccuracy: 'exact',
+        endReason: 'scheduled',
+        parentCycleId: null,
+        forecastEligible: true,
+      },
+    };
+
+    const entries = buildAccountWindowUsageTargetEntries(
+      [devinRow],
+      new Map([[devinRow.selectionKey, [definition]]]),
+      nowMs
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.period)).toEqual(['current', 'previous']);
+    expect(entries[0].requestKey).not.toBe(entries[1].requestKey);
+
+    const currentEntry = entries.find((e) => e.period === 'current');
+    expect(currentEntry).toBeDefined();
+    expect(currentEntry?.target).toMatchObject({
+      row_key: devinRow.selectionKey,
+      window_key: 'devin:daily',
+      from_ms: currentStartMs,
+      to_ms: nowMs,
+      auth_provider_snapshot: 'devin',
+      auth_file_snapshot: 'devin.json',
+      auth_index: 'auth-devin-1',
+      account_snapshot: 'devin@example.com',
+    });
+
+    const previousEntry = entries.find((e) => e.period === 'previous');
+    expect(previousEntry).toBeDefined();
+    expect(previousEntry?.target).toMatchObject({
+      row_key: devinRow.selectionKey,
+      window_key: 'devin:daily',
+      from_ms: previousStartMs,
+      to_ms: previousEndMs,
+      auth_provider_snapshot: 'devin',
+      auth_file_snapshot: 'devin.json',
+      auth_index: 'auth-devin-1',
+      account_snapshot: 'devin@example.com',
+    });
   });
 });

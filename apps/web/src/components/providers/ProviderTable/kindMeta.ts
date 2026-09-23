@@ -6,6 +6,7 @@ import iconClaude from '@/assets/icons/claude.svg';
 import iconVertex from '@/assets/icons/vertex.svg';
 import iconOpenaiLight from '@/assets/icons/openai-light.svg';
 import iconOpenaiDark from '@/assets/icons/openai-dark.svg';
+import iconMeta from '@/assets/icons/meta.svg';
 import type { ProviderKind } from './rowData';
 
 /** 品牌名，无需 i18n */
@@ -14,6 +15,7 @@ export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   interactions: 'Interactions',
   codex: 'Codex',
   xai: 'xAI',
+  meta: 'Muse (Meta)',
   claude: 'Claude',
   vertex: 'Vertex',
   openai: 'OpenAI',
@@ -24,6 +26,7 @@ const KIND_ICONS: Record<Exclude<ProviderKind, 'openai'>, string> = {
   interactions: iconGemini,
   codex: iconCodex,
   xai: iconGrokLight,
+  meta: iconMeta,
   claude: iconClaude,
   vertex: iconVertex,
 };

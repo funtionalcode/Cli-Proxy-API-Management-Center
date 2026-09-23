@@ -40,6 +40,7 @@ const SORT_KEY_SET: ReadonlySet<AccountsWorkspaceUiState['accountSort']['key']> 
   'plan',
   'note',
   'reset',
+  'remaining',
   'priority',
   'recent',
   'quota',
@@ -59,6 +60,7 @@ const MANAGED_QUERY_KEYS = [
   'direction',
   'pageSize',
   'display',
+  'layout',
   'account',
   'tab',
   'editor',
@@ -123,6 +125,12 @@ export const readAccountsWorkspaceUrlState = (
         : params.get('display') === 'full'
           ? 'full'
           : fallback.accountDisplayMode,
+    layoutMode:
+      params.get('layout') === 'grid'
+        ? 'grid'
+        : params.get('layout') === 'table'
+          ? 'table'
+          : fallback.layoutMode,
     account: params.get('account') || null,
     detailTab:
       params.get('tab') === 'credential'
@@ -166,6 +174,7 @@ export const writeAccountsWorkspaceUrlSearch = (
   }
   if (state.pageSize !== defaults.pageSize) params.set('pageSize', String(state.pageSize));
   setNonDefault(params, 'display', state.accountDisplayMode, defaults.accountDisplayMode);
+  setNonDefault(params, 'layout', state.layoutMode, defaults.layoutMode);
   if (state.account) {
     params.set('account', state.account);
     setNonDefault(params, 'tab', state.detailTab, 'overview');

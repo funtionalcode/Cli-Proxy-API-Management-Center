@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { KimiUsagePayload } from '@/types';
 import { buildAntigravityQuotaGroups, buildKimiQuotaRows } from './builders';
 
 describe('buildAntigravityQuotaGroups', () => {
@@ -280,19 +281,128 @@ describe('buildKimiQuotaRows', () => {
 
     expect(rows).toEqual([
       expect.objectContaining({
-        id: 'usage-0-summary',
-        labelKey: 'kimi_quota.scoped_weekly_limit',
-        labelParams: { scope: 'Coding' },
-        used: 214,
-        limit: 2048,
-      }),
-      expect.objectContaining({
         id: 'usage-0-limit-0',
         labelKey: 'kimi_quota.scoped_limit_window',
         labelParams: { scope: 'Coding', duration: '5h' },
         used: 139,
         limit: 200,
       }),
+      expect.objectContaining({
+        id: 'usage-0-summary',
+        labelKey: 'kimi_quota.scoped_weekly_limit',
+        labelParams: { scope: 'Coding' },
+        used: 214,
+        limit: 2048,
+      }),
     ]);
+  });
+
+  it('normalizes Kimi #699 payload with 5H limits before Weekly usage and assigns 7D duration to top-level usage', () => {
+    const observedAtMs = Date.parse('2026-09-06T19:24:47.694Z');
+    const resetTime = '2026-09-13T00:24:47.694450Z';
+    const limitResetTime = '2026-09-06T19:24:47.694450Z';
+    const rows = buildKimiQuotaRows(
+      {
+        user: {
+          membership: {
+            level: 'LEVEL_INTERMEDIATE',
+          },
+        },
+        usage: {
+          limit: '100',
+          used: '17',
+          remaining: '83',
+          resetTime,
+        },
+        limits: [
+          {
+            window: {
+              duration: 300,
+              timeUnit: 'TIME_UNIT_MINUTE',
+            },
+            detail: {
+              limit: '100',
+              used: '16',
+              remaining: '84',
+              resetTime: limitResetTime,
+            },
+          },
+        ],
+        parallel: {
+          limit: '20',
+        },
+        authentication: {
+          method: 'METHOD_ACCESS_TOKEN',
+          scope: 'FEATURE_CODING',
+        },
+        subType: 'TYPE_PURCHASE',
+        domain: 'DOMAIN_NEXUS',
+        version: 'GOODS_VERSION_V1',
+      } as unknown as KimiUsagePayload,
+      { observedAtMs }
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      id: 'limit-0',
+      used: 16,
+      limit: 100,
+      limitWindowSeconds: 18_000,
+      resetAtMs: Date.parse(limitResetTime),
+    });
+    expect(rows[1]).toMatchObject({
+      id: 'summary',
+      labelKey: 'kimi_quota.weekly_limit',
+      used: 17,
+      limit: 100,
+      limitWindowSeconds: 604_800,
+      resetAtMs: Date.parse(resetTime),
+    });
+  });
+
+  it('normalizes Kimi top-level summary-only usage as 7D weekly quota', () => {
+    const resetTime = '2026-09-13T00:24:47.694450Z';
+    const rows = buildKimiQuotaRows({
+      usage: {
+        limit: '100',
+        used: '17',
+        remaining: '83',
+        resetTime,
+      },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'summary',
+      labelKey: 'kimi_quota.weekly_limit',
+      used: 17,
+      limit: 100,
+      limitWindowSeconds: 604_800,
+      resetAtMs: Date.parse(resetTime),
+    });
+  });
+
+  it('does not alter Kimi normalization based on membership level', () => {
+    const resetTime = '2026-09-13T00:24:47.694450Z';
+    const rows = buildKimiQuotaRows({
+      user: {
+        membership: {
+          level: 'LEVEL_ADVANCED',
+        },
+      },
+      usage: {
+        limit: '200',
+        used: '50',
+        resetTime,
+      },
+    } as unknown as KimiUsagePayload);
+
+    expect(rows[0]).toMatchObject({
+      id: 'summary',
+      limitWindowSeconds: 604_800,
+      used: 50,
+      limit: 200,
+      resetAtMs: Date.parse(resetTime),
+    });
   });
 });

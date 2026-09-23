@@ -21,6 +21,9 @@ export type AccountModelRuleRow = AuthFileModelItem & {
   globalPatterns: string[];
   hasCredentialExactRule: boolean;
   hasCredentialWildcardRule: boolean;
+  ruleModelId: string;
+  ruleModelIdResolved: boolean;
+  equivalentRuntimeModelIds: string[];
 };
 
 export type AccountModelRuleProjection = {
@@ -45,6 +48,7 @@ type BuildAccountModelRuleProjectionOptions = {
   globalRules: Record<string, string[]>;
   globalRulesKnown?: boolean;
   credentialRulesShared?: boolean;
+  credentialPrefix?: string;
 };
 
 const normalizeModelId = (value: string): string => value.trim().toLowerCase();
@@ -85,6 +89,71 @@ const getGlobalRulesForProvider = (
   globalRules: Record<string, string[]>
 ): string[] => normalizeExcludedModels(getProviderRecordValues(globalRules, provider).flat());
 
+export type ResolvedAccountModelRuleIdentity = {
+  ruleModelId: string;
+  ruleModelIdResolved: boolean;
+};
+
+export const resolveAccountModelRuleIdentity = ({
+  modelId,
+  credentialPrefix,
+  modelDefinitions,
+}: {
+  modelId: string;
+  credentialPrefix?: string;
+  modelDefinitions: AuthFileModelItem[];
+}): ResolvedAccountModelRuleIdentity => {
+  const trimmedId = modelId.trim();
+  const normalizedId = normalizeModelId(trimmedId);
+  if (!normalizedId) {
+    return { ruleModelId: trimmedId, ruleModelIdResolved: false };
+  }
+
+  const definitionsMap = new Map<string, AuthFileModelItem>();
+  for (const def of modelDefinitions) {
+    const key = normalizeModelId(def.id);
+    if (key && !definitionsMap.has(key)) {
+      definitionsMap.set(key, def);
+    }
+  }
+
+  // Priority 1: exact definition match
+  const exactDef = definitionsMap.get(normalizedId);
+  if (exactDef) {
+    return {
+      ruleModelId: exactDef.id,
+      ruleModelIdResolved: true,
+    };
+  }
+
+  const cleanPrefix = (credentialPrefix ?? '').trim().replace(/^\/+|\/+$/g, '');
+  const prefixSegment = `${cleanPrefix.toLowerCase()}/`;
+
+  // Priority 2: verified prefix removal
+  if (cleanPrefix.length > 0 && normalizedId.startsWith(prefixSegment)) {
+    const candidateId = trimmedId.slice(cleanPrefix.length + 1);
+    const normalizedCandidate = normalizeModelId(candidateId);
+    const candidateDef = definitionsMap.get(normalizedCandidate);
+    if (candidateDef) {
+      return {
+        ruleModelId: candidateDef.id,
+        ruleModelIdResolved: true,
+      };
+    }
+    // Fail closed: cannot verify prefixed candidate
+    return {
+      ruleModelId: trimmedId,
+      ruleModelIdResolved: false,
+    };
+  }
+
+  // Priority 3: runtime does not carry the prefix
+  return {
+    ruleModelId: trimmedId,
+    ruleModelIdResolved: true,
+  };
+};
+
 export const buildAccountModelRuleProjection = ({
   provider,
   runtimeModels,
@@ -93,6 +162,7 @@ export const buildAccountModelRuleProjection = ({
   globalRules,
   globalRulesKnown = true,
   credentialRulesShared = false,
+  credentialPrefix,
 }: BuildAccountModelRuleProjectionOptions): AccountModelRuleProjection => {
   const normalizedCredentialRules = normalizeExcludedModels(credentialRules);
   const normalizedGlobalRules = globalRulesKnown
@@ -102,30 +172,116 @@ export const buildAccountModelRuleProjection = ({
     runtimeModels.map((model) => normalizeModelId(model.id)).filter(Boolean)
   );
   const modelById = new Map<string, AuthFileModelItem>();
+  const ruleIdentitiesByIdKey = new Map<string, ResolvedAccountModelRuleIdentity>();
   const orderedIds: string[] = [];
 
-  const addModel = (model: AuthFileModelItem, requireRuleMatch: boolean) => {
+  for (const model of runtimeModels) {
     const modelId = model.id.trim();
     const idKey = normalizeModelId(modelId);
-    if (!idKey) return;
-    if (
-      requireRuleMatch &&
-      findMatchingRules(modelId, normalizedCredentialRules).length === 0 &&
-      findMatchingRules(modelId, normalizedGlobalRules).length === 0
-    ) {
-      return;
+    if (!idKey) continue;
+    if (!modelById.has(idKey)) {
+      orderedIds.push(idKey);
+      const identity = resolveAccountModelRuleIdentity({
+        modelId,
+        credentialPrefix,
+        modelDefinitions,
+      });
+      ruleIdentitiesByIdKey.set(idKey, identity);
     }
-    if (!modelById.has(idKey)) orderedIds.push(idKey);
     modelById.set(idKey, mergeModelItem(modelById.get(idKey), { ...model, id: modelId }));
-  };
+  }
 
-  runtimeModels.forEach((model) => addModel(model, false));
-  modelDefinitions.forEach((model) => addModel(model, true));
+  const resolvedRuntimeRuleModelIds = new Set<string>();
+  for (const idKey of orderedIds) {
+    const identity = ruleIdentitiesByIdKey.get(idKey);
+    if (identity?.ruleModelIdResolved) {
+      resolvedRuntimeRuleModelIds.add(normalizeModelId(identity.ruleModelId));
+    }
+  }
+
+  for (const def of modelDefinitions) {
+    const defId = def.id.trim();
+    const defIdKey = normalizeModelId(defId);
+    if (!defIdKey) continue;
+
+    if (modelById.has(defIdKey)) {
+      modelById.set(defIdKey, mergeModelItem(modelById.get(defIdKey), { ...def, id: defId }));
+      continue;
+    }
+
+    if (resolvedRuntimeRuleModelIds.has(defIdKey)) {
+      for (const idKey of orderedIds) {
+        const identity = ruleIdentitiesByIdKey.get(idKey);
+        if (identity?.ruleModelIdResolved && normalizeModelId(identity.ruleModelId) === defIdKey) {
+          modelById.set(idKey, mergeModelItem(modelById.get(idKey), def));
+        }
+      }
+      continue;
+    }
+
+    if (
+      findMatchingRules(defId, normalizedCredentialRules).length === 0 &&
+      findMatchingRules(defId, normalizedGlobalRules).length === 0
+    ) {
+      continue;
+    }
+
+    orderedIds.push(defIdKey);
+    modelById.set(defIdKey, { ...def, id: defId });
+    ruleIdentitiesByIdKey.set(defIdKey, {
+      ruleModelId: defId,
+      ruleModelIdResolved: true,
+    });
+  }
+
+  const equivalentRuntimeIdsByRuleId = new Map<string, string[]>();
+  for (const idKey of orderedIds) {
+    if (runtimeIds.has(idKey)) {
+      const identity = ruleIdentitiesByIdKey.get(idKey);
+      if (identity?.ruleModelIdResolved) {
+        const key = normalizeModelId(identity.ruleModelId);
+        const list = equivalentRuntimeIdsByRuleId.get(key) ?? [];
+        const modelItem = modelById.get(idKey);
+        const actualId = modelItem?.id ?? idKey;
+        if (!list.includes(actualId)) {
+          list.push(actualId);
+        }
+        equivalentRuntimeIdsByRuleId.set(key, list);
+      }
+    }
+  }
 
   const rows = orderedIds.map((idKey): AccountModelRuleRow => {
     const model = modelById.get(idKey) ?? { id: idKey };
-    const credentialPatterns = findMatchingRules(model.id, normalizedCredentialRules);
-    const globalPatterns = findMatchingRules(model.id, normalizedGlobalRules);
+    const identity = ruleIdentitiesByIdKey.get(idKey) ?? {
+      ruleModelId: model.id,
+      ruleModelIdResolved: true,
+    };
+    const isRuntimeAvailable = runtimeIds.has(idKey);
+
+    const equivalentRuntimeModelIds = identity.ruleModelIdResolved
+      ? (equivalentRuntimeIdsByRuleId.get(normalizeModelId(identity.ruleModelId)) ?? [])
+          .slice()
+          .sort((a, b) => a.localeCompare(b))
+      : [];
+
+    if (!identity.ruleModelIdResolved) {
+      return {
+        ...model,
+        runtimeAvailable: isRuntimeAvailable,
+        scope: 'unknown',
+        credentialPatterns: [],
+        globalPatterns: [],
+        hasCredentialExactRule: false,
+        hasCredentialWildcardRule: false,
+        ruleModelId: identity.ruleModelId,
+        ruleModelIdResolved: false,
+        equivalentRuntimeModelIds: [],
+      };
+    }
+
+    const credentialPatterns = findMatchingRules(identity.ruleModelId, normalizedCredentialRules);
+    const globalPatterns = findMatchingRules(identity.ruleModelId, normalizedGlobalRules);
     const credentialExcluded = credentialPatterns.length > 0;
     const globalExcluded = globalPatterns.length > 0;
     const scope: AccountModelRuleScope = credentialExcluded
@@ -142,22 +298,31 @@ export const buildAccountModelRuleProjection = ({
           ? 'global'
           : 'available';
 
+    const normalizedRuleId = normalizeModelId(identity.ruleModelId);
+
     return {
       ...model,
-      runtimeAvailable: runtimeIds.has(idKey),
+      runtimeAvailable: isRuntimeAvailable,
       scope,
       credentialPatterns,
       globalPatterns,
       hasCredentialExactRule: credentialPatterns.some(
-        (pattern) => !pattern.includes('*') && normalizeModelId(pattern) === idKey
+        (pattern) => !pattern.includes('*') && normalizeModelId(pattern) === normalizedRuleId
       ),
       hasCredentialWildcardRule: credentialPatterns.some((pattern) => pattern.includes('*')),
+      ruleModelId: identity.ruleModelId,
+      ruleModelIdResolved: true,
+      equivalentRuntimeModelIds,
     };
   });
 
-  const knownModelIds = new Set(rows.map((row) => normalizeModelId(row.id)));
+  const knownRuleModelIds = new Set(
+    rows
+      .filter((row) => row.ruleModelIdResolved)
+      .map((row) => normalizeModelId(row.ruleModelId))
+  );
   const isAdvancedRule = (rule: string) =>
-    rule.includes('*') || !knownModelIds.has(normalizeModelId(rule));
+    rule.includes('*') || !knownRuleModelIds.has(normalizeModelId(rule));
 
   return {
     rows,
@@ -171,14 +336,29 @@ export const buildAccountModelRuleProjection = ({
 export const setAccountModelExactRule = (
   rules: string[],
   modelId: string,
-  excluded: boolean
+  excluded: boolean,
+  equivalentExactModelIds: string[] = []
 ): string[] => {
   const normalizedRules = normalizeExcludedModels(rules);
   const normalizedModelId = normalizeModelId(modelId);
   if (!normalizedModelId) return normalizedRules;
-  const next = new Set(normalizedRules);
-  if (excluded) next.add(normalizedModelId);
-  else next.delete(normalizedModelId);
+
+  const idsToRemove = new Set([
+    normalizedModelId,
+    ...equivalentExactModelIds.map(normalizeModelId).filter(Boolean),
+  ]);
+
+  const next = new Set<string>();
+  for (const rule of normalizedRules) {
+    if (rule.includes('*') || !idsToRemove.has(normalizeModelId(rule))) {
+      next.add(rule);
+    }
+  }
+
+  if (excluded) {
+    next.add(normalizedModelId);
+  }
+
   return Array.from(next).sort((left, right) => left.localeCompare(right));
 };
 

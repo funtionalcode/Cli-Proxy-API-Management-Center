@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { TFunction } from 'i18next';
 import { createAppRoutes } from '@/app/appRoutes';
 import { CODEX_INSPECTION_LAST_RUN_STORAGE_KEY } from '@/features/monitoring/model/codexInspectionStorage';
 import { CODEX_INSPECTION_SETTINGS_STORAGE_KEY } from '@/features/monitoring/model/codexInspectionSettings';
@@ -33,6 +34,9 @@ import {
   stripRouteBase,
 } from './demoMode';
 import { installDemoInspectionState } from './DemoPage';
+import { buildUsageDetailsFromAnalyticsEvents } from '@/features/monitoring/model/analyticsAdapters';
+import { buildEventRows } from '@/features/monitoring/model/eventRows';
+import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
 
 const createMemoryStorage = () => {
   const values = new Map<string, string>();
@@ -668,6 +672,99 @@ describe('DemoPage', () => {
       requested_model: 'deepseek-chat(region-us)',
       resolved_model: 'deepseek-chat(region-us)',
     });
+  });
+
+  it('provides #829 model routing and response mismatch fixtures with request metadata', () => {
+    const page = getDemoMonitoringAnalytics({
+      from_ms: 0,
+      to_ms: Date.now(),
+      include: { events_page: { limit: 20 } },
+    });
+    const items = page.events?.items ?? [];
+
+    // 场景 A: 正常路由 response 与 resolved 一致 (requested != resolved, response == resolved)
+    const matchedEvent = items.find(
+      (event) =>
+        Boolean(event.requested_model) &&
+        Boolean(event.resolved_model) &&
+        event.requested_model !== event.resolved_model &&
+        event.response_model === event.resolved_model
+    );
+    expect(matchedEvent).toBeDefined();
+    expect(matchedEvent).toMatchObject({
+      request_id: 'demo-gpt-model-matched',
+      event_hash: 'demo-event-gpt-model-matched',
+      requested_model: 'gpt-5.6-sol',
+      resolved_model: 'gpt-5.6-terra',
+      response_model: 'gpt-5.6-terra',
+    });
+
+    // 场景 B: 实际响应模型与路由模型不一致 (response != resolved, 包含 request metadata)
+    const mismatchEvent = items.find(
+      (event) =>
+        Boolean(event.response_model) &&
+        Boolean(event.resolved_model) &&
+        event.response_model !== event.resolved_model
+    );
+    expect(mismatchEvent).toBeDefined();
+    expect(mismatchEvent).toMatchObject({
+      request_id: 'demo-deepseek-reasoning-max',
+      event_hash: 'demo-event-deepseek-reasoning-max',
+      requested_model: 'deepseek-chat(max)',
+      resolved_model: 'deepseek-chat-202608',
+      response_model: 'deepseek-v4-flash',
+      session_id: 'demo-session-model-mismatch',
+      parent_session_id: 'demo-parent-session',
+      generate: true,
+      stream: false,
+    });
+    expect(mismatchEvent?.session_id).toBeTruthy();
+    expect(mismatchEvent?.parent_session_id).toBeTruthy();
+    expect(mismatchEvent?.generate).toBe(true);
+    expect(mismatchEvent?.stream).toBe(false);
+
+    // 旧数据降级: 保留 legacy payload (requested != resolved, 无 response_model / metadata)
+    const legacyEvent = items.find((event) => event.request_id === 'demo-deepseek-reasoning-low');
+    expect(legacyEvent).toBeDefined();
+    expect(legacyEvent?.requested_model).toBe('deepseek-chat(low)');
+    expect(legacyEvent?.resolved_model).toBe('deepseek-chat-202608');
+    expect(legacyEvent?.response_model).toBeUndefined();
+    expect(legacyEvent?.session_id).toBeUndefined();
+
+    // 验证经过 MonitoringAnalyticsResponse -> buildUsageDetailsFromAnalyticsEvents -> buildEventRows 管道
+    const details = buildUsageDetailsFromAnalyticsEvents([mismatchEvent!]);
+    expect(details[0].session_id).toBe('demo-session-model-mismatch');
+    expect(details[0].parent_session_id).toBe('demo-parent-session');
+    expect(details[0].generate).toBe(true);
+    expect(details[0].stream).toBe(false);
+
+    const rows = buildEventRows(
+      details,
+      new Map(),
+      new Map(),
+      { byAuthIndex: new Map(), bySource: new Map(), byIdentityKey: new Map() },
+      new Map(),
+      {},
+      new Map()
+    );
+    expect(rows[0].sessionId).toBe('demo-session-model-mismatch');
+    expect(rows[0].parentSessionId).toBe('demo-parent-session');
+    expect(rows[0].generate).toBe(true);
+    expect(rows[0].stream).toBe(false);
+    expect(rows[0].responseModel).toBe('deepseek-v4-flash');
+    expect(rows[0].resolvedModel).toBe('deepseek-chat-202608');
+    expect(rows[0].requestedModel).toBe('deepseek-chat(max)');
+
+    // 验证 full 模式暴露 request metadata，masked 模式隐藏
+    const mockT = ((key: string) => key) as unknown as TFunction;
+    const fullSourceDisplay = buildRealtimeSourceDisplay(rows[0], mockT, 'full');
+    expect(fullSourceDisplay.requestMetadataTitle).toContain('demo-session-model-mismatch');
+    expect(fullSourceDisplay.requestMetadataTitle).toContain('demo-parent-session');
+    expect(fullSourceDisplay.requestMetadataTitle).toContain('monitoring.generate: common.yes');
+    expect(fullSourceDisplay.requestMetadataTitle).toContain('monitoring.stream: common.no');
+
+    const maskedSourceDisplay = buildRealtimeSourceDisplay(rows[0], mockT, 'masked');
+    expect(maskedSourceDisplay.requestMetadataTitle).toBe('');
   });
 
   it('provides stable reason codes for localized account diagnostics', () => {

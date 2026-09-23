@@ -6,8 +6,8 @@ import {
   IconExternalLink,
   IconFileText,
   IconInbox,
-  IconSettings,
 } from '@/components/ui/icons';
+import { ModelPriceAttentionLink } from '@/features/model-price-attention';
 import styles from '../MonitoringCenterPage.module.scss';
 
 type MonitoringActionBarProps = {
@@ -43,11 +43,6 @@ export function MonitoringActionBar({
   onUsageImportChange,
   statusSummary,
 }: MonitoringActionBarProps) {
-  const modelPriceSettingsLabel = shortLabel(
-    t,
-    'usage_stats.model_price_settings_short',
-    'usage_stats.model_price_settings'
-  );
   const accountActionsLabel = shortLabel(t, 'nav.account_actions_short', 'nav.account_actions');
 
   return (
@@ -82,14 +77,7 @@ export function MonitoringActionBar({
           <span>{usageImporting ? t('common.loading') : t('usage_stats.import')}</span>
         </button>
         {modelPricesAvailable ? (
-          <Link
-            to="/model-prices"
-            className={styles.actionButton}
-            title={t('usage_stats.model_price_settings')}
-          >
-            <IconSettings size={16} />
-            <span>{modelPriceSettingsLabel}</span>
-          </Link>
+          <ModelPriceAttentionLink variant="action-bar" className={styles.actionButton} />
         ) : null}
         <Link
           to="/monitoring/account-actions"

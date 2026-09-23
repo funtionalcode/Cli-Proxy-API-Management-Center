@@ -229,7 +229,7 @@ Common variables:
 
 ## Rerun And Overwrite
 
-The following `CPAMP_OPERATION` modes apply to Docker deployments. Native packages continue to use their existing version and overwrite options.
+The following `CPAMP_OPERATION` modes apply to maintenance of existing deployments. Existing native deployments also require `CPAMP_OPERATION=upgrade` for non-interactive upgrades (or running `bash install-cpamp.sh update` directly).
 
 Before writing files, the installer checks both the install directory and Docker data volume. When it detects an existing deployment, interactive mode offers:
 
@@ -247,6 +247,12 @@ CPAMP_OPERATION=upgrade \
 CPAMP_NON_INTERACTIVE=1 \
 CPAMP_CONFIRM=1 \
 bash install-cpamp.sh
+```
+
+Existing native deployments also support this command and remain compatible with historical positional argument usage (equivalent to `CPAMP_OPERATION=upgrade`):
+
+```bash
+bash install-cpamp.sh update
 ```
 
 Non-interactive admin-login repair:

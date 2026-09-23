@@ -2,7 +2,9 @@ package usageaggregate
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -434,11 +436,12 @@ func assertAggregateCallsAndLedgerRevision(db *sql.DB, wantCalls int64, wantRevi
 	if calls != wantCalls {
 		return fmt.Errorf("aggregate calls = %d, want %d", calls, wantCalls)
 	}
-	for _, eventHash := range []string{"revision-event-1", "revision-event-2"} {
+	for _, rawHash := range []string{"revision-event-1", "revision-event-2"} {
+		eventHash := canonicalAggregateHash(rawHash)
 		var revision string
 		if err := db.QueryRow(`select aggregate_structure_revision
 			from usage_event_identity_ledger where event_hash = ?`, eventHash).Scan(&revision); err != nil {
-			return fmt.Errorf("read ledger revision for %s: %w", eventHash, err)
+			return fmt.Errorf("read ledger revision for %s: %w", rawHash, err)
 		}
 		if revision != wantRevision {
 			return fmt.Errorf("ledger aggregate_structure_revision for %s = %q, want %q", eventHash, revision, wantRevision)
@@ -558,7 +561,7 @@ func TestCatchUpFailureDoesNotAdvanceCoverage(t *testing.T) {
 		t.Fatalf("state advanced after failure: %#v", state)
 	}
 	var version int
-	if err := db.QueryRow(`select aggregate_schema_version from usage_event_identity_ledger where event_hash = 'aggregate-failure'`).Scan(&version); err != nil {
+	if err := db.QueryRow(`select aggregate_schema_version from usage_event_identity_ledger where event_hash = ?`, canonicalAggregateHash("aggregate-failure")).Scan(&version); err != nil {
 		t.Fatalf("read ledger version: %v", err)
 	}
 	if version != 0 {
@@ -759,9 +762,17 @@ func TestLoadRowsCanonicalizesReasoningSuffixesAcrossStoredAndRawRows(t *testing
 	}
 }
 
+func canonicalAggregateHash(raw string) string {
+	if len(raw) == 64 {
+		return raw
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
 func aggregateTestEvent(hash string, timestampMS int64, model string, failed bool, inputTokens, outputTokens int64, latencyMS *int64) usage.Event {
 	return usage.Event{
-		EventHash:     hash,
+		EventHash:     canonicalAggregateHash(hash),
 		TimestampMS:   timestampMS,
 		Timestamp:     time.UnixMilli(timestampMS).UTC().Format(time.RFC3339Nano),
 		Provider:      "openai",

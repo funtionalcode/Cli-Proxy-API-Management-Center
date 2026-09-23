@@ -27,6 +27,7 @@ The current sync maps models.dev `cost.input`, `cost.output`, `cost.cache_read`,
 - A transient models.dev failure cannot automatically replace a stored models.dev price with a lower-priority source; fallback sources may still fill models that have no local price.
 - When models.dev responds successfully but has no official entry or remains ambiguous, fallback sources are tried in order; only a unique strong identity match may replace the model.
 - If every source fails, synchronization stops before any database write and existing prices remain unchanged.
+- A manually saved price remains authoritative during synchronization, even when a source returns an exact match for the same model. Delete the manual entry and sync again to use synchronized pricing.
 - A synchronized price remains the last-known-good value until a later successful sync or a manual edit; `syncedAtMs` indicates its freshness.
 
 ## Supported Billing Semantics

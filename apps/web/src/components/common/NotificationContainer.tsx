@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNotificationStore } from '@/stores';
 import { IconX } from '@/components/ui/icons';
@@ -23,7 +24,9 @@ export function NotificationContainer() {
 
     const newNotifications = notifications.filter((n) => !prevIds.has(n.id));
 
-    const removedIds = new Set(prevNotifications.filter((n) => !currentIds.has(n.id)).map((n) => n.id));
+    const removedIds = new Set(
+      prevNotifications.filter((n) => !currentIds.has(n.id)).map((n) => n.id)
+    );
 
     setAnimatedNotifications((prev) => {
       let updated = prev.map((n) => (removedIds.has(n.id) ? { ...n, isExiting: true } : n));
@@ -49,7 +52,9 @@ export function NotificationContainer() {
   }, [notifications]);
 
   const handleClose = (id: string) => {
-    setAnimatedNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isExiting: true } : n)));
+    setAnimatedNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, isExiting: true } : n))
+    );
 
     setTimeout(() => {
       removeNotification(id);
@@ -58,7 +63,7 @@ export function NotificationContainer() {
 
   if (!animatedNotifications.length) return null;
 
-  return (
+  const content = (
     <div className="notification-container">
       {animatedNotifications.map((notification) => (
         <div
@@ -78,4 +83,8 @@ export function NotificationContainer() {
       ))}
     </div>
   );
+
+  if (typeof document === 'undefined') return content;
+
+  return createPortal(content, document.body);
 }

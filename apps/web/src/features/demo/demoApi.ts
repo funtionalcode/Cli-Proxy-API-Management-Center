@@ -75,6 +75,7 @@ const providerEndpointKeys: Record<string, string> = {
   '/gemini-api-key': 'gemini-api-key',
   '/codex-api-key': 'codex-api-key',
   '/xai-api-key': 'xai-api-key',
+  '/meta-api-key': 'meta-api-key',
   '/claude-api-key': 'claude-api-key',
   '/vertex-api-key': 'vertex-api-key',
   '/openai-compatibility': 'openai-compatibility',
@@ -550,6 +551,14 @@ export async function handleDemoApiRequest<T = unknown>(
       updateDemoRoutingStrategy(data.value);
     }
     return ok as T;
+  }
+
+  if (pathname === '/reset-quota') {
+    const authIndex =
+      typeof data === 'object' && data !== null && 'auth_index' in data
+        ? String((data as { auth_index?: unknown }).auth_index ?? '')
+        : '';
+    return { status: 'ok', auth_index: authIndex, models: [] } as T;
   }
 
   if (pathname === '/auth-files') {

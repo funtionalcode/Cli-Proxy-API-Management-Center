@@ -104,3 +104,93 @@ describe('normalizeConfigResponse Claude fingerprint profile', () => {
     expect(config.claudeApiKeys?.[0]).not.toHaveProperty('fingerprintProfile');
   });
 });
+
+describe('normalizeConfigResponse OAuth excluded models', () => {
+  it.each([{}, { 'oauth-excluded-models': null }])(
+    'leaves missing or null config fields unset: %j',
+    (raw) => {
+      expect(normalizeConfigResponse(raw).oauthExcludedModels).toBeUndefined();
+    }
+  );
+
+  it.each([
+    { 'oauth-excluded-models': null },
+    { items: null },
+    { 'oauth-excluded-models': null, items: { codex: ['model-a'] } },
+    { items: null, codex: ['model-a'] },
+  ])('does not interpret an empty wrapper as a provider: %j', (payload) => {
+    const config = normalizeConfigResponse({ 'oauth-excluded-models': payload });
+
+    expect(config.oauthExcludedModels).toBeUndefined();
+  });
+
+  it.each([{}, { 'oauth-excluded-models': {} }, { items: {} }])(
+    'preserves empty maps: %j',
+    (payload) => {
+      expect(
+        normalizeConfigResponse({ 'oauth-excluded-models': payload }).oauthExcludedModels
+      ).toEqual({});
+    }
+  );
+
+  it.each([
+    { codex: ['model-a'] },
+    { 'oauth-excluded-models': { codex: ['model-a'] } },
+    { items: { codex: ['model-a'] } },
+    { 'oauth-excluded-models': { codex: ['model-a'] }, items: { codex: ['model-b'] } },
+  ])('preserves supported maps and wrapper precedence: %j', (payload) => {
+    expect(
+      normalizeConfigResponse({ 'oauth-excluded-models': payload }).oauthExcludedModels
+    ).toEqual({ codex: ['model-a'] });
+  });
+});
+
+describe('normalizeConfigResponse Meta API keys', () => {
+  it('normalizes the meta-api-key contract using the provider-key shape', () => {
+    const config = normalizeConfigResponse({
+      'meta-api-key': [
+        {
+          'api-key': 'meta-key-test',
+          'auth-index': 'meta-auth-01',
+          'base-url': 'https://api.meta.ai/v1',
+          prefix: 'team-meta',
+          'disable-cooling': true,
+          priority: 15,
+          weight: 3,
+          models: [{ name: 'llama-3.3-70b-instruct', alias: 'Llama 3.3' }],
+        },
+      ],
+    });
+
+    expect(config.metaApiKeys).toEqual([
+      expect.objectContaining({
+        apiKey: 'meta-key-test',
+        authIndex: 'meta-auth-01',
+        baseUrl: 'https://api.meta.ai/v1',
+        prefix: 'team-meta',
+        disableCooling: true,
+        priority: 15,
+        weight: 3,
+        models: [{ name: 'llama-3.3-70b-instruct', alias: 'Llama 3.3' }],
+      }),
+    ]);
+  });
+
+  it('normalizes camelCase metaApiKeys and metaApiKey aliases', () => {
+    const config = normalizeConfigResponse({
+      metaApiKeys: [
+        {
+          apiKey: 'meta-camel-key',
+          baseUrl: 'https://api.meta.ai/v1',
+        },
+      ],
+    });
+
+    expect(config.metaApiKeys).toEqual([
+      expect.objectContaining({
+        apiKey: 'meta-camel-key',
+        baseUrl: 'https://api.meta.ai/v1',
+      }),
+    ]);
+  });
+});

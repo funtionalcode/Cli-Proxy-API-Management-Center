@@ -54,6 +54,14 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    .metricExtraAction {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      z-index: 2;
+    }
   }
 
   .metricBody {

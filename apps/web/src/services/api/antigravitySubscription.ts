@@ -131,11 +131,17 @@ export const antigravitySubscriptionApi = {
         if (result.statusCode < 200 || result.statusCode >= 300) {
           lastError = getApiCallErrorMessage(result);
           lastStatus = result.statusCode;
+          if (result.statusCode === 429) {
+            throw createStatusError(lastError, 429);
+          }
           continue;
         }
 
         return parseAntigravitySubscriptionSummary(result.body ?? result.bodyText);
       } catch (err: unknown) {
+        if (getStatusFromError(err) === 429) {
+          throw err;
+        }
         lastError = err instanceof Error ? err.message : 'Unknown error';
         lastStatus = getStatusFromError(err) ?? lastStatus;
       }

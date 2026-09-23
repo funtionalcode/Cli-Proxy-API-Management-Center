@@ -80,6 +80,9 @@ export function AiProvidersPage() {
     () => config?.codexApiKeys || []
   );
   const [xaiConfigs, setXAIConfigs] = useState<ProviderKeyConfig[]>(() => config?.xaiApiKeys || []);
+  const [metaConfigs, setMetaConfigs] = useState<ProviderKeyConfig[]>(
+    () => config?.metaApiKeys || []
+  );
   const [claudeConfigs, setClaudeConfigs] = useState<ProviderKeyConfig[]>(
     () => config?.claudeApiKeys || []
   );
@@ -154,6 +157,7 @@ export function AiProvidersPage() {
       setInteractionsKeys(data?.interactionsApiKeys || []);
       setCodexConfigs(data?.codexApiKeys || []);
       setXAIConfigs(data?.xaiApiKeys || []);
+      setMetaConfigs(data?.metaApiKeys || []);
       setClaudeConfigs(data?.claudeApiKeys || []);
       setVertexConfigs(data?.vertexApiKeys || []);
       setOpenaiProviders(data?.openaiCompatibility || []);
@@ -208,6 +212,7 @@ export function AiProvidersPage() {
     if (config?.interactionsApiKeys) setInteractionsKeys(config.interactionsApiKeys);
     if (config?.codexApiKeys) setCodexConfigs(config.codexApiKeys);
     if (config?.xaiApiKeys) setXAIConfigs(config.xaiApiKeys);
+    if (config?.metaApiKeys) setMetaConfigs(config.metaApiKeys);
     if (config?.claudeApiKeys) setClaudeConfigs(config.claudeApiKeys);
     if (config?.vertexApiKeys) setVertexConfigs(config.vertexApiKeys);
     if (config?.openaiCompatibility) setOpenaiProviders(config.openaiCompatibility);
@@ -216,6 +221,7 @@ export function AiProvidersPage() {
     config?.interactionsApiKeys,
     config?.codexApiKeys,
     config?.xaiApiKeys,
+    config?.metaApiKeys,
     config?.claudeApiKeys,
     config?.vertexApiKeys,
     config?.openaiCompatibility,
@@ -250,6 +256,7 @@ export function AiProvidersPage() {
         interactions: interactionsKeys,
         codex: codexConfigs,
         xai: xaiConfigs,
+        meta: metaConfigs,
         claude: claudeConfigs,
         vertex: vertexConfigs,
         openai: openaiProviders,
@@ -260,6 +267,7 @@ export function AiProvidersPage() {
       codexConfigs,
       geminiKeys,
       interactionsKeys,
+      metaConfigs,
       openaiProviders,
       usageByProvider,
       vertexConfigs,
@@ -321,6 +329,7 @@ export function AiProvidersPage() {
       interactions: 0,
       codex: 0,
       xai: 0,
+      meta: 0,
       claude: 0,
       vertex: 0,
       openai: 0,
@@ -356,6 +365,7 @@ export function AiProvidersPage() {
       interactions: interactionsKeys,
       codex: codexConfigs,
       xai: xaiConfigs,
+      meta: metaConfigs,
       claude: claudeConfigs,
       vertex: vertexConfigs,
       openai: openaiProviders,
@@ -364,6 +374,7 @@ export function AiProvidersPage() {
     let nextInteractions = interactionsKeys;
     let nextCodex = codexConfigs;
     let nextXAI = xaiConfigs;
+    let nextMeta = metaConfigs;
     let nextClaude = claudeConfigs;
     let nextVertex = vertexConfigs;
     let nextOpenai = openaiProviders;
@@ -372,6 +383,7 @@ export function AiProvidersPage() {
       interactions: false,
       codex: false,
       xai: false,
+      meta: false,
       claude: false,
       vertex: false,
       openai: false,
@@ -423,6 +435,16 @@ export function AiProvidersPage() {
           index === row.originalIndex ? { ...item, excludedModels } : item
         );
         changed.xai = true;
+      } else if (row.kind === 'meta') {
+        const current = nextMeta[row.originalIndex];
+        if (!current) return;
+        const excludedModels = enabled
+          ? withoutDisableAllModelsRule(current.excludedModels)
+          : withDisableAllModelsRule(current.excludedModels);
+        nextMeta = nextMeta.map((item, index) =>
+          index === row.originalIndex ? { ...item, excludedModels } : item
+        );
+        changed.meta = true;
       } else if (row.kind === 'claude') {
         const current = nextClaude[row.originalIndex];
         if (!current) return;
@@ -465,6 +487,7 @@ export function AiProvidersPage() {
       interactions: GeminiKeyConfig[],
       codex: ProviderKeyConfig[],
       xai: ProviderKeyConfig[],
+      meta: ProviderKeyConfig[],
       claude: ProviderKeyConfig[],
       vertex: ProviderKeyConfig[],
       openai: OpenAIProviderConfig[]
@@ -489,6 +512,11 @@ export function AiProvidersPage() {
         updateConfigValue('xai-api-key', xai);
         clearCache('xai-api-key');
       }
+      if (changed.meta) {
+        setMetaConfigs(meta);
+        updateConfigValue('meta-api-key', meta);
+        clearCache('meta-api-key');
+      }
       if (changed.claude) {
         setClaudeConfigs(claude);
         updateConfigValue('claude-api-key', claude);
@@ -511,6 +539,7 @@ export function AiProvidersPage() {
       nextInteractions,
       nextCodex,
       nextXAI,
+      nextMeta,
       nextClaude,
       nextVertex,
       nextOpenai
@@ -545,6 +574,13 @@ export function AiProvidersPage() {
         nextXAI.forEach((item, index) => {
           if (item !== previous.xai[index]) {
             mutations.push(() => providersApi.updateXAIConfig(previous.xai[index], item));
+          }
+        });
+      }
+      if (changed.meta) {
+        nextMeta.forEach((item, index) => {
+          if (item !== previous.meta[index]) {
+            mutations.push(() => providersApi.updateMetaConfig(previous.meta[index], item));
           }
         });
       }
@@ -655,9 +691,11 @@ export function AiProvidersPage() {
         ? codexConfigs
         : provider === 'xai'
           ? xaiConfigs
-          : provider === 'claude'
-            ? claudeConfigs
-            : vertexConfigs;
+          : provider === 'meta'
+            ? metaConfigs
+            : provider === 'claude'
+              ? claudeConfigs
+              : vertexConfigs;
     const current = source[index];
     if (!current) return;
 
@@ -679,6 +717,10 @@ export function AiProvidersPage() {
       setXAIConfigs(nextList);
       updateConfigValue('xai-api-key', nextList);
       clearCache('xai-api-key');
+    } else if (provider === 'meta') {
+      setMetaConfigs(nextList);
+      updateConfigValue('meta-api-key', nextList);
+      clearCache('meta-api-key');
     } else if (provider === 'claude') {
       setClaudeConfigs(nextList);
       updateConfigValue('claude-api-key', nextList);
@@ -694,6 +736,8 @@ export function AiProvidersPage() {
         await providersApi.updateCodexConfig(current, nextItem);
       } else if (provider === 'xai') {
         await providersApi.updateXAIConfig(current, nextItem);
+      } else if (provider === 'meta') {
+        await providersApi.updateMetaConfig(current, nextItem);
       } else if (provider === 'claude') {
         await providersApi.updateClaudeConfig(current, nextItem);
       } else {
@@ -714,6 +758,10 @@ export function AiProvidersPage() {
         setXAIConfigs(previousList);
         updateConfigValue('xai-api-key', previousList);
         clearCache('xai-api-key');
+      } else if (provider === 'meta') {
+        setMetaConfigs(previousList);
+        updateConfigValue('meta-api-key', previousList);
+        clearCache('meta-api-key');
       } else if (provider === 'claude') {
         setClaudeConfigs(previousList);
         updateConfigValue('claude-api-key', previousList);
@@ -887,7 +935,7 @@ export function AiProvidersPage() {
   };
 
   const setProviderCoolingPolicy = async (
-    provider: 'gemini' | 'interactions' | 'codex' | 'xai' | 'claude' | 'vertex' | 'openai',
+    provider: 'gemini' | 'interactions' | 'codex' | 'xai' | 'meta' | 'claude' | 'vertex' | 'openai',
     index: number,
     policy: CoolingPolicy
   ) => {
@@ -983,9 +1031,11 @@ export function AiProvidersPage() {
         ? codexConfigs
         : provider === 'xai'
           ? xaiConfigs
-          : provider === 'vertex'
-            ? vertexConfigs
-            : claudeConfigs;
+          : provider === 'meta'
+            ? metaConfigs
+            : provider === 'vertex'
+              ? vertexConfigs
+              : claudeConfigs;
     const current = source[index];
     if (!current) return;
 
@@ -1004,6 +1054,10 @@ export function AiProvidersPage() {
       setXAIConfigs(nextList);
       updateConfigValue('xai-api-key', nextList);
       clearCache('xai-api-key');
+    } else if (provider === 'meta') {
+      setMetaConfigs(nextList);
+      updateConfigValue('meta-api-key', nextList);
+      clearCache('meta-api-key');
     } else if (provider === 'vertex') {
       setVertexConfigs(nextList);
       updateConfigValue('vertex-api-key', nextList);
@@ -1023,6 +1077,10 @@ export function AiProvidersPage() {
         await providersApi.updateXAIConfig(current, nextItem);
         await loadConfigs();
         showNotification(t('notification.xai_config_updated'), 'success');
+      } else if (provider === 'meta') {
+        await providersApi.updateMetaConfig(current, nextItem);
+        await loadConfigs();
+        showNotification(t('notification.meta_config_updated'), 'success');
       } else if (provider === 'vertex') {
         await providersApi.updateVertexConfig(current, nextItem);
         await loadConfigs();
@@ -1042,6 +1100,10 @@ export function AiProvidersPage() {
         setXAIConfigs(previousList);
         updateConfigValue('xai-api-key', previousList);
         clearCache('xai-api-key');
+      } else if (provider === 'meta') {
+        setMetaConfigs(previousList);
+        updateConfigValue('meta-api-key', previousList);
+        clearCache('meta-api-key');
       } else if (provider === 'vertex') {
         setVertexConfigs(previousList);
         updateConfigValue('vertex-api-key', previousList);
@@ -1154,9 +1216,11 @@ export function AiProvidersPage() {
         ? codexConfigs
         : row.kind === 'xai'
           ? xaiConfigs
-          : row.kind === 'claude'
-            ? claudeConfigs
-            : vertexConfigs;
+          : row.kind === 'meta'
+            ? metaConfigs
+            : row.kind === 'claude'
+              ? claudeConfigs
+              : vertexConfigs;
     const current = source[row.originalIndex];
     if (!current || current.priority === nextPriority) return;
 
@@ -1174,6 +1238,10 @@ export function AiProvidersPage() {
       setXAIConfigs(nextList);
       updateConfigValue('xai-api-key', nextList);
       clearCache('xai-api-key');
+    } else if (row.kind === 'meta') {
+      setMetaConfigs(nextList);
+      updateConfigValue('meta-api-key', nextList);
+      clearCache('meta-api-key');
     } else if (row.kind === 'claude') {
       setClaudeConfigs(nextList);
       updateConfigValue('claude-api-key', nextList);
@@ -1193,6 +1261,10 @@ export function AiProvidersPage() {
         await providersApi.updateXAIConfig(current, { ...current, priority: nextPriority });
         await loadConfigs();
         showNotification(t('notification.xai_config_updated'), 'success');
+      } else if (row.kind === 'meta') {
+        await providersApi.updateMetaConfig(current, { ...current, priority: nextPriority });
+        await loadConfigs();
+        showNotification(t('notification.meta_config_updated'), 'success');
       } else if (row.kind === 'claude') {
         await providersApi.updateClaudeConfig(current, { ...current, priority: nextPriority });
         await loadConfigs();
@@ -1212,6 +1284,10 @@ export function AiProvidersPage() {
         setXAIConfigs(previousList);
         updateConfigValue('xai-api-key', previousList);
         clearCache('xai-api-key');
+      } else if (row.kind === 'meta') {
+        setMetaConfigs(previousList);
+        updateConfigValue('meta-api-key', previousList);
+        clearCache('meta-api-key');
       } else if (row.kind === 'claude') {
         setClaudeConfigs(previousList);
         updateConfigValue('claude-api-key', previousList);
@@ -1286,13 +1362,26 @@ export function AiProvidersPage() {
     });
   };
 
-  const deleteProviderEntry = (type: 'codex' | 'xai' | 'claude', index: number, target: string) => {
-    const source = type === 'codex' ? codexConfigs : type === 'xai' ? xaiConfigs : claudeConfigs;
+  const deleteProviderEntry = (
+    type: 'codex' | 'xai' | 'claude' | 'meta',
+    index: number,
+    target: string
+  ) => {
+    const source =
+      type === 'codex'
+        ? codexConfigs
+        : type === 'xai'
+          ? xaiConfigs
+          : type === 'meta'
+            ? metaConfigs
+            : claudeConfigs;
     const entry = source[index];
     if (!entry) return;
     showConfirmation({
       title: t(`ai_providers.${type}_delete_title`, {
-        defaultValue: `Delete ${type === 'codex' ? 'Codex' : type === 'xai' ? 'xAI' : 'Claude'} Config`,
+        defaultValue: `Delete ${
+          type === 'codex' ? 'Codex' : type === 'xai' ? 'xAI' : type === 'meta' ? 'Meta' : 'Claude'
+        } Config`,
       }),
       message: t(`ai_providers.${type}_delete_confirm`),
       variant: 'danger',
@@ -1318,6 +1407,13 @@ export function AiProvidersPage() {
             updateConfigValue('xai-api-key', next);
             clearCache('xai-api-key');
             showNotification(t('notification.xai_config_deleted'), 'success');
+          } else if (type === 'meta') {
+            await providersApi.deleteMetaConfig(entry.apiKey, entry.baseUrl);
+            const next = metaConfigs.filter((_, idx) => idx !== index);
+            setMetaConfigs(next);
+            updateConfigValue('meta-api-key', next);
+            clearCache('meta-api-key');
+            showNotification(t('notification.meta_config_deleted'), 'success');
           } else {
             await providersApi.deleteClaudeConfig(entry.apiKey, entry.baseUrl);
             const next = claudeConfigs.filter((_, idx) => idx !== index);
@@ -1417,6 +1513,7 @@ export function AiProvidersPage() {
       row.kind !== 'interactions' &&
       row.kind !== 'codex' &&
       row.kind !== 'xai' &&
+      row.kind !== 'meta' &&
       row.kind !== 'claude' &&
       row.kind !== 'vertex' &&
       row.kind !== 'openai'
@@ -1442,7 +1539,12 @@ export function AiProvidersPage() {
       deleteGemini(row.originalIndex, target);
     } else if (row.kind === 'interactions') {
       deleteInteractions(row.originalIndex, target);
-    } else if (row.kind === 'codex' || row.kind === 'xai' || row.kind === 'claude') {
+    } else if (
+      row.kind === 'codex' ||
+      row.kind === 'xai' ||
+      row.kind === 'claude' ||
+      row.kind === 'meta'
+    ) {
       deleteProviderEntry(row.kind, row.originalIndex, target);
     } else if (row.kind === 'vertex') {
       deleteVertex(row.originalIndex, target);
@@ -1635,6 +1737,14 @@ export function AiProvidersPage() {
         onClose={closeEditorDrawer}
         onSaved={handleDrawerSaved}
         providerKind="xai"
+      />
+      <CodexEditDrawer
+        open={editDrawerKind === 'meta'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+        providerKind="meta"
       />
       <VertexEditDrawer
         open={editDrawerKind === 'vertex'}

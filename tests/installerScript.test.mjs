@@ -39,8 +39,8 @@ const installerTextContents = (root) => {
   return contents.join('\n');
 };
 
-const runInstaller = (env) =>
-  spawnSync('bash', [installerPath], {
+const runInstaller = (env, args = []) =>
+  spawnSync('bash', [installerPath, ...args], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -262,26 +262,30 @@ while true; do read -r -t 1 _ || true; done
 `
   );
   chmodSync(path.join(binaryDir, 'cpa-manager-plus'), 0o755);
+  const config = {
+    httpAddr: '0.0.0.0:18317',
+    adminKeyFile: '../../secrets/cpamp-admin-key',
+    cpaUpstreamUrl: 'http://127.0.0.1:8317',
+    managementKeyFile: '../../secrets/cpa-management-key',
+    collectorMode: 'http',
+    queue: 'legacy-usage',
+    popSide: 'left',
+    batchSize: 321,
+    pollIntervalMs: 750,
+    queryLimit: 65432,
+  };
+  if (!options.omitConfigDataDir) {
+    config.dataDir = configDataDir;
+  }
+  if (!options.omitConfigDataKeyPath) {
+    config.dataKeyPath = configDataKeyPath;
+  }
+  if (options.configDbPath !== undefined) {
+    config.dbPath = options.configDbPath;
+  }
   writeFileSync(
     configPath,
-    `${JSON.stringify(
-       {
-         httpAddr: '0.0.0.0:18317',
-        dataDir: configDataDir,
-         adminKeyFile: '../../secrets/cpamp-admin-key',
-        dataKeyPath: configDataKeyPath,
-         cpaUpstreamUrl: 'http://127.0.0.1:8317',
-        managementKeyFile: '../../secrets/cpa-management-key',
-        collectorMode: 'http',
-        queue: 'legacy-usage',
-        popSide: 'left',
-        batchSize: 321,
-        pollIntervalMs: 750,
-        queryLimit: 65432,
-      },
-      null,
-      2
-    )}\n`
+    `${JSON.stringify(config, null, 2)}\n`
   );
   writeFileSync(
     runPath,
@@ -292,8 +296,12 @@ while true; do read -r -t 1 _ || true; done
   chmodSync(adminKeyPath, 0o600);
   writeFileSync(cpaKeyPath, 'cpa_existing_management_key\n');
   chmodSync(cpaKeyPath, 0o600);
-  writeFileSync(dbPath, 'existing-usage-data\n');
-  writeFileSync(dataKeyPath, 'existing-data-key\n');
+  if (!options.omitDbFile) {
+    writeFileSync(dbPath, 'existing-usage-data\n');
+  }
+  if (!options.omitDataKeyFile) {
+    writeFileSync(dataKeyPath, 'existing-data-key\n');
+  }
   writeFileSync(
     path.join(installDir, 'cpa-manager-plus.service'),
     `[Service]\nWorkingDirectory=${binaryDir}\n${serviceEnvironment}ExecStart=${binaryDir}/cpa-manager-plus\n`
@@ -1499,9 +1507,7 @@ services:
       expect(calls).not.toContain('--data-key-path /data/data.key');
       expect(readFileSync(fixture.databasePath, 'utf8')).toContain('import-attempt');
       expect(readFileSync(fixture.dataKeyPath, 'utf8')).toContain('import-attempt');
-      expect(readFileSync(fixture.defaultDatabasePath, 'utf8')).toBe(
-        'default-database-sentinel\n'
-      );
+      expect(readFileSync(fixture.defaultDatabasePath, 'utf8')).toBe('default-database-sentinel\n');
       expect(readFileSync(fixture.defaultDataKeyPath, 'utf8')).toBe('default-data-key-sentinel\n');
     } finally {
       rmSync(installDir, { recursive: true, force: true });
@@ -1589,7 +1595,10 @@ services:
     const fixture = writeCustomDockerInstall(installDir, { environmentSyntax: 'list' });
     const composePath = path.join(installDir, 'compose.yaml');
     const compose = readFileSync(composePath, 'utf8')
-      .replace('      - USAGE_DB_PATH=${CUSTOM_DB_PATH:-/data/usage.sqlite}', '      - USAGE_DB_PATH')
+      .replace(
+        '      - USAGE_DB_PATH=${CUSTOM_DB_PATH:-/data/usage.sqlite}',
+        '      - USAGE_DB_PATH'
+      )
       .replace(
         '      - CPA_MANAGER_DATA_KEY_PATH=${CUSTOM_DATA_KEY_PATH:-/data/data.key}',
         '      - CPA_MANAGER_DATA_KEY_PATH'
@@ -1633,9 +1642,7 @@ services:
       expect(calls).toContain('--data-key-path /data/custom.key');
       expect(readFileSync(fixture.databasePath, 'utf8')).toContain('import-attempt');
       expect(readFileSync(fixture.dataKeyPath, 'utf8')).toContain('import-attempt');
-      expect(readFileSync(fixture.defaultDatabasePath, 'utf8')).toBe(
-        'default-database-sentinel\n'
-      );
+      expect(readFileSync(fixture.defaultDatabasePath, 'utf8')).toBe('default-database-sentinel\n');
       expect(readFileSync(fixture.defaultDataKeyPath, 'utf8')).toBe('default-data-key-sentinel\n');
     } finally {
       rmSync(installDir, { recursive: true, force: true });
@@ -2480,9 +2487,9 @@ secrets:
       expect(result.status).toBe(0);
       expect(readFileSync(externalKeyPath, 'utf8')).toBe('cpa_external_canonical_key\n');
       expect(statSync(externalKeyPath).mode & 0o777).toBe(0o640);
-      expect(readFileSync(path.join(installDir, 'secrets/.cpa-management-key.external'), 'utf8')).toBe(
-        'EXTERNAL=1\n'
-      );
+      expect(
+        readFileSync(path.join(installDir, 'secrets/.cpa-management-key.external'), 'utf8')
+      ).toBe('EXTERNAL=1\n');
       expect(result.stdout).not.toContain(`rm -f "${externalKeyPath}"`);
       expect(readFileSync(path.join(installDir, 'compose.yaml'), 'utf8')).not.toContain(
         'CPA_MANAGEMENT_KEY_FILE'
@@ -2572,9 +2579,9 @@ secrets:
       expect(succeeded.status).toBe(0);
       expect(readFileSync(externalKeyPath, 'utf8')).toBe('cpa_external_canonical_key\n');
       expect(statSync(externalKeyPath).mode & 0o777).toBe(0o640);
-      expect(readFileSync(path.join(installDir, 'secrets/.cpa-management-key.external'), 'utf8')).toBe(
-        'EXTERNAL=1\n'
-      );
+      expect(
+        readFileSync(path.join(installDir, 'secrets/.cpa-management-key.external'), 'utf8')
+      ).toBe('EXTERNAL=1\n');
       expect(combinedOutput(succeeded)).not.toContain(`rm -f "${externalKeyPath}"`);
     } finally {
       rmSync(installDir, { recursive: true, force: true });
@@ -4525,9 +4532,9 @@ secrets:
       expect(readFileSync(legacy.runPath, 'utf8')).toBe(beforeRun);
       expect(readFileSync(legacy.dbPath, 'utf8')).toBe(beforeDatabase);
       expect(existsSync(legacy.dataKeyPath)).toBe(false);
-      expect(existsSync(path.join(installDir, 'runtime', 'cpa-manager-plus_vnext_linux_amd64'))).toBe(
-        false
-      );
+      expect(
+        existsSync(path.join(installDir, 'runtime', 'cpa-manager-plus_vnext_linux_amd64'))
+      ).toBe(false);
     } finally {
       rmSync(installDir, { recursive: true, force: true });
     }
@@ -5518,7 +5525,7 @@ exec /bin/mv "$@"
     const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-fixture-'));
     const platform = process.platform === 'darwin' ? 'darwin' : 'linux';
     const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-    const packageName = `cpa-manager-plus_vtest_${platform}_${arch}`;
+    const packageName = `cpa-manager-plus_v1.2.3_${platform}_${arch}`;
     const packageDir = path.join(fixtureDir, packageName);
     const archivePath = path.join(fixtureDir, `${packageName}.tar.gz`);
     let nativePid;
@@ -5553,8 +5560,8 @@ done
 set -euo pipefail
 for arg in "$@"; do
   case "$arg" in
-    https://github.com/seakee/CPA-Manager-Plus/releases/latest)
-      printf 'https://github.com/seakee/CPA-Manager-Plus/releases/tag/vtest'
+    https://raw.githubusercontent.com/seakee/CPA-Manager-Plus/update-channel/stable-version.txt)
+      printf 'v1.2.3'
       exit 0
       ;;
     */health) exit 0 ;;
@@ -5625,7 +5632,7 @@ exit 22
     const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-fixture-'));
     const platform = process.platform === 'darwin' ? 'darwin' : 'linux';
     const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-    const packageName = `cpa-manager-plus_vtest_${platform}_${arch}`;
+    const packageName = `cpa-manager-plus_v1.2.3_${platform}_${arch}`;
     const packageDir = path.join(fixtureDir, packageName);
     const archivePath = path.join(fixtureDir, `${packageName}.tar.gz`);
 
@@ -5649,8 +5656,8 @@ exit 22
         `#!/usr/bin/env bash
 set -euo pipefail
 for arg in "$@"; do
-  if [ "$arg" = "https://github.com/seakee/CPA-Manager-Plus/releases/latest" ]; then
-    printf 'https://github.com/seakee/CPA-Manager-Plus/releases/tag/vtest'
+  if [ "$arg" = "https://raw.githubusercontent.com/seakee/CPA-Manager-Plus/update-channel/stable-version.txt" ]; then
+    printf 'v1.2.3'
     exit 0
   fi
 done
@@ -6046,6 +6053,7 @@ exit 22
 
   it('rejects a symlinked CPA import pending state without touching its target', () => {
     const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const fakeBin = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-bin-'));
     const externalDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-external-state-'));
     const externalState = path.join(externalDir, 'pending-state');
     const pendingPath = path.join(installDir, 'secrets/cpa-connection-import.pending');
@@ -6064,6 +6072,7 @@ exit 22
       writeFileSync(externalState, 'external-state-content\n');
       chmodSync(externalState, 0o640);
       symlinkSync(externalState, pendingPath);
+      writeFakeDocker(fakeBin);
 
       const result = spawnSync('bash', [installerPath], {
         cwd: repoRoot,
@@ -6074,6 +6083,7 @@ exit 22
           CPAMP_CONFIRM: '1',
           CPAMP_LANG: 'en-US',
           CPAMP_INSTALL_DIR: installDir,
+          PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
         },
         encoding: 'utf8',
       });
@@ -6085,7 +6095,672 @@ exit 22
       expect(lstatSync(pendingPath).isSymbolicLink()).toBe(true);
     } finally {
       rmSync(installDir, { recursive: true, force: true });
+      rmSync(fakeBin, { recursive: true, force: true });
       rmSync(externalDir, { recursive: true, force: true });
     }
+  });
+
+  it('upgrades a legacy native layout with config ./data using canonical root data files (#782)', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: legacy.dbPath,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(0);
+      expect(combinedOutput(result)).toContain('Detected a legacy native Manager data layout');
+      const commands = readFileSync(commandLog, 'utf8');
+      expect(commands).toContain(`--db-path ${legacy.dbPath}`);
+      expect(commands).toContain(`--data-key-path ${legacy.dataKeyPath}`);
+      const runScript = readFileSync(legacy.runPath, 'utf8');
+      expect(runScript).toContain(`export USAGE_DATA_DIR=${path.join(installDir, 'data')}`);
+      expect(runScript).toContain(`export USAGE_DB_PATH=${path.join(installDir, 'data', 'usage.sqlite')}`);
+      expect(runScript).toContain(`export CPA_MANAGER_DATA_KEY_PATH=${path.join(installDir, 'data', 'data.key')}`);
+      if (process.platform === 'linux') {
+        const service = readFileSync(path.join(installDir, 'cpa-manager-plus.service'), 'utf8');
+        expect(service).toContain(`Environment="USAGE_DATA_DIR=${path.join(installDir, 'data')}"`);
+        expect(service).toContain(`Environment="USAGE_DB_PATH=${path.join(installDir, 'data', 'usage.sqlite')}"`);
+        expect(service).toContain(`Environment="CPA_MANAGER_DATA_KEY_PATH=${path.join(installDir, 'data', 'data.key')}"`);
+      }
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to root data when native config dataDir is omitted', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      omitConfigDataDir: true,
+      omitConfigDataKeyPath: true,
+    });
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: legacy.dbPath,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(0);
+      expect(combinedOutput(result)).toContain('Detected a legacy native Manager data layout');
+      const commands = readFileSync(commandLog, 'utf8');
+      expect(commands).toContain(`--db-path ${legacy.dbPath}`);
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers existing runtime-local data over root data when runtime DB exists', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    const runtimeDataDir = path.join(legacy.binaryDir, 'data');
+    mkdirSync(runtimeDataDir, { recursive: true });
+    const runtimeDb = path.join(runtimeDataDir, 'usage.sqlite');
+    const runtimeKey = path.join(runtimeDataDir, 'data.key');
+    writeFileSync(runtimeDb, 'runtime-db-content\n');
+    writeFileSync(runtimeKey, 'runtime-key-content\n');
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: runtimeDb,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(0);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      const commands = readFileSync(commandLog, 'utf8');
+      expect(commands).toContain(`--db-path ${realpathSync(runtimeDb)}`);
+      expect(commands).toContain(`--data-key-path ${realpathSync(runtimeKey)}`);
+      expect(commands).not.toContain(`--db-path ${realpathSync(legacy.dbPath)}`);
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when config.json specifies custom dbPath that does not exist', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+      configDbPath: path.join(installDir, 'custom-missing.sqlite'),
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when run.sh specifies custom USAGE_DB_PATH that does not exist', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+      runEnvironment: `export USAGE_DB_PATH=${path.join(installDir, 'custom-missing.sqlite')}\n`,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when systemd and run.sh specify matching custom USAGE_DB_PATH that does not exist', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const customDbPath = path.join(installDir, 'custom-missing.sqlite');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+      runEnvironment: `export USAGE_DB_PATH=${customDbPath}\n`,
+      serviceEnvironment: `Environment="USAGE_DB_PATH=${customDbPath}"\n`,
+    });
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats installation without run.sh as partial instead of native-managed even if service file exists', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir);
+    rmSync(legacy.runPath);
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Upgrading existing native deployment');
+      expect(combinedOutput(result)).toContain('Set CPAMP_OPERATION=regenerate to rebuild its config');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back when canonical root data.key is missing', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+      omitDataKeyFile: true,
+    });
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when config.json specifies custom non-canonical dataKeyPath', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const customKeyPath = path.join(installDir, 'custom-missing.key');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      configDataKeyPath: customKeyPath,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back when runtime DB is a directory', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+    mkdirSync(path.join(legacy.binaryDir, 'data', 'usage.sqlite'), { recursive: true });
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back when runtime DB is a dangling symlink', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+    mkdirSync(path.join(legacy.binaryDir, 'data'), { recursive: true });
+    symlinkSync(
+      path.join(legacy.binaryDir, 'data', 'missing-target.sqlite'),
+      path.join(legacy.binaryDir, 'data', 'usage.sqlite')
+    );
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back when legacy runtime dataset has leftover WAL file', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+    mkdirSync(path.join(legacy.binaryDir, 'data'), { recursive: true });
+    writeFileSync(path.join(legacy.binaryDir, 'data', 'usage.sqlite-wal'), 'wal-remnant\n');
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back when legacy runtime dataset has leftover data.key', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    rmSync(path.join(installDir, 'cpa-manager-plus.service'));
+    mkdirSync(path.join(legacy.binaryDir, 'data'), { recursive: true });
+    writeFileSync(path.join(legacy.binaryDir, 'data', 'data.key'), 'key-remnant\n');
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).not.toContain('Detected a legacy native Manager data layout');
+      expect(combinedOutput(result)).toContain('Manager database is missing or is not a regular file');
+    } finally {
+      rmSync(installDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back root data and sidecars when #782 legacy layout upgrade fails after mutation', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+    const walFile = path.join(installDir, 'data', 'usage.sqlite-wal');
+    writeFileSync(walFile, 'original-wal-content\n');
+    const beforeRun = readFileSync(legacy.runPath, 'utf8');
+
+    try {
+      const result = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NATIVE_HEALTH_ATTEMPTS: '1',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: legacy.dbPath,
+          FAKE_NATIVE_DATA_KEY_PATH: legacy.dataKeyPath,
+          FAKE_NATIVE_MUTATE_ALL_DATA: '1',
+          FAKE_NATIVE_HEALTH_OK: '1',
+          FAKE_NATIVE_AUTH_OK: '1',
+          FAKE_NATIVE_CPA_OK: '0',
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(1);
+      expect(combinedOutput(result)).toContain('CPA connection validation failed');
+      expect(readFileSync(legacy.dbPath, 'utf8')).toBe('existing-usage-data\n');
+      expect(readFileSync(legacy.dataKeyPath, 'utf8')).toBe('existing-data-key\n');
+      expect(readFileSync(walFile, 'utf8')).toBe('original-wal-content\n');
+      expect(readFileSync(legacy.runPath, 'utf8')).toBe(beforeRun);
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('self-heals #782 legacy layout so subsequent upgrade uses explicit launcher authority without fallback', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir, {
+      configDataDir: './data',
+      omitConfigDataKeyPath: true,
+    });
+
+    try {
+      const firstResult = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: legacy.dbPath,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+      expect(firstResult.status).toBe(0);
+      expect(combinedOutput(firstResult)).toContain('Detected a legacy native Manager data layout');
+
+      const runScript = readFileSync(legacy.runPath, 'utf8');
+      expect(runScript).toContain(`export USAGE_DATA_DIR=${path.join(installDir, 'data')}`);
+      expect(runScript).toContain(`export USAGE_DB_PATH=${path.join(installDir, 'data', 'usage.sqlite')}`);
+      expect(runScript).toContain(`export CPA_MANAGER_DATA_KEY_PATH=${path.join(installDir, 'data', 'data.key')}`);
+
+      if (process.platform !== 'linux') {
+        rmSync(path.join(installDir, 'cpa-manager-plus.service'), { force: true });
+      }
+
+      const secondResult = spawnSync('bash', [installerPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '1',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_OPERATION: 'upgrade',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+      expect(secondResult.status).toBe(0);
+      expect(combinedOutput(secondResult)).not.toContain('Detected a legacy native Manager data layout');
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts positional "update" argument for non-interactive native upgrade', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-installer-'));
+    const release = writeFakeNativeRelease();
+    const commandLog = path.join(installDir, 'native-command.log');
+    const legacy = writeLegacyNativeInstall(installDir);
+
+    try {
+      const result = spawnSync('bash', [installerPath, 'update'], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CPAMP_DRY_RUN: '0',
+          CPAMP_NON_INTERACTIVE: '1',
+          CPAMP_CONFIRM: '1',
+          CPAMP_LANG: 'en-US',
+          CPAMP_VERSION: 'vnext',
+          CPAMP_INSTALL_DIR: installDir,
+          CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+          FAKE_NATIVE_COMMAND_LOG: commandLog,
+          FAKE_NATIVE_DB_PATH: legacy.dbPath,
+          PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(0);
+      expect(combinedOutput(result)).not.toContain('noninteractive_existing');
+      expect(readFileSync(commandLog, 'utf8')).toContain(`--db-path ${realpathSync(legacy.dbPath)}`);
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts matching CPAMP_OPERATION=upgrade with positional "update"', () => {
+    const result = runInstaller(
+      {
+        CPAMP_OPERATION: 'upgrade',
+      },
+      ['update']
+    );
+    expect(combinedOutput(result)).not.toContain('Conflicting CPAMP operations');
+    expect(combinedOutput(result)).not.toContain('Unsupported operation');
+  });
+
+  it('rejects conflicting CPAMP_OPERATION and positional argument', () => {
+    const result = runInstaller(
+      {
+        CPAMP_OPERATION: 'repair',
+      },
+      ['update']
+    );
+    expect(result.status).toBe(1);
+    expect(combinedOutput(result)).toContain(
+      'Conflicting CPAMP operations: CPAMP_OPERATION=repair and argument=update'
+    );
+  });
+
+  it('rejects unsupported positional operation argument', () => {
+    const result = runInstaller({}, ['foo']);
+    expect(result.status).toBe(1);
+    expect(combinedOutput(result)).toContain('Unsupported operation argument: foo');
+  });
+
+  it('rejects multiple positional arguments', () => {
+    const result = runInstaller({}, ['update', 'extra']);
+    expect(result.status).toBe(1);
+    expect(combinedOutput(result)).toContain('Unexpected arguments: update extra');
   });
 });
