@@ -21,7 +21,7 @@ import {
 } from '@/stores';
 import { apiKeysApi } from '@/services/api/apiKeys';
 import { usageServiceApi, type UsageServiceStatus } from '@/services/api/usageService';
-import { classifyModels } from '@/utils/models';
+import { classifyModels, modelDisplayLabel } from '@/utils/models';
 import { STORAGE_KEY_AUTH, STORAGE_KEY_QUOTA_CACHE } from '@/utils/constants';
 import iconGemini from '@/assets/icons/gemini.svg';
 import iconClaude from '@/assets/icons/claude.svg';
@@ -390,16 +390,19 @@ export function SystemPage() {
                       </div>
                     </div>
                     <div className={styles.modelTags}>
-                      {group.items.map((model) => (
-                        <span
-                          key={`${model.name}-${model.alias ?? 'default'}`}
-                          className={styles.modelTag}
-                          title={model.description || ''}
-                        >
-                          <span className={styles.modelName}>{model.name}</span>
-                          {model.alias && <span className={styles.modelAlias}>{model.alias}</span>}
-                        </span>
-                      ))}
+                      {group.items.map((model) => {
+                        const label = modelDisplayLabel(model);
+                        return (
+                          <span
+                            key={`${model.name}-${label || 'default'}`}
+                            className={styles.modelTag}
+                            title={model.description || ''}
+                          >
+                            <span className={styles.modelName}>{model.name}</span>
+                            {label && <span className={styles.modelAlias}>{label}</span>}
+                          </span>
+                        );
+                      })}
                     </div>
                   </div>
                 );

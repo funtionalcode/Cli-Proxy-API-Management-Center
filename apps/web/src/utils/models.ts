@@ -6,6 +6,7 @@
 export interface ModelInfo {
   name: string;
   alias?: string;
+  displayName?: string;
   description?: string;
 }
 
@@ -53,11 +54,16 @@ export function normalizeModelList(payload: unknown, { dedupe = false } = {}): M
     const name = entry.id || entry.name || entry.model || entry.value;
     if (!name) return null;
 
-    const alias = entry.alias || entry.display_name || entry.displayName;
+    // 上游的 display_name 只是展示文本，不能当成路由别名：别名会被 CPA 用作对外注册的模型 ID
+    const alias = entry.alias;
+    const displayName = entry.display_name || entry.displayName;
     const description = entry.description || entry.note || entry.comment;
     const model: ModelInfo = { name: String(name) };
     if (alias && alias !== name) {
       model.alias = String(alias);
+    }
+    if (displayName && displayName !== name) {
+      model.displayName = String(displayName);
     }
     if (description) {
       model.description = String(description);
@@ -93,6 +99,14 @@ export function normalizeModelList(payload: unknown, { dedupe = false } = {}): M
   });
 }
 
+/**
+ * 发现列表的展示文本：优先显式别名，否则回落到上游展示名。
+ * 展示名只用于阅读，不会写进模型条目的别名字段。
+ */
+export function modelDisplayLabel(model: ModelInfo): string {
+  return model?.alias || model?.displayName || '';
+}
+
 export interface ModelGroup {
   id: string;
   label: string;
@@ -111,7 +125,8 @@ export function classifyModels(models: ModelInfo[] = [], { otherLabel = 'Other' 
   models.forEach((model) => {
     const name = (model?.name || '').toString();
     const alias = (model?.alias || '').toString();
-    const haystack = `${name} ${alias}`.toLowerCase();
+    const displayName = (model?.displayName || '').toString();
+    const haystack = `${name} ${alias} ${displayName}`.toLowerCase();
     const matchedId = /^devin\//i.test(name)
       ? 'devin'
       : matchCategory(haystack);

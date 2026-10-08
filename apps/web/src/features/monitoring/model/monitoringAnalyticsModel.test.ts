@@ -51,30 +51,20 @@ describe('buildMonitoringCenterAnalyticsInclude', () => {
     before_id: 42,
   };
 
-  it('loads compact account aggregates with the bounded shared event page', () => {
+  it('loads compact account aggregates without events page', () => {
     expect(buildMonitoringCenterAnalyticsInclude('accounts', 'day', eventsPage)).toEqual({
       summary: true,
       summary_profile: 'compact',
       account_stats: true,
-      events_page: {
-        limit: 500,
-        before_ms: null,
-        before_id: null,
-      },
       granularity: 'day',
     });
   });
 
-  it('loads compact API key aggregates with the bounded shared event page', () => {
+  it('loads compact API key aggregates without events page', () => {
     expect(buildMonitoringCenterAnalyticsInclude('apiKeys', 'hour', eventsPage)).toEqual({
       summary: true,
       summary_profile: 'compact',
       api_key_stats: true,
-      events_page: {
-        limit: 500,
-        before_ms: null,
-        before_id: null,
-      },
       granularity: 'hour',
     });
   });

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -20,9 +22,11 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -105,6 +109,18 @@ type UsagePricingHourlyRow = usagepricing.HourlyRow
 type UsagePricingAccountRow = usagepricing.AccountRow
 type UsageMonitoringState = usagemonitoring.State
 type UsageMonitoringCatchUpResult = usagemonitoring.CatchUpResult
+type UsageArchivePreview = usagearchive.Preview
+type UsageArchiveRun = usagearchive.Run
+type UsageArchiveRunListFilter = usagearchive.RunListFilter
+type UsageArchiveRunListResult = usagearchive.RunListResult
+type UsageArchiveSegment = usagearchive.Segment
+type UsageArchiveRecord = usagearchive.Record
+type UsageArchiveRecordRef = usagearchive.RecordRef
+type UsageArchiveDeleteBatchResult = usagearchive.DeleteBatchResult
+type UsageArchiveRawCoverage = usagearchive.RawCoverage
+type UsageMaintenanceLock = usagearchive.MaintenanceLock
+type UsageMaintenanceCounts = usagearchive.MaintenanceCounts
+type SQLitePageStats = sqliterepo.PageStats
 
 type UsageHourlyPricingSnapshot struct {
 	AggregateRows      []UsageHourlyAggregateRow
@@ -117,10 +133,12 @@ type UsageHourlyPricingSnapshot struct {
 }
 
 type UsagePricingAccountSnapshot struct {
-	Rows      []UsagePricingAccountRow
-	State     UsagePricingState
-	Available bool
-	Prices    map[string]ModelPrice
+	CoreRows                     []AccountHistoryRollupRow
+	Rows                         []UsagePricingAccountRow
+	State                        UsagePricingState
+	Available                    bool
+	PricingIncompleteAccountKeys map[string]struct{}
+	Prices                       map[string]ModelPrice
 }
 
 type Store struct {
@@ -138,6 +156,7 @@ type Store struct {
 	QuotaCooldowns   quotacooldown.Repository
 	QuotaSnapshots   quotasnapshot.Repository
 	UsageAggregates  usageaggregate.Repository
+	UsageArchives    *usagearchive.Repository
 	UsagePricing     usagepricing.Repository
 	UsageMonitoring  usagemonitoring.Repository
 	UsageRollups     usagerollup.Repository
@@ -165,6 +184,7 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		QuotaCooldowns:   quotacooldown.New(db),
 		QuotaSnapshots:   quotasnapshot.New(db),
 		UsageAggregates:  usageaggregate.New(db),
+		UsageArchives:    usagearchive.New(db),
 		UsagePricing:     usagepricing.New(db),
 		UsageMonitoring:  usagemonitoring.New(db),
 		UsageRollups:     usagerollup.New(db),
@@ -502,6 +522,26 @@ func (s *Store) UsageHourlyAggregateRows(ctx context.Context, filter UsageHourly
 	return s.UsageAggregates.LoadRows(ctx, filter)
 }
 
+func (s *Store) ActiveUsageArchiveRun(ctx context.Context) (UsageArchiveRun, bool, error) {
+	return s.UsageArchives.ActiveRun(ctx)
+}
+
+func (s *Store) ListUsageArchiveRuns(ctx context.Context, filter UsageArchiveRunListFilter) (UsageArchiveRunListResult, error) {
+	return s.UsageArchives.ListRuns(ctx, filter)
+}
+
+func (s *Store) UsageMaintenanceLock(ctx context.Context) (UsageMaintenanceLock, bool, error) {
+	return s.UsageArchives.MaintenanceLock(ctx)
+}
+
+func (s *Store) UsageMaintenanceCounts(ctx context.Context) (UsageMaintenanceCounts, error) {
+	return s.UsageArchives.MaintenanceCounts(ctx)
+}
+
+func (s *Store) SQLitePageStats(ctx context.Context) (SQLitePageStats, error) {
+	return sqliterepo.ReadPageStats(ctx, s.db)
+}
+
 func (s *Store) CatchUpUsagePricing(ctx context.Context, limit int, nowMS int64) (UsagePricingCatchUpResult, error) {
 	ready, err := s.UsageCacheAccountingMigrationReady(ctx)
 	if err != nil {
@@ -510,7 +550,11 @@ func (s *Store) CatchUpUsagePricing(ctx context.Context, limit int, nowMS int64)
 	if !ready {
 		return UsagePricingCatchUpResult{Pending: true}, nil
 	}
-	return s.UsagePricing.CatchUp(ctx, limit, nowMS)
+	result, err := s.UsagePricing.CatchUp(ctx, limit, nowMS)
+	if err != nil && errors.Is(err, usagepricing.ErrRetainedPricingHistoryIncomplete) {
+		return result, fmt.Errorf("%w: %w", ErrUsagePricingCoverageIncomplete, err)
+	}
+	return result, err
 }
 
 func (s *Store) RecordUsagePricingFailure(ctx context.Context, rollupErr error, nowMS int64) error {
@@ -613,14 +657,47 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 		return UsageHourlyPricingSnapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if aggregateFilter.LeftEdgeDeleted || aggregateFilter.RightEdgeDeleted {
+		const hourMS = int64(time.Hour / time.Millisecond)
+		if aggregateFilter.LeftEdgeDeleted {
+			toMS := min((aggregateFilter.FromMS/hourMS+1)*hourMS, aggregateFilter.ToMS)
+			if err := usageprojection.VerifyRetainedEdgeTx(ctx, tx, aggregateFilter.FromMS, toMS); err != nil {
+				if errors.Is(err, usageprojection.ErrRetainedCoverageIncomplete) {
+					return UsageHourlyPricingSnapshot{}, fmt.Errorf("%w: %v", ErrUsagePricingCoverageIncomplete, err)
+				}
+				return UsageHourlyPricingSnapshot{}, err
+			}
+		}
+		if aggregateFilter.RightEdgeDeleted {
+			fromMS := max(aggregateFilter.ToMS/hourMS*hourMS, aggregateFilter.FromMS)
+			if err := usageprojection.VerifyRetainedEdgeTx(ctx, tx, fromMS, aggregateFilter.ToMS); err != nil {
+				if errors.Is(err, usageprojection.ErrRetainedCoverageIncomplete) {
+					return UsageHourlyPricingSnapshot{}, fmt.Errorf("%w: %v", ErrUsagePricingCoverageIncomplete, err)
+				}
+				return UsageHourlyPricingSnapshot{}, err
+			}
+		}
+	}
 
 	aggregateRows, aggregateState, aggregateAvailable, err := s.UsageAggregates.LoadRowsTx(ctx, tx, aggregateFilter)
 	if err != nil {
 		return UsageHourlyPricingSnapshot{}, err
 	}
-	pricingRows, pricingState, pricingAvailable, err := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
-	if err != nil {
-		return UsageHourlyPricingSnapshot{}, err
+	pricingRows, pricingState, pricingAvailable, pricingErr := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
+	if aggregateAvailable && (pricingErr != nil || !pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows)) {
+		pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, pricingFilter)
+		if err != nil {
+			if errors.Is(err, ErrUsagePricingCoverageIncomplete) {
+				return UsageHourlyPricingSnapshot{}, err
+			}
+			return UsageHourlyPricingSnapshot{}, fmt.Errorf("%w: retained event query: %w", ErrUsagePricingRecoveryFailed, err)
+		}
+		if !hourlyPricingCoverageMatches(aggregateRows, pricingRows) {
+			return UsageHourlyPricingSnapshot{}, ErrUsagePricingCoverageIncomplete
+		}
+		pricingAvailable = true
+	} else if pricingErr != nil {
+		return UsageHourlyPricingSnapshot{}, pricingErr
 	}
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
@@ -650,10 +727,53 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 		return UsagePricingAccountSnapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	coreRows, err := s.UsageRollups.AccountHistoryRowsTx(ctx, tx, accountKeys)
+	if err != nil {
+		return UsagePricingAccountSnapshot{}, err
+	}
 	rows, state, available, err := s.UsagePricing.LoadAccountRowsTx(ctx, tx, accountKeys)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}
+	if !available {
+		rows = nil
+	}
+
+	incomplete := accountPricingCoverageIncompleteKeys(coreRows, rows)
+	if len(incomplete) > 0 {
+		recoveryKeys := make([]string, 0, len(incomplete))
+		for key := range incomplete {
+			recoveryKeys = append(recoveryKeys, key)
+		}
+		recoveredRows, recoveryErr := s.UsagePricing.LoadAccountRowsFromEventsTx(ctx, tx, recoveryKeys)
+		if recoveryErr != nil {
+			return UsagePricingAccountSnapshot{}, recoveryErr
+		}
+
+		recoveryCoreRows := make([]AccountHistoryRollupRow, 0, len(coreRows))
+		for _, row := range coreRows {
+			if _, needsRecovery := incomplete[row.AccountKey]; needsRecovery {
+				recoveryCoreRows = append(recoveryCoreRows, row)
+			}
+		}
+		stillIncomplete := accountPricingCoverageIncompleteKeys(recoveryCoreRows, recoveredRows)
+
+		completeRows := make([]UsagePricingAccountRow, 0, len(rows)+len(recoveredRows))
+		for _, row := range rows {
+			if _, needsRecovery := incomplete[row.AccountKey]; !needsRecovery {
+				completeRows = append(completeRows, row)
+			}
+		}
+		for _, row := range recoveredRows {
+			if _, unresolved := stillIncomplete[row.AccountKey]; !unresolved {
+				completeRows = append(completeRows, row)
+			}
+		}
+		rows = completeRows
+		incomplete = stillIncomplete
+	}
+	available = len(incomplete) == 0
+
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
@@ -662,10 +782,12 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 		return UsagePricingAccountSnapshot{}, err
 	}
 	return UsagePricingAccountSnapshot{
-		Rows:      rows,
-		State:     state,
-		Available: available,
-		Prices:    prices,
+		CoreRows:                     coreRows,
+		Rows:                         rows,
+		State:                        state,
+		Available:                    available,
+		PricingIncompleteAccountKeys: incomplete,
+		Prices:                       prices,
 	}, nil
 }
 
@@ -759,6 +881,10 @@ func (s *Store) BackfillUsageResponseMetadata(ctx context.Context, batchLimit in
 	return s.UsageEvents.BackfillResponseMetadata(ctx, batchLimit)
 }
 
+func (s *Store) UsageResponseMetadataBackfillPending(ctx context.Context) (bool, error) {
+	return s.UsageEvents.ResponseMetadataBackfillPending(ctx)
+}
+
 func (s *Store) Counts(ctx context.Context) (events int64, deadLetters int64, err error) {
 	events, err = s.UsageEvents.Count(ctx)
 	if err != nil {
@@ -785,6 +911,10 @@ func (s *Store) WriteCompatibleUsage(ctx context.Context, writer io.Writer, limi
 
 func (s *Store) WriteExportJSONL(ctx context.Context, writer io.Writer, limit int) error {
 	return s.UsageEvents.WriteExportJSONL(ctx, writer, limit)
+}
+
+func (s *Store) WriteFullExportJSONL(ctx context.Context, writer io.Writer) error {
+	return s.UsageEvents.WriteFullExportJSONL(ctx, writer)
 }
 
 // AggregateBetween computes summary metrics over [fromMs, toMs).

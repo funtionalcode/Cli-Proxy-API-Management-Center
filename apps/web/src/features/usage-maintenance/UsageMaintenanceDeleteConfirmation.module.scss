@@ -1,0 +1,438 @@
+@use '@/styles/variables.scss' as *;
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.lead {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.retryNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--app-radius-md, 10px);
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 8%, var(--surface-subtle));
+  border: 1px solid color-mix(in srgb, var(--warning-color, #f59e0b) 30%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.retryNoticeIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--warning-color, #f59e0b);
+  flex-shrink: 0;
+}
+
+/* 1. 核心决策指标看板 (Hero Metric Card) */
+.heroCard {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: var(--app-radius-md, 10px);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.heroPrimary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+}
+
+.metricItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metricLabel {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.metricValueRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.metricValueNumber {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--error-color, #ef4444);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.metricUnit {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.scopeBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--app-radius-sm, 6px);
+  background: color-mix(in srgb, var(--error-color, #ef4444) 10%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--error-color, #ef4444) 25%, transparent);
+  color: var(--error-color, #ef4444);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cutoffItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+
+.cutoffLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.cutoffIcon {
+  color: var(--text-tertiary, #94a3b8);
+}
+
+.cutoffValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 元信息条 (Meta Row) */
+.metaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  background: color-mix(in srgb, var(--bg-primary) 50%, var(--surface-subtle));
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+
+.metaTask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.metaLabel {
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.taskIdWrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border-color) 45%, transparent);
+  transition: background 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    background: color-mix(in srgb, var(--border-color) 80%, transparent);
+    color: var(--text-primary);
+  }
+}
+
+.taskIdMono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyIcon {
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary, #94a3b8);
+}
+
+.metaBadges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--app-radius-full, 9999px);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.statusSuccess {
+  background: color-mix(in srgb, var(--success-color, #10b981) 12%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--success-color, #10b981) 30%, transparent);
+  color: var(--success-color, #10b981);
+}
+
+.statusWarning {
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 12%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--warning-color, #f59e0b) 30%, transparent);
+  color: var(--warning-color, #f59e0b);
+}
+
+.archiveCountHint {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+
+  strong {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.capabilityBadge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.capEnabled {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--border-color) 40%, transparent);
+}
+
+.capDisabled {
+  color: var(--error-color, #ef4444);
+  background: color-mix(in srgb, var(--error-color, #ef4444) 10%, transparent);
+}
+
+/* 2. 结构化对比网格 (Comparison Grid) */
+.comparisonGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.guaranteeCard,
+.limitationCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--app-radius-md, 10px);
+  border: 1px solid var(--border-color);
+  background: var(--surface-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.guaranteeCard {
+  border-color: color-mix(in srgb, var(--success-color, #10b981) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--success-color, #10b981) 3.5%, var(--surface-subtle));
+}
+
+.limitationCard {
+  border-color: color-mix(in srgb, var(--warning-color, #f59e0b) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 3.5%, var(--surface-subtle));
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
+}
+
+.headerIconSuccess,
+.headerIconWarning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--app-radius-sm, 6px);
+}
+
+.headerIconSuccess {
+  background: color-mix(in srgb, var(--success-color, #10b981) 15%, var(--bg-primary));
+  color: var(--success-color, #10b981);
+}
+
+.headerIconWarning {
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 15%, var(--bg-primary));
+  color: var(--warning-color, #f59e0b);
+}
+
+.cardTitleSuccess {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cardTitleWarning {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.itemList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.itemIconCheck,
+.itemIconWarning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.itemIconCheck {
+  background: color-mix(in srgb, var(--success-color, #10b981) 12%, var(--bg-primary));
+  color: var(--success-color, #10b981);
+}
+
+.itemIconWarning {
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 12%, var(--bg-primary));
+  color: var(--warning-color, #f59e0b);
+}
+
+.itemText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 3. 确认复选框卡片 (Checkbox Card) */
+/* 注意：SelectionCheckbox 根节点是 label，此处通过 :global 或直接重写实现卡片包裹效果 */
+.checkboxCard {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 12px !important;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px !important;
+  border-radius: var(--app-radius-md, 10px);
+  background: color-mix(in srgb, var(--error-color, #ef4444) 4%, var(--surface-subtle));
+  border: 1px solid color-mix(in srgb, var(--error-color, #ef4444) 25%, var(--border-color));
+  border-left: 4px solid var(--error-color, #ef4444);
+  cursor: pointer !important;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    background: color-mix(in srgb, var(--error-color, #ef4444) 8%, var(--surface-subtle));
+    border-color: color-mix(in srgb, var(--error-color, #ef4444) 40%, var(--border-color));
+  }
+
+  /* 复选框盒子居左上对齐并支持危险红强调色 */
+  span[class*="box"] {
+    margin-top: 1px;
+    flex-shrink: 0;
+  }
+
+  span[class*="boxChecked"] {
+    background: var(--error-color, #ef4444) !important;
+    border-color: var(--error-color, #ef4444) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--error-color, #ef4444) 20%, transparent) !important;
+  }
+}
+
+.checkboxCardChecked {
+  background: color-mix(in srgb, var(--error-color, #ef4444) 9%, var(--surface-subtle));
+  border-color: color-mix(in srgb, var(--error-color, #ef4444) 45%, var(--border-color));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--error-color, #ef4444) 20%, transparent);
+}
+
+.checkboxText {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.checkboxStrong {
+  color: var(--error-color, #ef4444);
+  margin-right: 4px;
+  font-weight: 700;
+}
+
+/* 响应式调整 */
+@media (max-width: 580px) {
+  .heroPrimary {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .cutoffItem {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .comparisonGrid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .metaRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

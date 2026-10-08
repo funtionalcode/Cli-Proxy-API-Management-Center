@@ -16,6 +16,7 @@ function scenario({
   wrongRevision = false,
   registryMismatch = false,
   latestMismatch = false,
+  latestTransportFailures = 0,
 } = {}) {
   const sha = 'a'.repeat(40),
     calls = [];
@@ -71,7 +72,8 @@ function scenario({
     ),
     'withdrawn.json': withdrawn,
   };
-  let latest;
+  let latest,
+    remainingLatestTransportFailures = latestTransportFailures;
   const response = (body, status = 200) => new Response(JSON.stringify(body), { status });
   const fetchImpl = async (url, options = {}) => {
     const method = options.method || 'GET';
@@ -90,6 +92,10 @@ function scenario({
     if (url.includes('/commits/v')) return response({ sha });
     if (url.endsWith('/releases/latest')) return response(latestMismatch ? {} : latest);
     if (/\/releases\/\d+$/.test(url)) {
+      if (remainingLatestTransportFailures > 0) {
+        remainingLatestTransportFailures--;
+        throw new TypeError('fetch failed', { cause: { code: 'UND_ERR_SOCKET' } });
+      }
       latest = candidates.find((c) => String(c.release.id) === url.split('/').at(-1)).release;
       return response(latest);
     }
@@ -192,6 +198,14 @@ describe('update index publication', () => {
     const s = scenario({ latestMismatch: true });
     await expect(s.run()).rejects.toThrow('GitHub Latest');
     expect(s.calls.some((c) => c.url?.includes('/git/trees'))).toBe(false);
+  });
+  it('retries transient GitHub transport failures for idempotent release updates', async () => {
+    const s = scenario({ latestTransportFailures: 1 });
+    const index = await s.run();
+    expect(index.channels.stable.version).toBe('v2.0.0');
+    expect(
+      s.calls.filter((c) => c.method === 'PATCH' && /\/releases\/\d+$/.test(c.url || ''))
+    ).toHaveLength(2);
   });
   it.each([false, true])(
     'reports a ref conflict without forcing an update (existing=%s)',

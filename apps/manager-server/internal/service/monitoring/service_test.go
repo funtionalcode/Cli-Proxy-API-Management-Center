@@ -17,6 +17,10 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
+	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usagehourly"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -62,16 +66,16 @@ func TestBuildEventsIncludesRequestMetadata(t *testing.T) {
 	genTrue := true
 	streamFalse := false
 	response := buildEvents(store.EventsPage{Items: []store.EventPageItem{{
-		EventHash:          "request-metadata",
-		ClientIP:           "192.0.2.10",
-		XForwardedFor:      "203.0.113.5, 198.51.100.8",
-		UserAgent:          "test-client/1.0",
-		ResponseModel:      "gpt-4o-mini",
-		SessionID:          "sess-12345",
-		ParentSessionID:    "parent-sess-67890",
-		AccessTokenSHA256:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		Generate:           &genTrue,
-		Stream:             &streamFalse,
+		EventHash:         "request-metadata",
+		ClientIP:          "192.0.2.10",
+		XForwardedFor:     "203.0.113.5, 198.51.100.8",
+		UserAgent:         "test-client/1.0",
+		ResponseModel:     "gpt-4o-mini",
+		SessionID:         "sess-12345",
+		ParentSessionID:   "parent-sess-67890",
+		AccessTokenSHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		Generate:          &genTrue,
+		Stream:            &streamFalse,
 	}}}, 1)
 	if response == nil || len(response.Items) != 1 {
 		t.Fatalf("events response = %#v", response)
@@ -2245,7 +2249,7 @@ func TestAccountHistoryReturnsRollupTotalsAndCost(t *testing.T) {
 	if history.SuccessRate == nil || math.Abs(*history.SuccessRate-0.5) > 0.000001 {
 		t.Fatalf("success rate = %#v", history.SuccessRate)
 	}
-	if math.Abs(history.TotalCost-2.055) > 0.000001 {
+	if history.TotalCost == nil || math.Abs(*history.TotalCost-2.055) > 0.000001 {
 		t.Fatalf("total cost = %v", history.TotalCost)
 	}
 	if history.FirstSeenMS == nil || *history.FirstSeenMS != baseMS+1_000 || history.LastSeenMS == nil || *history.LastSeenMS != baseMS+2_000 {
@@ -2473,7 +2477,7 @@ func TestAccountHistoryPricesContextTierBands(t *testing.T) {
 		t.Fatalf("history item = %#v", resp.Items)
 	}
 	const wantCost = 4.60002
-	if math.Abs(resp.Items[0].TotalCost-wantCost) > 0.000001 {
+	if resp.Items[0].TotalCost == nil || math.Abs(*resp.Items[0].TotalCost-wantCost) > 0.000001 {
 		t.Fatalf("history cost = %v, want %v", resp.Items[0].TotalCost, wantCost)
 	}
 }
@@ -3493,6 +3497,1024 @@ func TestAnalyticsHourlyRollupEligibilityIsStrict(t *testing.T) {
 	} {
 		if !analyticsHourlyRollupEligible(supported) {
 			t.Fatalf("supported filter unexpectedly ineligible: %#v", supported)
+		}
+	}
+}
+
+func TestAnalyticsReportsArchivedCoverageAndKeepsProjectionBackedCoreExact(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+	events := []usage.Event{
+		monitoringEvent("coverage-archived-a", fromMS+1_000, "gpt-a", "auth-1", "source-a", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("coverage-archived-b", fromMS+2_000, "gpt-b", "auth-2", "source-b", true, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("coverage-hot", fromMS+time.Hour.Milliseconds()+1_000, "gpt-a", "auth-1", "source-a", false, 30, 4, 0, 0, 34, nil),
+	}
+	for index := range events {
+		events[index].AccountSnapshot = "user@example.com"
+		events[index].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert coverage events: %v", err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
+
+	compact, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			ModelStats:     true,
+			Granularity:    "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compact coverage analytics: %v", err)
+	}
+	if compact.Summary == nil || compact.Summary.TotalCalls != 3 {
+		t.Fatalf("compact summary = %#v", compact.Summary)
+	}
+	if compact.Coverage == nil || compact.Coverage.Scope != "time_range" || compact.Coverage.Mode != "mixed" ||
+		compact.Coverage.RawComplete || !compact.Coverage.CoreAggregateUsed || compact.Coverage.RawEventCount != 1 ||
+		compact.Coverage.RawDeletedEventCount != 2 || len(compact.Coverage.FidelityLimitations) != 0 {
+		t.Fatalf("compact coverage = %#v", compact.Coverage)
+	}
+
+	partial, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS + 500,
+		ToMS:   toMS,
+		Filters: Filters{
+			Accounts: []string{"user@example.com"},
+		},
+		Include: Include{
+			Summary:         true,
+			SummaryProfile:  "compact",
+			CredentialStats: true,
+			EventsPage:      &EventsPage{Limit: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("partial coverage analytics: %v", err)
+	}
+	if partial.Summary == nil || partial.Summary.TotalCalls != 3 || partial.Events == nil ||
+		partial.Events.TotalCount != 1 || len(partial.Events.Items) != 1 || partial.Events.HasMore ||
+		partial.Events.NextBeforeMS != 0 || partial.Events.NextBeforeID != 0 {
+		t.Fatalf("partial analytics summary=%#v events=%#v", partial.Summary, partial.Events)
+	}
+	if partial.Coverage == nil || !partial.Coverage.CoreAggregateUsed ||
+		slices.Contains(partial.Coverage.FidelityLimitations, "core_metrics_require_raw_events") {
+		t.Fatalf("partial coverage = %#v", partial.Coverage)
+	}
+	for _, limitation := range []string{
+		"credential_metrics_require_raw_events",
+		"event_details_require_raw_events",
+	} {
+		if !slices.Contains(partial.Coverage.FidelityLimitations, limitation) {
+			t.Fatalf("partial limitations = %#v, missing %s", partial.Coverage.FidelityLimitations, limitation)
+		}
+	}
+
+	rawOnlyCore, err := New(db, true).Analytics(ctx, Request{
+		FromMS:      fromMS,
+		ToMS:        toMS,
+		SearchQuery: "%",
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+		},
+	})
+	if err != nil {
+		t.Fatalf("raw-only core coverage analytics: %v", err)
+	}
+	if rawOnlyCore.Coverage == nil || !slices.Contains(rawOnlyCore.Coverage.FidelityLimitations, "core_metrics_require_raw_events") {
+		t.Fatalf("raw-only core coverage = %#v", rawOnlyCore.Coverage)
+	}
+}
+
+func TestAnalyticsArchivedPartialHourKeepsHourlyCore(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	events := []usage.Event{
+		monitoringEvent("left-deleted", start+10_000, "gpt-a", "auth-1", "src", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("middle-hour", start+time.Hour.Milliseconds()+10_000, "gpt-a", "auth-1", "src", false, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("right-raw", start+3*time.Hour.Milliseconds()+10_000, "gpt-b", "auth-1", "src", true, 30, 4, 0, 0, 34, nil),
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, start+time.Hour.Milliseconds())
+	filter := store.AnalyticsFilter{
+		FromMS:        start + 1_000,
+		ToMS:          start + 3*time.Hour.Milliseconds() + 30_000,
+		IncludeFailed: true,
+	}
+	snapshot, available := usagehourly.New(db, true).LoadAnalytics(ctx, filter, "hour", time.UTC, true,
+		usagehourly.DeletedEdges{Left: true})
+	if !available || snapshot.Aggregate.TotalCalls != 3 {
+		t.Fatalf("hourly reader missed archived edge: available=%t aggregate=%#v error=%v", available, snapshot.Aggregate, snapshot.ReadError)
+	}
+	response, err := New(db, true).Analytics(ctx, Request{
+		FromMS: start + 1_000,
+		ToMS:   start + 3*time.Hour.Milliseconds() + 30_000,
+		NowMS:  start + 4*time.Hour.Milliseconds(),
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			ModelStats:     true,
+			Timeline:       true,
+			Granularity:    "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("archived analytics: %v", err)
+	}
+	if response.Coverage == nil || !response.Coverage.CoreAggregateUsed {
+		t.Fatalf("hourly core was skipped for archived partial edge: %#v", response.Coverage)
+	}
+}
+
+func TestAnalyticsHourlyDeletedEdgeRouting(t *testing.T) {
+	const hourMS = int64(time.Hour / time.Millisecond)
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	tests := []struct {
+		name       string
+		initial    string
+		late       string
+		cutoffHour int64
+		aligned    bool
+		want       usagehourly.DeletedEdges
+	}{
+		{"no deleted raw", "lmr", "", 0, false, usagehourly.DeletedEdges{}},
+		{"deleted aligned range", "lmr", "", 1, true, usagehourly.DeletedEdges{}},
+		{"left deleted", "lmr", "", 1, false, usagehourly.DeletedEdges{Left: true}},
+		{"right deleted", "mr", "l", 4, false, usagehourly.DeletedEdges{Right: true}},
+		{"both deleted", "lmr", "", 4, false, usagehourly.DeletedEdges{Left: true, Right: true}},
+		{"deleted only in full hour", "m", "lr", 2, false, usagehourly.DeletedEdges{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newMonitoringTestStore(t)
+			ctx := context.Background()
+			if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{"gpt-a": {Prompt: 2, Completion: 4}}); err != nil {
+				t.Fatal(err)
+			}
+			makeEvents := func(slots string, suffix string) []usage.Event {
+				events := make([]usage.Event, 0, len(slots))
+				for _, slot := range slots {
+					at := map[rune]int64{'l': 10_000, 'm': hourMS + 10_000, 'r': 3*hourMS + 10_000}[slot]
+					events = append(events, monitoringEvent(tc.name+suffix+string(slot), start+at,
+						"gpt-a", "auth-1", "source-a", slot == 'r', 100, 20, 0, 0, 120, nil))
+				}
+				return events
+			}
+			if _, err := db.InsertEvents(ctx, makeEvents(tc.initial, "initial")); err != nil {
+				t.Fatal(err)
+			}
+			catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+			if tc.cutoffHour > 0 {
+				archiveMonitoringEventsThrough(t, ctx, db, start+tc.cutoffHour*hourMS)
+			}
+			if tc.late != "" {
+				if _, err := db.InsertEvents(ctx, makeEvents(tc.late, "late")); err != nil {
+					t.Fatal(err)
+				}
+				catchUpMonitoringHourlyRollup(t, ctx, db)
+			}
+			fromMS, toMS := start+1_000, start+3*hourMS+30_000
+			if tc.aligned {
+				fromMS, toMS = start, start+4*hourMS
+			}
+			coverage, err := db.UsageArchives.RawCoverage(ctx, fromMS, toMS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := New(db, true)
+			edges, err := service.deletedHourlyEdges(ctx, fromMS, toMS, coverage.RawDeletedEventCount > 0)
+			if err != nil || edges != tc.want {
+				t.Fatalf("deleted edges = %#v, want %#v, error=%v", edges, tc.want, err)
+			}
+			filter := store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true}
+			snapshot, available := usagehourly.New(db, true).LoadAnalytics(ctx, filter, "hour", time.UTC, true, edges)
+			if !available || snapshot.Aggregate.TotalCalls != 3 || snapshot.Aggregate.FailureCalls != 1 {
+				t.Fatalf("hourly snapshot = %#v, available=%t", snapshot, available)
+			}
+			response, err := service.Analytics(ctx, Request{
+				FromMS: fromMS, ToMS: toMS, NowMS: toMS,
+				Include: Include{Summary: true, SummaryProfile: "compact", ModelStats: true, Timeline: true, Granularity: "hour"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Summary == nil || response.Summary.TotalCalls != 3 || response.Summary.FailureCalls != 1 ||
+				response.Summary.TotalCost <= 0 || len(response.ModelStats) != 1 || response.ModelStats[0].Calls != 3 {
+				t.Fatalf("analytics response = %#v", response)
+			}
+		})
+	}
+}
+
+func TestAnalyticsHourlyCoreMatchesAfterArchiveDeleteAndCompact(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	hourMS := int64(time.Hour / time.Millisecond)
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"gpt-a": {Prompt: 2, Completion: 4},
+		"gpt-b": {Prompt: 3, Completion: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events := []usage.Event{
+		monitoringEvent("compact-left", start+10_000, "gpt-a", "auth-1", "source-a", false, 100, 20, 0, 0, 120, nil),
+		monitoringEvent("compact-middle-a", start+hourMS+10_000, "gpt-b", "auth-1", "source-a", true, 200, 30, 0, 0, 230, nil),
+		monitoringEvent("compact-middle-b", start+2*hourMS+10_000, "gpt-a", "auth-1", "source-a", false, 300, 40, 0, 0, 340, nil),
+		monitoringEvent("compact-right", start+3*hourMS+10_000, "gpt-b", "auth-1", "source-a", false, 400, 50, 0, 0, 450, nil),
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	req := Request{
+		FromMS: start + 1_000, ToMS: start + 3*hourMS + 30_000,
+		NowMS: start + 4*hourMS,
+		Include: Include{Summary: true, SummaryProfile: "compact", ModelStats: true,
+			ModelShare: true, Timeline: true, Granularity: "hour"},
+	}
+	before, err := New(db, true).Analytics(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveMonitoringEventsThrough(t, ctx, db, start+hourMS)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqliterepo.CompactUsage(ctx, dbPath); err != nil {
+		t.Fatalf("offline compact: %v", err)
+	}
+	db, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := New(db, true).Analytics(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Summary == nil || after.Summary == nil || !reflect.DeepEqual(before.Summary, after.Summary) {
+		t.Fatalf("summary changed after archive/delete/compact: before=%#v after=%#v", before.Summary, after.Summary)
+	}
+	if before.Summary.TotalCost <= 0 || before.Summary.FailureCalls != 1 ||
+		!reflect.DeepEqual(before.ModelStats, after.ModelStats) || !reflect.DeepEqual(before.ModelShare, after.ModelShare) {
+		t.Fatalf("model and pricing totals changed: before=%#v after=%#v", before, after)
+	}
+	if len(before.Timeline) != len(after.Timeline) {
+		t.Fatalf("timeline length changed: before=%#v after=%#v", before.Timeline, after.Timeline)
+	}
+	for index := range before.Timeline {
+		want, got := before.Timeline[index], after.Timeline[index]
+		want.P95LatencyMS, want.P95TTFTMS = nil, nil
+		got.P95LatencyMS, got.P95TTFTMS = nil, nil
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("timeline bucket %d changed: before=%#v after=%#v", index, want, got)
+		}
+	}
+	if after.Coverage == nil || after.Coverage.RawDeletedEventCount != 1 || !after.Coverage.CoreAggregateUsed {
+		t.Fatalf("archived coverage = %#v", after.Coverage)
+	}
+}
+
+func BenchmarkAnalyticsArchived100kLongRange(b *testing.B) {
+	ctx := context.Background()
+	dbPath := filepath.Join(b.TempDir(), "archived-analytics.sqlite")
+	sqlDB, err := sqliterepo.Open(dbPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	db := store.New(sqlDB)
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	duration := int64(30 * 24 * time.Hour / time.Millisecond)
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{"gpt-a": {Prompt: 2, Completion: 4}}); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := sqlDB.Exec(`with digits(value) as (values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)),
+		numbers(value) as (
+			select a.value + 10*b.value + 100*c.value + 1000*d.value + 10000*e.value
+			from digits a cross join digits b cross join digits c cross join digits d cross join digits e
+		)
+		insert into usage_events(event_hash, timestamp_ms, timestamp, model, requested_model,
+			input_tokens, output_tokens, total_tokens, created_at_ms)
+		select printf('benchmark-%06d', value), ? + value * ? / 100000, cast(value as text),
+			'gpt-a', 'gpt-a', 100, 20, 120, ? + value * ? / 100000
+		from numbers`, start, duration, start, duration); err != nil {
+		b.Fatalf("seed 100k usage events: %v", err)
+	}
+	for _, catchUp := range []struct {
+		name string
+		run  func(context.Context, int, int64) (bool, error)
+	}{
+		{"hourly core", func(ctx context.Context, limit int, nowMS int64) (bool, error) {
+			result, err := db.CatchUpUsageHourlyAggregate(ctx, limit, nowMS)
+			return result.Pending, err
+		}},
+		{"pricing", func(ctx context.Context, limit int, nowMS int64) (bool, error) {
+			result, err := db.CatchUpUsagePricing(ctx, limit, nowMS)
+			return result.Pending, err
+		}},
+		{"projection", func(ctx context.Context, limit int, nowMS int64) (bool, error) {
+			result, err := db.CatchUpUsageMonitoringProjection(ctx, limit, nowMS)
+			return result.Pending, err
+		}},
+	} {
+		for {
+			pending, err := catchUp.run(ctx, 10_000, start+duration+1_000)
+			if err != nil {
+				b.Fatalf("catch up %s: %v", catchUp.name, err)
+			}
+			if !pending {
+				break
+			}
+		}
+	}
+	req := Request{FromMS: start + 1, ToMS: start + duration - 1, NowMS: start + duration,
+		Include: Include{Summary: true, SummaryProfile: "compact", ModelStats: true}}
+	uncleaned := New(db, true)
+	b.Run("uncleaned_hourly", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			response, err := uncleaned.Analytics(ctx, req)
+			if err != nil || response.Summary == nil || response.Summary.TotalCalls != 99_999 {
+				b.Fatalf("uncleaned sanity check: summary=%v error=%v", response.Summary, err)
+			}
+		}
+	})
+	for _, statement := range []string{
+		`insert into usage_archive_runs(id, mode, schema_version, format, status, cutoff_timestamp_ms,
+			target_event_id, event_count, created_at_ms, updated_at_ms)
+		values('benchmark-archive', 'manual', 1, 'gzip-jsonl-v1', 'completed', 1, 100000, 100000, 1, 1)`,
+		`insert into usage_archive_segments(run_id, sequence, status, file_name, first_event_id,
+			last_event_id, min_timestamp_ms, max_timestamp_ms, event_count, uncompressed_bytes,
+			compressed_bytes, content_sha256, event_hash_digest, created_at_ms)
+		values('benchmark-archive', 1, 'verified', 'benchmark-segment', 1, 100000, 1, 1,
+			100000, 1, 1, 'sha', 'digest', 1)`,
+		`insert into usage_archive_event_refs(event_hash, run_id, segment_sequence, raw_event_id,
+			timestamp_ms, archived_at_ms, raw_deleted_at_ms)
+		select event_hash, 'benchmark-archive', 1, id, timestamp_ms, 1, 2 from usage_events`,
+		`update usage_event_identity_ledger set raw_event_id = null`,
+		`delete from usage_events`,
+		`insert into usage_archive_deleted_coverage_daily
+			select timestamp_ms / 86400000, count(*), min(timestamp_ms), max(timestamp_ms)
+			from usage_archive_event_refs group by timestamp_ms / 86400000`,
+	} {
+		if _, err := sqlDB.Exec(statement); err != nil {
+			b.Fatalf("prepare archived fixture: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := sqliterepo.CompactUsage(ctx, dbPath); err != nil {
+		b.Fatalf("compact archived fixture: %v", err)
+	}
+	db, err = store.Open(dbPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+	for _, candidate := range []struct {
+		name    string
+		enabled bool
+	}{
+		{"projection_fallback", false},
+		{"hybrid_hourly", true},
+	} {
+		service := New(db, candidate.enabled)
+		response, err := service.Analytics(ctx, req)
+		if err != nil || response.Summary == nil || response.Summary.TotalCalls != 99_999 {
+			b.Fatalf("%s sanity check: calls=%v error=%v", candidate.name, response.Summary, err)
+		}
+		b.Run(candidate.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := service.Analytics(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestAnalyticsReportsComparisonCoverageSeparately(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	previousFromMS := time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC).UnixMilli()
+	currentFromMS := previousFromMS + time.Hour.Milliseconds()
+	currentToMS := currentFromMS + time.Hour.Milliseconds()
+	if _, err := db.InsertEvents(ctx, []usage.Event{
+		monitoringEvent("comparison-archived-a", previousFromMS+1_000, "gpt-a", "auth-1", "source-a", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("comparison-archived-b", previousFromMS+2_000, "gpt-b", "auth-2", "source-b", true, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("comparison-current", currentFromMS+1_000, "gpt-a", "auth-1", "source-a", false, 30, 4, 0, 0, 34, nil),
+	}); err != nil {
+		t.Fatalf("insert comparison events: %v", err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, currentFromMS)
+
+	response, err := New(db, true).Analytics(ctx, Request{
+		FromMS: currentFromMS,
+		ToMS:   currentToMS,
+		Include: Include{
+			Summary:           true,
+			SummaryProfile:    "compact",
+			SummaryComparison: true,
+			Granularity:       "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("comparison coverage analytics: %v", err)
+	}
+	if response.Summary == nil || response.Summary.TotalCalls != 1 ||
+		response.SummaryComparison == nil || response.SummaryComparison.TotalCalls != 2 {
+		t.Fatalf("comparison summaries current=%#v previous=%#v", response.Summary, response.SummaryComparison)
+	}
+	if response.Coverage == nil || response.Coverage.Scope != "time_range" || response.Coverage.Mode != "mixed" ||
+		response.Coverage.RawEventCount != 1 || response.Coverage.RawDeletedEventCount != 0 ||
+		response.Coverage.ComparisonRawEventCount != 0 || response.Coverage.ComparisonRawDeletedEventCount != 2 ||
+		!response.Coverage.CoreAggregateUsed || len(response.Coverage.FidelityLimitations) != 0 {
+		t.Fatalf("comparison coverage = %#v", response.Coverage)
+	}
+}
+
+func TestAnalyticsReportsIndependentRollingAndDrilldownCoverage(t *testing.T) {
+	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open auxiliary coverage store: %v", err)
+	}
+	db := store.New(sqlDB)
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	ctx := context.Background()
+	baseMS := time.Date(2026, time.August, 4, 0, 0, 0, 0, time.UTC).UnixMilli()
+	mainFromMS := baseMS + 2*time.Hour.Milliseconds()
+	mainToMS := mainFromMS + time.Hour.Milliseconds()
+	rollingNowMS := baseMS + 30*time.Minute.Milliseconds()
+	if _, err := db.InsertEvents(ctx, []usage.Event{
+		monitoringEvent("auxiliary-archived", baseMS+5*time.Minute.Milliseconds(), "gpt-a", "auth-1", "source-a", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("auxiliary-current", mainFromMS+time.Minute.Milliseconds(), "gpt-b", "auth-2", "source-b", false, 20, 3, 0, 0, 23, nil),
+	}); err != nil {
+		t.Fatalf("insert auxiliary coverage events: %v", err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, baseMS+time.Hour.Milliseconds())
+
+	findRange := func(t *testing.T, coverage *AnalyticsCoverage, scope string) AnalyticsCoverageRange {
+		t.Helper()
+		if coverage == nil {
+			t.Fatal("coverage is nil")
+		}
+		for _, item := range coverage.AuxiliaryRanges {
+			if item.Scope == scope {
+				return item
+			}
+		}
+		t.Fatalf("coverage range %q not found in %#v", scope, coverage.AuxiliaryRanges)
+		return AnalyticsCoverageRange{}
+	}
+
+	rolling, err := New(db, true).Analytics(ctx, Request{
+		FromMS: mainFromMS,
+		ToMS:   mainToMS,
+		NowMS:  rollingNowMS,
+		Include: Include{
+			Summary:     true,
+			Granularity: "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("rolling auxiliary coverage analytics: %v", err)
+	}
+	if rolling.Summary == nil || rolling.Summary.TotalCalls != 1 || rolling.Summary.RPM30M != float64(1)/30 || rolling.Summary.TPM30M != float64(12)/30 {
+		t.Fatalf("rolling summary = %#v", rolling.Summary)
+	}
+	rollingRange := findRange(t, rolling.Coverage, "rolling_30m")
+	if rolling.Coverage.Scope != "requested_ranges" || rolling.Coverage.RawDeletedEventCount != 0 ||
+		rolling.Coverage.RawEventCount != 1 || rollingRange.RawDeletedEventCount != 1 ||
+		rollingRange.RawEventCount != 0 || len(rolling.Coverage.FidelityLimitations) != 0 {
+		t.Fatalf("rolling coverage = %#v range=%#v", rolling.Coverage, rollingRange)
+	}
+
+	drilldown, err := New(db, true).Analytics(ctx, Request{
+		FromMS: mainFromMS,
+		ToMS:   mainToMS,
+		Include: Include{
+			DrilldownPreview: &DrilldownPreview{
+				FromMS: baseMS,
+				ToMS:   baseMS + time.Hour.Milliseconds(),
+				Limit:  10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("drilldown auxiliary coverage analytics: %v", err)
+	}
+	if drilldown.DrilldownPreview == nil || len(drilldown.DrilldownPreview.Items) != 0 {
+		t.Fatalf("drilldown preview = %#v", drilldown.DrilldownPreview)
+	}
+	drilldownRange := findRange(t, drilldown.Coverage, "drilldown_preview")
+	if drilldown.Coverage.Scope != "requested_ranges" || drilldownRange.RawDeletedEventCount != 1 ||
+		!slices.Contains(drilldown.Coverage.FidelityLimitations, "event_details_require_raw_events") {
+		t.Fatalf("drilldown coverage = %#v range=%#v", drilldown.Coverage, drilldownRange)
+	}
+
+	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0
+		where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
+		t.Fatalf("mark projection unavailable for rolling coverage: %v", err)
+	}
+	degraded, err := New(db, true).Analytics(ctx, Request{
+		FromMS: mainFromMS,
+		ToMS:   mainToMS,
+		NowMS:  rollingNowMS,
+		Include: Include{
+			Summary:     true,
+			Granularity: "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("degraded rolling auxiliary coverage analytics: %v", err)
+	}
+	if degraded.Summary == nil || degraded.Summary.RPM30M != 0 || degraded.Summary.TPM30M != 0 ||
+		!slices.Contains(degraded.Coverage.FidelityLimitations, "rolling_window_metrics_require_raw_events") {
+		t.Fatalf("degraded rolling response summary=%#v coverage=%#v", degraded.Summary, degraded.Coverage)
+	}
+}
+
+func TestAnalyticsReportsActualDerivedReaderFallbacksAfterArchivedDeletion(t *testing.T) {
+	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open fallback store: %v", err)
+	}
+	db := store.New(sqlDB)
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 3, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+	events := []usage.Event{
+		monitoringEvent("fallback-archived-a", fromMS+1_000, "gpt-a", "auth-1", "source-a", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("fallback-archived-b", fromMS+2_000, "gpt-b", "auth-2", "source-b", true, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("fallback-hot", fromMS+time.Hour.Milliseconds()+1_000, "gpt-a", "auth-1", "source-a", false, 30, 4, 0, 0, 34, nil),
+	}
+	for index := range events {
+		events[index].AccountSnapshot = "user@example.com"
+		events[index].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert fallback events: %v", err)
+	}
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
+	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0
+		where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
+		t.Fatalf("mark projection unavailable: %v", err)
+	}
+
+	response, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			Summary:         true,
+			SummaryProfile:  "compact",
+			AccountStats:    true,
+			FilterSelectors: true,
+			Granularity:     "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("fallback coverage analytics: %v", err)
+	}
+	if response.Summary == nil || response.Summary.TotalCalls != 3 ||
+		len(response.AccountStats) != 1 || response.AccountStats[0].Calls != 1 {
+		t.Fatalf("fallback response summary=%#v accounts=%#v", response.Summary, response.AccountStats)
+	}
+	if response.Coverage == nil || !response.Coverage.CoreAggregateUsed ||
+		slices.Contains(response.Coverage.FidelityLimitations, "core_metrics_require_raw_events") ||
+		!slices.Contains(response.Coverage.FidelityLimitations, "identity_metrics_require_raw_events") ||
+		!slices.Contains(response.Coverage.FidelityLimitations, "filter_options_require_raw_events") {
+		t.Fatalf("fallback coverage = %#v", response.Coverage)
+	}
+}
+
+func TestAnalyticsArchivedRawDeletionWithoutFilterUsesRawEventsAndCoverageCount(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+
+	// 3 events: 2 in the first hour (archived and raw-deleted), 1 retained in the second hour
+	events := []usage.Event{
+		monitoringEvent("archived-1", fromMS+1_000, "gpt-a", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("archived-2", fromMS+2_000, "gpt-b", "auth-2", "src-2", true, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("retained-1", fromMS+time.Hour.Milliseconds()+1_000, "gpt-a", "auth-1", "src-1", false, 30, 4, 0, 0, 34, nil),
+	}
+	for i := range events {
+		events[i].AccountSnapshot = "user@example.com"
+		events[i].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
+
+	resp, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			EventsPage:     &EventsPage{Limit: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+
+	if resp.Summary == nil || resp.Summary.TotalCalls != 3 {
+		t.Fatalf("summary total calls = %v, want 3", resp.Summary)
+	}
+	if resp.Events == nil {
+		t.Fatalf("events is nil")
+	}
+	if resp.Events.TotalCount != 1 {
+		t.Fatalf("events total count = %d, want 1", resp.Events.TotalCount)
+	}
+	if len(resp.Events.Items) != 1 {
+		t.Fatalf("events items len = %d, want 1", len(resp.Events.Items))
+	}
+	if resp.Events.Items[0].EventHash != testCanonicalHash("retained-1") {
+		t.Fatalf("events items[0] hash = %s, want retained-1", resp.Events.Items[0].EventHash)
+	}
+	if resp.Coverage == nil || resp.Coverage.RawDeletedEventCount != 2 || resp.Coverage.RawEventCount != 1 {
+		t.Fatalf("coverage mismatch: %#v", resp.Coverage)
+	}
+}
+
+func TestAnalyticsArchivedRawDeletionWithRowLevelFilterCountsAndPagesRawEventsOnly(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+
+	// 4 events: 2 in first hour (archived+deleted), 2 in second hour (retained)
+	events := []usage.Event{
+		monitoringEvent("archived-match", fromMS+1_000, "gpt-match", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("archived-other", fromMS+2_000, "gpt-other", "auth-2", "src-2", false, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("retained-match", fromMS+time.Hour.Milliseconds()+1_000, "gpt-match", "auth-1", "src-1", false, 30, 4, 0, 0, 34, nil),
+		monitoringEvent("retained-other", fromMS+time.Hour.Milliseconds()+2_000, "gpt-other", "auth-2", "src-2", false, 40, 5, 0, 0, 45, nil),
+	}
+	for i := range events {
+		events[i].AccountSnapshot = "user@example.com"
+		events[i].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
+
+	// Filter by Models: ["gpt-match"]
+	resp, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Filters: Filters{
+			Models: []string{"gpt-match"},
+		},
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			EventsPage:     &EventsPage{Limit: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+
+	if resp.Summary == nil || resp.Summary.TotalCalls != 2 {
+		t.Fatalf("summary total calls = %v, want 2", resp.Summary)
+	}
+	if resp.Events == nil {
+		t.Fatalf("events is nil")
+	}
+	if resp.Events.TotalCount != 1 {
+		t.Fatalf("events total count = %d, want 1", resp.Events.TotalCount)
+	}
+	if len(resp.Events.Items) != 1 {
+		t.Fatalf("events items len = %d, want 1", len(resp.Events.Items))
+	}
+	if resp.Events.Items[0].EventHash != testCanonicalHash("retained-match") {
+		t.Fatalf("events items[0] hash = %s, want retained-match", resp.Events.Items[0].EventHash)
+	}
+}
+
+func TestAnalyticsArchivedRawDeletionKeysetPagination(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+
+	sameTS := fromMS + time.Hour.Milliseconds() + 2_000
+	events := []usage.Event{
+		// 2 archived & deleted
+		monitoringEvent("archived-1", fromMS+1_000, "gpt-a", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("archived-2", fromMS+2_000, "gpt-b", "auth-2", "src-2", false, 20, 3, 0, 0, 23, nil),
+		// 4 retained raw events: two sharing the exact same timestamp
+		monitoringEvent("retained-1", fromMS+time.Hour.Milliseconds()+1_000, "gpt-a", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("retained-2a", sameTS, "gpt-a", "auth-1", "src-1", false, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("retained-2b", sameTS, "gpt-a", "auth-1", "src-1", false, 30, 4, 0, 0, 34, nil),
+		monitoringEvent("retained-3", fromMS+time.Hour.Milliseconds()+3_000, "gpt-a", "auth-1", "src-1", false, 40, 5, 0, 0, 45, nil),
+	}
+	for i := range events {
+		events[i].AccountSnapshot = "user@example.com"
+		events[i].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
+
+	// Page 1: limit 2
+	resp1, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			EventsPage: &EventsPage{Limit: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("page 1 analytics: %v", err)
+	}
+	if resp1.Events == nil || len(resp1.Events.Items) != 2 {
+		t.Fatalf("page 1 items len = %v, want 2", resp1.Events)
+	}
+	if !resp1.Events.HasMore {
+		t.Fatalf("page 1 HasMore = false, want true")
+	}
+	if resp1.Events.NextBeforeMS == 0 || resp1.Events.NextBeforeID == 0 {
+		t.Fatalf("page 1 NextBeforeMS=%d NextBeforeID=%d, want non-zero", resp1.Events.NextBeforeMS, resp1.Events.NextBeforeID)
+	}
+
+	// Page 2: with before_ms, before_id
+	resp2, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			EventsPage: &EventsPage{
+				Limit:    2,
+				BeforeMS: &resp1.Events.NextBeforeMS,
+				BeforeID: &resp1.Events.NextBeforeID,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("page 2 analytics: %v", err)
+	}
+	if resp2.Events == nil || len(resp2.Events.Items) != 2 {
+		t.Fatalf("page 2 items len = %v, want 2", resp2.Events)
+	}
+	if resp2.Events.HasMore {
+		t.Fatalf("page 2 HasMore = true, want false")
+	}
+
+	// Verify all 4 retained items were returned with no duplicates
+	seen := make(map[string]bool)
+	for _, item := range append(resp1.Events.Items, resp2.Events.Items...) {
+		if seen[item.EventHash] {
+			t.Fatalf("duplicate event returned: %s", item.EventHash)
+		}
+		seen[item.EventHash] = true
+	}
+	if len(seen) != 4 {
+		t.Fatalf("seen items count = %d, want 4", len(seen))
+	}
+	for _, expected := range []string{"retained-1", "retained-2a", "retained-2b", "retained-3"} {
+		if !seen[testCanonicalHash(expected)] {
+			t.Fatalf("missing expected retained event %s", expected)
+		}
+	}
+}
+
+func TestAnalyticsWithoutRawDeletionRetainsProjectionOptimization(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + time.Hour.Milliseconds()
+
+	events := []usage.Event{
+		monitoringEvent("hot-1", fromMS+1_000, "gpt-a", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("hot-2", fromMS+2_000, "gpt-b", "auth-2", "src-2", false, 20, 3, 0, 0, 23, nil),
+	}
+	for i := range events {
+		events[i].AccountSnapshot = "user@example.com"
+		events[i].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	// No archive delete performed: RawDeletedEventCount == 0
+
+	resp, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Filters: Filters{
+			Models: []string{"gpt-a"},
+		},
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			EventsPage:     &EventsPage{Limit: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+
+	if resp.Coverage != nil && resp.Coverage.RawDeletedEventCount != 0 {
+		t.Fatalf("raw deleted event count = %d, want 0", resp.Coverage.RawDeletedEventCount)
+	}
+	if resp.Summary == nil || resp.Summary.TotalCalls != 1 {
+		t.Fatalf("summary total calls = %v, want 1", resp.Summary)
+	}
+	if resp.Events == nil || resp.Events.TotalCount != 1 || len(resp.Events.Items) != 1 {
+		t.Fatalf("events response = %#v", resp.Events)
+	}
+	if resp.Events.Items[0].EventHash != testCanonicalHash("hot-1") {
+		t.Fatalf("events items[0] hash = %s, want hot-1", resp.Events.Items[0].EventHash)
+	}
+}
+
+func TestAnalyticsArchivedDrilldownPreviewUsesRawEvents(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	toMS := fromMS + 2*time.Hour.Milliseconds()
+
+	// In preview range [fromMS, fromMS + 1h):
+	// 1 event archived and deleted, 1 retained raw event
+	// Outside preview range:
+	// 1 event in [fromMS + 1h, toMS)
+	events := []usage.Event{
+		monitoringEvent("archived-1", fromMS+10*time.Minute.Milliseconds(), "gpt-a", "auth-1", "src-1", false, 10, 2, 0, 0, 12, nil),
+		monitoringEvent("retained-1", fromMS+40*time.Minute.Milliseconds(), "gpt-b", "auth-2", "src-2", false, 20, 3, 0, 0, 23, nil),
+		monitoringEvent("main-event", fromMS+90*time.Minute.Milliseconds(), "gpt-a", "auth-1", "src-1", false, 30, 4, 0, 0, 34, nil),
+	}
+	for i := range events {
+		events[i].AccountSnapshot = "user@example.com"
+		events[i].AuthFileSnapshot = "user.json"
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
+	// Archive through fromMS + 30m: archives and deletes archived-1 (at 10m), but keeps retained-1 (at 40m)
+	archiveMonitoringEventsThrough(t, ctx, db, fromMS+30*time.Minute.Milliseconds())
+
+	resp, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			DrilldownPreview: &DrilldownPreview{
+				FromMS: fromMS,
+				ToMS:   fromMS + time.Hour.Milliseconds(),
+				Limit:  10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+
+	if resp.DrilldownPreview == nil {
+		t.Fatalf("drilldown preview is nil")
+	}
+	// Preview range had 1 archived+deleted event and 1 retained raw event.
+	// Verify DrilldownPreview.Items only contains retained raw event, not the archived projection row.
+	if len(resp.DrilldownPreview.Items) != 1 {
+		t.Fatalf("drilldown preview items len = %d, want 1, items: %#v", len(resp.DrilldownPreview.Items), resp.DrilldownPreview.Items)
+	}
+	if resp.DrilldownPreview.Items[0].EventHash != testCanonicalHash("retained-1") {
+		t.Fatalf("drilldown preview items[0] hash = %s, want retained-1", resp.DrilldownPreview.Items[0].EventHash)
+	}
+	if resp.DrilldownPreview.TotalCount != 1 {
+		t.Fatalf("drilldown preview total count = %d, want 1", resp.DrilldownPreview.TotalCount)
+	}
+
+	// Filtered preview scenario: filter by model "gpt-b" (retained)
+	respFiltered, err := New(db, true).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Filters: Filters{
+			Models: []string{"gpt-b"},
+		},
+		Include: Include{
+			Summary:        true,
+			SummaryProfile: "compact",
+			DrilldownPreview: &DrilldownPreview{
+				FromMS: fromMS,
+				ToMS:   fromMS + time.Hour.Milliseconds(),
+				Limit:  10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("filtered analytics: %v", err)
+	}
+	if respFiltered.DrilldownPreview == nil || len(respFiltered.DrilldownPreview.Items) != 1 {
+		t.Fatalf("filtered drilldown preview = %#v, want 1 item", respFiltered.DrilldownPreview)
+	}
+	if respFiltered.DrilldownPreview.Items[0].EventHash != testCanonicalHash("retained-1") {
+		t.Fatalf("filtered drilldown items[0] hash = %s, want retained-1", respFiltered.DrilldownPreview.Items[0].EventHash)
+	}
+}
+
+func archiveMonitoringEventsThrough(t *testing.T, ctx context.Context, db *store.Store, cutoffTimestampMS int64) {
+	t.Helper()
+	archiveService := usageservice.New(db, usageservice.WithArchive(usageservice.ArchiveConfig{
+		Directory:             filepath.Join(t.TempDir(), "usage-archives"),
+		SegmentEventLimit:     1,
+		DeleteBatchSize:       1,
+		AggregateReadsEnabled: true,
+	}))
+	created, err := archiveService.CreateArchive(ctx, cutoffTimestampMS)
+	if err != nil {
+		t.Fatalf("create coverage archive: %v", err)
+	}
+	if _, err := archiveService.ResumeArchive(ctx, created.Run.ID); err != nil {
+		t.Fatalf("write coverage archive: %v", err)
+	}
+	if _, err := archiveService.VerifyArchive(ctx, created.Run.ID); err != nil {
+		t.Fatalf("verify coverage archive: %v", err)
+	}
+	if _, err := archiveService.DeleteArchive(ctx, created.Run.ID); err != nil {
+		t.Fatalf("delete coverage raw rows: %v", err)
+	}
+}
+
+func catchUpMonitoringArchiveDeleteReadiness(t *testing.T, ctx context.Context, db *store.Store) {
+	t.Helper()
+	catchUpMonitoringHourlyRollup(t, ctx, db)
+	for _, catchUp := range []struct {
+		name string
+		run  func(context.Context, int, int64) (store.UsageMonitoringCatchUpResult, error)
+	}{
+		{name: "stats", run: db.CatchUpUsageMonitoringStats},
+		{name: "metadata", run: db.CatchUpUsageMonitoringMetadata},
+		{name: "projection", run: db.CatchUpUsageMonitoringProjection},
+		{name: "codex legacy identity evidence", run: db.CatchUpCodexLegacyIdentityEvidence},
+	} {
+		for {
+			result, err := catchUp.run(ctx, 100, time.Now().UnixMilli())
+			if err != nil {
+				t.Fatalf("catch up monitoring %s: %v", catchUp.name, err)
+			}
+			if !result.Pending {
+				break
+			}
+		}
+	}
+	for _, catchUp := range []struct {
+		name string
+		run  func(context.Context, int, int64) (store.UsageRollupCatchUpResult, error)
+	}{
+		{name: "account history", run: db.CatchUpAccountHistoryRollups},
+		{name: "dashboard hourly", run: db.CatchUpDashboardHourlyRollups},
+	} {
+		for {
+			result, err := catchUp.run(ctx, 100, time.Now().UnixMilli())
+			if err != nil {
+				t.Fatalf("catch up %s: %v", catchUp.name, err)
+			}
+			if !result.Pending {
+				break
+			}
 		}
 	}
 }

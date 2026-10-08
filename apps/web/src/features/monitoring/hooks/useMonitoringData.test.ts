@@ -11,6 +11,7 @@ import {
   mergeMonitoringEventsPageItems,
   resolveMonitoringDisplayEventItems,
   resolveMonitoringPresentationSnapshot,
+  resetMonitoringEventsPageCursor,
   withoutMonitoringSnapshotEvents,
   type MonitoringEventRow,
   type MonitoringPresentationSnapshot,
@@ -19,6 +20,7 @@ import {
   buildAccountRowsFromAnalytics,
   buildApiKeyRowsFromAnalytics,
 } from '../model/analyticsAdapters';
+import { buildMonitoringCenterAnalyticsInclude } from '../model/monitoringAnalyticsModel';
 import { buildMonitoringAccountRowId } from '../model/accountIdentity';
 import type { MonitoringAnalyticsEventRow } from '@/services/api/usageService';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
@@ -82,6 +84,17 @@ const createPresentationSnapshot = (id: string): MonitoringPresentationSnapshot 
   const row = createMonitoringEventRow({ id });
   return {
     summary: buildMonitoringSummary([row]),
+    coverage: {
+      scope: 'time_range',
+      mode: 'mixed',
+      raw_complete: false,
+      core_aggregate_used: true,
+      raw_event_count: 1,
+      raw_deleted_event_count: id.length,
+      min_deleted_timestamp_ms: 1,
+      max_deleted_timestamp_ms: 2,
+      fidelity_limitations: [],
+    },
     timeline: [{ label: id, requests: 1, tokens: row.totalTokens, cost: row.totalCost }],
     timelineGranularity: 'hour',
     hourlyDistribution: [],
@@ -657,9 +670,10 @@ describe('buildRangeFilteredRows', () => {
         createMonitoringEventRow({ id: 'today-start', timestampMs: todayStartMs }),
       ];
 
-      expect(
-        buildRangeFilteredRows(rows, 'yesterday', null, '').map((row) => row.id)
-      ).toEqual(['yesterday-start', 'yesterday-end']);
+      expect(buildRangeFilteredRows(rows, 'yesterday', null, '').map((row) => row.id)).toEqual([
+        'yesterday-start',
+        'yesterday-end',
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -879,6 +893,7 @@ describe('withoutMonitoringSnapshotEvents', () => {
     const cached = withoutMonitoringSnapshotEvents(snapshot);
 
     expect(cached.summary).toBe(snapshot.summary);
+    expect(cached.coverage).toBe(snapshot.coverage);
     expect(cached.filteredRows).toEqual([]);
     expect(cached.eventsLoadedCount).toBe(0);
     expect(cached.eventsTotalCount).toBe(0);
@@ -1023,5 +1038,72 @@ describe('resolveMonitoringPresentationSnapshot', () => {
     expect(result.snapshot).toBe(computed);
     expect(result.hasPresentationSnapshot).toBe(true);
     expect(result.usingSnapshotFallback).toBe(false);
+  });
+});
+
+describe('resetMonitoringEventsPageCursor and tab pagination lifecycle', () => {
+  it('resets pagination cursor when leaving realtime tab and uses null cursor on re-entering realtime', () => {
+    // 1. In Realtime tab, pagination cursor has been advanced via load more
+    const realtimeState = {
+      scopeKey: '{"range":"1h"}',
+      beforeMs: 1_800_000_000_000,
+      beforeId: 1042,
+      items: [
+        {
+          id: 1042,
+          event_hash: 'hash-1',
+          timestamp_ms: 1_800_000_000_000,
+          created_at_ms: 1_800_000_000_000,
+          model: 'gpt-4o',
+          endpoint: '/v1/chat/completions',
+          status_code: 200,
+          failed: 0,
+        } as unknown as MonitoringAnalyticsEventRow,
+      ],
+      hasMore: true,
+      loadingMore: true,
+      lastPageKey: 'page-1',
+    };
+
+    // 2. User switches to Accounts or API Keys tab -> cursor is reset while preserving items & metadata
+    const switchedState = resetMonitoringEventsPageCursor(realtimeState);
+    expect(switchedState.beforeMs).toBeNull();
+    expect(switchedState.beforeId).toBeNull();
+    expect(switchedState.loadingMore).toBe(false);
+    expect(switchedState.items).toBe(realtimeState.items);
+    expect(switchedState.hasMore).toBe(true);
+
+    // On non-realtime tabs, buildMonitoringCenterAnalyticsInclude does NOT include events_page
+    const accountsInclude = buildMonitoringCenterAnalyticsInclude('accounts', 'hour', {
+      limit: 500,
+      before_ms: switchedState.beforeMs,
+      before_id: switchedState.beforeId,
+    });
+    expect(accountsInclude.events_page).toBeUndefined();
+
+    // 3. User re-enters Realtime tab -> initial request must use null cursor (root page)
+    const realtimeReentryInclude = buildMonitoringCenterAnalyticsInclude('realtime', 'hour', {
+      limit: 500,
+      before_ms: switchedState.beforeMs,
+      before_id: switchedState.beforeId,
+    });
+    expect(realtimeReentryInclude.events_page).toEqual({
+      limit: 500,
+      before_ms: null,
+      before_id: null,
+    });
+  });
+
+  it('preserves already-clean cursor states', () => {
+    const cleanState = {
+      scopeKey: '{"range":"1h"}',
+      beforeMs: null,
+      beforeId: null,
+      items: [],
+      hasMore: false,
+      loadingMore: false,
+      lastPageKey: '',
+    };
+    expect(resetMonitoringEventsPageCursor(cleanState)).toBe(cleanState);
   });
 });

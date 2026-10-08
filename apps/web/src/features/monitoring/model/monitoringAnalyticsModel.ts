@@ -27,17 +27,8 @@ export const buildMonitoringCenterAnalyticsInclude = (
     include.account_stats = true;
   } else if (activeDataTab === 'apiKeys') {
     include.api_key_stats = true;
-  }
-
-  if (eventsPage) {
-    include.events_page =
-      activeDataTab === 'realtime'
-        ? eventsPage
-        : {
-            ...eventsPage,
-            before_ms: null,
-            before_id: null,
-          };
+  } else if (activeDataTab === 'realtime' && eventsPage) {
+    include.events_page = eventsPage;
   }
 
   return include;

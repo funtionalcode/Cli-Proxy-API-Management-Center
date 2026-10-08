@@ -22,7 +22,7 @@ import {
   areModelEntriesEqual,
   areStringArraysEqual,
 } from '@/utils/compare';
-import type { ModelInfo } from '@/utils/models';
+import { modelDisplayLabel, type ModelInfo } from '@/utils/models';
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
 import { CredentialWeightInput } from '../CredentialWeightInput';
@@ -226,9 +226,9 @@ export function GeminiEditDrawer({
     if (!filter) return discoveredModels;
     return discoveredModels.filter((model) => {
       const name = (model.name || '').toLowerCase();
-      const alias = (model.alias || '').toLowerCase();
+      const label = modelDisplayLabel(model).toLowerCase();
       const description = (model.description || '').toLowerCase();
-      return name.includes(filter) || alias.includes(filter) || description.includes(filter);
+      return name.includes(filter) || label.includes(filter) || description.includes(filter);
     });
   }, [discoveredModels, modelDiscoverySearch]);
 
@@ -726,6 +726,7 @@ export function GeminiEditDrawer({
                     {discoveredModelsFiltered.map((model) => {
                       const normalizedName = stripGeminiModelResourceName(model.name).trim();
                       const checked = modelDiscoverySelected.has(normalizedName);
+                      const discoveryLabel = modelDisplayLabel(model);
                       const alreadyConfigured = configuredModelNames.has(
                         normalizedName.toLowerCase()
                       );
@@ -745,9 +746,9 @@ export function GeminiEditDrawer({
                               <div className={styles.modelDiscoveryName}>
                                 <div className={styles.modelDiscoveryNameText}>
                                   {model.name}
-                                  {model.alias && (
+                                  {discoveryLabel && (
                                     <span className={styles.modelDiscoveryAlias}>
-                                      {model.alias}
+                                      {discoveryLabel}
                                     </span>
                                   )}
                                 </div>

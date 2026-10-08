@@ -535,6 +535,19 @@ function MainLayoutContent({ routeBase = '', demoMode = false }: MainLayoutProps
         icon: sidebarIcons.monitoring,
       }
     : null;
+  const usageMaintenanceNavItem: NavItem | null =
+    featureAvailability.panelHostMode === 'manager_embedded' &&
+    featureAvailability.managerServiceAvailable
+      ? {
+          path: '/usage-maintenance',
+          label: t('nav.usage_maintenance', { defaultValue: 'Usage Maintenance' }),
+          shortLabel: navShortLabel(
+            'nav.usage_maintenance',
+            t('nav.usage_maintenance', { defaultValue: 'Maintenance' })
+          ),
+          icon: sidebarIcons.system,
+        }
+      : null;
   const operationNavItems: NavItem[] = [
     {
       path: '/logs',
@@ -566,6 +579,7 @@ function MainLayoutContent({ routeBase = '', demoMode = false }: MainLayoutProps
       dashboardNavItem,
       ...(usageAnalyticsNavItem ? [usageAnalyticsNavItem] : []),
       ...(monitoringNavItem ? [monitoringNavItem] : []),
+      ...(usageMaintenanceNavItem ? [usageMaintenanceNavItem] : []),
     ],
     [
       {

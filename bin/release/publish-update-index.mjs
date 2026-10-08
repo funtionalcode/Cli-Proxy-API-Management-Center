@@ -104,17 +104,34 @@ export async function publishUpdateIndex({
   const token = env.GITHUB_TOKEN;
   if (!token) throw new Error('Missing GitHub token');
   const apiBase = 'https://api.github.com/repos/seakee/CPA-Manager-Plus';
+  const retryableMethods = new Set(['GET', 'PATCH']);
   const api = async (path, method = 'GET', body, allow404 = false) => {
-    const res = await fetchImpl(apiBase + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
-    });
+    let res;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        res = await fetchImpl(apiBase + path, {
+          method,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(30_000),
+        });
+        break;
+      } catch (err) {
+        if (!retryableMethods.has(method) || attempt === 3) {
+          const message = err instanceof Error ? err.message : String(err);
+          const code = err?.cause?.code ? ` (${err.cause.code})` : '';
+          throw new Error(
+            `GitHub ${method} ${path} transport failure after ${attempt} attempt(s): ${message}${code}`,
+            { cause: err }
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
     if (allow404 && res.status === 404) return null;
     if (!res.ok) throw new Error(`GitHub ${method} ${path}: ${res.status}`);
     return res.json();

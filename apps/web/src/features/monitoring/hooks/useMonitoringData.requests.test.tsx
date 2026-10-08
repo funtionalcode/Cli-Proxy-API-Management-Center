@@ -318,7 +318,6 @@ describe('useMonitoringData analytics requests', () => {
       summary: true,
       summary_profile: 'compact',
       account_stats: true,
-      events_page: { limit: 500, before_ms: null, before_id: null },
       granularity: 'hour',
     });
     expect(JSON.parse(accounts?.dataScopeKey ?? '{}')).toMatchObject({
@@ -335,7 +334,6 @@ describe('useMonitoringData analytics requests', () => {
       summary: true,
       summary_profile: 'compact',
       api_key_stats: true,
-      events_page: { limit: 500, before_ms: null, before_id: null },
       granularity: 'hour',
     });
     expect(JSON.parse(apiKeys?.dataScopeKey ?? '{}')).toMatchObject({
@@ -379,11 +377,9 @@ describe('useMonitoringData analytics requests', () => {
     });
 
     await renderTab('accounts');
-    expect(lastParams((params) => Boolean(params.include?.summary))?.include?.events_page).toEqual({
-      limit: 500,
-      before_ms: null,
-      before_id: null,
-    });
+    expect(
+      lastParams((params) => Boolean(params.include?.summary))?.include?.events_page
+    ).toBeUndefined();
 
     await renderTab('realtime');
     expect(lastParams((params) => Boolean(params.include?.summary))?.include?.events_page).toEqual({

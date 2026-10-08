@@ -18,6 +18,30 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
+func TestIsCurrentStructureRevision(t *testing.T) {
+	for _, revision := range []string{
+		StructureRevision,
+		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdef",
+	} {
+		if !IsCurrentStructureRevision(revision) {
+			t.Fatalf("current structure revision rejected: %q", revision)
+		}
+	}
+	for _, revision := range []string{
+		"",
+		"stale",
+		StructureRevision + ":rebuild-short",
+		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdeg",
+		StructureRevision + ":cache-accounting-v2-0-42",
+		StructureRevision + ":cache-accounting-v2-1700000000000-42",
+		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdef:cache-accounting-v2-1700000000000-42",
+	} {
+		if IsCurrentStructureRevision(revision) {
+			t.Fatalf("invalid structure revision accepted: %q", revision)
+		}
+	}
+}
+
 func TestCatchUpAndLoadRowsMergeCoverageDeltaAndLateEvents(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
@@ -286,6 +310,32 @@ func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
 	}
 	if err := assertAggregateCallsAndLedgerRevision(db, 2, "schema-3:model-1:rebuild-test"); err != nil {
 		t.Fatalf("after same-revision replay: %v", err)
+	}
+}
+
+func TestRecordFailureSQLiteBusyDoesNotPoisonAggregateState(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	repo := New(db)
+
+	before, err := repo.State(ctx)
+	if err != nil {
+		t.Fatalf("read aggregate state before sqlite busy: %v", err)
+	}
+	if err := repo.RecordFailure(ctx, errors.New("database is locked (SQLITE_BUSY_SNAPSHOT)"), 10_000); err != nil {
+		t.Fatalf("record aggregate sqlite busy: %v", err)
+	}
+	after, err := repo.State(ctx)
+	if err != nil {
+		t.Fatalf("read aggregate state after sqlite busy: %v", err)
+	}
+	if after.Status != before.Status || after.CoverageEventID != before.CoverageEventID ||
+		after.TargetEventID != before.TargetEventID || after.LastError != before.LastError {
+		t.Fatalf("aggregate state changed after sqlite busy: before=%#v after=%#v", before, after)
 	}
 }
 
