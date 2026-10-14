@@ -162,6 +162,58 @@ export function AccountConfigurationTab({
         </div>
       ) : null}
 
+      {state.providerKey === 'gemini-web' ? (
+        <section className={styles.configurationSection}>
+          <h3 className={styles.configurationSectionTitle}>
+            {t('accounts.config_gemini_session_title')}
+          </h3>
+          <div className={styles.configurationFieldGrid}>
+            <div className={styles.configurationFieldFull}>
+              <Input
+                label={t('accounts.config_gemini_filename')}
+                value={draft.geminiFileName ?? state.fileName}
+                hint={t('accounts.config_gemini_filename_hint')}
+                error={fieldError('geminiFileName')}
+                disabled={disabled}
+                onChange={(event) => editor.updateField('geminiFileName', event.target.value)}
+              />
+            </div>
+            <div className={styles.configurationFieldFull}>
+              <Input
+                label={t('accounts.config_gemini_name')}
+                value={draft.geminiAccountName ?? ''}
+                hint={t('accounts.config_gemini_name_hint')}
+                error={fieldError('geminiAccountName')}
+                disabled={disabled}
+                onChange={(event) => editor.updateField('geminiAccountName', event.target.value)}
+              />
+            </div>
+            <Input
+              label="Session (__Secure-1PSID)"
+              type="password"
+              autoComplete="new-password"
+              value={draft.geminiSession ?? ''}
+              placeholder={t('accounts.config_gemini_session_placeholder')}
+              hint={t('accounts.config_gemini_session_hint')}
+              error={fieldError('geminiSession')}
+              disabled={disabled}
+              onChange={(event) => editor.updateField('geminiSession', event.target.value)}
+            />
+            <Input
+              label="Session (__Secure-1PSIDTS)"
+              type="password"
+              autoComplete="new-password"
+              value={draft.geminiSessionTimestamp ?? ''}
+              placeholder={t('accounts.config_gemini_session_placeholder')}
+              hint={t('accounts.config_gemini_session_hint')}
+              error={fieldError('geminiSessionTimestamp')}
+              disabled={disabled}
+              onChange={(event) => editor.updateField('geminiSessionTimestamp', event.target.value)}
+            />
+          </div>
+        </section>
+      ) : null}
+
       <section className={styles.configurationSection}>
         <h3 className={styles.configurationSectionTitle}>{t('accounts.config_section_routing')}</h3>
         <div className={styles.configurationFieldGrid}>

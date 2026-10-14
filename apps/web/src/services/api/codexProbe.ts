@@ -67,10 +67,14 @@ export const codexProbeApi = {
   getExternalAccount: () =>
     apiClient.get<ExternalProbeAccountStatus>('/codex/turn-state/external-account'),
   startExternalLogin: () =>
-    apiClient.post<{ auth_url: string }>('/codex/turn-state/external-login/start', {}),
-  completeExternalLogin: (callbackUrl: string) =>
+    apiClient.post<{ auth_url: string; state: string }>(
+      '/codex/turn-state/external-login/start',
+      {}
+    ),
+  completeExternalLogin: (callbackUrl: string, state: string) =>
     apiClient.post<{ status: string }>('/codex/turn-state/external-login/complete', {
       callback_url: callbackUrl,
+      state,
     }),
   startExternalDeviceLogin: () =>
     apiClient.post<ExternalDeviceLogin>('/codex/turn-state/external-device-login/start', {}),

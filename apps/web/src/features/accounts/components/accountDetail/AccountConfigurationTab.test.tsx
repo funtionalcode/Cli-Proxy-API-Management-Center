@@ -298,6 +298,21 @@ describe('AccountConfigurationTab', () => {
     expect(onCopyText).toHaveBeenCalledWith(editor.rawDataText);
   });
 
+  it('provides Gemini account name and masked session replacement inputs', () => {
+    const editor = makeEditor('gemini-web', makeDraft({ geminiAccountName: 'my-account' }));
+    const renderer = renderTab(makeRow('gemini-web'), editor);
+    const inputs = renderer.root.findAllByType(Input);
+    const name = inputs.find((input) => input.props.label === 'accounts.config_gemini_name');
+    const session = inputs.find((input) => input.props.label === 'Session (__Secure-1PSID)');
+    const timestamp = inputs.find((input) => input.props.label === 'Session (__Secure-1PSIDTS)');
+    expect(name?.props.value).toBe('my-account');
+    expect(session?.props.type).toBe('password');
+    expect(timestamp?.props.type).toBe('password');
+    expect(session?.props.value).toBe('');
+    act(() => session?.props.onChange({ target: { value: 'new-session' } }));
+    expect(editor.updateField).toHaveBeenCalledWith('geminiSession', 'new-session');
+  });
+
   it('keeps a shared single-object source read-only while retaining raw-data access', () => {
     const editor = makeEditor('claude');
     editor.sourceMemberCount = 2;

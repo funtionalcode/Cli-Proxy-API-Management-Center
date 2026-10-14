@@ -24,6 +24,7 @@ const { mocks } = vi.hoisted(() => ({
     lookup: vi.fn(),
     patchFieldsWithPluginSourceFallback: vi.fn(),
     patchFieldsForAuthIndexes: vi.fn(),
+    renameGeminiFile: vi.fn(),
     showNotification: vi.fn(),
     reconcileSource: vi.fn(async (_name?: string): Promise<void> => undefined),
     onSaved: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('@/services/api', async (importOriginal) => {
       lookup: mocks.lookup,
       patchFieldsWithPluginSourceFallback: mocks.patchFieldsWithPluginSourceFallback,
       patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
+      renameGeminiFile: mocks.renameGeminiFile,
     },
   };
 });
@@ -120,6 +122,7 @@ describe('useAuthFileConfigurationEditor', () => {
     mocks.lookup.mockReset();
     mocks.patchFieldsWithPluginSourceFallback.mockReset();
     mocks.patchFieldsForAuthIndexes.mockReset();
+    mocks.renameGeminiFile.mockReset();
     mocks.showNotification.mockReset();
     mocks.reconcileSource.mockReset();
     mocks.reconcileSource.mockResolvedValue(undefined);
@@ -203,6 +206,121 @@ describe('useAuthFileConfigurationEditor', () => {
     expect(latest?.rawDataText).toContain('"note": "updated"');
     expect(latest?.dirty).toBe(false);
     expect(renderer).not.toBeNull();
+  });
+
+  it('saves Gemini sessions and account name through verified source replacement', async () => {
+    const geminiFile = {
+      ...file,
+      name: 'gemini-web.json',
+      id: 'gemini-web.json',
+      type: 'gemini-web',
+      provider: 'gemini-web',
+      email: 'old-name',
+      account: 'old-name',
+    };
+    const record = {
+      type: 'gemini-web',
+      email: 'old-name',
+      secure_1psid: 'old-session',
+      secure_1psidts: 'old-timestamp',
+    };
+    setDownloadedRecord(record);
+    mocks.lookup.mockResolvedValue([geminiFile]);
+    await act(async () => {
+      renderer = create(<Harness activeFile={geminiFile} />);
+    });
+    await flush();
+    expect(latest?.draft?.geminiSession).toBe('');
+    expect(latest?.rawDataText).not.toContain('old-session');
+    act(() => {
+      latest?.updateField('geminiAccountName', 'new-name');
+      latest?.updateField('geminiSession', 'new-session');
+    });
+    setDownloadedRecord({ ...record, email: 'new-name', secure_1psid: 'new-session' });
+    await act(async () => {
+      await latest?.save();
+    });
+    expect(mocks.patchFieldsWithPluginSourceFallback).not.toHaveBeenCalled();
+    expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledWith(
+      'gemini-web.json',
+      expect.any(Array),
+      expect.any(Array),
+      { email: 'new-name', secure_1psid: 'new-session' }
+    );
+    expect(latest?.draft?.geminiAccountName).toBe('new-name');
+    expect(latest?.draft?.geminiSession).toBe('');
+    expect(latest?.dirty).toBe(false);
+    expect(latest?.state?.record?.secure_1psidts).toBe('old-timestamp');
+    expect(mocks.showNotification).toHaveBeenCalledWith('accounts.config_saved_success', 'success');
+    expect(
+      mocks.showNotification.mock.calls.some((call) => call[1] === 'warning' || call[1] === 'error')
+    ).toBe(false);
+  });
+
+  it('renames the file and edits the account in one request, then refreshes both names', async () => {
+    const target = {
+      ...file,
+      name: 'old.json',
+      id: 'old.json',
+      type: 'gemini-web',
+      provider: 'gemini-web',
+      account: 'old-name',
+    };
+    setDownloadedRecord({ type: 'gemini-web', email: 'old-name', secure_1psid: 'old' });
+    mocks.lookup.mockResolvedValue([target]);
+    mocks.renameGeminiFile.mockResolvedValue({ status: 'ok', name: 'new.json' });
+    await act(async () => {
+      renderer = create(<Harness activeFile={target} />);
+    });
+    await flush();
+    expect(latest?.draft?.geminiFileName).toBe('old.json');
+    act(() => {
+      latest?.updateField('geminiFileName', 'new.json');
+      latest?.updateField('geminiAccountName', 'renamed');
+      latest?.updateField('geminiSession', 'replacement');
+    });
+    expect(latest?.canSave).toBe(true);
+    await act(async () => {
+      await latest?.save();
+    });
+    expect(mocks.renameGeminiFile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'old.json' }),
+      'new.json',
+      { email: 'renamed', secure_1psid: 'replacement' },
+      undefined
+    );
+    expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
+    expect(mocks.onSaved).toHaveBeenCalledWith('new.json');
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('old.json');
+    expect(mocks.reconcileSource).toHaveBeenCalledWith('new.json');
+    expect(latest?.state).toBeNull();
+  });
+
+  it('rejects unsafe filenames and retains the draft after a destination conflict', async () => {
+    const target = {
+      ...file,
+      name: 'old.json',
+      id: 'old.json',
+      type: 'gemini-web',
+      provider: 'gemini-web',
+      account: 'old-name',
+    };
+    setDownloadedRecord({ type: 'gemini-web', email: 'old-name', secure_1psid: 'old' });
+    mocks.lookup.mockResolvedValue([target]);
+    await act(async () => {
+      renderer = create(<Harness activeFile={target} />);
+    });
+    await flush();
+    act(() => latest?.updateField('geminiFileName', '../outside.json'));
+    expect(latest?.canSave).toBe(false);
+    act(() => latest?.updateField('geminiFileName', 'existing.json'));
+    mocks.renameGeminiFile.mockRejectedValue(new Error('destination filename already exists'));
+    await act(async () => {
+      await latest?.save();
+    });
+    expect(latest?.draft?.geminiFileName).toBe('existing.json');
+    expect(latest?.dirty).toBe(true);
+    expect(mocks.onSaved).not.toHaveBeenCalled();
   });
 
   it.each([

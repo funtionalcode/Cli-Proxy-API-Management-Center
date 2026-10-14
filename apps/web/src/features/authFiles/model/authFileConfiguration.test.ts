@@ -22,6 +22,58 @@ const makeFile = (overrides: Partial<AuthFileItem> = {}): AuthFileItem =>
   }) as AuthFileItem;
 
 describe('authFileConfiguration provider capabilities', () => {
+  it('edits Gemini sessions without prefilling or clearing saved secrets', () => {
+    const record = {
+      type: 'gemini-web',
+      email: 'old-name',
+      secure_1psid: 'old-session',
+      secure_1psidts: 'old-timestamp',
+    };
+    const original = buildAuthFileConfigurationDraft(record, 'gemini-web');
+    expect(original.geminiAccountName).toBe('old-name');
+    expect(original.geminiSession).toBe('');
+    expect(original.geminiSessionTimestamp).toBe('');
+    expect(buildAuthFileConfigurationPatch(record, 'gemini-web', original, original).patch).toEqual(
+      {}
+    );
+    const result = buildAuthFileConfigurationPatch(record, 'gemini-web', original, {
+      ...original,
+      geminiAccountName: 'new-name',
+      geminiSession: 'new-session',
+    });
+    expect(result.errors).toEqual({});
+    expect(result.patch).toEqual({ email: 'new-name', secure_1psid: 'new-session' });
+    expect(
+      buildAuthFileConfigurationDraft({ ...record, ...result.patch }, 'gemini-web').geminiSession
+    ).toBe('');
+    const redacted = buildRedactedAuthFileConfigurationText({
+      ...record,
+      '__Secure-1PSID': 'other-secret',
+    });
+    expect(redacted).not.toContain('old-session');
+    expect(redacted).not.toContain('old-timestamp');
+    expect(redacted).not.toContain('other-secret');
+    expect(JSON.parse(redacted).secure_1psid).toBe('[redacted]');
+  });
+
+  it('validates session replacement and restricts it to Gemini Web', () => {
+    const original = buildAuthFileConfigurationDraft({ email: 'old' }, 'gemini-web');
+    const result = buildAuthFileConfigurationPatch({}, 'gemini-web', original, {
+      ...original,
+      geminiAccountName: '',
+      geminiSession: '__Secure-1PSID=value; other=value',
+    });
+    expect(result.errors).toEqual({
+      geminiAccountName: 'accounts.config_error_gemini_name',
+      geminiSession: 'accounts.config_error_gemini_session',
+    });
+    expect(
+      buildAuthFileConfigurationPatch({}, 'claude', original, {
+        ...original,
+        geminiSession: 'replacement',
+      }).patch
+    ).toEqual({});
+  });
   it('keeps provider-only OAuth fields distinct', () => {
     expect(getAuthFileConfigurationCapabilities('codex')).toEqual({
       websockets: true,

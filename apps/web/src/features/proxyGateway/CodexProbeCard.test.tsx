@@ -119,18 +119,11 @@ describe('探针来源与记录', () => {
     vi.mocked(codexProbeApi.getExternalAccount)
       .mockResolvedValueOnce({ authenticated: false, total_accounts: 0, active_accounts: 0 })
       .mockResolvedValue({ authenticated: true, total_accounts: 1, active_accounts: 1 });
-    vi.mocked(codexProbeApi.startExternalDeviceLogin).mockResolvedValue({
-      user_code: 'ABCD-EFGH',
-      verification_uri: 'https://auth.openai.com/codex/device',
-      verification_uri_complete: 'https://auth.openai.com/codex/device?user_code=ABCD-EFGH',
-      device_code: 'device-code-123456',
-      expires_in: 900,
-      interval: 5,
+    vi.mocked(codexProbeApi.startExternalLogin).mockResolvedValue({
+      auth_url: 'https://auth.openai.com/oauth/authorize?state=test-state-1234567890',
+      state: 'test-state-1234567890',
     });
-    vi.mocked(codexProbeApi.pollExternalDeviceLogin).mockResolvedValue({
-      success: true,
-      pending: false,
-    });
+    vi.mocked(codexProbeApi.completeExternalLogin).mockResolvedValue({ status: 'success' });
     const open = vi.fn();
     vi.stubGlobal('window', { open, location: { hash: '' } });
 
@@ -145,16 +138,24 @@ describe('探针来源与记录', () => {
         .props.onClick()
     );
     expect(open).toHaveBeenCalledWith(
-      'https://auth.openai.com/codex/device?user_code=ABCD-EFGH',
+      'https://auth.openai.com/oauth/authorize?state=test-state-1234567890',
       '_blank',
       'noopener,noreferrer'
     );
     await act(async () =>
+      renderer.root.findByProps({ 'aria-label': 'OAuth 回调地址' }).props.onChange({
+        target: { value: 'http://localhost:1455/auth/callback?code=test-code&scope=openid' },
+      })
+    );
+    await act(async () =>
       buttons()
-        .find((button) => button.props.children === '检查登录状态')!
+        .find((button) => button.props.children === '完成登录')!
         .props.onClick()
     );
-    expect(codexProbeApi.pollExternalDeviceLogin).toHaveBeenCalledWith('device-code-123456');
+    expect(codexProbeApi.completeExternalLogin).toHaveBeenCalledWith(
+      'http://localhost:1455/auth/callback?code=test-code&scope=openid',
+      'test-state-1234567890'
+    );
     expect(JSON.stringify(renderer.toJSON())).toContain('已登录 1 个账号，1 个可用');
   });
 
@@ -199,7 +200,7 @@ describe('探针来源与记录', () => {
       renderer = create(<CodexProbeCard />);
     });
     const select = renderer.root.findByProps({ 'aria-label': '用于探针的已登录账户' });
-    const options = select.children as Array<{ props: { value: string; disabled?: boolean } }>;
+    const options = select.findAllByType('option');
     const cooling = options.find((option) => option.props.value === 'cooling');
     const disabled = options.find((option) => option.props.value === 'disabled');
     expect(cooling?.props.disabled).toBe(false);

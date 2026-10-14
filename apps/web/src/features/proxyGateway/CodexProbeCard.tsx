@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { codexProbeApi, type ProbeConfig, type ProbeStats } from '@/services/api/codexProbe';
-import type { ExternalDeviceLogin, ExternalProbeAccountStatus } from '@/services/api/codexProbe';
+import type { ExternalProbeAccountStatus } from '@/services/api/codexProbe';
 import styles from './ProxyGatewayPage.module.scss';
 import probeStyles from './CodexProbeCard.module.scss';
 
@@ -11,8 +11,8 @@ const formatProbeError = (err: unknown): string => {
   const details = (err as Error & { details?: unknown }).details;
   const nested =
     details && typeof details === 'object'
-      ? (details as { error?: unknown; message?: unknown }).error ??
-        (details as { message?: unknown }).message
+      ? ((details as { error?: unknown; message?: unknown }).error ??
+        (details as { message?: unknown }).message)
       : undefined;
   if (typeof nested === 'string' && nested.trim() && !err.message.includes(nested.trim())) {
     return `${err.message}：${nested.trim()}`;
@@ -43,7 +43,8 @@ export function CodexProbeCard() {
   const [stats, setStats] = useState<ProbeStats | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [externalAccount, setExternalAccount] = useState<ExternalProbeAccountStatus | null>(null);
-  const [deviceLogin, setDeviceLogin] = useState<ExternalDeviceLogin | null>(null);
+  const [oauthLogin, setOAuthLogin] = useState<{ auth_url: string; state: string } | null>(null);
+  const [callbackUrl, setCallbackUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -154,14 +155,11 @@ export function CodexProbeCard() {
     setError('');
     setMessage('');
     try {
-      const result = await codexProbeApi.startExternalDeviceLogin();
-      setDeviceLogin(result);
-      window.open(
-        result.verification_uri_complete || result.verification_uri,
-        '_blank',
-        'noopener,noreferrer'
-      );
-      setMessage(`设备登录页已打开，请确认授权码 ${result.user_code}。`);
+      const result = await codexProbeApi.startExternalLogin();
+      setOAuthLogin(result);
+      setCallbackUrl('');
+      window.open(result.auth_url, '_blank', 'noopener,noreferrer');
+      setMessage('登录页已打开。授权完成后复制浏览器地址栏中的完整 localhost:1455 地址。');
     } catch (err) {
       setError(formatProbeError(err));
     } finally {
@@ -169,19 +167,17 @@ export function CodexProbeCard() {
     }
   };
 
-  const checkExternalLogin = async () => {
-    if (!deviceLogin) return;
+  const completeExternalLogin = async () => {
+    if (!oauthLogin || !callbackUrl.trim()) return;
     setBusy(true);
     setError('');
+    setMessage('');
     try {
-      const result = await codexProbeApi.pollExternalDeviceLogin(deviceLogin.device_code);
-      if (!result.success) {
-        setMessage('OpenAI 授权尚未完成，请完成授权后再次检查。');
-        return;
-      }
+      await codexProbeApi.completeExternalLogin(callbackUrl.trim(), oauthLogin.state);
       const account = await codexProbeApi.getExternalAccount();
       setExternalAccount(account);
-      setDeviceLogin(null);
+      setOAuthLogin(null);
+      setCallbackUrl('');
       setMessage('免费账号登录成功，现在可以测试已保存来源。');
     } catch (err) {
       setError(formatProbeError(err));
@@ -284,25 +280,38 @@ export function CodexProbeCard() {
                   {externalAccount?.authenticated ? '添加另一个免费账号' : '开始登录免费账号'}
                 </Button>
               </div>
-              {(deviceLogin || !externalAccount?.authenticated) && (
+              {(oauthLogin || !externalAccount?.authenticated) && (
                 <div className={probeStyles.loginSteps}>
-                  <p>1. 点击“开始登录免费账号”，在新页面登录 OpenAI。</p>
-                  <p>2. 核对页面显示的设备授权码，然后确认授权。</p>
-                  <p>3. 授权完成后返回此页，点击“检查登录状态”。</p>
-                  {deviceLogin && (
+                  <p>1. 点击“开始登录免费账号”，在新页面完成 OpenAI 授权。</p>
+                  <p>2. 页面跳转到 localhost:1455 后，复制地址栏中的完整地址。</p>
+                  <p>3. 粘贴到下方并点击“完成登录”；缺失的 state 会从本次登录会话自动补充。</p>
+                  {oauthLogin && (
                     <a
-                      href={deviceLogin.verification_uri_complete || deviceLogin.verification_uri}
+                      href={oauthLogin.auth_url}
                       target="_blank"
                       rel="noreferrer"
                       className={probeStyles.loginLink}
                     >
-                      登录页未打开？点此重新打开（授权码 {deviceLogin.user_code}）
+                      登录页未打开？点此重新打开
                     </a>
                   )}
-                  {deviceLogin && (
-                    <Button variant="secondary" disabled={busy} onClick={checkExternalLogin}>
-                      检查登录状态
-                    </Button>
+                  {oauthLogin && (
+                    <div className={probeStyles.callbackRow}>
+                      <Input
+                        aria-label="OAuth 回调地址"
+                        value={callbackUrl}
+                        placeholder="http://localhost:1455/auth/callback?code=..."
+                        disabled={busy}
+                        onChange={(event) => setCallbackUrl(event.target.value)}
+                      />
+                      <Button
+                        variant="secondary"
+                        disabled={busy || !callbackUrl.trim()}
+                        onClick={completeExternalLogin}
+                      >
+                        完成登录
+                      </Button>
+                    </div>
                   )}
                 </div>
               )}

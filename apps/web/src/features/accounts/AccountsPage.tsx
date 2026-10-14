@@ -4519,13 +4519,20 @@ export function AccountsPage() {
     return files.filter((file) => String(file.name ?? '').trim() === fileName).length;
   }, [files, selectedRow?.fileName]);
   const disableControls = connectionStatus !== 'connected';
-  const handleConfigurationSaved = useCallback(() => {
-    if (!selectedRow) return;
-    invalidateModels(selectedRow.raw);
-    if (detailTab === 'models') {
-      void refreshModels(selectedRow.raw);
-    }
-  }, [detailTab, invalidateModels, refreshModels, selectedRow]);
+  const handleConfigurationSaved = useCallback(
+    (fileName: string) => {
+      if (!selectedRow) return;
+      invalidateModels(selectedRow.raw);
+      if (fileName !== selectedRow.fileName) {
+        setSelectedRowKey(null);
+        return;
+      }
+      if (detailTab === 'models') {
+        void refreshModels(selectedRow.raw);
+      }
+    },
+    [detailTab, invalidateModels, refreshModels, selectedRow]
+  );
   const configurationEditor = useAuthFileConfigurationEditor({
     file: selectedRow && !selectedRow.runtimeOnly ? selectedRow.raw : null,
     enabled:

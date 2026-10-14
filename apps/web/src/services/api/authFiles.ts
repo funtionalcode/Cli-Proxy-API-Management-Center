@@ -52,6 +52,9 @@ type AuthFileModelApiItem = {
   owned_by?: string;
 };
 export type AuthFileFieldsPatch = {
+  email?: string;
+  secure_1psid?: string;
+  secure_1psidts?: string;
   expired?: string;
   last_refresh?: string;
   prefix?: string;
@@ -697,6 +700,10 @@ export const applyAuthFileFieldsPatchToRecord = (
     }
   };
 
+  applyTrimmedString('email', fields.email);
+  applyTrimmedString('secure_1psid', fields.secure_1psid);
+  applyTrimmedString('secure_1psidts', fields.secure_1psidts);
+
   if (fields.expired !== undefined) {
     const value = fields.expired.trim();
     if (value) {
@@ -1207,9 +1214,7 @@ export const authFilesApi = {
     queryOrScope: AuthFilesListQuery | AuthFilesApiRequestScope = {},
     requestScope?: AuthFilesApiRequestScope
   ) => {
-    const scopedRequest = isAuthFilesApiRequestScope(queryOrScope)
-      ? queryOrScope
-      : requestScope;
+    const scopedRequest = isAuthFilesApiRequestScope(queryOrScope) ? queryOrScope : requestScope;
     const query = isAuthFilesApiRequestScope(queryOrScope) ? {} : queryOrScope;
     const params = buildAuthFilesListParams(query);
     const scopedConfig = scopedRequest ? createScopedApiRequestConfig(scopedRequest) : {};
@@ -1344,6 +1349,34 @@ export const authFilesApi = {
             headers: { ...scopedRequestConfig.headers, ...identityHeaders },
           }
         : { headers: identityHeaders }
+    );
+  },
+
+  renameGeminiFile: async (
+    target: AuthFileStatusTarget,
+    newName: string,
+    fields: AuthFileFieldsPatch,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<{ status: string; name: string; warning?: string }> => {
+    const rawText = await authFilesApi.downloadText(target.name, requestScope);
+    const value = parseAuthFileJsonValue(rawText);
+    if (Array.isArray(value) || value.type !== 'gemini-web')
+      throw new Error('Only single Gemini Web account files can be renamed');
+    verifyAuthFileJsonPatchTargets(value, [target]);
+    const headers = {
+      ...buildAuthFileIdentityHeaders(AUTH_FILE_WRITE_IDENTITIES_HEADER, [target]),
+      [AUTH_FILE_WRITE_CONTENT_SHA256_HEADER]: sha256RawTextHex(rawText),
+    };
+    const scope = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
+    // Resolve from the existing /v0/management base to the maintained v8 endpoint.
+    return apiClient.post(
+      '../../v8/management/credentials/rename',
+      {
+        name: target.name,
+        new_name: newName,
+        content: JSON.stringify(applyAuthFileFieldsPatchToRecord(value, fields)),
+      },
+      { ...scope, headers: { ...scope?.headers, ...headers } }
     );
   },
 

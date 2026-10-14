@@ -32,6 +32,10 @@ export const AUTH_FILE_WEIGHT_MAX = 1_000_000;
 export type XaiRoutingMode = 'grok-build' | 'official-api';
 
 export type AuthFileConfigurationDraft = {
+  geminiFileName?: string;
+  geminiAccountName?: string;
+  geminiSession?: string;
+  geminiSessionTimestamp?: string;
   prefix: string;
   proxyUrl: string;
   priority: string;
@@ -53,6 +57,9 @@ export type AuthFileConfigurationDraft = {
 };
 
 export type AuthFileConfigurationErrorKey =
+  | 'accounts.config_error_gemini_filename'
+  | 'accounts.config_error_gemini_name'
+  | 'accounts.config_error_gemini_session'
   | 'auth_files.headers_invalid_json'
   | 'auth_files.headers_invalid_object'
   | 'auth_files.headers_invalid_value'
@@ -108,6 +115,7 @@ const SENSITIVE_KEY_PARTS = [
   'privatekey',
   'secret',
   'sessionid',
+  'secure1psid',
 ];
 
 const isRecordObject = (value: unknown): value is Record<string, unknown> =>
@@ -245,9 +253,7 @@ const parseModelAliasesText = (
       name: item.name,
       alias: item.alias,
       ...(item.fork === true ? { fork: true } : {}),
-      ...(item.forceMapping === true || item.force_mapping === true
-        ? { forceMapping: true }
-        : {}),
+      ...(item.forceMapping === true || item.force_mapping === true ? { forceMapping: true } : {}),
     });
   }
 
@@ -453,6 +459,9 @@ export const buildAuthFileConfigurationDraft = (
   );
 
   return {
+    geminiAccountName: providerKey === 'gemini-web' ? readTrimmedString(record.email) : '',
+    geminiSession: '',
+    geminiSessionTimestamp: '',
     prefix: readTrimmedString(record.prefix),
     proxyUrl: readTrimmedString(record.proxy_url ?? record.proxyUrl ?? record['proxy-url']),
     priority: readPriorityText(record.priority),
@@ -537,6 +546,27 @@ export const buildAuthFileConfigurationPatch = (
   const patch: AuthFileFieldsPatch = {};
   const errors: AuthFileConfigurationErrors = {};
   const capabilities = getAuthFileConfigurationCapabilities(provider);
+
+  if (normalizeProviderKey(provider) === 'gemini-web') {
+    const name = (draft.geminiAccountName ?? '').trim();
+    if (name !== (originalDraft.geminiAccountName ?? '').trim()) {
+      if (!name) errors.geminiAccountName = 'accounts.config_error_gemini_name';
+      else patch.email = name;
+    }
+    for (const [field, key] of [
+      ['geminiSession', 'secure_1psid'],
+      ['geminiSessionTimestamp', 'secure_1psidts'],
+    ] as const) {
+      const value = (draft[field] ?? '').trim();
+      // Empty replacement fields leave the existing session untouched.
+      if (!value) continue;
+      if (!/^[\x21-\x7e]+$/.test(value) || /[";,\\]/.test(value)) {
+        errors[field] = 'accounts.config_error_gemini_session';
+      } else if (value !== record[key]) {
+        patch[key] = value;
+      }
+    }
+  }
 
   const originalPrefix = originalDraft.prefix.trim();
   const nextPrefix = draft.prefix.trim();

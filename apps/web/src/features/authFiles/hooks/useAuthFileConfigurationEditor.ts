@@ -176,6 +176,7 @@ export function useAuthFileConfigurationEditor(
       }
       const parsed = parseAuthFileConfigurationSource(rawText, targetFile);
       const draft = buildAuthFileConfigurationDraft(parsed.record, parsed.providerKey);
+      if (parsed.providerKey === 'gemini-web') draft.geminiFileName = fileName;
       setScopedState({
         scopeKey,
         value: {
@@ -220,15 +221,32 @@ export function useAuthFileConfigurationEditor(
     if (!state?.record || !state.originalDraft || !state.draft) {
       return { patch: {}, errors: EMPTY_ERRORS };
     }
-    return buildAuthFileConfigurationPatch(
+    const result = buildAuthFileConfigurationPatch(
       state.record,
       state.providerKey,
       state.originalDraft,
       state.draft
     );
+    if (state.providerKey === 'gemini-web' && state.draft.geminiFileName !== undefined) {
+      const name = state.draft.geminiFileName.trim();
+      if (
+        !name ||
+        name.startsWith('.') ||
+        name.length > 200 ||
+        /[/\\:\x00-\x1f]/.test(name) ||
+        !name.toLowerCase().endsWith('.json')
+      ) {
+        result.errors.geminiFileName = 'accounts.config_error_gemini_filename';
+      }
+    }
+    return result;
   }, [state]);
 
-  const hasPatch = Object.keys(patchResult.patch).length > 0;
+  const renaming =
+    state?.providerKey === 'gemini-web' &&
+    state.draft?.geminiFileName !== undefined &&
+    state.draft.geminiFileName.trim() !== state.fileName;
+  const hasPatch = Object.keys(patchResult.patch).length > 0 || renaming;
   const hasErrors = Object.keys(patchResult.errors).length > 0;
   // Dirty state follows the normalized mutation result. Formatting-only edits
   // (for example, JSON whitespace or surrounding spaces) must not block
@@ -331,12 +349,42 @@ export function useAuthFileConfigurationEditor(
       const sourceIdentities = currentFiles
         .filter((entry) => readAuthFileStatusPhysicalName(entry) === targetPhysicalName)
         .map(getAuthFilePatchTarget);
-      if (patch['excluded-models'] !== undefined && hasLegacyExcludedModelsAlias(recordSnapshot)) {
-        // CPA currently reads `excluded_models` before `excluded-models` and
-        // treats PATCH null values as retained metadata keys. Rewrite the
-        // verified source JSON so the legacy key is actually removed; this
-        // prevents a stale legacy list from shadowing the canonical one at
-        // runtime. The helper performs identity and content-hash checks.
+      if (renaming) {
+        const result = await authFilesApi.renameGeminiFile(
+          patchTarget,
+          state.draft.geminiFileName!.trim(),
+          patch,
+          requestScope
+        );
+        if (!isCurrentTarget()) return;
+        setScopedState(null);
+        showNotification(t('accounts.config_saved_success'), 'success');
+        if (result.warning) showNotification(result.warning, 'warning');
+        // The parent closes the old selection because its physical identity changed.
+        onSaved?.(result.name);
+        if (reconcileSource) {
+          const results = await Promise.allSettled([
+            reconcileSource(targetPhysicalName || fileName),
+            reconcileSource(result.name),
+          ]);
+          if (results.some((item) => item.status === 'rejected'))
+            showNotification(t('notification.load_failed'), 'warning');
+        }
+        return;
+      }
+      const geminiCredentialEdit =
+        providerKeySnapshot === 'gemini-web' &&
+        (patch.email !== undefined ||
+          patch.secure_1psid !== undefined ||
+          patch.secure_1psidts !== undefined);
+      if (
+        geminiCredentialEdit ||
+        (patch['excluded-models'] !== undefined && hasLegacyExcludedModelsAlias(recordSnapshot))
+      ) {
+        // Verified source writes re-synthesize Gemini's display name and session.
+        // They also remove legacy excluded-model keys instead of leaving null
+        // metadata that can shadow the canonical list. The helper verifies both
+        // the current identity and the source content hash before writing.
         if (requestScope) {
           await authFilesApi.patchFieldsForAuthIndexes(
             resolution.target.name,
@@ -372,6 +420,17 @@ export function useAuthFileConfigurationEditor(
       if (!isCurrentTarget()) return;
 
       let nextRecord = applyAuthFileFieldsPatchToRecord(recordSnapshot, patch);
+      // A verified rename changes the expected account identity for readback.
+      const savedTarget =
+        patch.email !== undefined && providerKeySnapshot === 'gemini-web'
+          ? {
+              ...resolution.target,
+              email: patch.email,
+              account: patch.email,
+              accountSnapshot: patch.email,
+              account_snapshot: patch.email,
+            }
+          : resolution.target;
       let nextProviderKey = providerKeySnapshot;
       let nextRecordIndex = state.recordIndex;
       let sourceRefreshWarning = '';
@@ -382,7 +441,7 @@ export function useAuthFileConfigurationEditor(
         if (!isCurrentTarget()) return;
         const refreshed = parseAuthFileConfigurationSource(
           refreshedRawText,
-          resolution.target ?? targetSnapshot
+          savedTarget ?? targetSnapshot
         );
         nextRecord = refreshed.record;
         nextProviderKey = refreshed.providerKey;
@@ -393,6 +452,7 @@ export function useAuthFileConfigurationEditor(
           refreshError instanceof Error ? refreshError.message : t('common.unknown_error');
       }
       const normalizedDraft = buildAuthFileConfigurationDraft(nextRecord, nextProviderKey);
+      if (nextProviderKey === 'gemini-web') normalizedDraft.geminiFileName = fileName;
       setScopedState((previous) => {
         if (
           previous?.scopeKey !== scopeKey ||
@@ -404,7 +464,7 @@ export function useAuthFileConfigurationEditor(
           ...previous,
           value: {
             ...previous.value,
-            authFile: resolution.target ?? previous.value.authFile,
+            authFile: savedTarget ?? previous.value.authFile,
             saving: false,
             record: nextRecord,
             recordIndex: nextRecordIndex,
@@ -453,6 +513,7 @@ export function useAuthFileConfigurationEditor(
     onSaved,
     patchResult.patch,
     reconcileSource,
+    renaming,
     requestScope,
     showNotification,
     state,

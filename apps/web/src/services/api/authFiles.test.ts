@@ -42,6 +42,56 @@ beforeEach(() => {
   mocks.delete.mockReset();
 });
 
+describe('Gemini Web file rename', () => {
+  it('sends the preserved source and edits to the v8 endpoint with a content guard', async () => {
+    const source = JSON.stringify({
+      type: 'gemini-web',
+      email: 'old',
+      secure_1psid: 'old-session',
+      secure_1psidts: 'keep',
+      note: 'preserved',
+    });
+    mocks.getRaw.mockResolvedValue({ data: new Blob([source]) });
+    mocks.post.mockResolvedValue({ status: 'ok', name: 'new.json' });
+    const scope = { apiBase: 'https://cpa.example', managementKey: 'test-key' };
+    await authFilesApi.renameGeminiFile(
+      { name: 'old.json', provider: 'gemini-web', accountSnapshot: 'old' },
+      'new.json',
+      { email: 'renamed', secure_1psid: 'replacement' },
+      scope
+    );
+    const [path, body, config] = mocks.post.mock.calls[0];
+    expect(new URL(`${config.baseURL}/${path}`).pathname).toBe('/v8/management/credentials/rename');
+    expect(body.name).toBe('old.json');
+    expect(body.new_name).toBe('new.json');
+    expect(JSON.parse(body.content)).toEqual({
+      type: 'gemini-web',
+      email: 'renamed',
+      secure_1psid: 'replacement',
+      secure_1psidts: 'keep',
+      note: 'preserved',
+    });
+    expect(config.headers['X-CPAMP-Auth-File-Write-Content-SHA256']).toBe(sha256RawTextHex(source));
+    expect(config.headers.Authorization).toBe('Bearer test-key');
+    expect(mocks.delete).not.toHaveBeenCalled();
+    expect(mocks.postForm).not.toHaveBeenCalled();
+  });
+
+  it('does not rename when the account identity changed during editing', async () => {
+    mocks.getRaw.mockResolvedValue({
+      data: new Blob([JSON.stringify({ type: 'gemini-web', email: 'someone-else' })]),
+    });
+    await expect(
+      authFilesApi.renameGeminiFile(
+        { name: 'old.json', provider: 'gemini-web', accountSnapshot: 'old' },
+        'new.json',
+        {}
+      )
+    ).rejects.toThrow();
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+});
+
 describe('authFilesApi OAuth excluded model normalization', () => {
   it.each([
     { 'oauth-excluded-models': null },
@@ -280,10 +330,7 @@ describe('authFilesApi list normalization', () => {
       managementKey: 'old-cpa-key',
     };
 
-    await authFilesApi.list(
-      { page: 1, pageSize: 1000, includeBalances: false },
-      requestScope
-    );
+    await authFilesApi.list({ page: 1, pageSize: 1000, includeBalances: false }, requestScope);
 
     expect(mocks.get).toHaveBeenCalledWith('/auth-files', {
       baseURL: 'http://old-cpa.local:8317/v0/management',
