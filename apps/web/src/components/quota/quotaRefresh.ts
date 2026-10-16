@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
 import type { AuthFilesApiRequestScope } from '@/services/api';
 import type { AuthFileItem } from '@/types';
+import { isDisabledAuthFile } from '@/utils/quota/validators';
 import {
   buildQuotaFailureState,
   getScopedQuotaState,
@@ -49,6 +50,7 @@ export const refreshQuotaWithConfig = async <TState, TData>({
   requestScope?: AuthFilesApiRequestScope;
   currentState?: TState;
 }): Promise<QuotaRefreshResult<TState, TData> | null> => {
+  if (isDisabledAuthFile(file)) return null;
   const storeKey = config.getStoreKey?.(file) ?? file.name;
   const requestKey = `${config.type}:${storeKey}`;
   const cacheGeneration = captureQuotaCacheGeneration();

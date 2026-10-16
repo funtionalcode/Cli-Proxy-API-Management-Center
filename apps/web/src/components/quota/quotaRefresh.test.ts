@@ -125,6 +125,29 @@ describe('refreshQuotaWithConfig', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    { disabled: true },
+    { disabled: 'true' },
+    { disabled: '1' },
+    { disabled: 1 },
+    { status: 'disabled' },
+    { status: 'inactive' },
+    { state: 'disabled' },
+  ])('ignores disabled credentials without changing cached quota: %j', async (disabledState) => {
+    const file = { ...codexFile, ...disabledState } as AuthFileItem;
+    const storeKey = getQuotaCredentialStoreKey(file);
+    const previousState = CODEX_CONFIG.buildSuccessState(codexData(20), file);
+    useQuotaStore.getState().setCodexQuota({ [storeKey]: previousState });
+    const setQuota = vi.fn();
+
+    const result = await runRefresh(CODEX_CONFIG, file, setQuota, previousState);
+
+    expect(result).toBeNull();
+    expect(fetchCodexQuota).not.toHaveBeenCalled();
+    expect(setQuota).not.toHaveBeenCalled();
+    expect(useQuotaStore.getState().codexQuota[storeKey]).toBe(previousState);
+  });
+
   it('writes the Provider state once to the shared Codex store for all consumers', async () => {
     vi.mocked(fetchCodexQuota).mockResolvedValue(codexData(20));
 

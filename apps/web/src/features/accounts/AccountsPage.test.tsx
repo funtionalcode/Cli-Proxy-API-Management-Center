@@ -11033,7 +11033,7 @@ describe('AccountsPage replacement flows', () => {
     });
   });
 
-  it('allows a disabled credential to request its latest quota', async () => {
+  it('ignores quota refreshes for a disabled credential in the list and detail drawer', async () => {
     const file = {
       ...makeCodexFile('codex-disabled.json', 'auth-disabled', 'disabled@example.com'),
       disabled: true,
@@ -11047,14 +11047,125 @@ describe('AccountsPage replacement flows', () => {
       getAuthFileSelectionKey(file),
       'accounts.refresh_quota'
     );
-    expect(refreshButton.props.disabled).toBe(false);
+    expect(refreshButton.props.disabled).toBe(true);
+    expect(findButtonByText(renderer, 'accounts.refresh_quota').props.disabled).toBe(true);
 
     await act(async () => {
       await refreshButton.props.onClick();
     });
 
-    expect(quotaFetch).toHaveBeenCalledTimes(1);
-    expect(quotaFetch).toHaveBeenCalledWith(file, expect.anything(), expect.anything());
+    await openCodexQuotaTab(renderer, file.name);
+    const detailRefreshButton = renderer.root
+      .findByType(Drawer)
+      .findAllByType(Button)
+      .find((node) => readText(node.props.children).includes('accounts.refresh_quota'));
+    if (!detailRefreshButton) throw new Error('Detail quota refresh button not found');
+    expect(detailRefreshButton.props.disabled).toBe(true);
+    await act(async () => {
+      await detailRefreshButton.props.onClick();
+    });
+
+    expect(quotaFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'skips disabled credentials during a quota batch with selection=%s',
+    async (hasSelection) => {
+      const first = makeCodexFile('first.json', 'auth-first', 'first@example.com');
+      const disabled = {
+        ...makeCodexFile('disabled.json', 'auth-disabled', 'disabled@example.com'),
+        disabled: true,
+      };
+      const last = makeCodexFile('last.json', 'auth-last', 'last@example.com');
+      mocks.files = [first, disabled, last];
+      if (hasSelection) {
+        mocks.selectedFiles = new Set([first, disabled].map(getAuthFileSelectionKey));
+        mocks.selectionCount = 2;
+      }
+      const summaryFetch = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota')
+        .mockResolvedValue(makeCodexQuotaData());
+      const renderer = await renderAccountsPage();
+
+      await act(async () => {
+        await findButtonByText(renderer, 'accounts.refresh_quota').props.onClick();
+      });
+
+      expect(summaryFetch.mock.calls.map(([file]) => file)).toEqual(
+        hasSelection ? [first] : [first, last]
+      );
+      expect(mocks.showNotification).toHaveBeenCalledWith(
+        hasSelection
+          ? 'accounts.quota_refresh_success:first@example.com'
+          : 'accounts.quota_refresh_result:2:2',
+        'success'
+      );
+    }
+  );
+
+  it('disables quota batch actions when only disabled credentials are selected', async () => {
+    const enabled = makeCodexFile('enabled.json', 'auth-enabled', 'enabled@example.com');
+    const disabled = {
+      ...makeCodexFile('disabled.json', 'auth-disabled', 'disabled@example.com'),
+      disabled: true,
+    };
+    mocks.files = [enabled, disabled];
+    mocks.selectedFiles = new Set([getAuthFileSelectionKey(disabled)]);
+    mocks.selectionCount = 1;
+    const summaryFetch = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota');
+    const renderer = await renderAccountsPage();
+    const refreshButtons = renderer.root.findAllByType(Button).filter(
+      (node) => readText(node.props.children).includes('accounts.refresh_quota')
+    );
+
+    expect(refreshButtons).not.toHaveLength(0);
+    expect(refreshButtons.every((node) => node.props.disabled)).toBe(true);
+    await act(async () => {
+      await refreshButtons[0].props.onClick();
+    });
+    expect(summaryFetch).not.toHaveBeenCalled();
+  });
+
+  it('skips credentials disabled while queued and allows refresh again after enabling', async () => {
+    const first = makeCodexFile('first.json', 'auth-first', 'first@example.com');
+    const second = makeCodexFile('second.json', 'auth-second', 'second@example.com');
+    mocks.files = [first, second];
+    const firstQuota = createDeferred<CodexQuotaData>();
+    const summaryFetch = vi.spyOn(CODEX_SUMMARY_CONFIG, 'fetchQuota')
+      .mockReturnValueOnce(firstQuota.promise)
+      .mockResolvedValue(makeCodexQuotaData());
+    const detailFetch = vi.spyOn(CODEX_CONFIG, 'fetchQuota')
+      .mockResolvedValue(makeCodexQuotaData());
+    const renderer = await renderAccountsPage();
+    let batch: Promise<void> | undefined;
+    await act(async () => {
+      batch = findButtonByText(renderer, 'accounts.refresh_quota').props.onClick();
+      await Promise.resolve();
+    });
+    expect(summaryFetch).toHaveBeenCalledTimes(1);
+
+    mocks.files = [first, { ...second, disabled: true }];
+    await act(async () => renderer.update(<AccountsPage />));
+    await act(async () => {
+      firstQuota.resolve(makeCodexQuotaData());
+      await batch;
+    });
+
+    expect(summaryFetch).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'accounts.quota_refresh_result:1:1',
+      'success'
+    );
+
+    mocks.files = [first, second];
+    await act(async () => renderer.update(<AccountsPage />));
+    const refreshButton = findAccountCardButtonByAriaLabel(
+      renderer, getAuthFileSelectionKey(second), 'accounts.refresh_quota'
+    );
+    expect(refreshButton.props.disabled).toBe(false);
+    await act(async () => {
+      await refreshButton.props.onClick();
+    });
+    expect(detailFetch).toHaveBeenCalledExactlyOnceWith(second, expect.anything(), expect.anything());
   });
 
   it('shows an action-level success notification for a single quota refresh', async () => {

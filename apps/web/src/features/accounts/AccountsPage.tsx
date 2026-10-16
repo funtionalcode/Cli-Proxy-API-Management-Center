@@ -360,6 +360,7 @@ import {
 } from '@/stores';
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { normalizeAuthIndex } from '@/utils/authIndex';
+import { isDisabledAuthFile } from '@/utils/quota/validators';
 import { clearLocalCooldown } from '@/services/api/authCooldown';
 import { copyToClipboard } from '@/utils/clipboard';
 import {
@@ -436,6 +437,12 @@ const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
 const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite']);
 
 type AccountQuotaRefreshMode = 'summary' | 'detail';
+
+const canRefreshAccountQuota = (row: AccountRow): boolean =>
+  !row.disabled &&
+  !isDisabledAuthFile(row.raw) &&
+  !row.runtimeOnly &&
+  isQuotaRefreshSupportedProvider(row.provider);
 
 const getAccountQuotaRefreshKey = (row: AccountRow): string =>
   `${row.provider}:${getQuotaCredentialStoreKey(row.raw)}`;
@@ -4095,6 +4102,10 @@ export function AccountsPage() {
       freshAccountInspectionBySelectionKey,
     ]
   );
+  const quotaRefreshRowsRef = useRef(new Map<string, AccountRow>());
+  useLayoutEffect(() => {
+    quotaRefreshRowsRef.current = new Map(rows.map((row) => [row.selectionKey, row]));
+  }, [rows]);
   const codexStatusBySelectionKey = useMemo(() => {
     const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
     rows.forEach((row) => {
@@ -6398,10 +6409,11 @@ export function AccountsPage() {
 
   const refreshQuotaForRow = useCallback(
     async (
-      row: AccountRow,
+      targetRow: AccountRow,
       mode: AccountQuotaRefreshMode = 'summary'
     ): Promise<AccountQuotaRefreshOutcome> => {
-      if (row.runtimeOnly || !isQuotaRefreshSupportedProvider(row.provider)) {
+      const row = quotaRefreshRowsRef.current.get(targetRow.selectionKey);
+      if (!row || !canRefreshAccountQuota(row)) {
         return { status: 'ignored' };
       }
       const refreshWithConfig = <TState, TData>(
@@ -6515,9 +6527,7 @@ export function AccountsPage() {
       if (currentBatch?.connectionFingerprint === connectionFingerprint) {
         return currentBatch.promise;
       }
-      const refreshable = targets.filter(
-        (row) => !row.runtimeOnly && isQuotaRefreshSupportedProvider(row.provider)
-      );
+      const refreshable = targets.filter(canRefreshAccountQuota);
       if (refreshable.length === 0) {
         showNotification(t('accounts.no_refreshable_accounts'), 'warning');
         return Promise.resolve();
@@ -6542,7 +6552,8 @@ export function AccountsPage() {
               maxConcurrentProviders: MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS,
             },
             async ({ item, providerKey }): Promise<AccountQuotaRefreshOutcome> => {
-              if (!isCurrentBatch()) {
+              const currentRow = quotaRefreshRowsRef.current.get(item.selectionKey);
+              if (!isCurrentBatch() || !currentRow || !canRefreshAccountQuota(currentRow)) {
                 return { status: 'ignored' };
               }
               if (blockedProviders.has(providerKey)) {
@@ -6578,7 +6589,7 @@ export function AccountsPage() {
             (result): result is Extract<AccountQuotaRefreshOutcome, { status: 'error' }> =>
               result.status === 'error'
           );
-          const totalCount = taskPlan.length;
+          const totalCount = currentResults.length;
 
           if (successCount > 0) {
             setListWindowUsageRefreshRevision((current) => current + 1);
@@ -6666,7 +6677,7 @@ export function AccountsPage() {
 
   const refreshAccountQuota = useCallback(
     async (row: AccountRow, mode: AccountQuotaRefreshMode = 'summary'): Promise<void> => {
-      if (row.runtimeOnly || !isQuotaRefreshSupportedProvider(row.provider)) return;
+      if (!canRefreshAccountQuota(row)) return;
       const refreshKey = getAccountQuotaRefreshKey(row);
       if (manualQuotaRefreshingKeysRef.current.has(refreshKey)) return;
 
@@ -8196,9 +8207,7 @@ export function AccountsPage() {
   const renderBatchBar = () => {
     const hasSelection = selectionCount > 0;
     const refreshTargets = hasSelection ? selectedRows : pageRows;
-    const hasRefreshableTargets = refreshTargets.some(
-      (row) => !row.runtimeOnly && isQuotaRefreshSupportedProvider(row.provider)
-    );
+    const hasRefreshableTargets = refreshTargets.some(canRefreshAccountQuota);
     const showSelectionControls = isSelectionMode || hasSelection;
 
     return (
@@ -8360,9 +8369,7 @@ export function AccountsPage() {
               disabled={
                 disableControls ||
                 quotaRefreshing ||
-                !selectedRows.some(
-                  (row) => !row.runtimeOnly && isQuotaRefreshSupportedProvider(row.provider)
-                )
+                !selectedRows.some(canRefreshAccountQuota)
               }
               loading={quotaRefreshing}
               title={t('accounts.refresh_quota')}
@@ -8464,7 +8471,10 @@ export function AccountsPage() {
           className={`${styles.accountIconButton} ${styles.accountIconButtonRefresh}`}
           onClick={() => void refreshAccountQuota(row, getAccountManualQuotaRefreshMode(row))}
           disabled={
-            disableControls || quotaRefreshing || isManualQuotaRefreshing(row) || row.runtimeOnly
+            disableControls ||
+            quotaRefreshing ||
+            isManualQuotaRefreshing(row) ||
+            !canRefreshAccountQuota(row)
           }
           loading={isManualQuotaRefreshing(row)}
           title={t('accounts.refresh_quota')}
@@ -10099,7 +10109,9 @@ export function AccountsPage() {
                 variant="secondary"
                 onClick={() => void refreshAccountQuota(selectedRow, 'detail')}
                 loading={quotaRefreshing || selectedQuotaRefreshing}
-                disabled={disableControls || selectedQuotaRefreshing || selectedRow.runtimeOnly}
+                disabled={
+                  disableControls || selectedQuotaRefreshing || !canRefreshAccountQuota(selectedRow)
+                }
               >
                 {!quotaRefreshing && !selectedQuotaRefreshing ? <IconRefreshCw size={16} /> : null}
                 {t('accounts.refresh_quota')}
