@@ -178,10 +178,38 @@ export interface CodexCreditsInfo {
   approxCloudMessages?: number | string | null;
 }
 
+export interface CodexSpendControlLimitInfo {
+  source?: string | null;
+  unit?: string | null;
+  limit?: number | string | null;
+  used?: number | string | null;
+  remaining?: number | string | null;
+  used_percent?: number | string | null;
+  usedPercent?: number | string | null;
+  remaining_percent?: number | string | null;
+  remainingPercent?: number | string | null;
+  reset_after_seconds?: number | string | null;
+  resetAfterSeconds?: number | string | null;
+  reset_at?: number | string | null;
+  resetAt?: number | string | null;
+}
+
 export interface CodexSpendControlInfo {
   reached?: boolean;
-  individual_limit?: number | string | null;
-  individualLimit?: number | string | null;
+  individual_limit?: CodexSpendControlLimitInfo | number | string | null;
+  individualLimit?: CodexSpendControlLimitInfo | number | string | null;
+}
+
+export interface CodexSpendControlLimit {
+  source: string | null;
+  unit: string | null;
+  limit: string | null;
+  used: string | null;
+  remaining: string | null;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetAfterSeconds: number | null;
+  resetAtMs: number | null;
 }
 
 export interface CodexRateLimitResetCreditsInfo {
@@ -387,13 +415,14 @@ export interface CodexQuotaState extends CredentialScopedQuotaState {
   creditsApproxLocalMessages?: number | null;
   creditsApproxCloudMessages?: number | null;
   spendControlReached?: boolean | null;
-  spendControlIndividualLimit?: number | null;
+  spendControlIndividualLimit?: CodexSpendControlLimit | null;
   rateLimitReachedType?: string | null;
   primaryOverSecondaryLimitPercent?: number | null;
   subscriptionActiveUntil?: string | number | null;
   rateLimitResetCreditsAvailableCount?: number | null;
   rateLimitResetCredits?: CodexRateLimitResetCredit[];
   rateLimitResetCreditsError?: string | null;
+  resetCreditsCountSource?: 'summary' | 'dedicated';
   resetCreditsEvidenceAtMs?: number | null;
   resetCreditsCountEvidenceAtMs?: number | null;
   resetCreditsDetailEvidenceAtMs?: number | null;
@@ -591,6 +620,12 @@ export interface XaiOfficialApiHealth {
   teamBlocked: boolean | null;
 }
 
+export interface XaiSubscriptionInfo {
+  planType: string | null;
+  source: 'user' | 'settings';
+  observedAtMs: number;
+}
+
 export interface XaiBillingSummary {
   periodType: XaiBillingPeriodType;
   usagePercent: number | null;
@@ -610,6 +645,9 @@ export interface XaiBillingSummary {
   partial?: boolean;
   diagnostics?: XaiBillingDiagnostic[];
   rateLimited?: boolean;
+  subscription?: XaiSubscriptionInfo;
+  /** A prior subscription observation was discarded; file metadata cannot replace it. */
+  subscriptionSuperseded?: boolean;
 }
 
 export interface XaiQuotaState extends CredentialScopedQuotaState {

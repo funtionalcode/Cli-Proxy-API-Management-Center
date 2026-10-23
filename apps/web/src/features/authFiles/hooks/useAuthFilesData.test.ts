@@ -102,7 +102,10 @@ import {
   getCodexInspectionOwnershipIdentityKey,
   recordCodexInspectionDisableOwnership,
 } from '@/features/monitoring/model/codexInspectionOwnership';
-import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
+import {
+  getAuthFilePatchTarget,
+  getAuthFileSelectionKey,
+} from '@/features/authFiles/model/credentialStatus';
 
 type UseAuthFilesDataHarness = {
   getCurrent: () => ReturnType<typeof useAuthFilesData>;
@@ -246,6 +249,215 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe('useAuthFilesData revalidation', () => {
+  it('首次分页加载时先展示首屏，再合并后续页面', async () => {
+    const secondPage = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list
+      .mockResolvedValueOnce({ files: [{ name: 'first.json' }], total: 2, totalPages: 2 })
+      .mockReturnValueOnce(secondPage.promise);
+    const hook = mountUseAuthFilesData('a');
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = hook.getCurrent().loadFiles();
+      await Promise.resolve();
+    });
+
+    expect(hook.getCurrent().files).toEqual([{ name: 'first.json' }]);
+    expect(hook.getCurrent().totalFiles).toBe(2);
+    expect(hook.getCurrent().initialLoading).toBe(false);
+    expect(hook.getCurrent().hasLoaded).toBe(true);
+    expect(hook.getCurrent().loadingMore).toBe(true);
+    await act(async () => {
+      secondPage.resolve({ files: [{ name: 'second.json' }] });
+      await pending;
+    });
+
+    expect(hook.getCurrent().files.map((file) => file.name)).toEqual([
+      'first.json',
+      'second.json',
+    ]);
+    expect(hook.getCurrent().loadingMore).toBe(false);
+    hook.unmount();
+  });
+
+  it('后台分页刷新完成前和后续页面失败时保留完整列表及选择', async () => {
+    const initialFiles = [{ name: 'first.json' }, { name: 'selected.json' }];
+    mocks.list.mockResolvedValueOnce({ files: initialFiles });
+    const hook = mountUseAuthFilesData('a');
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    const selectionKey = getAuthFileSelectionKey(initialFiles[1]);
+    act(() => hook.getCurrent().toggleSelect(selectionKey));
+
+    const secondPage = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list
+      .mockResolvedValueOnce({
+        files: [{ name: 'first.json', note: 'updated' }],
+        total: 2,
+        totalPages: 2,
+      })
+      .mockReturnValueOnce(secondPage.promise);
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = hook.getCurrent().loadFiles();
+      await Promise.resolve();
+    });
+    expect(hook.getCurrent().files).toEqual(initialFiles);
+    expect(hook.getCurrent().selectedFiles.has(selectionKey)).toBe(true);
+    expect(hook.getCurrent().loading).toBe(true);
+    await act(async () => {
+      secondPage.resolve({ files: [{ name: 'selected.json', note: 'updated' }] });
+      await pending;
+    });
+    const refreshedFiles = hook.getCurrent().files;
+    expect(refreshedFiles).toEqual(initialFiles.map((file) => ({ ...file, note: 'updated' })));
+    expect(hook.getCurrent().selectedFiles.has(selectionKey)).toBe(true);
+
+    mocks.list
+      .mockResolvedValueOnce({ files: [{ name: 'partial.json' }], total: 3, totalPages: 2 })
+      .mockRejectedValueOnce(new Error('page two offline'));
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    expect(hook.getCurrent().files).toEqual(refreshedFiles);
+    expect(hook.getCurrent().totalFiles).toBe(2);
+    expect(hook.getCurrent().selectedFiles.has(selectionKey)).toBe(true);
+    expect(hook.getCurrent().error).toBe('page two offline');
+    expect(hook.getCurrent().loading).toBe(false);
+    expect(hook.getCurrent().loadingMore).toBe(false);
+    hook.unmount();
+  });
+
+  it('分页刷新遇到本地保存时重新读取，避免过期页面覆盖保存结果', async () => {
+    const original = { name: 'target.json', note: 'old' };
+    const saved = { ...original, note: 'saved' };
+    const staleSecondPage = createDeferred<{ files: AuthFileItem[] }>();
+    const retryFirstPage = createDeferred<{
+      files: AuthFileItem[];
+      total: number;
+      totalPages: number;
+    }>();
+    mocks.list
+      .mockResolvedValueOnce({ files: [original] })
+      .mockResolvedValueOnce({ files: [original], total: 2, totalPages: 2 })
+      .mockReturnValueOnce(staleSecondPage.promise)
+      .mockReturnValueOnce(retryFirstPage.promise)
+      .mockResolvedValueOnce({ files: [{ name: 'other.json' }] });
+    mockAuthFileLookup([saved]);
+    const hook = mountUseAuthFilesData('a');
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = hook.getCurrent().loadFiles();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await hook.getCurrent().reconcileAuthFileSource('target.json');
+    });
+    expect(hook.getCurrent().files).toEqual([saved]);
+    await act(async () => {
+      staleSecondPage.resolve({ files: [{ name: 'stale.json' }] });
+      await Promise.resolve();
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(4);
+    expect(hook.getCurrent().files).toEqual([saved]);
+    await act(async () => {
+      retryFirstPage.resolve({ files: [saved], total: 2, totalPages: 2 });
+      await pending;
+    });
+    expect(hook.getCurrent().files).toEqual([saved, { name: 'other.json' }]);
+    expect(mocks.list.mock.calls.map(([options]) => options.page)).toEqual([1, 1, 2, 1, 2]);
+    hook.unmount();
+  });
+
+  it('keeps successful data and selection through pending, successful and failed refreshes', async () => {
+    const hook = mountUseAuthFilesData('a');
+    expect(hook.getCurrent().initialLoading).toBe(true);
+    const first = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list.mockReturnValueOnce(first.promise);
+    let pending!: Promise<unknown>;
+    act(() => {
+      pending = hook.getCurrent().loadFiles();
+    });
+    expect(hook.getCurrent().initialLoading).toBe(true);
+    await act(async () => {
+      first.resolve({ files: [{ name: 'old.json' }] });
+      await pending;
+    });
+    const selectionKey = getAuthFileSelectionKey({ name: 'old.json' });
+    act(() => hook.getCurrent().toggleSelect(selectionKey));
+    const next = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list.mockReturnValueOnce(next.promise);
+    act(() => {
+      pending = hook.getCurrent().loadFiles();
+    });
+    expect(hook.getCurrent().loading).toBe(true);
+    expect(hook.getCurrent().initialLoading).toBe(false);
+    expect(hook.getCurrent().files[0].name).toBe('old.json');
+    await act(async () => {
+      next.resolve({ files: [{ name: 'old.json' }, { name: 'new.json' }] });
+      await pending;
+    });
+    expect(hook.getCurrent().files).toHaveLength(2);
+    mocks.list.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    expect(hook.getCurrent().files).toHaveLength(2);
+    expect(hook.getCurrent().error).toBe('offline');
+    expect(hook.getCurrent().selectedFiles.has(selectionKey)).toBe(true);
+    hook.unmount();
+  });
+
+  it('keeps a successful empty result and rejects old connection responses', async () => {
+    const hook = mountUseAuthFilesData('a');
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    const old = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list.mockReturnValueOnce(old.promise);
+    let pending!: Promise<unknown>;
+    act(() => {
+      pending = hook.getCurrent().loadFiles();
+    });
+    expect(hook.getCurrent().initialLoading).toBe(false);
+    hook.rerender('b');
+    expect(hook.getCurrent().initialLoading).toBe(true);
+    await act(async () => {
+      old.resolve({ files: [{ name: 'wrong-scope.json' }] });
+      await pending;
+    });
+    expect(hook.getCurrent().files).toEqual([]);
+    expect(hook.getCurrent().initialLoading).toBe(true);
+    hook.unmount();
+  });
+
+  it('discards earlier refreshes that complete after the latest response', async () => {
+    const hook = mountUseAuthFilesData('a');
+    const old = createDeferred<{ files: AuthFileItem[] }>();
+    const fresh = createDeferred<{ files: AuthFileItem[] }>();
+    mocks.list.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    let first!: Promise<unknown>, second!: Promise<unknown>;
+    act(() => {
+      first = hook.getCurrent().loadFiles();
+      second = hook.getCurrent().loadFiles();
+    });
+    await act(async () => {
+      fresh.resolve({ files: [{ name: 'latest.json' }] });
+      await second;
+    });
+    await act(async () => {
+      old.resolve({ files: [{ name: 'stale.json' }] });
+      await first;
+    });
+    expect(hook.getCurrent().files[0].name).toBe('latest.json');
+    hook.unmount();
+  });
 });
 
 describe('buildPastedAuthJsonPayloads', () => {

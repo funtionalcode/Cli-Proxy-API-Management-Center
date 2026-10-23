@@ -628,11 +628,24 @@ const buildQuotaWindows = (
     };
   });
 
+const isZeroSpendControlBudget = (row: AccountRow): boolean => {
+  const limit = row.quota.spendControlIndividualLimit;
+  if (!limit) return false;
+  const values = [limit.limit, limit.used, limit.remaining].map((value) => {
+    if (value === null || value.trim() === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  });
+  return values.every((value) => value === 0);
+};
+
 const buildQuotaDiagnostics = (
   row: AccountRow,
   xaiQuota?: XaiQuotaState | null
 ): AccountDetailField[] => {
   const xaiBilling = xaiQuota?.billing;
+  const spendControlLimit = row.quota.spendControlIndividualLimit;
+  const zeroSpendControlBudget = isZeroSpendControlBudget(row);
   const quotaErrorGuidance =
     row.quota.errorStatus === 404
       ? 'common.quota_update_required'
@@ -680,10 +693,35 @@ const buildQuotaDiagnostics = (
       row.quota.spendControlReached
     ),
     field(
-      'spendControlIndividualLimit',
-      'accounts.detail_spend_control_individual_limit',
-      row.quota.spendControlIndividualLimit,
-      'number'
+      'spendControlSource',
+      'accounts.detail_spend_control_source',
+      spendControlLimit?.source
+    ),
+    field('spendControlUnit', 'accounts.detail_spend_control_unit', spendControlLimit?.unit),
+    field('spendControlLimit', 'accounts.detail_spend_control_limit', spendControlLimit?.limit),
+    field('spendControlUsed', 'accounts.detail_spend_control_used', spendControlLimit?.used),
+    field(
+      'spendControlRemaining',
+      'accounts.detail_spend_control_remaining',
+      spendControlLimit?.remaining
+    ),
+    field(
+      'spendControlUsedPercent',
+      'accounts.detail_spend_control_used_percent',
+      zeroSpendControlBudget ? null : spendControlLimit?.usedPercent,
+      'percent'
+    ),
+    field(
+      'spendControlRemainingPercent',
+      'accounts.detail_spend_control_remaining_percent',
+      zeroSpendControlBudget ? null : spendControlLimit?.remainingPercent,
+      'percent'
+    ),
+    field(
+      'spendControlResetAt',
+      'accounts.detail_spend_control_reset_at',
+      spendControlLimit?.resetAtMs,
+      'timestamp'
     ),
     field(
       'rateLimitReachedType',
@@ -1002,7 +1040,8 @@ const buildOverviewCapacity = (
   return {
     kind: 'percent',
     statusLabelKey: listItem.quota.statusLabelKey,
-    remainingPercent: row.quota.remainingPercent,
+    remainingPercent: row.quota.remainingPercent ??
+      (row.provider === 'xai' ? quotaWindow?.remainingPercent ?? null : null),
     availableGroupCount: null,
     totalGroupCount: null,
     hasData: hasQuotaData,
@@ -1396,7 +1435,9 @@ export const buildAccountDetailViewModel = (
     recommendation,
     quotaCooldown,
     codexStatus: options.codexStatus ?? null,
-    quotaWindows: accountQuotaWindows,
+    // The list model filters entitlement evidence itself, but also needs the
+    // observed windows to explain why availability remains unconfirmed.
+    quotaWindows: row.provider === 'xai' ? quotaWindows : accountQuotaWindows,
     requestEvidence,
   });
   const value = buildValueSummary(row, options.valueRow);
@@ -1428,7 +1469,11 @@ export const buildAccountDetailViewModel = (
   const overviewDecision = buildOverviewDecision(row, listItem, quotaCooldown);
   const overview = {
     decision: overviewDecision,
-    capacity: buildOverviewCapacity(row, accountQuotaWindows, listItem),
+    capacity: buildOverviewCapacity(
+      row,
+      row.provider === 'xai' ? quotaWindows : accountQuotaWindows,
+      listItem
+    ),
     credential: buildOverviewCredential(row, options.codexQuota, options.t),
     recentStatus: buildOverviewRecentStatus(
       row,

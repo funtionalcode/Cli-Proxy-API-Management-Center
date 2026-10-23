@@ -4,6 +4,7 @@ import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/cred
 import type { AccountRow } from './accountRows';
 import {
   isConfirmedPaidXaiPlan,
+  isSpendControlSnapshotCurrent,
   summarizeGroupedQuotaAvailability,
   type AccountGroupedQuotaAvailabilitySummary,
 } from './accountQuotaSummary';
@@ -25,6 +26,7 @@ import {
   getAccountRequestCredentialEvidence,
   getAccountRequestEvidenceDetail,
   getAccountRequestQuotaEvidenceDetail,
+  hasAccountNonSpendControlQuotaLimitEvidence,
   hasAccountQuotaLimitEvidence,
   isAccountCredentialQuotaLimitCurrent,
   isAccountCredentialStatusProblemCurrent,
@@ -235,6 +237,42 @@ const getFirstDetail = (...values: Array<string | number | null | undefined>): s
   return '-';
 };
 
+const readSpendControlAmount = (value: string | null | undefined): number | null => {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const hasCompleteSpendControlAmounts = (row: AccountRow): boolean => {
+  const limit = row.quota.spendControlIndividualLimit;
+  if (!limit) return false;
+  return [limit.limit, limit.used, limit.remaining]
+    .map(readSpendControlAmount)
+    .every((value) => value !== null);
+};
+
+const isZeroSpendControlBudget = (row: AccountRow): boolean => {
+  const limit = row.quota.spendControlIndividualLimit;
+  if (
+    !limit ||
+    !isSpendControlSnapshotCurrent(limit, row.quota.fetchedAtMs) ||
+    !hasCompleteSpendControlAmounts(row)
+  ) {
+    return false;
+  }
+  return [limit.limit, limit.used, limit.remaining]
+    .map(readSpendControlAmount)
+    .every((value) => value === 0);
+};
+
+const getSpendControlResetLabel = (row: AccountRow): string => {
+  const resetAtMs = row.quota.spendControlIndividualLimit?.resetAtMs;
+  if (typeof resetAtMs !== 'number' || !Number.isFinite(resetAtMs) || resetAtMs <= 0) return '-';
+  const date = new Date(resetAtMs);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+};
+
 const getHttpStatusDetail = (statusCode: number | null | undefined): string =>
   statusCode ? `HTTP ${statusCode}` : '';
 
@@ -362,9 +400,15 @@ const isHeaderQuotaLimitEvidence = (row: AccountRow): boolean => {
 
 const getLimitedReasonKey = (
   row: AccountRow,
-  requestQuotaEvidence: AccountRequestQuotaEvidence | null = null
+  requestQuotaEvidence: AccountRequestQuotaEvidence | null = null,
+  hasNonSpendControlQuotaLimitEvidence = false
 ): string => {
   if (requestQuotaEvidence) return 'accounts.health_reason_limited_request';
+  if (row.quota.spendControlReached === true && !hasNonSpendControlQuotaLimitEvidence) {
+    return isZeroSpendControlBudget(row)
+      ? 'accounts.health_reason_limited_spend_control_zero_budget'
+      : 'accounts.health_reason_limited_spend_control';
+  }
   return isHeaderQuotaLimitEvidence(row)
     ? 'accounts.health_reason_limited_header'
     : 'accounts.health_reason_limited_quota';
@@ -396,7 +440,8 @@ const getQuotaLimitDetail = (
 const getQuotaLimitTooltip = (
   row: AccountRow,
   requestQuotaEvidence: AccountRequestQuotaEvidence | null,
-  hasCurrentCredentialQuotaLimit: boolean
+  hasCurrentCredentialQuotaLimit: boolean,
+  hasNonSpendControlQuotaLimitEvidence: boolean
 ): Pick<HealthStatusResolution, 'tooltipKey' | 'tooltipParams'> => {
   if (requestQuotaEvidence) {
     return {
@@ -407,7 +452,29 @@ const getQuotaLimitTooltip = (
   if (row.quota.creditsOverageLimitReached === true) {
     return { tooltipKey: 'accounts.health_tip_limited_credits_overage', tooltipParams: {} };
   }
-  if (row.quota.spendControlReached === true) {
+  if (
+    row.quota.spendControlReached === true &&
+    !hasNonSpendControlQuotaLimitEvidence
+  ) {
+    const limit = row.quota.spendControlIndividualLimit;
+    const snapshotCurrent = isSpendControlSnapshotCurrent(limit, row.quota.fetchedAtMs);
+    if (snapshotCurrent && isZeroSpendControlBudget(row)) {
+      return {
+        tooltipKey: 'accounts.health_tip_limited_spend_control_zero_budget',
+        tooltipParams: {},
+      };
+    }
+    if (snapshotCurrent && limit && hasCompleteSpendControlAmounts(row)) {
+      return {
+        tooltipKey: 'accounts.health_tip_limited_spend_control_detail',
+        tooltipParams: {
+          limit: limit.limit ?? '-',
+          used: limit.used ?? '-',
+          remaining: limit.remaining ?? '-',
+          resetAt: getSpendControlResetLabel(row),
+        },
+      };
+    }
     return { tooltipKey: 'accounts.health_tip_limited_spend_control', tooltipParams: {} };
   }
   const detail = getQuotaLimitDetail(row, null, hasCurrentCredentialQuotaLimit);
@@ -758,6 +825,10 @@ const resolveHealthStatus = (
     ? resolvedRequestQuotaEvidence
     : null;
   const hasQuotaLimitEvidence = hasAccountQuotaLimitEvidence(row, requestEvidenceInput);
+  const hasNonSpendControlQuotaLimitEvidence = hasAccountNonSpendControlQuotaLimitEvidence(
+    row,
+    requestEvidenceInput
+  );
   const hasCredentialQuotaLimitEvidence = isAccountCredentialQuotaLimitCurrent(
     row,
     resolvedRequestEvidence
@@ -887,7 +958,7 @@ const resolveHealthStatus = (
       status: 'limited',
       tooltipKey: 'accounts.health_tip_limited',
       tooltipParams: { detail: getFirstDetail(row.quota.rateLimitReachedType, row.quota.error) },
-      reasonKey: getLimitedReasonKey(row),
+      reasonKey: getLimitedReasonKey(row, null, true),
       reasonTone: 'warning',
     };
   }
@@ -920,7 +991,7 @@ const resolveHealthStatus = (
       status: 'limited',
       tooltipKey: 'accounts.health_tip_limited',
       tooltipParams: { detail: getFirstDetail(row.quota.rateLimitReachedType, row.quota.error) },
-      reasonKey: getLimitedReasonKey(row),
+      reasonKey: getLimitedReasonKey(row, null, true),
       reasonTone: 'warning',
     };
   }
@@ -929,12 +1000,17 @@ const resolveHealthStatus = (
     const tooltip = getQuotaLimitTooltip(
       row,
       requestQuotaEvidence,
-      hasCredentialQuotaLimitEvidence
+      hasCredentialQuotaLimitEvidence,
+      hasNonSpendControlQuotaLimitEvidence
     );
     return {
       status: 'limited',
       ...tooltip,
-      reasonKey: getLimitedReasonKey(row, requestQuotaEvidence),
+      reasonKey: getLimitedReasonKey(
+        row,
+        requestQuotaEvidence,
+        hasNonSpendControlQuotaLimitEvidence
+      ),
       reasonTone: 'warning',
       ...(requestQuotaEvidence
         ? {
@@ -957,7 +1033,7 @@ const resolveHealthStatus = (
       tooltipParams: {
         detail: getFirstDetail(row.quota.rateLimitReachedType, row.quota.resetLabel),
       },
-      reasonKey: getLimitedReasonKey(row),
+      reasonKey: getLimitedReasonKey(row, null, true),
       reasonTone: 'warning',
     };
   }
@@ -1182,18 +1258,42 @@ export const buildAccountListItem = (
       : row.provider === 'xai' && !isConfirmedPaidXaiPlan(row.planType)
         ? []
         : quotaWindows;
-  const health = resolveHealthStatus(
+  const resolvedHealth = resolveHealthStatus(
     row,
     quotaCooldown,
     options.codexStatus ?? null,
     accountQuotaWindows,
     options.requestEvidence
   );
+  const health =
+    resolvedHealth.status === 'raw' &&
+    row.provider === 'xai' &&
+    quotaWindows.length > 0
+      ? {
+          ...resolvedHealth,
+          reasonKey: row.planType
+            ? 'accounts.health_reason_xai_quota_unconfirmed'
+            : 'accounts.health_reason_xai_plan_unknown',
+          tooltipKey: row.planType
+            ? 'accounts.health_reason_xai_quota_unconfirmed'
+            : 'accounts.health_reason_xai_plan_unknown',
+        }
+      : resolvedHealth;
   const planPresentation = getPlanPresentation({
     provider: row.provider,
     planType: row.planType,
     t: options.t,
   });
+  // Informational windows may be displayed without becoming health evidence.
+  const observedXaiWindow =
+    row.provider === 'xai' && row.quota.status === 'unknown' &&
+    !isConfirmedPaidXaiPlan(row.planType) && row.quota.remainingPercent === null
+      ? quotaWindows
+          .filter((window) =>
+            typeof window.remainingPercent === 'number' && Number.isFinite(window.remainingPercent)
+          )
+          .sort((a, b) => a.remainingPercent! - b.remainingPercent!)[0]
+      : undefined;
 
   return {
     identity: {
@@ -1221,11 +1321,11 @@ export const buildAccountListItem = (
       observedAtMs: health.observedAtMs ?? null,
     },
     quota: {
-      remainingPercent: row.quota.remainingPercent,
-      usedPercent: row.quota.usedPercent,
-      resetLabel: row.quota.resetLabel,
-      resetAtMs: row.quota.resetAtMs,
-      resetAccuracy: row.quota.resetAccuracy,
+      remainingPercent: row.quota.remainingPercent ?? observedXaiWindow?.remainingPercent ?? null,
+      usedPercent: row.quota.usedPercent ?? observedXaiWindow?.usedPercent ?? null,
+      resetLabel: observedXaiWindow?.resetLabel ?? row.quota.resetLabel,
+      resetAtMs: observedXaiWindow?.resetAtMs ?? row.quota.resetAtMs,
+      resetAccuracy: observedXaiWindow?.resetAccuracy ?? row.quota.resetAccuracy,
       statusLabelKey: quotaStatusLabelKey(row.quota.status),
       sourceShortLabelKey: quotaSourceShortLabelKey(row.quota.source),
     },

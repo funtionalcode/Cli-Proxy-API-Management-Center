@@ -236,6 +236,7 @@ import {
 } from '@/features/accounts/model/accountSubscriptionPresentation';
 import { resolveAccountQuotaWindowUsageAndForecast } from '@/features/accounts/model/accountQuotaWindowUsagePresentation';
 import { formatCompactNumber, formatCompactUsd, formatUsd } from '@/utils/usage';
+import { resolveCredentialIdentity } from '@/utils/authFileCredentialIdentity';
 import {
   getAuthFileCodexInspectionKeyForFile,
   getAuthFileCodexInspectionKeyForIdentity,
@@ -435,6 +436,7 @@ const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
 const ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES = new Set(['pro', 'ultra', 'ultra-lite']);
+const ANTIGRAVITY_MAIN_LIST_QUOTA_WINDOW_LIMIT = 5;
 
 type AccountQuotaRefreshMode = 'summary' | 'detail';
 
@@ -451,11 +453,13 @@ const getMainListQuotaWindowLimit = (
   layoutMode: AccountsLayoutMode,
   row: AccountRow
 ): number => {
-  if (layoutMode === 'table') return 4;
-  return row.provider === ANTIGRAVITY_CONFIG.type &&
-    ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES.has(row.canonicalPlanType ?? '')
-    ? 4
-    : 2;
+  if (row.provider === ANTIGRAVITY_CONFIG.type) {
+    if (layoutMode === 'table') return ANTIGRAVITY_MAIN_LIST_QUOTA_WINDOW_LIMIT;
+    return ANTIGRAVITY_MULTI_WINDOW_PLAN_TYPES.has(row.canonicalPlanType ?? '')
+      ? ANTIGRAVITY_MAIN_LIST_QUOTA_WINDOW_LIMIT
+      : 2;
+  }
+  return layoutMode === 'table' ? 4 : 2;
 };
 
 const getCardQuotaWindowGroups = (
@@ -496,6 +500,7 @@ type AccountHistoryLoadOutcome = { status: 'success' } | { status: 'error'; erro
 type CodexResetCreditRequestEntry = {
   promise: Promise<CodexResetCreditsData | null>;
   isCurrent: () => boolean;
+  quotaGenerationAtStart: number;
 };
 
 const toAccountQuotaRefreshOutcome = <TState, TData>(
@@ -1327,6 +1332,8 @@ export function AccountsPage() {
     selectedFiles,
     selectionCount,
     loading,
+    initialLoading,
+    hasLoaded,
     error,
     uploading,
     authJsonPasteSaving,
@@ -1520,8 +1527,12 @@ export function AccountsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => initialWorkspaceUrlState.current.pageSize);
   const [usageRows, setUsageRows] = useState<UsageValueRow[]>([]);
+  type ScopedAccountHistory = {
+    item: MonitoringAccountHistoryItem;
+    identitySignature: string;
+  };
   const [accountHistoryByRowKey, setAccountHistoryByRowKey] = useState<
-    Map<string, MonitoringAccountHistoryItem>
+    Map<string, ScopedAccountHistory>
   >(() => new Map());
   const [accountHistoryLoading, setAccountHistoryLoading] = useState(false);
   const [accountHistoryErrorsByRowKey, setAccountHistoryErrorsByRowKey] = useState<
@@ -1535,10 +1546,12 @@ export function AccountsPage() {
   >(() => new Map());
   const [listWindowUsageQueryContext, setListWindowUsageQueryContext] = useState<{
     pageKeys: string[];
+    identityByRowKey: Map<string, string>;
     asOfMs: number;
   } | null>(null);
   const [accountWindowUsageQueryContext, setAccountWindowUsageQueryContext] = useState<{
     rowKey: string;
+    identitySignature: string;
     asOfMs: number;
   } | null>(null);
   const [accountWindowUsageError, setAccountWindowUsageError] = useState('');
@@ -2234,10 +2247,10 @@ export function AccountsPage() {
       prev.managerServiceBase !== featureAvailability.managerServiceBase ||
       prev.managementKey !== managementKey ||
       prev.connectionFingerprint !== connectionFingerprint;
-    const availabilityChanged =
-      prev.checking !== featureAvailability.checking ||
+    const monitoringCapabilityChanged =
       prev.requestMonitoringAvailable !== featureAvailability.requestMonitoringAvailable;
-    if (!connectionScopeChanged && !availabilityChanged) {
+    const checkingChanged = prev.checking !== featureAvailability.checking;
+    if (!connectionScopeChanged && !monitoringCapabilityChanged && !checkingChanged) {
       return;
     }
     headerSnapshotContextRef.current = {
@@ -2247,6 +2260,21 @@ export function AccountsPage() {
       checking: featureAvailability.checking,
       requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
     };
+    // A checking-only transition invalidates in-flight history requests, but
+    // must not discard the last verified history or quota-window presentation.
+    // Actual connection/capability changes still clear the scoped snapshots.
+    if (!connectionScopeChanged && !monitoringCapabilityChanged) {
+      accountHistoryAutoAbortRef.current?.abort();
+      accountHistoryAutoAbortRef.current = null;
+      accountHistoryTargetAbortRef.current?.abort();
+      accountHistoryTargetAbortRef.current = null;
+      accountHistoryRefreshRequestIdRef.current += 1;
+      accountHistoryRefreshPromiseRef.current = null;
+      accountHistoryAutoLoadKeyRef.current = null;
+      accountHistoryAutoRequestContextKeyRef.current = null;
+      setHistoryRefreshing(false);
+      return;
+    }
     quotaCooldownRequestIdRef.current += 1;
     accountHistoryAutoAbortRef.current?.abort();
     accountHistoryAutoAbortRef.current = null;
@@ -3666,16 +3694,32 @@ export function AccountsPage() {
     [connectionFingerprint, files, inspectionResults, navigate, showNotification, t]
   );
 
+  const accountHistoryIdentityByRowKey = useMemo(
+    () => new Map(files.map((file) => [
+      getAuthFileSelectionKey(file),
+      JSON.stringify(resolveCredentialIdentity(file)),
+    ])),
+    [files]
+  );
+  const verifiedAccountHistoryByRowKey = useMemo(() => {
+    const current = new Map<string, MonitoringAccountHistoryItem>();
+    accountHistoryByRowKey.forEach((scoped, selectionKey) => {
+      if (scoped.identitySignature === accountHistoryIdentityByRowKey.get(selectionKey)) {
+        current.set(selectionKey, scoped.item);
+      }
+    });
+    return current;
+  }, [accountHistoryByRowKey, accountHistoryIdentityByRowKey]);
   const requestEvidenceBySelectionKey = useMemo(() => {
     const evidenceMap = new Map<string, AccountRequestEvidenceInput>();
-    accountHistoryByRowKey.forEach((history, selectionKey) => {
+    verifiedAccountHistoryByRowKey.forEach((history, selectionKey) => {
       evidenceMap.set(selectionKey, {
         latestRequest: history.latest_request ?? null,
         recentRequests: history.recent_requests ?? [],
       });
     });
     return evidenceMap;
-  }, [accountHistoryByRowKey]);
+  }, [verifiedAccountHistoryByRowKey]);
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),
     [headerSnapshots]
@@ -4464,6 +4508,9 @@ export function AccountsPage() {
     [rows, selectedRowKey]
   );
   const accountHistoryTargets = useMemo(() => buildAccountHistoryTargetEntries(rows), [rows]);
+  const selectedRowIdentitySignature = selectedRow
+    ? accountHistoryIdentityByRowKey.get(selectedRow.selectionKey) ?? ''
+    : '';
   const accountHistoryAutoContextKey = useMemo(
     () =>
       JSON.stringify({
@@ -4850,7 +4897,8 @@ export function AccountsPage() {
         buildAccountQuotaWindowDefinitions(buildQuotaDisplayWindows(selectedRow))
     );
     const asOfMs =
-      accountWindowUsageQueryContext?.rowKey === selectedRow.selectionKey
+      accountWindowUsageQueryContext?.rowKey === selectedRow.selectionKey &&
+      accountWindowUsageQueryContext?.identitySignature === selectedRowIdentitySignature
         ? accountWindowUsageQueryContext.asOfMs
         : undefined;
     return buildAccountWindowUsageTargetEntries([selectedRow], windowsByRowKey, asOfMs);
@@ -4859,11 +4907,19 @@ export function AccountsPage() {
     buildQuotaDisplayWindows,
     effectiveQuotaWindowDefinitionsByRowKey,
     selectedRow,
+    selectedRowIdentitySignature,
   ]);
   const matchingAccountWindowUsageByKey = useMemo(
     () =>
-      filterAccountWindowUsageByTargetRanges(accountWindowUsageTargets, accountWindowUsageByKey),
-    [accountWindowUsageByKey, accountWindowUsageTargets]
+      accountWindowUsageQueryContext?.identitySignature === selectedRowIdentitySignature
+        ? filterAccountWindowUsageByTargetRanges(accountWindowUsageTargets, accountWindowUsageByKey)
+        : new Map<string, MonitoringAccountWindowUsageItem>(),
+    [
+      accountWindowUsageByKey,
+      accountWindowUsageQueryContext,
+      accountWindowUsageTargets,
+      selectedRowIdentitySignature,
+    ]
   );
   const selectedHeaderSnapshotRevision = useMemo(() => {
     if (selectedRow?.provider !== CODEX_CONFIG.type) return '';
@@ -4877,6 +4933,7 @@ export function AccountsPage() {
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         selectedRowKey: selectedRow?.selectionKey ?? selectedRowKey,
+        selectedRowIdentitySignature,
         selectedHeaderSnapshotRevision,
         historyRevision: accountHistoryRefreshRevision,
         historyAutoRevision: accountHistoryAutoRefreshRevision,
@@ -4891,6 +4948,7 @@ export function AccountsPage() {
       managerConnectionFingerprint,
       selectedRow,
       selectedHeaderSnapshotRevision,
+      selectedRowIdentitySignature,
       selectedRowKey,
     ]
   );
@@ -4925,6 +4983,18 @@ export function AccountsPage() {
     quotaWindowDefinitionsByRowKey,
     effectiveLayoutMode,
   ]);
+  // The auth index can stay unchanged while the credential account changes.
+  // Only reuse a window-usage snapshot for the exact identity it queried.
+  const listWindowUsageIdentityByRowKey = useMemo(
+    () => new Map(buildAccountHistoryTargetEntries(pageRows).map((entry) => [
+      entry.rowKey,
+      JSON.stringify(entry.target),
+    ])),
+    [pageRows]
+  );
+  const listWindowUsageIdentitySignature = JSON.stringify(
+    Array.from(listWindowUsageIdentityByRowKey)
+  );
   const isListQueryContextMatching = useMemo(() => {
     if (!listWindowUsageQueryContext) return false;
     if (listWindowUsageQueryContext.pageKeys.length !== pageRows.length) return false;
@@ -4941,8 +5011,22 @@ export function AccountsPage() {
   }, [isListQueryContextMatching, listQuotaWindowsByRowKey, listWindowUsageQueryContext, pageRows]);
   const matchingListWindowUsageByKey = useMemo(
     () =>
-      filterAccountWindowUsageByTargetRanges(listWindowUsageTargets, listWindowUsageByKey),
-    [listWindowUsageByKey, listWindowUsageTargets]
+      isListQueryContextMatching
+        ? filterAccountWindowUsageByTargetRanges(
+            listWindowUsageTargets.filter(
+              (entry) => listWindowUsageQueryContext!.identityByRowKey.get(entry.rowKey) ===
+                listWindowUsageIdentityByRowKey.get(entry.rowKey)
+            ),
+            listWindowUsageByKey
+          )
+        : new Map<string, MonitoringAccountWindowUsageItem>(),
+    [
+      isListQueryContextMatching,
+      listWindowUsageByKey,
+      listWindowUsageIdentityByRowKey,
+      listWindowUsageQueryContext,
+      listWindowUsageTargets,
+    ]
   );
   const listWindowUsageDefinitionsSignature = useMemo(() => {
     const payload = pageRows.map((row) => {
@@ -4996,12 +5080,14 @@ export function AccountsPage() {
         managerConnectionFingerprint,
         requestMonitoringAvailable: featureAvailability.requestMonitoringAvailable,
         pageKeys: pageRows.map((r) => r.selectionKey),
+        identitySignature: listWindowUsageIdentitySignature,
         definitionsSignature: listWindowUsageDefinitionsSignature,
       }),
     [
       featureAvailability.checking,
       featureAvailability.requestMonitoringAvailable,
       listWindowUsageDefinitionsSignature,
+      listWindowUsageIdentitySignature,
       managerConnectionFingerprint,
       pageRows,
     ]
@@ -5576,9 +5662,12 @@ export function AccountsPage() {
       }
 
       const cacheGeneration = captureQuotaCacheGeneration();
+      const quotaGenerationAtStart = quotaRequestVersionsRef.current.get(
+        `${CODEX_CONFIG.type}:${storeKey}`
+      ) ?? 0;
       const requestGate = beginAccountQuotaRequest(
         quotaRequestVersionsRef.current,
-        CODEX_CONFIG.type + ':' + storeKey
+        CODEX_CONFIG.type + ':reset-credits:' + storeKey
       );
       const capturedConnectionFingerprint = connectionFingerprint;
       const isCurrentRequest = () =>
@@ -5618,6 +5707,7 @@ export function AccountsPage() {
               );
               const incoming: CodexResetCreditsMergeInput = {
                 rateLimitResetCreditsAvailableCount: resolvedCount,
+                resetCreditsCountSource: 'dedicated',
                 rateLimitResetCredits: data.credits,
                 rateLimitResetCreditsError: null,
                 resetCreditsEvidenceAtMs: data.resetCreditsEvidenceAtMs,
@@ -5652,6 +5742,7 @@ export function AccountsPage() {
                 [storeKey]: {
                   ...base,
                   rateLimitResetCreditsAvailableCount: merged.rateLimitResetCreditsAvailableCount,
+                  resetCreditsCountSource: merged.resetCreditsCountSource,
                   rateLimitResetCredits: merged.rateLimitResetCredits,
                   rateLimitResetCreditsError: merged.rateLimitResetCreditsError,
                   resetCreditsEvidenceAtMs: merged.resetCreditsEvidenceAtMs,
@@ -5688,6 +5779,7 @@ export function AccountsPage() {
       const entry: CodexResetCreditRequestEntry = {
         promise: requestPromise,
         isCurrent: isCurrentRequest,
+        quotaGenerationAtStart,
       };
       codexResetCreditDetailRequestsRef.current.set(storeKey, entry);
       void requestPromise.finally(() => {
@@ -5962,6 +6054,7 @@ export function AccountsPage() {
       if (!isCurrentRequest()) return;
       setAccountWindowUsageQueryContext({
         rowKey: selectedRow.selectionKey,
+        identitySignature: selectedRowIdentitySignature,
         asOfMs: queryAsOfMs,
       });
       setAccountWindowUsageByKey(buildAccountWindowUsageByKey(entries, response.items ?? []));
@@ -5993,6 +6086,7 @@ export function AccountsPage() {
     managerStorageAvailable,
     quotaWindowDefinitionsByRowKey,
     selectedRow,
+    selectedRowIdentitySignature,
     t,
   ]);
 
@@ -6103,8 +6197,12 @@ export function AccountsPage() {
         !managementKey ||
         entries.length === 0
       ) {
-        if (!mergeResult) {
-          setAccountHistoryByRowKey(new Map());
+        // A temporary monitoring capability check must not blank already loaded
+        // history. Connection changes are cleared by the connection-scope effect.
+        if (!mergeResult && entries.length === 0) {
+          setAccountHistoryByRowKey((current) =>
+            current.size === 0 ? current : new Map()
+          );
         }
         setAccountHistoryLoading(accountHistoryPendingRequestsRef.current.size > 0);
         setAccountHistoryErrorsByRowKey((current) => {
@@ -6177,7 +6275,7 @@ export function AccountsPage() {
         setAccountHistoryByRowKey((current) => {
           const merged = mergeResult
             ? new Map(current)
-            : new Map<string, MonitoringAccountHistoryItem>();
+            : new Map<string, ScopedAccountHistory>();
           entries.forEach((entry) => {
             const requestVersion = requestVersions.get(entry.rowKey);
             if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
@@ -6196,7 +6294,12 @@ export function AccountsPage() {
             }
             merged.delete(entry.rowKey);
             const nextItem = nextHistory.get(entry.rowKey);
-            if (nextItem) merged.set(entry.rowKey, nextItem);
+            if (nextItem) {
+              merged.set(entry.rowKey, {
+                item: nextItem,
+                identitySignature: accountHistoryIdentityByRowKey.get(entry.rowKey) ?? '',
+              });
+            }
           });
           return merged;
         });
@@ -6261,6 +6364,7 @@ export function AccountsPage() {
     },
     [
       accountHistoryAutoContextKey,
+      accountHistoryIdentityByRowKey,
       accountHistoryTargets,
       featureAvailability.checking,
       featureAvailability.managerServiceBase,
@@ -6437,6 +6541,18 @@ export function AccountsPage() {
       };
       switch (row.provider) {
         case CODEX_CONFIG.type: {
+          // Any quota refresh supersedes an in-flight reset-credit verification
+          // for this credential. Summary refreshes can also establish a newer
+          // generation and must prevent stale verifier errors/results from
+          // producing UI writes or reset side effects.
+          const key = CODEX_CONFIG.getStoreKey?.(row.raw) ?? row.fileName;
+          const supersededResetRequest =
+            codexResetCreditDetailRequestsRef.current.get(key)?.isCurrent() === true;
+          beginAccountQuotaRequest(
+            quotaRequestVersionsRef.current,
+            `${CODEX_CONFIG.type}:reset-credits:${key}`
+          );
+          codexResetCreditDetailRequestsRef.current.delete(key);
           const config = mode === 'detail' ? CODEX_CONFIG : CODEX_SUMMARY_CONFIG;
           const result = await refreshWithConfig(
             config,
@@ -6446,6 +6562,15 @@ export function AccountsPage() {
           const outcome = toAccountQuotaRefreshOutcome(result);
           if (!result || result.status !== 'success') return outcome;
           const refreshedQuota = result.state;
+          if (mode === 'summary' && supersededResetRequest) {
+            // The refresh intentionally invalidated an in-flight dedicated read.
+            // Do not immediately recreate the exact same automatic reconciliation
+            // from the resulting stale signature; explicit reset verification
+            // remains free to issue a fresh dedicated request.
+            codexResetCreditAutoFetchAttemptedSignaturesRef.current.add(
+              buildCodexResetCreditAutoFetchSignature(row.selectionKey, refreshedQuota)
+            );
+          }
           const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
           invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
             supersedeAuthenticationActionEvidence: true,
@@ -6940,6 +7065,7 @@ export function AccountsPage() {
       setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
       setListWindowUsageQueryContext({
         pageKeys: currentPageKeys,
+        identityByRowKey: new Map(listWindowUsageIdentityByRowKey),
         asOfMs: queryAsOfMs,
       });
       return;
@@ -6962,15 +7088,15 @@ export function AccountsPage() {
       if (!isCurrentRequest()) return;
       setListWindowUsageQueryContext({
         pageKeys: currentPageKeys,
+        identityByRowKey: new Map(listWindowUsageIdentityByRowKey),
         asOfMs: queryAsOfMs,
       });
       setListWindowUsageByKey(
         buildAccountWindowUsageByKey(queryTargets, response.items ?? [])
       );
     } catch {
-      if (isCurrentRequest()) {
-        setListWindowUsageByKey((current) => (current.size === 0 ? current : new Map()));
-      }
+      // Keep the last successful usage while this refresh fails. The existing
+      // target-range filter still rejects changed credentials or quota cycles.
       // 失败静默降级，不阻塞列表显示
     } finally {
       if (listWindowUsageReqIdRef.current === requestId) {
@@ -6984,6 +7110,7 @@ export function AccountsPage() {
     featureAvailability.managerServiceBase,
     featureAvailability.requestMonitoringAvailable,
     listQuotaWindowsByRowKey,
+    listWindowUsageIdentityByRowKey,
     managementKey,
     managerStorageAvailable,
     pageRows,
@@ -7036,6 +7163,18 @@ export function AccountsPage() {
       const cacheGeneration = captureQuotaCacheGeneration();
 
       const runResetTransaction = async () => {
+        // A pending dedicated read can be reused for verification only when
+        // no quota refresh has started since it was issued. A newer quota
+        // generation requires a fresh read before any mutation.
+        const inFlight = codexResetCreditDetailRequestsRef.current.get(storeKey);
+        const quotaGeneration = quotaRequestVersionsRef.current.get(requestKey) ?? 0;
+        if (inFlight?.isCurrent() && inFlight.quotaGenerationAtStart !== quotaGeneration) {
+          beginAccountQuotaRequest(
+            quotaRequestVersionsRef.current,
+            `${CODEX_CONFIG.type}:reset-credits:${storeKey}`
+          );
+          codexResetCreditDetailRequestsRef.current.delete(storeKey);
+        }
         let fresh: CodexResetCreditsData | null;
         try {
           fresh = await loadCodexResetCreditDetails(row);
@@ -7109,6 +7248,7 @@ export function AccountsPage() {
             };
             const incoming: CodexResetCreditsMergeInput = {
               rateLimitResetCreditsAvailableCount: verifiedCount,
+              resetCreditsCountSource: 'dedicated',
               rateLimitResetCredits: fresh.credits,
               rateLimitResetCreditsError: null,
               resetCreditsEvidenceAtMs: fresh.resetCreditsEvidenceAtMs,
@@ -7126,6 +7266,7 @@ export function AccountsPage() {
               [storeKey]: {
                 ...baseState,
                 rateLimitResetCreditsAvailableCount: merged.rateLimitResetCreditsAvailableCount,
+                resetCreditsCountSource: merged.resetCreditsCountSource,
                 rateLimitResetCredits: merged.rateLimitResetCredits,
                 rateLimitResetCreditsError: merged.rateLimitResetCreditsError,
                 resetCreditsEvidenceAtMs: merged.resetCreditsEvidenceAtMs,
@@ -7209,6 +7350,7 @@ export function AccountsPage() {
                       [storeKey]: {
                         ...baseState,
                         rateLimitResetCreditsAvailableCount: 0,
+                        resetCreditsCountSource: 'dedicated',
                         rateLimitResetCredits: [],
                         rateLimitResetCreditsError: null,
                         resetCreditsEvidenceAtMs: nowMs,
@@ -7276,6 +7418,7 @@ export function AccountsPage() {
                       [storeKey]: {
                         ...baseState,
                         rateLimitResetCreditsAvailableCount: null,
+                        resetCreditsCountSource: 'summary',
                         rateLimitResetCredits: [],
                         rateLimitResetCreditsError: null,
                         resetCreditsEvidenceAtMs: nowMs,
@@ -7286,6 +7429,12 @@ export function AccountsPage() {
                     };
               });
             });
+            // A consumed credit invalidates any pre-mutation dedicated reads.
+            beginAccountQuotaRequest(
+              quotaRequestVersionsRef.current,
+              `${CODEX_CONFIG.type}:reset-credits:${storeKey}`
+            );
+            codexResetCreditDetailRequestsRef.current.delete(storeKey);
             setQuotaSnapshotWindowsByRowKey((current) => {
               const windows = current.get(row.selectionKey);
               if (!windows) return current;
@@ -7301,25 +7450,45 @@ export function AccountsPage() {
               return next;
             });
 
-            // Flow: reset credit succeeds → sync CPA runtime reset → refresh quota for UI
-            const authIndex = normalizeAuthIndex(row.raw['auth_index'] ?? row.raw.authIndex ?? row.authIndex);
-            let gatewaySyncSuccess = false;
-            if (authIndex && !row.raw.disabled) {
+            // Flow: reset credit succeeds → one-shot quota verification →
+            // recover a CPAMP-owned disable (if any) → sync CPA runtime cooldown.
+            // No polling or background retry is used in this transaction.
+            const authIndex = normalizeAuthIndex(
+              row.raw['auth_index'] ?? row.raw.authIndex ?? row.authIndex
+            );
+            const wasDisabled = row.raw.disabled === true;
+            let gatewaySyncSuccess = !authIndex && !wasDisabled;
+            let credentialRecoverySuccess = !wasDisabled;
+
+            if (authIndex && !wasDisabled) {
               try {
                 await authFilesApi.resetQuota(authIndex, authFilesRequestScope);
                 gatewaySyncSuccess = true;
               } catch (resetErr) {
-                console.warn('[Accounts] Failed to reset gateway cooldown quota after consuming reset credit:', resetErr);
+                console.warn(
+                  '[Accounts] Failed to reset gateway cooldown quota after consuming reset credit:',
+                  resetErr
+                );
                 gatewaySyncSuccess = false;
               }
-            } else {
-              gatewaySyncSuccess = true;
             }
 
+            const isPostMutationVerificationCurrent = () =>
+              postMutationIsCurrent() &&
+              oauthEditorConnectionFingerprintRef.current === connectionFingerprint &&
+              captureQuotaCacheGeneration() === cacheGeneration;
+
             let quotaRefreshSuccess = false;
+            let quotaHealthy = false;
             try {
               const data = await CODEX_CONFIG.fetchQuota(row.raw, t, authFilesRequestScope);
-              if (postMutationIsCurrent()) {
+              const healthState = CODEX_CONFIG.buildSuccessState(data, row.raw);
+              quotaHealthy =
+                data.windows.some(
+                  (window) =>
+                    typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+                ) && isKnownHealthyCodexQuota(healthState);
+              if (isPostMutationVerificationCurrent()) {
                 commitIfQuotaCacheCurrent(cacheGeneration, () => {
                   setCodexQuota((prev) => {
                     const currentState = getScopedQuotaState(CODEX_CONFIG, prev, row.raw);
@@ -7331,23 +7500,71 @@ export function AccountsPage() {
                   });
                 });
               }
-              quotaRefreshSuccess = true;
+              quotaRefreshSuccess = isPostMutationVerificationCurrent();
+              if (!quotaRefreshSuccess) quotaHealthy = false;
             } catch (refreshErr) {
-              console.warn('[Accounts] Failed to refresh quota after consuming reset credit:', refreshErr);
+              console.warn(
+                '[Accounts] Failed to refresh quota after consuming reset credit:',
+                refreshErr
+              );
               quotaRefreshSuccess = false;
-            } finally {
-              endResetTransaction();
             }
+
+            if (
+              wasDisabled &&
+              quotaRefreshSuccess &&
+              quotaHealthy &&
+              authIndex &&
+              featureAvailability.managerServiceBase &&
+              managementKey &&
+              isPostMutationVerificationCurrent()
+            ) {
+              try {
+                const recovery = await usageServiceApi.recoverQuotaCooldown(
+                  featureAvailability.managerServiceBase,
+                  managementKey,
+                  {
+                    authFileName: row.fileName,
+                    authIndex,
+                    provider: 'codex',
+                  }
+                );
+                credentialRecoverySuccess = recovery.recovered === true;
+                if (credentialRecoverySuccess) {
+                  try {
+                    await authFilesApi.resetQuota(authIndex, authFilesRequestScope);
+                    gatewaySyncSuccess = true;
+                  } catch (resetErr) {
+                    console.warn(
+                      '[Accounts] Failed to reset gateway cooldown after recovering CPAMP quota disable:',
+                      resetErr
+                    );
+                    gatewaySyncSuccess = false;
+                  }
+                  await Promise.allSettled([loadFiles(), loadQuotaCooldowns()]);
+                }
+              } catch (recoverErr) {
+                console.warn(
+                  '[Accounts] Failed to recover CPAMP-owned quota cooldown after consuming reset credit:',
+                  recoverErr
+                );
+                credentialRecoverySuccess = false;
+              }
+            }
+
+            endResetTransaction();
 
             invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
               supersedeAuthenticationActionEvidence: true,
               supersedeQuotaActionEvidence: quotaRefreshSuccess,
-              supersedeCooldownEvidence: gatewaySyncSuccess,
+              supersedeCooldownEvidence: wasDisabled
+                ? credentialRecoverySuccess
+                : gatewaySyncSuccess,
             });
 
-            if (gatewaySyncSuccess && quotaRefreshSuccess) {
+            if (gatewaySyncSuccess && quotaRefreshSuccess && credentialRecoverySuccess) {
               showNotification(t('codex_quota.reset_success', { name: displayName }), 'success');
-            } else if (!gatewaySyncSuccess) {
+            } else if (!gatewaySyncSuccess && credentialRecoverySuccess) {
               showNotification(
                 t('codex_quota.reset_gateway_failed', {
                   name: displayName,
@@ -7370,8 +7587,12 @@ export function AccountsPage() {
       canResetCodexQuota,
       connectionFingerprint,
       getDisplayAccount,
+      featureAvailability.managerServiceBase,
       invalidateCodexCredentialStatusForSelectionKeys,
       loadCodexResetCreditDetails,
+      loadFiles,
+      loadQuotaCooldowns,
+      managementKey,
       setCodexQuota,
       showConfirmation,
       showNotification,
@@ -8813,7 +9034,7 @@ export function AccountsPage() {
 
   const resolveAccountRowContext = (row: AccountRow) => {
     const recommendation = recommendationBySelectionKey.get(row.selectionKey) ?? null;
-    const accountHistory = accountHistoryByRowKey.get(row.selectionKey) ?? null;
+    const accountHistory = verifiedAccountHistoryByRowKey.get(row.selectionKey) ?? null;
     const quotaWindows =
       quotaDisplayWindowsByRowKey.get(row.selectionKey) ?? buildQuotaDisplayWindows(row);
     const quotaLifecycleBarOverride = getAccountQuotaLifecycleBarOverride(row.quota.status);
@@ -9721,7 +9942,7 @@ export function AccountsPage() {
                       latestRequest={ctx.accountHistory?.latest_request}
                       recentRequests={ctx.accountHistory?.recent_requests}
                       loading={accountHistoryLoading && !ctx.accountHistory}
-                      unavailable={Boolean(ctx.accountHistoryError)}
+                      unavailable={Boolean(ctx.accountHistoryError) && !ctx.accountHistory}
                       locale={i18n.language}
                       onCopy={copyTextWithNotification}
                     />
@@ -9868,7 +10089,7 @@ export function AccountsPage() {
       windowUsageByKey: matchingAccountWindowUsageByKey,
       actionCandidates: accountActionCandidates,
       matchedActionCandidates: actionCandidatesByRowKey.get(selectedRow.selectionKey) ?? [],
-      history: accountHistoryByRowKey.get(selectedRow.selectionKey) ?? null,
+      history: verifiedAccountHistoryByRowKey.get(selectedRow.selectionKey) ?? null,
       valueRow,
       codexQuota: selectedCodexQuota,
       xaiQuota:
@@ -10186,15 +10407,15 @@ export function AccountsPage() {
 
   const renderAccountsOverview = () => (
     <>
-      <AccountMetricsGrid metrics={metrics} />
+      {hasLoaded ? <AccountMetricsGrid metrics={metrics} /> : null}
       {error ? <div className={styles.errorBox}>{error}</div> : null}
-      {loading ? (
+      {initialLoading ? (
         <div className={styles.loadingPanel}>
           <LoadingSpinner />
         </div>
-      ) : (
+      ) : hasLoaded ? (
         renderAccountCards()
-      )}
+      ) : null}
       {renderDetailDrawer()}
     </>
   );
@@ -10269,6 +10490,7 @@ export function AccountsPage() {
         <OAuthExcludedCard
           disableControls={disableControls}
           loadState={oauthState.excludedError}
+          hasLoaded={oauthState.excludedLoaded}
           excluded={oauthState.excluded}
           onRetry={loadOauthExcluded}
           onAdd={() => openOauthExcludedEditor()}
@@ -10283,6 +10505,7 @@ export function AccountsPage() {
           onEditProvider={openOauthModelAliasEditor}
           onDeleteProvider={oauthState.deleteModelAlias}
           loadState={oauthState.modelAliasError}
+          hasLoaded={oauthState.modelAliasLoaded}
           modelAlias={oauthState.modelAlias}
           onRetry={loadOauthModelAlias}
           allProviderModels={oauthState.allProviderModels}

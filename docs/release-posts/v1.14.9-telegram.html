@@ -1,0 +1,16 @@
+<b>10 月 22 日 · v1.14.9</b>
+
+<b>依赖安全维护更新</b>
+
+• 更新 Go、Node.js、前端及文档构建依赖，修复已发现的依赖安全告警。
+• Manager Server 源码构建采用 Go <code>1.26.10</code>；Docker 构建使用固定版本的 Node.js 与 Go。
+• 加入全工作区 npm 审计，以及 Linux、macOS、Windows 的六组 Go 漏洞扫描；未通过检查的变更无法通过必需 CI。
+• 新增定期依赖安全扫描与 Dependabot 维护。
+
+<b>升级说明</b>
+
+• 从 v1.14.8 正常升级、重启即可，无数据库或配置迁移。
+• 官方 Docker / 原生包使用者无需在宿主机另行安装 Go 或 Node.js；仅源码构建者需关注新的工具链版本。
+• 无新增用户功能，不包含 v2 架构改动；CPA 最低兼容要求仍为 <code>v7.3.4+</code>。
+
+<a href="https://github.com/seakee/CPA-Manager-Plus/releases/tag/v1.14.9">GitHub Release</a>

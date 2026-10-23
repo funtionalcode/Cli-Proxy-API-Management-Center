@@ -87,6 +87,8 @@ export type UseAuthFilesDataResult = {
   selectionCount: number;
   loading: boolean;
   loadingMore: boolean;
+  initialLoading: boolean;
+  hasLoaded: boolean;
   error: string;
   uploading: boolean;
   authJsonPasteSaving: boolean;
@@ -798,6 +800,8 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   const [totalFiles, setTotalFiles] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const hasLoadedRef = useRef(false);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [authJsonPasteSaving, setAuthJsonPasteSaving] = useState(false);
@@ -840,6 +844,8 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     deleteOperationRef.current = null;
     commitFiles([]);
     setTotalFiles(0);
+    setHasLoaded(false);
+    hasLoadedRef.current = false;
     setSelectedFiles(new Set());
     setLoading(true);
     setLoadingMore(false);
@@ -1006,58 +1012,75 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
       setLoadingMore(false);
       setError('');
       try {
-        const firstPage = await authFilesApi.list(
-          {
-            page: 1,
-            pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
-            includeBalances: false,
-          },
-          requestScope
-        );
-        if (!isCurrentRequest()) {
-          if (options?.throwOnError) throw new Error(t('notification.refresh_failed'));
-          return;
-        }
-
-        let loadedFiles = Array.isArray(firstPage?.files) ? firstPage.files : [];
-        const total = getAuthFilesListTotal(firstPage, loadedFiles.length);
-        const totalPages = getAuthFilesListTotalPages(firstPage);
-        commitFiles(loadedFiles);
-        setTotalFiles(total);
-        setLoading(false);
-
-        if (totalPages <= 1) return loadedFiles;
-        setLoadingMore(true);
-        for (let page = 2; page <= totalPages; page += AUTH_FILES_FETCH_CONCURRENCY) {
-          const pages = Array.from(
-            { length: Math.min(AUTH_FILES_FETCH_CONCURRENCY, totalPages - page + 1) },
-            (_, index) => page + index
-          );
-          const responses = await Promise.all(
-            pages.map((currentPage) =>
-              authFilesApi.list(
-                {
-                  page: currentPage,
-                  pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
-                  includeBalances: false,
-                },
-                requestScope
-              )
-            )
+        // 分页请求遇到本地修改时重新读取，避免旧列表覆盖已保存的内容。
+        while (isCurrentRequest()) {
+          let revision = filesRevisionRef.current;
+          const firstPage = await authFilesApi.list(
+            {
+              page: 1,
+              pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
+              includeBalances: false,
+            },
+            requestScope
           );
           if (!isCurrentRequest()) {
             if (options?.throwOnError) throw new Error(t('notification.refresh_failed'));
             return;
           }
-          responses.forEach((response) => {
-            loadedFiles = mergeAuthFilePages(
-              loadedFiles,
-              Array.isArray(response?.files) ? response.files : []
+          if (revision !== filesRevisionRef.current) continue;
+
+          let loadedFiles = Array.isArray(firstPage?.files) ? firstPage.files : [];
+          const total = getAuthFilesListTotal(firstPage, loadedFiles.length);
+          const totalPages = getAuthFilesListTotalPages(firstPage);
+          const streamInitialLoad = !hasLoadedRef.current;
+          const publishFiles = () => {
+            commitFiles(loadedFiles);
+            revision = filesRevisionRef.current;
+            setTotalFiles(total);
+            setHasLoaded(true);
+            hasLoadedRef.current = true;
+          };
+
+          // 首次加载逐页展示；后台刷新保留完整快照，待全部页面成功后替换。
+          if (streamInitialLoad) {
+            publishFiles();
+            setLoading(false);
+          }
+          setLoadingMore(totalPages > 1);
+          for (let page = 2; page <= totalPages; page += AUTH_FILES_FETCH_CONCURRENCY) {
+            const pages = Array.from(
+              { length: Math.min(AUTH_FILES_FETCH_CONCURRENCY, totalPages - page + 1) },
+              (_, index) => page + index
             );
-          });
-          commitFiles(loadedFiles);
+            const responses = await Promise.all(
+              pages.map((currentPage) =>
+                authFilesApi.list(
+                  {
+                    page: currentPage,
+                    pageSize: AUTH_FILES_FETCH_PAGE_SIZE,
+                    includeBalances: false,
+                  },
+                  requestScope
+                )
+              )
+            );
+            if (!isCurrentRequest()) {
+              if (options?.throwOnError) throw new Error(t('notification.refresh_failed'));
+              return;
+            }
+            if (revision !== filesRevisionRef.current) break;
+            responses.forEach((response) => {
+              loadedFiles = mergeAuthFilePages(
+                loadedFiles,
+                Array.isArray(response?.files) ? response.files : []
+              );
+            });
+            if (streamInitialLoad) publishFiles();
+          }
+          if (revision !== filesRevisionRef.current) continue;
+          if (!streamInitialLoad) publishFiles();
+          return loadedFiles;
         }
-        return loadedFiles;
       } catch (err: unknown) {
         if (!isCurrentRequest()) {
           if (options?.throwOnError) throw err;
@@ -2280,6 +2303,8 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
     selectionCount,
     loading,
     loadingMore,
+    initialLoading: loading && !hasLoaded,
+    hasLoaded,
     error,
     uploading,
     authJsonPasteSaving,

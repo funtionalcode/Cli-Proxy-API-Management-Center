@@ -36,6 +36,7 @@ import {
   buildUsageAnalyticsInclude,
   buildUsageTimeline,
   getSelectableApiKeyHash,
+  getUsagePresentationRangeScopeKey,
   getUsageRangeBounds,
   resolveUsageGranularity,
   USAGE_ANALYTICS_DEFAULT_FILTERS,
@@ -101,6 +102,7 @@ export function useUsageAnalytics({
   const [monitoringMeta, setMonitoringMeta] = useState<UsageAnalyticsMonitoringMeta>(
     EMPTY_USAGE_ANALYTICS_MONITORING_META
   );
+  const [monitoringMetaError, setMonitoringMetaError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [initialUiState] = useState<UsageAnalyticsUiState>(() =>
     buildUsageAnalyticsUiStateFromSearchParams(searchParams, readUsageAnalyticsUiState())
@@ -133,10 +135,11 @@ export function useUsageAnalytics({
   );
   const loadMonitoringMeta = useCallback(async () => {
     const payload = await loadMonitoringMetaPayload(config);
-    setMonitoringMeta({
-      authFiles: payload.authFiles,
-      channels: payload.channels,
-    });
+    setMonitoringMeta((current) => ({
+      authFiles: payload.authFilesLoaded ? payload.authFiles : current.authFiles,
+      channels: payload.channelsLoaded ? payload.channels : current.channels,
+    }));
+    setMonitoringMetaError(payload.error);
   }, [config]);
   useEffect(() => {
     let cancelled = false;
@@ -147,10 +150,12 @@ export function useUsageAnalytics({
           authFiles: payload.authFiles,
           channels: payload.channels,
         });
+        setMonitoringMetaError(payload.error);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setMonitoringMeta(EMPTY_USAGE_ANALYTICS_MONITORING_META);
+          setMonitoringMetaError(error instanceof Error ? error.message : String(error));
         }
       });
     return () => {
@@ -223,6 +228,7 @@ export function useUsageAnalytics({
   );
 
   const bounds = useMemo(() => getUsageRangeBounds(filters, nowMs), [filters, nowMs]);
+  const presentationRangeScopeKey = getUsagePresentationRangeScopeKey(filters, bounds);
   const heatmapRangeContext = useMemo(
     () => buildUsageHeatmapRangeContext(bounds, 'en-US', browserTimeZone),
     [bounds, browserTimeZone]
@@ -279,7 +285,7 @@ export function useUsageAnalytics({
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        presentationRangeScopeKey,
         drilldownPreview,
         filters: analyticsFilters,
         granularity: resolvedGranularity,
@@ -288,7 +294,7 @@ export function useUsageAnalytics({
     [
       activeTabState,
       analyticsFilters,
-      bounds,
+      presentationRangeScopeKey,
       debouncedSearchQuery,
       drilldownPreview,
       resolvedGranularity,
@@ -310,10 +316,10 @@ export function useUsageAnalytics({
   const filterSelectorsDataScopeKey = useMemo(
     () =>
       JSON.stringify({
-        bounds,
+        presentationRangeScopeKey,
         searchQuery: debouncedSearchQuery,
       }),
-    [bounds, debouncedSearchQuery]
+    [presentationRangeScopeKey, debouncedSearchQuery]
   );
   const filterSelectorsAnalytics = useMonitoringAnalytics({
     fromMs: bounds?.fromMs,
@@ -411,7 +417,7 @@ export function useUsageAnalytics({
       JSON.stringify({
         activeTab: activeTabState,
         apiKeyHashes: apiKeyTrendHashes,
-        bounds,
+        presentationRangeScopeKey,
         filters: apiKeyTrendFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -420,7 +426,7 @@ export function useUsageAnalytics({
       activeTabState,
       apiKeyTrendFilters,
       apiKeyTrendHashes,
-      bounds,
+      presentationRangeScopeKey,
       debouncedSearchQuery,
       resolvedGranularity,
     ]
@@ -542,7 +548,7 @@ export function useUsageAnalytics({
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        presentationRangeScopeKey,
         filters: selectedApiKeyTimelineFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -550,7 +556,7 @@ export function useUsageAnalytics({
       }),
     [
       activeTabState,
-      bounds,
+      presentationRangeScopeKey,
       debouncedSearchQuery,
       resolvedGranularity,
       selectedApiKeyFilterHash,
@@ -597,7 +603,7 @@ export function useUsageAnalytics({
     () =>
       JSON.stringify({
         activeTab: activeTabState,
-        bounds,
+        presentationRangeScopeKey,
         filters: selectedCredentialTimelineFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -605,7 +611,7 @@ export function useUsageAnalytics({
       }),
     [
       activeTabState,
-      bounds,
+      presentationRangeScopeKey,
       debouncedSearchQuery,
       resolvedGranularity,
       selectedCredentialFilterID,
@@ -795,7 +801,7 @@ export function useUsageAnalytics({
     bounds,
     resolvedGranularity,
     loading: analytics.loading,
-    error: analytics.error,
+    error: analytics.error || monitoringMetaError,
     enabled: analytics.enabled,
     apiKeyDisplayMap,
     unavailableReason: analytics.unavailableReason,
@@ -819,6 +825,7 @@ export function useUsageAnalytics({
     selectedHeatmapDateKey: activeHeatmapDateKey,
     selectHeatmapDate,
     heatmapDateLoading: heatmapDateRefreshing,
+    heatmapDateLoaded: Boolean(heatmapDateData),
     heatmapDateError: selectedHeatmapDate ? heatmapDateAnalytics.error : '',
     selectedHeatmapCell,
     selectHeatmapCell,
@@ -837,6 +844,7 @@ export function useUsageAnalytics({
     selectedApiKeyTrendSeries,
     credentialTrendSeries,
     credentialTrendLoading,
+    credentialTrendLoaded: Boolean(selectedCredentialTimelineData),
     credentialTrendError,
     keyAnomalies,
     credentialAnomalies,
