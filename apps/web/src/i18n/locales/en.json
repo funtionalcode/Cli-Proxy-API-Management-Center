@@ -4379,6 +4379,9 @@
         },
         "headers": {
           "title": "Header Defaults",
+          "auto_update": "Automatically use latest stable releases",
+          "claude_auto_update_desc": "Within 30 seconds of enabling and every 3 hours, fetch official Claude Code, Anthropic SDK and Node.js stable versions and save them. Keep existing values on failure. Reload configuration to see the result.",
+          "codex_auto_update_desc": "Within 30 seconds of enabling and every 3 hours, fetch and save the official stable Codex CLI version in User-Agent, preserving its platform suffix. Keep existing values on failure. Reload configuration to see the result.",
           "description": "Default headers for Claude and Codex OAuth requests when the client omits them",
           "claude_title": "Claude Header Defaults",
           "codex_title": "Codex Header Defaults",

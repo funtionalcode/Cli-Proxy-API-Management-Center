@@ -1238,23 +1238,32 @@ export function VisualConfigEditor({
                     title={t('config_management.visual.sections.headers.claude_title')}
                   >
                     <SectionGrid>
+                      <ToggleRow
+                        title={t('config_management.visual.sections.headers.auto_update')}
+                        description={t(
+                          'config_management.visual.sections.headers.claude_auto_update_desc'
+                        )}
+                        checked={values.claudeHeaderAutoUpdate}
+                        disabled={disabled}
+                        onChange={(claudeHeaderAutoUpdate) => onChange({ claudeHeaderAutoUpdate })}
+                      />
                       <Input
                         label={t('config_management.visual.sections.headers.user_agent')}
                         value={values.claudeHeaderUserAgent}
                         onChange={(e) => onChange({ claudeHeaderUserAgent: e.target.value })}
-                        disabled={disabled}
+                        disabled={disabled || values.claudeHeaderAutoUpdate}
                       />
                       <Input
                         label={t('config_management.visual.sections.headers.package_version')}
                         value={values.claudeHeaderPackageVersion}
                         onChange={(e) => onChange({ claudeHeaderPackageVersion: e.target.value })}
-                        disabled={disabled}
+                        disabled={disabled || values.claudeHeaderAutoUpdate}
                       />
                       <Input
                         label={t('config_management.visual.sections.headers.runtime_version')}
                         value={values.claudeHeaderRuntimeVersion}
                         onChange={(e) => onChange({ claudeHeaderRuntimeVersion: e.target.value })}
-                        disabled={disabled}
+                        disabled={disabled || values.claudeHeaderAutoUpdate}
                       />
                       <Input
                         label={t('config_management.visual.sections.headers.os')}
@@ -1292,11 +1301,20 @@ export function VisualConfigEditor({
                     title={t('config_management.visual.sections.headers.codex_title')}
                   >
                     <SectionGrid>
+                      <ToggleRow
+                        title={t('config_management.visual.sections.headers.auto_update')}
+                        description={t(
+                          'config_management.visual.sections.headers.codex_auto_update_desc'
+                        )}
+                        checked={values.codexHeaderAutoUpdate}
+                        disabled={disabled}
+                        onChange={(codexHeaderAutoUpdate) => onChange({ codexHeaderAutoUpdate })}
+                      />
                       <Input
                         label={t('config_management.visual.sections.headers.user_agent')}
                         value={values.codexHeaderUserAgent}
                         onChange={(e) => onChange({ codexHeaderUserAgent: e.target.value })}
-                        disabled={disabled}
+                        disabled={disabled || values.codexHeaderAutoUpdate}
                       />
                       <Input
                         label={t('config_management.visual.sections.headers.beta_features')}

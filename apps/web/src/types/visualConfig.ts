@@ -141,6 +141,7 @@ export type VisualConfigValues = {
   antigravitySignatureCacheEnabled: boolean;
   antigravitySignatureBypassStrict: boolean;
   claudeHeaderUserAgent: string;
+  claudeHeaderAutoUpdate: boolean;
   claudeHeaderPackageVersion: string;
   claudeHeaderRuntimeVersion: string;
   claudeHeaderOs: string;
@@ -148,6 +149,7 @@ export type VisualConfigValues = {
   claudeHeaderTimeout: string;
   claudeHeaderStabilizeDeviceProfile: boolean;
   codexHeaderUserAgent: string;
+  codexHeaderAutoUpdate: boolean;
   codexHeaderBetaFeatures: string;
   codexIdentityConfuse: boolean;
   codexIdentityConfuseSupported: boolean;
@@ -218,6 +220,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   antigravitySignatureCacheEnabled: true,
   antigravitySignatureBypassStrict: false,
   claudeHeaderUserAgent: '',
+  claudeHeaderAutoUpdate: false,
   claudeHeaderPackageVersion: '',
   claudeHeaderRuntimeVersion: '',
   claudeHeaderOs: '',
@@ -225,6 +228,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   claudeHeaderTimeout: '',
   claudeHeaderStabilizeDeviceProfile: false,
   codexHeaderUserAgent: '',
+  codexHeaderAutoUpdate: false,
   codexHeaderBetaFeatures: '',
   codexIdentityConfuse: false,
   codexIdentityConfuseSupported: true,

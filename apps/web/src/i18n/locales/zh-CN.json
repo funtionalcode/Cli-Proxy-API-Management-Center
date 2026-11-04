@@ -4374,6 +4374,9 @@
         },
         "headers": {
           "title": "Header 默认值",
+          "auto_update": "自动获取最新稳定版",
+          "claude_auto_update_desc": "保存启用后 30 秒内及每 3 小时检查官方 Claude Code、Anthropic SDK 和 Node.js 稳定版，覆盖版本并保存。失败保留原值；刷新配置可查看结果。",
+          "codex_auto_update_desc": "保存启用后 30 秒内及每 3 小时获取官方 Codex CLI 稳定版，覆盖 User-Agent 中的版本并保存，保留系统后缀。失败保留原值；刷新配置可查看结果。",
           "description": "Claude 与 Codex OAuth 请求在客户端缺少 Header 时使用的默认值",
           "claude_title": "Claude Header Defaults",
           "codex_title": "Codex Header Defaults",

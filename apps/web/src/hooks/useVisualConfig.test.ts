@@ -49,6 +49,47 @@ const mountUseVisualConfig = (runtime?: VisualConfigRuntime): UseVisualConfigHar
 };
 
 describe('useVisualConfig', () => {
+  it.each(['legacy', 'v8'])(
+    'saves header auto-update switches in %s layout without replacing versions',
+    (layout) => {
+      const harness = mountUseVisualConfig();
+      const yaml =
+        layout === 'v8'
+          ? 'config-version: 8\nupstream:\n  claude:\n    header-defaults: {auto-update: true, user-agent: claude-cli/2.1.280, os: MacOS}\noauth:\n  providers:\n    codex:\n      header-defaults: {auto-update: false, user-agent: codex_cli_rs/0.166.0, beta-features: custom}\n'
+          : 'claude-header-defaults: {auto-update: true, user-agent: claude-cli/2.1.280, os: MacOS}\ncodex-header-defaults: {auto-update: false, user-agent: codex_cli_rs/0.166.0, beta-features: custom}\n';
+      act(() => {
+        expect(harness.getCurrent().loadVisualValuesFromYaml(yaml).ok).toBe(true);
+      });
+      expect(harness.getCurrent().visualValues.claudeHeaderAutoUpdate).toBe(true);
+      expect(harness.getCurrent().visualValues.codexHeaderAutoUpdate).toBe(false);
+      act(() => {
+        harness
+          .getCurrent()
+          .setVisualValues({ claudeHeaderAutoUpdate: false, codexHeaderAutoUpdate: true });
+      });
+      const saved = parseYaml(harness.getCurrent().applyVisualChangesToYaml(yaml));
+      const claude =
+        layout === 'v8'
+          ? saved.upstream.claude['header-defaults']
+          : saved['claude-header-defaults'];
+      const codex =
+        layout === 'v8'
+          ? saved.oauth.providers.codex['header-defaults']
+          : saved['codex-header-defaults'];
+      expect(claude).toEqual({
+        'auto-update': false,
+        'user-agent': 'claude-cli/2.1.280',
+        os: 'MacOS',
+      });
+      expect(codex).toEqual({
+        'auto-update': true,
+        'user-agent': 'codex_cli_rs/0.166.0',
+        'beta-features': 'custom',
+      });
+      harness.unmount();
+    }
+  );
+
   it('loads v8 client API keys separately from upstream provider credentials', () => {
     const harness = mountUseVisualConfig();
     const yaml = [

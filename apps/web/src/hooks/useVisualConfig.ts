@@ -813,6 +813,7 @@ function getNextDirtyFields(
       'antigravitySignatureCacheEnabled',
       'antigravitySignatureBypassStrict',
       'claudeHeaderUserAgent',
+      'claudeHeaderAutoUpdate',
       'claudeHeaderPackageVersion',
       'claudeHeaderRuntimeVersion',
       'claudeHeaderOs',
@@ -820,6 +821,7 @@ function getNextDirtyFields(
       'claudeHeaderTimeout',
       'claudeHeaderStabilizeDeviceProfile',
       'codexHeaderUserAgent',
+      'codexHeaderAutoUpdate',
       'codexHeaderBetaFeatures',
       'codexIdentityConfuse',
     ] as Array<keyof VisualConfigValues>
@@ -1248,6 +1250,7 @@ export function useVisualConfig(runtime: VisualConfigRuntime = {}) {
         antigravitySignatureBypassStrict: Boolean(
           readCompat(['antigravity-signature-bypass-strict'])
         ),
+        claudeHeaderAutoUpdate: Boolean(readCompat(['claude-header-defaults', 'auto-update'])),
         claudeHeaderUserAgent:
           typeof readCompat(['claude-header-defaults', 'user-agent']) === 'string'
             ? (readCompat(['claude-header-defaults', 'user-agent']) as string)
@@ -1275,6 +1278,7 @@ export function useVisualConfig(runtime: VisualConfigRuntime = {}) {
         claudeHeaderStabilizeDeviceProfile: Boolean(
           readCompat(['claude-header-defaults', 'stabilize-device-profile'])
         ),
+        codexHeaderAutoUpdate: Boolean(readCompat(['codex-header-defaults', 'auto-update'])),
         codexHeaderUserAgent:
           typeof readCompat(['codex-header-defaults', 'user-agent']) === 'string'
             ? (readCompat(['codex-header-defaults', 'user-agent']) as string)
@@ -1776,6 +1780,7 @@ export function useVisualConfig(runtime: VisualConfigRuntime = {}) {
         }
 
         const claudeHeadersDirty =
+          isDirty('claudeHeaderAutoUpdate') ||
           isDirty('claudeHeaderUserAgent') ||
           isDirty('claudeHeaderPackageVersion') ||
           isDirty('claudeHeaderRuntimeVersion') ||
@@ -1785,6 +1790,12 @@ export function useVisualConfig(runtime: VisualConfigRuntime = {}) {
           isDirty('claudeHeaderStabilizeDeviceProfile');
         if (claudeHeadersDirty) {
           ensureCompatMap(['claude-header-defaults']);
+          if (isDirty('claudeHeaderAutoUpdate')) {
+            setCompatBoolean(
+              ['claude-header-defaults', 'auto-update'],
+              values.claudeHeaderAutoUpdate
+            );
+          }
           if (isDirty('claudeHeaderUserAgent')) {
             setCompatString(
               ['claude-header-defaults', 'user-agent'],
@@ -1822,9 +1833,17 @@ export function useVisualConfig(runtime: VisualConfigRuntime = {}) {
         }
 
         const codexHeadersDirty =
-          isDirty('codexHeaderUserAgent') || isDirty('codexHeaderBetaFeatures');
+          isDirty('codexHeaderAutoUpdate') ||
+          isDirty('codexHeaderUserAgent') ||
+          isDirty('codexHeaderBetaFeatures');
         if (codexHeadersDirty) {
           ensureCompatMap(['codex-header-defaults']);
+          if (isDirty('codexHeaderAutoUpdate')) {
+            setCompatBoolean(
+              ['codex-header-defaults', 'auto-update'],
+              values.codexHeaderAutoUpdate
+            );
+          }
           if (isDirty('codexHeaderUserAgent')) {
             setCompatString(
               ['codex-header-defaults', 'user-agent'],
