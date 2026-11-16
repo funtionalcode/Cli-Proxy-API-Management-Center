@@ -296,6 +296,28 @@ export interface ClaudeUsagePayload {
   iguana_necktie?: ClaudeUsageWindow | null;
   limits?: ClaudeUsageLimit[] | null;
   extra_usage?: ClaudeExtraUsage | null;
+  cedar_ember?: unknown;
+}
+
+export interface ClaudeLimitResetGrant {
+  id: string;
+  label: string;
+  kind: 'full' | 'fable' | 'unknown';
+  resetsLeft: number;
+  startsAtMs: number | null;
+  endsAtMs: number | null;
+  clears: string[];
+  paused: boolean;
+  usableNow: boolean;
+  useRequiresLimit: boolean;
+  unavailableReason: string | null;
+}
+
+export interface ClaudeLimitResetStatus {
+  atLimit: boolean;
+  ineligibleReason: string | null;
+  cooldownUntilMs: number | null;
+  grants: ClaudeLimitResetGrant[];
 }
 
 export interface ClaudeProfileResponse {
@@ -347,6 +369,8 @@ export interface ClaudeQuotaState extends CredentialScopedQuotaState {
   quotaInventoryObserved?: boolean;
   extraUsage?: ClaudeExtraUsage | null;
   planType?: string | null;
+  limitResets?: ClaudeLimitResetStatus | null;
+  organizationId?: string | null;
   error?: string;
   errorStatus?: number;
 }

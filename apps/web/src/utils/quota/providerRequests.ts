@@ -6,6 +6,7 @@ import type {
   AntigravityQuotaSummaryPayload,
   AuthFileItem,
   ClaudeExtraUsage,
+  ClaudeLimitResetStatus,
   ClaudeProfileResponse,
   ClaudeQuotaWindow,
   ClaudeUsagePayload,
@@ -91,6 +92,7 @@ import {
   resolveCodexResetCreditsObservationCount,
 } from './resetCredits';
 import { classifyXaiProbe, parseXaiErrorEnvelope, XaiProbeError } from './xaiErrors';
+import { normalizeClaudeOrganizationId, parseClaudeLimitResets } from './claudeLimitReset';
 
 const DEFAULT_ANTIGRAVITY_PROJECT_ID = 'bamboo-precept-lgxtn';
 const CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS = 8000;
@@ -139,6 +141,8 @@ export type ClaudeQuotaData = {
   quotaInventoryObserved: boolean;
   extraUsage?: ClaudeExtraUsage | null;
   planType?: string | null;
+  limitResets?: ClaudeLimitResetStatus | null;
+  organizationId?: string | null;
   rateLimited?: boolean;
 };
 
@@ -1187,21 +1191,21 @@ export const fetchClaudeQuota = async (
     (profileResult.status === 'fulfilled' && profileResult.value.statusCode === 429) ||
     (profileResult.status === 'rejected' && getStatusFromError(profileResult.reason) === 429);
 
-  const planType =
+  const profile =
     !profileRateLimited &&
     profileResult.status === 'fulfilled' &&
     profileResult.value.statusCode >= 200 &&
     profileResult.value.statusCode < 300
-      ? resolveClaudePlanType(
-          parseClaudeProfilePayload(profileResult.value.body ?? profileResult.value.bodyText)
-        )
+      ? parseClaudeProfilePayload(profileResult.value.body ?? profileResult.value.bodyText)
       : null;
 
   return {
     windows,
     quotaInventoryObserved: hasClaudeQuotaInventory(payload, windows),
     extraUsage: payload.extra_usage,
-    planType,
+    planType: resolveClaudePlanType(profile),
+    organizationId: normalizeClaudeOrganizationId(profile?.organization?.uuid),
+    limitResets: parseClaudeLimitResets(payload.cedar_ember),
     ...(profileRateLimited ? { rateLimited: true } : {}),
   };
 };

@@ -1,5 +1,11 @@
 import type { TFunction } from 'i18next';
-import type { CodexQuotaState, QuotaResetAccuracy, XaiQuotaState } from '@/types';
+import type {
+  ClaudeLimitResetStatus,
+  ClaudeQuotaState,
+  CodexQuotaState,
+  QuotaResetAccuracy,
+  XaiQuotaState,
+} from '@/types';
 import { getSortedCodexResetCreditExpiries } from '@/components/quota/quotaConfigs';
 import type {
   AccountActionCandidate,
@@ -326,6 +332,8 @@ export interface AccountDetailViewModel {
     creditsInUse?: boolean;
     resetCreditsAvailableCount: number | null;
     resetCreditExpiries: AccountDetailResetCreditExpiry[];
+    claudeLimitResets?: ClaudeLimitResetStatus | null;
+    claudeOrganizationId?: string | null;
   };
   auth: {
     fields: AccountDetailField[];
@@ -356,6 +364,7 @@ export interface BuildAccountDetailViewModelOptions {
   history?: MonitoringAccountHistoryItem | null;
   valueRow?: UsageValueRow | null;
   codexQuota?: CodexQuotaState | null;
+  claudeQuota?: ClaudeQuotaState | null;
   xaiQuota?: XaiQuotaState | null;
   diagnosticsSummary?: MonitoringAnalyticsSummary | null;
   diagnosticsRecentFailure?: MonitoringAnalyticsRecentFailure | null;
@@ -1541,6 +1550,10 @@ export const buildAccountDetailViewModel = (
         row.quota.usedPercent === 100 &&
         areCodexCreditsUsable(row.quota),
       resetCreditsAvailableCount: options.codexQuota?.rateLimitResetCreditsAvailableCount ?? null,
+      claudeLimitResets:
+        row.provider === 'claude' ? options.claudeQuota?.limitResets ?? null : null,
+      claudeOrganizationId:
+        row.provider === 'claude' ? options.claudeQuota?.organizationId ?? null : null,
       resetCreditExpiries: getSortedCodexResetCreditExpiries(
         options.codexQuota?.rateLimitResetCredits
       ).map((item) => ({ id: item.id, expiresAtMs: item.expiresAtMs })),

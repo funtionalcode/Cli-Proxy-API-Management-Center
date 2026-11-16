@@ -152,12 +152,17 @@ export const ANTIGRAVITY_QUOTA_GROUPS: AntigravityQuotaGroupDefinition[] = [
 // Claude API configuration
 export const CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
 
-export const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+export const CLAUDE_USAGE_URL =
+  'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1';
+
+export const CLAUDE_RESET_ORGANIZATIONS_URL = 'https://api.anthropic.com/api/organizations';
 
 export const CLAUDE_REQUEST_HEADERS = {
   Authorization: 'Bearer $TOKEN$',
   'Content-Type': 'application/json',
   'anthropic-beta': 'oauth-2025-04-20',
+  'User-Agent': 'claude-cli/2.1.321 (external, cli)',
+  'anthropic-client-platform': 'cli',
 };
 
 export const CLAUDE_USAGE_WINDOW_KEYS = [

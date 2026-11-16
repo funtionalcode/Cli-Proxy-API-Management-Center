@@ -643,6 +643,8 @@ export const CLAUDE_CONFIG: QuotaConfig<ClaudeQuotaState, ClaudeQuotaData> = {
     quotaInventoryObserved: data.quotaInventoryObserved,
     extraUsage: data.extraUsage,
     planType: data.planType,
+    limitResets: data.limitResets,
+    organizationId: data.organizationId,
     ...buildQuotaCredentialIdentity(file),
     fetchedAtMs: Date.now(),
   }),

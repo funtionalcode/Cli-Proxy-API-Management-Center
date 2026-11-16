@@ -22,6 +22,7 @@ import { useInterval } from '@/hooks/useInterval';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import { QuotaWindowCard } from '../QuotaWindowCard';
 import { CodexCreditsSummary } from '../CodexCreditsSummary';
+import { ClaudeLimitResetPanel } from './ClaudeLimitResetPanel';
 import styles from '@/features/accounts/AccountsPage.module.scss';
 
 type MetricTone = 'blue' | 'green' | 'teal' | 'amber';
@@ -103,6 +104,9 @@ interface AccountQuotaTabProps {
   onRefreshHistory: () => void;
   onResetQuota: () => void;
   resetQuotaDisabled: boolean;
+  onResetClaudeGrant?: (grantId: string) => void;
+  onRefreshClaudeQuota?: () => void;
+  claudeResetDisabled?: boolean;
 }
 
 const renderResetCreditRemainingText = (
@@ -141,6 +145,9 @@ export function AccountQuotaTab({
   onRefreshHistory,
   onResetQuota,
   resetQuotaDisabled,
+  onResetClaudeGrant,
+  onRefreshClaudeQuota,
+  claudeResetDisabled = false,
 }: AccountQuotaTabProps) {
   const { t, i18n } = useTranslation();
   const history = detailView.history;
@@ -170,7 +177,10 @@ export function AccountQuotaTab({
   const shouldShowResetRecords = detailView.identity.provider === 'codex';
   const resetCreditsAvailableCount = detailView.quota.resetCreditsAvailableCount;
   const [nowMs, setNowMs] = useState(() => Date.now());
-  useInterval(() => setNowMs(Date.now()), shouldShowResetRecords ? 60_000 : null);
+  useInterval(
+    () => setNowMs(Date.now()),
+    shouldShowResetRecords || detailView.identity.provider === 'claude' ? 60_000 : null
+  );
   const visibleResetCreditExpiries = detailView.quota.resetCreditExpiries.filter(
     (item) => item.expiresAtMs > nowMs
   );
@@ -319,6 +329,17 @@ export function AccountQuotaTab({
             ))}
           </div>
         </section>
+      ) : null}
+
+      {detailView.identity.provider === 'claude' ? (
+        <ClaudeLimitResetPanel
+          status={detailView.quota.claudeLimitResets ?? null}
+          organizationId={detailView.quota.claudeOrganizationId ?? null}
+          nowMs={nowMs}
+          disabled={claudeResetDisabled}
+          onReset={onResetClaudeGrant}
+          onRefresh={onRefreshClaudeQuota}
+        />
       ) : null}
 
       {shouldShowResetRecords ? (

@@ -68,6 +68,7 @@ import {
 } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
+import { useClaudeLimitReset } from '@/features/accounts/hooks/useClaudeLimitReset';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import {
@@ -7632,6 +7633,15 @@ export function AccountsPage() {
     ]
   );
 
+  const { resetClaudeQuotaForRow, isClaudeQuotaResetting } = useClaudeLimitReset({
+    rows,
+    connectionKey: connectionFingerprint,
+    requestScope: authFilesRequestScope,
+    disabled: disableControls || configurationSaving,
+    requestVersions: quotaRequestVersionsRef,
+    onGatewayReset: loadQuotaCooldowns,
+  });
+
   const handleBatchStatus = useCallback(
     async (enabled: boolean, targets = selectedRows) => {
       const patchTargets = targets
@@ -10185,6 +10195,10 @@ export function AccountsPage() {
       history: verifiedAccountHistoryByRowKey.get(selectedRow.selectionKey) ?? null,
       valueRow,
       codexQuota: selectedCodexQuota,
+      claudeQuota:
+        selectedRow.provider === CLAUDE_CONFIG.type
+          ? getCredentialScopedQuotaState(claudeQuota, selectedRow.raw)
+          : undefined,
       xaiQuota:
         selectedRow.provider === XAI_CONFIG.type
           ? getCredentialScopedQuotaState(xaiQuota, selectedRow.raw)
@@ -10210,6 +10224,15 @@ export function AccountsPage() {
             historyRefreshing={historyRefreshing}
             onRefreshHistory={() => void refreshAccountHistory(selectedRow)}
             onResetQuota={() => resetCodexQuotaForRow(selectedRow)}
+            onResetClaudeGrant={(grantId) => void resetClaudeQuotaForRow(selectedRow, grantId)}
+            onRefreshClaudeQuota={() => void refreshQuotaForRow(selectedRow)}
+            claudeResetDisabled={
+              disableControls ||
+              configurationSaving ||
+              selectedRow.runtimeOnly ||
+              !normalizeAuthIndex(selectedRow.raw['auth_index'] ?? selectedRow.raw.authIndex) ||
+              isClaudeQuotaResetting(selectedRow)
+            }
             resetQuotaDisabled={
               !canResetCodexQuota(selectedRow) || resettingSelectedQuota || configurationSaving
             }

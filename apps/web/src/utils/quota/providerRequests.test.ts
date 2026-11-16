@@ -975,6 +975,36 @@ describe('fetchCodexQuota', () => {
 });
 
 describe('fetchClaudeQuota', () => {
+  it('reads reset inventory and organization using the same account proxy chain without extra requests', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200, hasStatusCode: true, header: {}, bodyText: '',
+      body: { five_hour: { utilization: 32 }, cedar_ember: {
+        grants: [{ id: 'fable', label: 'Fable reset', resets_left: 2, usable_now: true, clears: ['five_hour'] }],
+      } },
+    }).mockResolvedValueOnce({
+      statusCode: 200, hasStatusCode: true, header: {}, bodyText: '',
+      body: { organization: { uuid: 'org-claude' } },
+    });
+    const quota = await fetchClaudeQuota({
+      name: 'claude.json', type: 'claude', auth_index: 'claude-1',
+      proxy_url: 'socks5://account-proxy.example.test:1080',
+    }, t, { apiBase: 'https://captured.example.test', managementKey: 'test-key' });
+    expect(quota.organizationId).toBe('org-claude');
+    expect(quota.limitResets?.grants[0]).toMatchObject({ id: 'fable', resetsLeft: 2, usableNow: true });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request.mock.calls[0][0].url).toContain('?cedar_ember=1&skip_spend=1');
+    for (const [request, config] of mocks.request.mock.calls) {
+      expect(request).toMatchObject({ authIndex: 'claude-1', method: 'GET', header: {
+        Authorization: 'Bearer $TOKEN$',
+        'User-Agent': 'claude-cli/2.1.321 (external, cli)',
+        'anthropic-client-platform': 'cli',
+      } });
+      expect(request).not.toHaveProperty('proxyUrl');
+      expect(request).not.toHaveProperty('proxy_url');
+      expect(config).toMatchObject({ baseURL: 'https://captured.example.test/v0/management' });
+    }
+  });
+
   it('adds model-scoped weekly limits from the existing usage request', async () => {
     const resetAt = '2026-07-08T21:00:00+00:00';
     mocks.request

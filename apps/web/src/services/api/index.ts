@@ -15,5 +15,6 @@ export * from './plugins';
 export * from './transformers';
 export * from './vertex';
 export * from './codexQuota';
+export * from './claudeQuota';
 export * from './antigravitySubscription';
 export * from './proxyGateway';
