@@ -32,15 +32,15 @@ export const consumeClaudeLimitReset = async (
 ): Promise<ClaudeLimitResetResult> => {
   const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
   if (!authIndex) throw new Error('Auth file missing auth_index');
-  if (!normalizeClaudeOrganizationId(organizationId))
-    throw new Error('Invalid Claude organization ID');
+  const normalizedOrganizationId = normalizeClaudeOrganizationId(organizationId);
+  if (!normalizedOrganizationId) throw new Error('Invalid Claude organization ID');
   if (!isClaudeResetGrantId(grantId)) throw new Error('Invalid Claude reset grant ID');
 
   const response = await apiCallApi.request(
     {
       authIndex,
       method: 'POST',
-      url: `${CLAUDE_RESET_ORGANIZATIONS_URL}/${organizationId}/reset_rate_limits`,
+      url: `${CLAUDE_RESET_ORGANIZATIONS_URL}/${normalizedOrganizationId}/reset_rate_limits`,
       header: { ...CLAUDE_REQUEST_HEADERS },
       data: JSON.stringify({
         program: 'cedar_ember',

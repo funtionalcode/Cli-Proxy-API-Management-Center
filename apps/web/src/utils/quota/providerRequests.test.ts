@@ -5,6 +5,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     getSubscription: vi.fn(),
     request: vi.fn(),
+    downloadClaudeFile: vi.fn(),
   },
 }));
 
@@ -21,6 +22,14 @@ vi.mock('@/services/api/antigravitySubscription', () => ({
     get: mocks.getSubscription,
   },
 }));
+
+vi.mock('@/services/api/authFiles', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/services/api/authFiles')>();
+  return {
+    ...original,
+    authFilesApi: { ...original.authFilesApi, downloadJsonObject: mocks.downloadClaudeFile },
+  };
+});
 
 import {
   ANTIGRAVITY_AVAILABLE_MODELS_URLS,
@@ -79,6 +88,7 @@ beforeEach(() => {
   mocks.getSubscription.mockReset();
   mocks.getSubscription.mockResolvedValue(null);
   mocks.request.mockReset();
+  mocks.downloadClaudeFile.mockReset().mockResolvedValue({});
 });
 
 describe('buildCodexQuotaWindows', () => {
@@ -975,6 +985,141 @@ describe('fetchCodexQuota', () => {
 });
 
 describe('fetchClaudeQuota', () => {
+  const resetUsage = {
+    five_hour: { utilization: 100 },
+    cedar_ember: {
+      grants: [{ id: 'fable', type: 'fable', resets_left: 1, usable_now: true }],
+    },
+  };
+  const quotaResponse = (body: unknown, statusCode = 200) => ({
+    statusCode,
+    hasStatusCode: true,
+    header: {},
+    bodyText: '',
+    body,
+  });
+
+  it('资料接口限流时从所选认证文件读取组织 ID，保持原连接且只读', async () => {
+    mocks.request
+      .mockResolvedValueOnce(quotaResponse(resetUsage))
+      .mockResolvedValueOnce(quotaResponse({ error: 'rate limited' }, 429));
+    mocks.downloadClaudeFile.mockResolvedValue({
+      type: 'claude',
+      email: 'selected@example.test',
+      organization_uuid: ' org-selected ',
+    });
+    const scope = { apiBase: 'https://captured.example.test', managementKey: 'test-key' };
+    const quota = await fetchClaudeQuota(
+      {
+        name: 'selected.json',
+        type: 'claude',
+        auth_index: 'selected-auth',
+        email: 'selected@example.test',
+      },
+      t,
+      scope
+    );
+
+    expect(quota.organizationId).toBe('org-selected');
+    expect(quota.limitResets?.grants[0].usableNow).toBe(true);
+    expect(quota.rateLimited).toBe(true);
+    expect(mocks.downloadClaudeFile).toHaveBeenCalledExactlyOnceWith('selected.json', scope);
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request.mock.calls.every(([payload]) => payload.method === 'GET')).toBe(true);
+  });
+
+  it.each([
+    { organization_uuid: ' org-direct ' },
+    { metadata: { organization_uuid: 'org-direct' } },
+    { attributes: { organization_uuid: 'org-direct' } },
+  ])('资料接口缺少组织时沿用同一凭证的组织字段：%j', async (fields) => {
+    mocks.request
+      .mockResolvedValueOnce(quotaResponse(resetUsage))
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+    const quota = await fetchClaudeQuota(
+      {
+        name: 'selected.json',
+        type: 'claude',
+        auth_index: 'selected-auth',
+        ...fields,
+      },
+      t
+    );
+    expect(quota.organizationId).toBe('org-direct');
+    expect(mocks.downloadClaudeFile).not.toHaveBeenCalled();
+  });
+
+  it('优先使用新读取的组织信息，不下载认证文件或沿用旧组织', async () => {
+    mocks.request
+      .mockResolvedValueOnce(quotaResponse(resetUsage))
+      .mockResolvedValueOnce(quotaResponse({ organization: { uuid: ' org-fresh ' } }));
+    const quota = await fetchClaudeQuota(
+      {
+        name: 'selected.json',
+        type: 'claude',
+        auth_index: 'selected-auth',
+        organization_uuid: 'org-old',
+      },
+      t
+    );
+    expect(quota.organizationId).toBe('org-fresh');
+    expect(mocks.downloadClaudeFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { type: 'claude', email: 'different@example.test', organization_uuid: 'org-other' },
+    { type: 'codex', email: 'selected@example.test', organization_uuid: 'org-other' },
+    { type: 'claude', email: 'selected@example.test', organization_uuid: 'org/unsafe' },
+  ])('不采用不匹配或无效的认证文件组织：%j', async (credential) => {
+    mocks.request
+      .mockResolvedValueOnce(quotaResponse(resetUsage))
+      .mockResolvedValueOnce(quotaResponse({}));
+    mocks.downloadClaudeFile.mockResolvedValue(credential);
+    const quota = await fetchClaudeQuota(
+      {
+        name: 'selected.json',
+        type: 'claude',
+        auth_index: 'selected-auth',
+        email: 'selected@example.test',
+      },
+      t
+    );
+    expect(quota.organizationId).toBeNull();
+    expect(quota.windows).toHaveLength(1);
+  });
+
+  it('组织文件读取失败时保留已取得的额度，组织保持未知', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      mocks.request
+        .mockResolvedValueOnce(quotaResponse(resetUsage))
+        .mockResolvedValueOnce(quotaResponse({}, 503));
+      mocks.downloadClaudeFile.mockRejectedValue(new Error('download unavailable'));
+      const quota = await fetchClaudeQuota(
+        {
+          name: 'selected.json',
+          type: 'claude',
+          auth_index: 'selected-auth',
+        },
+        t
+      );
+      expect(quota.organizationId).toBeNull();
+      expect(quota.limitResets?.grants[0].resetsLeft).toBe(1);
+      expect(quota.windows).toHaveLength(1);
+      expect(warning).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('没有重置项时不额外读取认证文件', async () => {
+    mocks.request
+      .mockResolvedValueOnce(quotaResponse({ five_hour: { utilization: 20 } }))
+      .mockResolvedValueOnce(quotaResponse({}));
+    await fetchClaudeQuota({ name: 'selected.json', auth_index: 'selected-auth' }, t);
+    expect(mocks.downloadClaudeFile).not.toHaveBeenCalled();
+  });
+
   it('reads reset inventory and organization using the same account proxy chain without extra requests', async () => {
     mocks.request.mockResolvedValueOnce({
       statusCode: 200, hasStatusCode: true, header: {}, bodyText: '',

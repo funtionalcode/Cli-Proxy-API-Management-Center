@@ -5083,6 +5083,50 @@
   }
 }
 
+.claudeResetGrant {
+  align-items: flex-start;
+}
+
+.claudeResetGrantMain {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+
+  p {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+}
+
+.claudeResetGrantTitle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.claudeResetGrantActions {
+  display: grid;
+  justify-items: end;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.claudeResetGrantLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claudeResetScopeNote {
+  margin: 0;
+  color: var(--accounts-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .quotaPanelIcon {
   display: inline-flex;
   align-items: center;
@@ -5252,6 +5296,15 @@
     align-items: flex-start;
     flex-direction: column;
     gap: 3px;
+  }
+
+  .claudeResetGrant {
+    gap: 10px;
+  }
+
+  .claudeResetGrantActions {
+    justify-items: stretch;
+    width: 100%;
   }
 
   .detailQuotaUsageSummaryHeader {

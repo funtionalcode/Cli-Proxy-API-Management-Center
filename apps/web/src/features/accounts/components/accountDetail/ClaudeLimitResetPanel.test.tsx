@@ -79,12 +79,10 @@ describe('ClaudeLimitResetPanel', () => {
     expect(counters).toContain('claude_quota.reset_usable_count:{"count":1}');
     const full = renderer!.root.findByProps({ 'data-claude-reset-grant': 'full_launch' });
     const fable = renderer!.root.findByProps({ 'data-claude-reset-grant': 'fable_launch' });
-    expect(full.findByType('strong').children.join('')).toContain('reset_kind_full');
-    expect(fable.findByType('strong').children.join('')).toContain('reset_kind_fable');
-    const fullExpiry = full.findAllByType('p').map((element) => element.children.join(''));
-    const fableExpiry = fable.findAllByType('p').map((element) => element.children.join(''));
-    expect(fullExpiry.find((text) => text.includes('reset_expires'))).not.toEqual(
-      fableExpiry.find((text) => text.includes('reset_expires'))
+    expect(full.findAllByType('strong')[0].children.join('')).toContain('reset_kind_full');
+    expect(fable.findAllByType('strong')[0].children.join('')).toContain('reset_kind_fable');
+    expect(full.findByProps({ 'data-claude-reset-expiry': 'full_launch' }).children).not.toEqual(
+      fable.findByProps({ 'data-claude-reset-expiry': 'fable_launch' }).children
     );
     const fullButton = full.findByType('button');
     expect(fullButton.props.disabled).toBe(false);

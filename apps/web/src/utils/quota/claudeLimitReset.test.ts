@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getClaudeResetUnavailableReason, parseClaudeLimitResets } from './claudeLimitReset';
+import {
+  getClaudeResetUnavailableReason,
+  normalizeClaudeOrganizationId,
+  parseClaudeLimitResets,
+} from './claudeLimitReset';
 
 const nowMs = Date.parse('2026-11-16T12:00:00Z');
 const rawGrant = {
@@ -12,6 +16,22 @@ const rawGrant = {
 };
 
 describe('Claude reset inventory', () => {
+  it('规范化组织 ID 的空白并拒绝能改变请求路径的内容', () => {
+    expect(normalizeClaudeOrganizationId(' org-1 ')).toBe('org-1');
+    for (const value of [
+      undefined,
+      null,
+      '',
+      ' ',
+      'org/other',
+      '../org',
+      'org?x=1',
+      'a'.repeat(65),
+    ]) {
+      expect(normalizeClaudeOrganizationId(value)).toBeNull();
+    }
+  });
+
   it.each([
     undefined,
     null,

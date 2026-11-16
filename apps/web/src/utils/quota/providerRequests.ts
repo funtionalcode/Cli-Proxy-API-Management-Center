@@ -1198,14 +1198,40 @@ export const fetchClaudeQuota = async (
     profileResult.value.statusCode < 300
       ? parseClaudeProfilePayload(profileResult.value.body ?? profileResult.value.bodyText)
       : null;
+  const limitResets = parseClaudeLimitResets(payload.cedar_ember);
+  const metadata = isRecord(file.metadata) ? file.metadata : null;
+  const attributes = isRecord(file.attributes) ? file.attributes : null;
+  let organizationId =
+    normalizeClaudeOrganizationId(profile?.organization?.uuid) ??
+    normalizeClaudeOrganizationId(file.organization_uuid) ??
+    normalizeClaudeOrganizationId(metadata?.organization_uuid) ??
+    normalizeClaudeOrganizationId(attributes?.organization_uuid);
+
+  if (!organizationId && limitResets?.grants.length && !file.runtimeOnly) {
+    try {
+      const credential = await authFilesApi.downloadJsonObject(file.name, requestScope);
+      const expectedEmail = normalizeStringValue(file.email);
+      if (
+        credential.type === 'claude' &&
+        (!expectedEmail || normalizeStringValue(credential.email) === expectedEmail)
+      ) {
+        organizationId = normalizeClaudeOrganizationId(credential.organization_uuid);
+      }
+    } catch (error) {
+      console.warn(
+        '[Quota] Failed to read Claude organization from auth file:',
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
 
   return {
     windows,
     quotaInventoryObserved: hasClaudeQuotaInventory(payload, windows),
     extraUsage: payload.extra_usage,
     planType: resolveClaudePlanType(profile),
-    organizationId: normalizeClaudeOrganizationId(profile?.organization?.uuid),
-    limitResets: parseClaudeLimitResets(payload.cedar_ember),
+    organizationId,
+    limitResets,
     ...(profileRateLimited ? { rateLimited: true } : {}),
   };
 };

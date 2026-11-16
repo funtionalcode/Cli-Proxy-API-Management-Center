@@ -10,6 +10,9 @@ backend endpoint or change the backend's proxy selection.
 - Read usage and reset inventory with
   `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1`.
 - Read `organization.uuid` from the existing OAuth profile request.
+- 资料接口未提供组织 ID 时，从所选凭证的 `organization_uuid` 元数据或下载的
+  Claude 认证文件中读取，并保持原管理连接。认证文件的服务商或邮箱不匹配时不采用；
+  仍无法取得组织信息时，保持重置操作禁用。
 - Only after an operator selects an available grant and confirms, submit one
   `POST https://api.anthropic.com/api/organizations/{organization.uuid}/reset_rate_limits`
   with `program: "cedar_ember"`, the selected `grant_id`, and a fresh UUID

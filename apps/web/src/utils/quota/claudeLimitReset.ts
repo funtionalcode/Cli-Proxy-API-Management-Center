@@ -3,8 +3,10 @@ import { isRecord } from '@/utils/helpers';
 
 export const isClaudeResetGrantId = (value: string): boolean => /^[a-z0-9_-]{1,40}$/.test(value);
 
-export const normalizeClaudeOrganizationId = (value: unknown): string | null =>
-  typeof value === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(value) ? value : null;
+export const normalizeClaudeOrganizationId = (value: unknown): string | null => {
+  const id = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;
+};
 
 const optionalText = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() ? value.trim() : null;

@@ -28,6 +28,14 @@ beforeEach(() => {
 });
 
 describe('consumeClaudeLimitReset', () => {
+  it('在模拟传输中使用规范化的组织 ID', async () => {
+    request.mockResolvedValue(response({ result: 'reset' }));
+    await consumeClaudeLimitReset(file, ' org-1 ', 'fable');
+    expect(request.mock.calls[0][0].url).toBe(
+      'https://api.anthropic.com/api/organizations/org-1/reset_rate_limits'
+    );
+  });
+
   it.each(['full_launch', 'fable_launch'])(
     'sends only selected grant %s through the account proxy chain and captured scope',
     async (grantId) => {
