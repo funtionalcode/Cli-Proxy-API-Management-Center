@@ -311,7 +311,9 @@ import {
   AccountProviderTabs,
   AccountQuotaTab,
   AccountsBatchDeletePreview,
+  CodexCreditsSummary,
 } from '@/features/accounts/components';
+import { areCodexCreditsUsable } from '@/utils/quota/codexCredits';
 import {
   accountQuotaSnapshotApi,
   authFilesApi,
@@ -9182,6 +9184,7 @@ export function AccountsPage() {
       quotaCooldown,
       codexStatus,
       item,
+      displayCodexQuota,
       codexQuotaState,
       subscriptionPresentation,
       codexResetCreditsCount,
@@ -9804,6 +9807,16 @@ export function AccountsPage() {
                         {ctx.quotaEmptyLabel}
                       </span>
                     )}
+                    {row.provider === CODEX_CONFIG.type ? (
+                      <CodexCreditsSummary
+                        credits={ctx.displayCodexQuota ?? row.quota}
+                        inUse={
+                          ctx.item.health.status === 'available' &&
+                          row.quota.usedPercent === 100 &&
+                          areCodexCreditsUsable(row.quota)
+                        }
+                      />
+                    ) : null}
                   </div>
 
                   <div
@@ -10034,24 +10047,36 @@ export function AccountsPage() {
                       kind: 'quota',
                       onOpen: () => void openAccountDetail(row, 'quota'),
                       children: (
-                        <span className={styles.quotaWindowGrid} title={ctx.quotaWindowTitle}>
-                        {ctx.mainListWindows.length > 0 ? (
-                          ctx.mainListWindows.map((window, windowIndex) =>
-                            renderSingleQuotaWindowCard(
-                              row,
-                              window,
-                              windowIndex,
-                              ctx.codexResetCreditsCount,
-                              ctx.hasCodexResetCredits,
-                              ctx.quotaLifecycleBarOverride
-                            )
-                          )
-                        ) : (
-                          <span className={styles.quotaEmptyState} data-account-quota-empty="true">
-                            {ctx.quotaEmptyLabel}
+                        <span className={styles.quotaWindowContent}>
+                          <span className={styles.quotaWindowGrid} title={ctx.quotaWindowTitle}>
+                            {ctx.mainListWindows.length > 0 ? (
+                              ctx.mainListWindows.map((window, windowIndex) =>
+                                renderSingleQuotaWindowCard(
+                                  row,
+                                  window,
+                                  windowIndex,
+                                  ctx.codexResetCreditsCount,
+                                  ctx.hasCodexResetCredits,
+                                  ctx.quotaLifecycleBarOverride
+                                )
+                              )
+                            ) : (
+                              <span className={styles.quotaEmptyState} data-account-quota-empty="true">
+                                {ctx.quotaEmptyLabel}
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
+                          {row.provider === CODEX_CONFIG.type ? (
+                            <CodexCreditsSummary
+                              credits={ctx.displayCodexQuota ?? row.quota}
+                              inUse={
+                                ctx.item.health.status === 'available' &&
+                                row.quota.usedPercent === 100 &&
+                                areCodexCreditsUsable(row.quota)
+                              }
+                            />
+                          ) : null}
+                        </span>
                       ),
                     });
                   })()}

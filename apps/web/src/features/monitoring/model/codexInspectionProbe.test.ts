@@ -145,6 +145,47 @@ describe('toInspectionAccount', () => {
 });
 
 describe('inspectSingleAccount', () => {
+  it.each([
+    { has_credits: true, balance: '59897.4803850000' },
+    { has_credits: true, balance: '0.4' },
+    { has_credits: true, unlimited: true },
+  ])('套餐耗尽但积分可用时保留账号 %#', async (credits) => {
+    const response = createUsageResult(100);
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      ...response,
+      payload: { ...response.payload, credits },
+    });
+    const result = await inspectSingleAccount(baseAccount, settings);
+    expect(result).toMatchObject({ action: 'keep', isQuota: false, usedPercent: 100 });
+    expect(result.quotaWindows?.[0]?.usedPercent).toBe(100);
+  });
+
+  it('积分可用时仍保留上游 429 拒绝', async () => {
+    const response = createUsageResult(100);
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      result: {
+        ...response.result,
+        statusCode: 429,
+        bodyText: '{"error":{"type":"usage_limit_reached"}}',
+      },
+      payload: { ...response.payload, credits: { has_credits: true, balance: '50' } },
+    });
+    expect(await inspectSingleAccount(baseAccount, settings)).toMatchObject({
+      action: 'disable',
+      isQuota: true,
+    });
+  });
+
+  it('积分可用时不越过原有禁用归属规则', async () => {
+    const response = createUsageResult(100);
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      ...response,
+      payload: { ...response.payload, credits: { has_credits: true, balance: '50' } },
+    });
+    const result = await inspectSingleAccount(createDisabledAccount(false), settings);
+    expect(result).toMatchObject({ action: 'enable', autoRecoverEligible: false });
+  });
+
   beforeEach(() => {
     mockRequestCodexUsageRaw.mockReset();
   });

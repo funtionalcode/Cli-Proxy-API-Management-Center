@@ -118,6 +118,52 @@ const makeCodexStatus = (
 });
 
 describe('accountListPresentation', () => {
+  it('主额度耗尽但积分可用时显示账号可用，保留真实百分比', () => {
+    const row = makeRow({
+      quota: {
+        status: 'ok',
+        remainingPercent: 0,
+        usedPercent: 100,
+        creditsHasCredits: true,
+        creditsBalance: '0.4',
+      },
+    });
+    const item = buildAccountListItem(row, {
+      quotaWindows: [{
+        key: 'weekly',
+        label: 'Weekly',
+        kind: 'weekly',
+        usedPercent: 100,
+        remainingPercent: 0,
+        resetLabel: '-',
+        modelScope: CODEX_MAIN_SCOPE,
+      }],
+    });
+    expect(item.health.status).toBe('available');
+    expect(item.quota.usedPercent).toBe(100);
+    expect(item.quota.remainingPercent).toBe(0);
+    expect(item.recommendation.item?.action).not.toBe('disable');
+  });
+
+  it.each([
+    { creditsOverageLimitReached: true },
+    { spendControlReached: true },
+    { rateLimitAllowed: false },
+    { rateLimitReachedType: 'workspace_member_credits_depleted' },
+  ])('有余额时仍展示明确的限额拒绝 %#', (rejection) => {
+    const row = makeRow({
+      quota: {
+        status: 'exhausted',
+        remainingPercent: 0,
+        usedPercent: 100,
+        creditsHasCredits: true,
+        creditsBalance: '50',
+        ...rejection,
+      },
+    });
+    expect(buildAccountListItem(row).health.status).toBe('limited');
+  });
+
   it('attaches compact and full plan presentation to account list identity', () => {
     const item = buildAccountListItem(
       makeRow({

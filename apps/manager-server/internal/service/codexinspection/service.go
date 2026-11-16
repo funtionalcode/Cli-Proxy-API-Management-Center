@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1813,6 +1814,13 @@ func (s *Service) inspectSingleAccount(
 		isRateLimitReached(rateLimit) ||
 		(usedPercent != nil && *usedPercent >= settings.UsedPercentThreshold)
 	decision := resolveProbeAction(item, statusCode, response.BodyText, rateLimit, usedPercent, isQuota, settings.UsedPercentThreshold, planType)
+	if statusCode == http.StatusOK && codexCreditsUsable(payload, rateLimit) {
+		decision = inspectionDecision{Action: "keep", ActionReason: "积分可用，保留账号", UsedPercent: decision.UsedPercent}
+		if item.Disabled {
+			decision.Action = "enable"
+			decision.ActionReason = "积分可用，建议启用账号"
+		}
+	}
 
 	base.Action = decision.Action
 	base.ActionReason = decision.ActionReason
@@ -4406,6 +4414,24 @@ func parseIDTokenPayload(value any) map[string]any {
 		}
 	}
 	return nil
+}
+
+func codexCreditsUsable(payload map[string]any, rateLimit *codexRateLimit) bool {
+	if rateLimit != nil && rateLimit.Allowed != nil && !*rateLimit.Allowed {
+		return false
+	}
+	credits := readMap(payload, "credits")
+	if !readBool(credits, "has_credits", "hasCredits") ||
+		readBool(credits, "overage_limit_reached", "overageLimitReached") ||
+		readBool(readMap(payload, "spend_control", "spendControl"), "reached") ||
+		readString(payload, "rate_limit_reached_type", "rateLimitReachedType") != "" {
+		return false
+	}
+	if readBool(credits, "unlimited") {
+		return true
+	}
+	balance, err := strconv.ParseFloat(readString(credits, "balance"), 64)
+	return err == nil && !math.IsNaN(balance) && !math.IsInf(balance, 0) && balance > 0
 }
 
 func parseRateLimit(raw map[string]any) *codexRateLimit {

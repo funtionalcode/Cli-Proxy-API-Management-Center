@@ -18,6 +18,7 @@ import {
 import type { UsageValueSource } from './usageValueRows';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import { isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { areCodexCreditsUsable } from '@/utils/quota/codexCredits';
 import { getPlanPresentation, type PlanPresentation } from '@/utils/plans';
 import {
   classifyAccountCredentialStatusEvidence,
@@ -675,6 +676,7 @@ const hasKnownAvailableQuota = (
   quotaWindows: AccountListQuotaWindowPresentation[],
   antigravityAvailability: AccountGroupedQuotaAvailabilitySummary | null
 ): boolean => {
+  if (row.provider === 'codex' && areCodexCreditsUsable(row.quota)) return true;
   if (antigravityAvailability) {
     return (
       antigravityAvailability.state === 'available' || antigravityAvailability.state === 'partial'
@@ -848,6 +850,7 @@ const resolveHealthStatus = (
     !hasRowAuthenticationEvidence &&
     requestCredentialEvidence?.direction !== 'positive';
   const antigravityAvailability = resolveAntigravityAvailability(row, quotaWindows);
+  const hasUsableCodexCredits = row.provider === 'codex' && areCodexCreditsUsable(row.quota);
   const resolveEffectiveQuotaWindowLimitKind = () =>
     antigravityAvailability
       ? antigravityAvailability.state !== 'exhausted'
@@ -857,7 +860,9 @@ const resolveHealthStatus = (
             )
           ? (antigravityAvailability.resetKind as AccountListSupportedLimitKind)
           : 'unknown'
-      : resolveQuotaWindowLimitKind(quotaWindows);
+      : hasUsableCodexCredits
+        ? null
+        : resolveQuotaWindowLimitKind(quotaWindows);
 
   if (authenticationProblem || providerStatusNeedsReauth) {
     const authenticationSource =
@@ -1026,7 +1031,10 @@ const resolveHealthStatus = (
     };
   }
 
-  if (row.quota.status === 'exhausted' || row.quota.remainingPercent === 0) {
+  if (
+    !hasUsableCodexCredits &&
+    (row.quota.status === 'exhausted' || row.quota.remainingPercent === 0)
+  ) {
     return {
       status: 'limited',
       tooltipKey: 'accounts.health_tip_limited',

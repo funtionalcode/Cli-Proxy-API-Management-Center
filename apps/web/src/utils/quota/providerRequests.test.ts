@@ -109,6 +109,30 @@ describe('buildCodexQuotaWindows', () => {
 });
 
 describe('fetchCodexQuotaSummary', () => {
+  it('保留积分原始精度与明确的限额拒绝信号', async () => {
+    mocks.request.mockResolvedValueOnce({
+      statusCode: 200,
+      hasStatusCode: true,
+      header: {},
+      bodyText: '',
+      body: {
+        credits: { has_credits: true, balance: '59897.4803850000' },
+        rate_limit: { allowed: false },
+        rate_limit_reached_type: 'workspace_member_credits_depleted',
+      },
+    });
+    const result = await fetchCodexQuotaSummary(
+      { name: 'codex.json', type: 'codex', authIndex: 'auth-1' },
+      t
+    );
+    expect(result).toMatchObject({
+      creditsHasCredits: true,
+      creditsBalance: '59897.4803850000',
+      rateLimitAllowed: false,
+      rateLimitReachedType: 'workspace_member_credits_depleted',
+    });
+  });
+
   it('fetches only usage summary and does not call rate limit reset credits endpoint', async () => {
     mocks.request.mockResolvedValueOnce({
       statusCode: 200,

@@ -332,7 +332,10 @@ describe('credential health inspection demo fixtures', () => {
 
     expect(pro).toMatchObject({
       status_code: 200,
-      body: { rate_limit: { secondary_window: { used_percent: 96 } } },
+      body: {
+        rate_limit: { secondary_window: { used_percent: 96 } },
+        credits: { has_credits: true, balance: 42.6, overage_limit_reached: true },
+      },
     });
     expect(recovered).toMatchObject({
       status_code: 200,

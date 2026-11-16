@@ -28,6 +28,7 @@ import {
   type CodexInspectionSettings,
 } from '@/features/monitoring/codexInspection';
 import { readString } from './codexInspectionSettings';
+import { canUseCodexCreditsFromPayload } from '@/utils/quota/codexCredits';
 
 const QUOTA_BODY_PATTERNS = ['quota exhausted', 'limit reached', 'payment_required'];
 const MAX_INSPECTION_ERROR_DETAIL_LENGTH = 2048;
@@ -466,7 +467,7 @@ export const inspectSingleAccount = async (
       QUOTA_BODY_PATTERNS.some((pattern) => bodyText.includes(pattern)) ||
       isCodexRateLimitReached(rateLimit) ||
       (usedPercent !== null && usedPercent >= settings.usedPercentThreshold);
-    const decision = resolveProbeAction(
+    let decision = resolveProbeAction(
       account,
       result.statusCode,
       result.bodyText,
@@ -476,6 +477,14 @@ export const inspectSingleAccount = async (
       settings.usedPercentThreshold,
       planType
     );
+    if (result.statusCode === 200 && canUseCodexCreditsFromPayload(payload)) {
+      decision = {
+        ...decision,
+        action: account.disabled ? 'enable' : 'keep',
+        actionReason: account.disabled ? '积分可用，建议启用账号' : '积分可用，保留账号',
+        isQuota: false,
+      };
+    }
     const autoRecoverEligible = decision.action === 'enable' && account.autoRecoverOwned;
     const actionReason =
       decision.action === 'enable' && !autoRecoverEligible

@@ -21,6 +21,7 @@ import {
 import { useInterval } from '@/hooks/useInterval';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import { QuotaWindowCard } from '../QuotaWindowCard';
+import { CodexCreditsSummary } from '../CodexCreditsSummary';
 import styles from '@/features/accounts/AccountsPage.module.scss';
 
 type MetricTone = 'blue' | 'green' | 'teal' | 'amber';
@@ -237,6 +238,11 @@ export function AccountQuotaTab({
           />
         </div>
       </section>
+
+      <CodexCreditsSummary
+        credits={detailView.quota.credits}
+        inUse={detailView.quota.creditsInUse}
+      />
 
       {windowUsageError ? <div className={styles.errorBox}>{windowUsageError}</div> : null}
 

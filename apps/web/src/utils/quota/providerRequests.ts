@@ -81,6 +81,7 @@ import {
 } from './parsers';
 import { resolveCodexChatgptAccountId, resolveCodexPlanType } from './resolvers';
 import { buildCodexQuotaWindowInfos, type CodexQuotaScopeResolution } from './codexQuota';
+import { resolveCodexCreditsFields } from './codexCredits';
 import {
   buildCodexResetCreditsRequestHeaders,
   buildCodexUsageRequestHeaders,
@@ -101,6 +102,8 @@ export type CodexQuotaData = {
   observedAtMs?: number;
   quotaInventoryObserved: boolean;
   subscriptionActiveUntil: string | number | null;
+  rateLimitAllowed?: boolean | null;
+  rateLimitReachedType?: string | null;
   creditsHasCredits?: boolean | null;
   creditsUnlimited?: boolean | null;
   creditsBalance?: string | null;
@@ -438,9 +441,7 @@ const normalizeBooleanValue = (value: unknown): boolean | null => {
 const resolveCodexCreditsInfo = (payload: CodexUsagePayload) => {
   const credits = payload.credits;
   return {
-    creditsHasCredits: normalizeBooleanValue(credits?.has_credits ?? credits?.hasCredits),
-    creditsUnlimited: normalizeBooleanValue(credits?.unlimited),
-    creditsBalance: normalizeStringValue(credits?.balance),
+    ...resolveCodexCreditsFields(payload),
     creditsOverageLimitReached: normalizeBooleanValue(
       credits?.overage_limit_reached ?? credits?.overageLimitReached
     ),
@@ -632,6 +633,10 @@ export const fetchCodexQuotaSummary = async (
     observedAtMs,
     quotaInventoryObserved: hasCodexQuotaInventory(payload),
     subscriptionActiveUntil: resolveCodexSubscriptionActiveUntil(payload),
+    rateLimitAllowed: normalizeBooleanValue((payload.rate_limit ?? payload.rateLimit)?.allowed),
+    rateLimitReachedType: normalizeStringValue(
+      payload.rate_limit_reached_type ?? payload.rateLimitReachedType
+    ),
     ...resolveCodexCreditsInfo(payload),
     ...resolveCodexSpendControlInfo(payload),
     rateLimitResetCreditsAvailableCount: usageResetCreditsAvailableCount,

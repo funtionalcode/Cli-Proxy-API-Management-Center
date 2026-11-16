@@ -361,9 +361,6 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
   if (!scopedObservation) {
     scalarKeys.push(
       'activeLimit',
-      'creditsHasCredits',
-      'creditsUnlimited',
-      'creditsBalance',
       'creditsOverageLimitReached',
       'creditsApproxLocalMessages',
       'creditsApproxCloudMessages',
@@ -379,6 +376,16 @@ const mergeObservedQuotaIntoActive = <TState extends DisplayQuotaState>(
       (merged as Record<string, unknown>)[key] = value;
     }
   });
+  if (
+    !scopedObservation &&
+    [observed.creditsBalance, observed.creditsHasCredits, observed.creditsUnlimited].some(
+      hasObservedValue
+    )
+  ) {
+    merged.creditsBalance = observed.creditsBalance ?? null;
+    merged.creditsHasCredits = observed.creditsHasCredits ?? null;
+    merged.creditsUnlimited = observed.creditsUnlimited ?? null;
+  }
   merged.windows = mergeCodexQuotaWindows(activeWindows, observedWindows);
   if (observed.observedFromUsageHeaders === true) merged.observedFromUsageHeaders = true;
   if (observed.observedModelScope) merged.observedModelScope = observed.observedModelScope;
@@ -709,6 +716,8 @@ export const CODEX_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> = {
       quotaInventoryObserved: data.quotaInventoryObserved,
       planType: data.planType,
       subscriptionActiveUntil: data.subscriptionActiveUntil,
+      rateLimitAllowed: data.rateLimitAllowed,
+      rateLimitReachedType: data.rateLimitReachedType,
       creditsHasCredits: data.creditsHasCredits,
       creditsUnlimited: data.creditsUnlimited,
       creditsBalance: data.creditsBalance,
@@ -758,6 +767,8 @@ export const CODEX_SUMMARY_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> 
       quotaInventoryObserved: data.quotaInventoryObserved,
       planType: data.planType,
       subscriptionActiveUntil: data.subscriptionActiveUntil,
+      rateLimitAllowed: data.rateLimitAllowed,
+      rateLimitReachedType: data.rateLimitReachedType,
       creditsHasCredits: data.creditsHasCredits,
       creditsUnlimited: data.creditsUnlimited,
       creditsBalance: data.creditsBalance,

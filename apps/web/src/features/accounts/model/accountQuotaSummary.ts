@@ -28,6 +28,7 @@ import {
 } from '@/utils/usageHeaderSnapshots';
 import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 import { isCodexMainQuotaModelScope, isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { areCodexCreditsUsable } from '@/utils/quota/codexCredits';
 import { resolveAuthFilePlanType, resolveAntigravityPlanType } from '@/utils/plans';
 
 export type AccountQuotaStatus =
@@ -61,6 +62,7 @@ export interface AccountQuotaSummary {
   observedErrorKind?: string;
   observedErrorCode?: string;
   activeLimit?: string | null;
+  rateLimitAllowed?: boolean | null;
   creditsBalance?: string | null;
   creditsHasCredits?: boolean | null;
   creditsUnlimited?: boolean | null;
@@ -168,6 +170,7 @@ type AccountQuotaObservationFields = Partial<
     | 'observedErrorKind'
     | 'observedErrorCode'
     | 'activeLimit'
+    | 'rateLimitAllowed'
     | 'creditsBalance'
     | 'creditsHasCredits'
     | 'creditsUnlimited'
@@ -781,6 +784,7 @@ const quotaObservationFields = (quota: CodexQuotaState): AccountQuotaObservation
     observedErrorKind: quota.observedErrorKind,
     observedErrorCode: quota.observedErrorCode,
     activeLimit: suppressAccountFields ? undefined : quota.activeLimit,
+    rateLimitAllowed: suppressAccountFields ? undefined : quota.rateLimitAllowed,
     creditsBalance: suppressAccountFields ? undefined : quota.creditsBalance,
     creditsHasCredits: suppressAccountFields ? undefined : quota.creditsHasCredits,
     creditsUnlimited: suppressAccountFields ? undefined : quota.creditsUnlimited,
@@ -837,15 +841,16 @@ const quotaObservationFieldsFromSnapshot = (
   };
 };
 
-const hasObservedQuotaFields = (fields: AccountQuotaObservationFields): boolean =>
-  Object.values(fields).some((value) => value !== undefined);
-
 const mergeQuotaObservationFields = (
   summary: AccountQuotaSummary,
   fields: AccountQuotaObservationFields
 ): AccountQuotaSummary => {
-  if (!hasObservedQuotaFields(fields)) return summary;
   const merged: AccountQuotaSummary = { ...summary };
+  const useObservedCredits =
+    (fields.observedAtMs ?? 0) >= Math.max(summary.fetchedAtMs ?? 0, summary.observedAtMs ?? 0) &&
+    [fields.creditsBalance, fields.creditsHasCredits, fields.creditsUnlimited].some(
+      (value) => value !== undefined
+    );
   if (fields.observedAtMs !== undefined) merged.observedAtMs = fields.observedAtMs;
   if (fields.observedQuotaAtMs !== undefined) {
     merged.observedQuotaAtMs = fields.observedQuotaAtMs;
@@ -859,9 +864,11 @@ const mergeQuotaObservationFields = (
     merged.observedErrorCode = fields.observedErrorCode;
   }
   if (fields.activeLimit !== undefined) merged.activeLimit = fields.activeLimit;
-  if (fields.creditsBalance !== undefined) merged.creditsBalance = fields.creditsBalance;
-  if (fields.creditsHasCredits !== undefined) merged.creditsHasCredits = fields.creditsHasCredits;
-  if (fields.creditsUnlimited !== undefined) merged.creditsUnlimited = fields.creditsUnlimited;
+  if (useObservedCredits) {
+    merged.creditsBalance = fields.creditsBalance ?? null;
+    merged.creditsHasCredits = fields.creditsHasCredits ?? null;
+    merged.creditsUnlimited = fields.creditsUnlimited ?? null;
+  }
   if (fields.creditsOverageLimitReached !== undefined) {
     merged.creditsOverageLimitReached = fields.creditsOverageLimitReached;
   }
@@ -885,6 +892,9 @@ const mergeQuotaObservationFields = (
   }
   if (summary.source === 'none' && fields.source) {
     merged.source = fields.source;
+  }
+  if (merged.status === 'exhausted' && areCodexCreditsUsable(merged)) {
+    merged.status = 'ok';
   }
   return merged;
 };

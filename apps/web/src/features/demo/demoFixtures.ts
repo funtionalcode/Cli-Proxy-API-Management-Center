@@ -7542,7 +7542,7 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
           has_credits: isCodexTeamZeroBudget ? false : true,
           unlimited: false,
           balance: isCodexTeamZeroBudget ? null : isCodexPro20x ? 42.6 : 18.4,
-          overage_limit_reached: false,
+          overage_limit_reached: isCodexPro20x,
         },
         spend_control: isCodexTeamZeroBudget
           ? {

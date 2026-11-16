@@ -17840,6 +17840,84 @@ describe('AccountsPage replacement flows', () => {
     });
   });
 
+  describe('Codex 积分余额展示', () => {
+    it('已禁用账号仍展示已查询的余额', async () => {
+      const file = { ...mocks.files[0], disabled: true };
+      mocks.files = [file];
+      mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+        status: 'success',
+        fetchedAtMs: Date.now(),
+        creditsHasCredits: true,
+        creditsBalance: '18.4',
+        windows: [makeCodexQuotaWindow()],
+      });
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+      expect(readText(card.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('18');
+      expect(card.findAllByProps({ 'data-codex-credits-in-use': 'true' })).toHaveLength(0);
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+      const quotaTab = renderer.root.findByType(AccountQuotaTab);
+      expect(readText(quotaTab.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('18');
+    });
+
+    it('列表、卡片和详情展示余额及主额度耗尽后的积分提示', async () => {
+      const file = mocks.files[0];
+      const selectionKey = getAuthFileSelectionKey(file);
+      mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+        status: 'success',
+        fetchedAtMs: Date.now(),
+        creditsHasCredits: true,
+        creditsBalance: '59897.4803850000',
+        windows: [makeCodexQuotaWindow({ usedPercent: 100 })],
+      });
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      const listCard = findAccountCardByKey(renderer, selectionKey);
+      expect(readText(listCard.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('59,897');
+      expect(listCard.findAllByProps({ 'data-codex-credits-in-use': 'true' })).toHaveLength(1);
+      expect(readText(listCard)).toContain('accounts.health_available');
+
+      await act(async () => {
+        renderer.root.findByProps({ 'aria-label': 'accounts.view_mode_grid' }).props.onClick();
+      });
+      await flushPromises();
+      const gridCard = findAccountCardByKey(renderer, selectionKey);
+      expect(readText(gridCard.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('59,897');
+      expect(gridCard.findAllByProps({ 'data-codex-credits-in-use': 'true' })).toHaveLength(1);
+
+      await openCodexQuotaTab(renderer, file.name);
+      await flushPromises();
+      const quotaTab = renderer.root.findByType(AccountQuotaTab);
+      expect(readText(quotaTab.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('59,897');
+      expect(quotaTab.findAllByProps({ 'data-codex-credits-in-use': 'true' })).toHaveLength(1);
+    });
+
+    it('代码审查额度耗尽不触发主额度积分提示', async () => {
+      const file = mocks.files[0];
+      mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+        status: 'success',
+        fetchedAtMs: Date.now(),
+        creditsHasCredits: true,
+        creditsBalance: '0.4',
+        windows: [
+          makeCodexQuotaWindow({ usedPercent: 20 }),
+          makeCodexQuotaWindow({
+            id: 'code-review-weekly',
+            usedPercent: 100,
+            modelScope: { kind: 'feature', key: 'code_review', complete: true },
+          }),
+        ],
+      });
+      const renderer = await renderAccountsPage();
+      await flushPromises();
+      const card = findAccountCardByKey(renderer, getAuthFileSelectionKey(file));
+      expect(readText(card.findByProps({ 'data-codex-credits-balance': 'true' }))).toBe('<1');
+      expect(card.findAllByProps({ 'data-codex-credits-in-use': 'true' })).toHaveLength(0);
+    });
+  });
+
   describe('codex reset credits presentation in quota track header', () => {
     it('displays reset credits on the first quota window header when available', async () => {
       const targetFile = mocks.files[0];

@@ -14,6 +14,7 @@ export { AccountQuotaMatrix } from './AccountQuotaMatrix';
 export { AccountsBatchDeletePreview } from './AccountsBatchDeletePreview';
 export { AccountMetricsGrid } from './AccountMetricsGrid';
 export { AccountLatestRequest } from './AccountLatestRequest';
+export { CodexCreditsSummary } from './CodexCreditsSummary';
 export { AccountProviderTabs } from './AccountProviderTabs';
 
 export { CopyableText } from './CopyableText';

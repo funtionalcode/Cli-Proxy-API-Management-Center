@@ -14,6 +14,7 @@ import type {
 import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/credentialStatus';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import { isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { areCodexCreditsUsable, type CodexCreditsFields } from '@/utils/quota/codexCredits';
 import { sumRecentRequests, type RecentRequestBucket } from '@/utils/recentRequests';
 import type { AccountRow } from './accountRows';
 import {
@@ -321,6 +322,8 @@ export interface AccountDetailViewModel {
     diagnostics: AccountDetailField[];
     windows: AccountDetailQuotaWindow[];
     cooldown: QuotaCooldownInfo | null;
+    credits?: CodexCreditsFields;
+    creditsInUse?: boolean;
     resetCreditsAvailableCount: number | null;
     resetCreditExpiries: AccountDetailResetCreditExpiry[];
   };
@@ -1531,6 +1534,12 @@ export const buildAccountDetailViewModel = (
       diagnostics: buildQuotaDiagnostics(row, options.xaiQuota),
       windows: buildQuotaWindows(row, quotaWindows, options.windowUsageByKey ?? new Map()),
       cooldown: quotaCooldown,
+      credits: row.provider === 'codex' ? (options.codexQuota ?? row.quota) : undefined,
+      creditsInUse:
+        row.provider === 'codex' &&
+        listItem.health.status === 'available' &&
+        row.quota.usedPercent === 100 &&
+        areCodexCreditsUsable(row.quota),
       resetCreditsAvailableCount: options.codexQuota?.rateLimitResetCreditsAvailableCount ?? null,
       resetCreditExpiries: getSortedCodexResetCreditExpiries(
         options.codexQuota?.rateLimitResetCredits

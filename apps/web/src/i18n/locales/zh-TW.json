@@ -2517,6 +2517,8 @@
     "active_limit_label": "生效限額",
     "credits_label": "Credits",
     "credits_balance": "餘額",
+    "credits_balance_label": "積分餘額",
+    "credits_in_use_hint": "方案額度已用盡，可使用積分繼續",
     "credits_available": "可用",
     "credits_unavailable": "不可用",
     "credits_unlimited": "無限",

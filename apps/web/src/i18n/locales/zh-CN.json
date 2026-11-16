@@ -2519,6 +2519,8 @@
     "active_limit_label": "生效限额",
     "credits_label": "Credits",
     "credits_balance": "余额",
+    "credits_balance_label": "积分余额",
+    "credits_in_use_hint": "套餐额度已用尽，可使用积分继续",
     "credits_available": "可用",
     "credits_unavailable": "不可用",
     "credits_unlimited": "无限",

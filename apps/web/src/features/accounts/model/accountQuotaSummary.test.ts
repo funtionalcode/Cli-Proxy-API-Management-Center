@@ -34,6 +34,83 @@ const makeXaiBilling = (overrides: Partial<XaiBillingSummary> = {}): XaiBillingS
 });
 
 describe('resolveAccountQuota', () => {
+  const creditBackedQuota = (credits: Partial<CodexQuotaState> = {}): CodexQuotaState => ({
+    status: 'success',
+    fetchedAtMs: 2_000,
+    creditsHasCredits: true,
+    creditsBalance: '59897.48',
+    windows: [
+      {
+        id: 'weekly',
+        label: 'Weekly',
+        usedPercent: 100,
+        resetLabel: '-',
+        modelScope: { kind: 'family', key: 'codex_main' },
+      },
+    ],
+    ...credits,
+  });
+
+  it('积分可用时不把账号标为耗尽，保留真实套餐百分比', () => {
+    const file = { name: 'codex.json', type: 'codex' } as AuthFileItem;
+    const quota = creditBackedQuota();
+    const result = resolveAccountQuota(file, emptyStores(), {
+      codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+    });
+    expect(result).toMatchObject({
+      status: 'ok',
+      remainingPercent: 0,
+      usedPercent: 100,
+      creditsBalance: '59897.48',
+    });
+  });
+
+  it.each([
+    { creditsHasCredits: false },
+    { creditsBalance: '0' },
+    { creditsBalance: 'NaN' },
+    { creditsOverageLimitReached: true },
+    { spendControlReached: true },
+    { rateLimitAllowed: false },
+    { rateLimitReachedType: 'workspace_member_credits_depleted' },
+  ])('积分不可用或明确拒绝时保留耗尽状态 %#', (credits) => {
+    const file = { name: 'codex.json', type: 'codex' } as AuthFileItem;
+    const quota = creditBackedQuota(credits);
+    expect(
+      resolveAccountQuota(file, emptyStores(), {
+        codexQuotaBySelectionKey: new Map([[getAuthFileSelectionKey(file), quota]]),
+      }).status
+    ).toBe('exhausted');
+  });
+
+  it.each([1_000, 3_000])('积分观测按时间更新整组字段，观测时间 %s', (observedAtMs) => {
+    const file = { name: 'codex.json', type: 'codex' } as AuthFileItem;
+    const result = resolveAccountQuota(file, emptyStores(), {
+      codexQuotaBySelectionKey: new Map([
+        [getAuthFileSelectionKey(file), creditBackedQuota({ creditsUnlimited: true })],
+      ]),
+      codexHeaderSnapshotBySelectionKey: new Map([
+        [
+          getAuthFileSelectionKey(file),
+          {
+            event_hash: 'stale-credit-observation',
+            model: 'gpt-5.6-sol',
+            timestamp_ms: observedAtMs,
+            response_metadata: {
+              quota: { credits_balance: '0', credits_has_credits: false },
+            },
+          },
+        ],
+      ]),
+    });
+    expect(result).toMatchObject({
+      status: observedAtMs < 2_000 ? 'ok' : 'exhausted',
+      creditsBalance: observedAtMs < 2_000 ? '59897.48' : '0',
+      creditsHasCredits: observedAtMs < 2_000,
+      creditsUnlimited: observedAtMs < 2_000 ? true : null,
+    });
+  });
+
   it.each([
     {
       label: 'weekly current-period data',

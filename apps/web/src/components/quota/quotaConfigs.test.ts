@@ -17,6 +17,32 @@ import {
 } from './quotaConfigs';
 
 describe('getCodexQuotaStoreKey', () => {
+  it('新的积分观测替换整组字段，清除旧无限标记', () => {
+    const state = resolveQuotaDisplayState<CodexQuotaState>(
+      {
+        status: 'success',
+        windows: [],
+        fetchedAtMs: 1_000,
+        creditsHasCredits: true,
+        creditsUnlimited: true,
+      },
+      {
+        status: 'success',
+        windows: [],
+        observedAtMs: 2_000,
+        observedFromUsageHeaders: true,
+        observedModelScope: { kind: 'family', key: 'codex_main' },
+        creditsBalance: '0.4',
+        creditsHasCredits: true,
+      }
+    );
+    expect(state).toMatchObject({
+      creditsBalance: '0.4',
+      creditsHasCredits: true,
+      creditsUnlimited: null,
+    });
+  });
+
   it('preserves indexed keys and separates same-file rows without auth indexes', () => {
     expect(
       getCodexQuotaStoreKey({

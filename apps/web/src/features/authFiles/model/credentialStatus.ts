@@ -1,6 +1,7 @@
 import type { AuthFileItem, CodexQuotaState, CodexQuotaWindow, QuotaResetAccuracy } from '@/types';
 import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import { getXaiProbeIssueKey } from '@/utils/quota/xaiPresentation';
+import { areCodexCreditsUsable } from '@/utils/quota/codexCredits';
 import { formatQuotaResetTime, isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import {
   getHeaderSnapshotErrorCode,
@@ -1209,6 +1210,7 @@ export const getAuthFileCodexStatus = (
   const fiveHourUsedPercent = normalizeNumber(fiveHourWindow?.usedPercent);
   const weeklyWindowUsedPercent = normalizeNumber(weeklyWindow?.usedPercent);
   const monthlyWindowUsedPercent = normalizeNumber(monthlyWindow?.usedPercent);
+  const hasUsableCredits = isCodex && areCodexCreditsUsable(quota);
   const inspectionUsedPercent =
     inspection?.isQuota === true ? normalizeNumber(inspection?.usedPercent) : null;
   const action = typeof inspection?.action === 'string' ? inspection.action : '';
@@ -1237,8 +1239,9 @@ export const getAuthFileCodexStatus = (
     'unknown'
   );
   const observedQuotaLimited =
-    (observedUsedPercent !== null && observedUsedPercent >= 100) ||
-    (observedUnknownUsedPercent !== null && observedUnknownUsedPercent >= 100) ||
+    (!hasUsableCredits &&
+      ((observedUsedPercent !== null && observedUsedPercent >= 100) ||
+        (observedUnknownUsedPercent !== null && observedUnknownUsedPercent >= 100))) ||
     observedProviderUsageLimited ||
     Boolean(observedRateLimitReachedType) ||
     isObservedQuotaLimitError(observedAccountQuotaErrorKind, observedAccountQuotaErrorCode);
@@ -1295,21 +1298,22 @@ export const getAuthFileCodexStatus = (
       (effectiveDisabled && action === 'keep'));
   const isWeeklyLimited =
     isCodex &&
-    ((weeklyUsedPercent !== null && weeklyUsedPercent >= 100) ||
+    ((!hasUsableCredits && weeklyUsedPercent !== null && weeklyUsedPercent >= 100) ||
       (inspectionReachedQuota && !monthlyWindow) ||
       observedWeeklyLimited);
   const isMonthlyLimited =
     isCodex &&
-    ((monthlyUsedPercent !== null && monthlyUsedPercent >= 100) ||
+    ((!hasUsableCredits && monthlyUsedPercent !== null && monthlyUsedPercent >= 100) ||
       (inspectionReachedQuota && monthlyWindow !== null && !weeklyWindow) ||
       observedMonthlyLimited);
   const isFiveHourLimited =
     isCodex &&
-    ((fiveHourUsedPercent !== null && fiveHourUsedPercent >= 100) || observedFiveHourLimited);
+    ((!hasUsableCredits && fiveHourUsedPercent !== null && fiveHourUsedPercent >= 100) ||
+      observedFiveHourLimited);
   const isUnknownQuotaLimited =
     (isXai && inspectionReachedQuota) ||
     observedProviderUsageLimited ||
-    (observedUnknownUsedPercent !== null && observedUnknownUsedPercent >= 100) ||
+    (!hasUsableCredits && observedUnknownUsedPercent !== null && observedUnknownUsedPercent >= 100) ||
     (observedQuotaLimitedStatus && !isFiveHourLimited && !isWeeklyLimited && !isMonthlyLimited);
   const isQuotaLimited =
     isFiveHourLimited || isWeeklyLimited || isMonthlyLimited || isUnknownQuotaLimited;

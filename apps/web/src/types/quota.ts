@@ -408,6 +408,7 @@ export interface CodexQuotaState extends CredentialScopedQuotaState {
   quotaInventoryObserved?: boolean;
   planType?: string | null;
   activeLimit?: string | null;
+  rateLimitAllowed?: boolean | null;
   creditsHasCredits?: boolean | null;
   creditsUnlimited?: boolean | null;
   creditsBalance?: string | null;

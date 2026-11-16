@@ -2524,6 +2524,8 @@
     "active_limit_label": "Active limit",
     "credits_label": "Credits",
     "credits_balance": "Balance",
+    "credits_balance_label": "Credits balance",
+    "credits_in_use_hint": "Plan quota exhausted; credits are available to continue",
     "credits_available": "Available",
     "credits_unavailable": "Unavailable",
     "credits_unlimited": "Unlimited",

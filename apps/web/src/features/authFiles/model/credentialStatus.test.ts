@@ -61,6 +61,33 @@ const codexQuota = (overrides: Partial<CodexQuotaState> = {}): CodexQuotaState =
 });
 
 describe('auth file Codex status helpers', () => {
+  it('积分可用时套餐百分比不会生成耗尽徽标', () => {
+    const status = getAuthFileCodexStatus(
+      codexFile(),
+      codexQuota({ creditsHasCredits: true, creditsBalance: '0.4' })
+    );
+    expect(status.isQuotaLimited).toBe(false);
+    expect(status.isWeeklyLimited).toBe(false);
+    expect(status.weeklyUsedPercent).toBe(100);
+  });
+
+  it('积分余额不覆盖真实响应头限额拒绝', () => {
+    const status = getAuthFileCodexStatus(
+      codexFile(),
+      codexQuota({ creditsHasCredits: true, creditsBalance: '50' }),
+      undefined,
+      {
+        event_hash: 'credits-rejected',
+        model: CODEX_MAIN_MODEL,
+        timestamp_ms: 2_000,
+        response_metadata: {
+          quota: { rate_limit_reached_type: 'workspace_member_credits_depleted' },
+        },
+      }
+    );
+    expect(status.isQuotaLimited).toBe(true);
+  });
+
   it('keeps a handled server inspection result suppressed while allowing a newer result', () => {
     const handled: AuthFileCodexInspectionSnapshot = {
       fileName: 'codex-main.json',

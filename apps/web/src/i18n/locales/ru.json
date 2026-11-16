@@ -2524,6 +2524,8 @@
     "active_limit_label": "Активный лимит",
     "credits_label": "Credits",
     "credits_balance": "Баланс",
+    "credits_balance_label": "Баланс кредитов",
+    "credits_in_use_hint": "Квота тарифа исчерпана; можно продолжить за кредиты",
     "credits_available": "Доступны",
     "credits_unavailable": "Недоступны",
     "credits_unlimited": "Без ограничений",
