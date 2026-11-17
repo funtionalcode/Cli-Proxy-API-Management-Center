@@ -2894,6 +2894,28 @@ describe('accountDetailViewModel', () => {
     });
   });
 
+  it('额度诊断保留积分状态且不展示精确余额', () => {
+    const row = makeRow({
+      quota: {
+        creditsHasCredits: true,
+        creditsUnlimited: false,
+        creditsBalance: '59897.4803850000',
+      },
+    });
+
+    const viewModel = buildAccountDetailViewModel(row);
+
+    expect(viewModel.quota.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'creditsHasCredits', value: 'common.yes' }),
+        expect.objectContaining({ key: 'creditsUnlimited', value: 'common.no' }),
+      ])
+    );
+    expect(viewModel.quota.diagnostics).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'creditsBalance' })])
+    );
+  });
+
   it('shows structured spend-control details without presenting a zero budget as 100% used', () => {
     const resetAtMs = 1_793_491_200_000;
     const row = makeRow({

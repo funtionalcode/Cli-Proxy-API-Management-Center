@@ -19,13 +19,9 @@ export function CodexCreditsSummary({ credits, inUse = false }: CodexCreditsSumm
         : new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 0 }).format(
             Math.floor(display.balance)
           );
-  const fullValue = display.kind === 'balance' ? String(credits?.creditsBalance) : value;
   return (
     <span className={styles.summary} data-codex-credits-summary="true">
-      <span
-        className={styles.balance}
-        title={`${t('codex_quota.credits_balance_label')}: ${fullValue}`}
-      >
+      <span className={styles.balance}>
         <span>{t('codex_quota.credits_balance_label')}</span>
         <strong data-codex-credits-balance="true">{value}</strong>
       </span>

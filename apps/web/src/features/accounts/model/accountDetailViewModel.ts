@@ -671,7 +671,6 @@ const buildQuotaDiagnostics = (
     field('errorKind', 'accounts.detail_header_error_kind', row.quota.observedErrorKind),
     field('errorCode', 'accounts.detail_header_error_code', row.quota.observedErrorCode),
     field('activeLimit', 'accounts.detail_active_limit', row.quota.activeLimit),
-    field('creditsBalance', 'accounts.detail_credits_balance', row.quota.creditsBalance),
     booleanField(
       'creditsHasCredits',
       'accounts.detail_credits_available',

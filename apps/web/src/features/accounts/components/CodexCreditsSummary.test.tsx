@@ -7,7 +7,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('CodexCreditsSummary', () => {
-  it('显示向下取整的余额并在提示中保留原始精度', () => {
+  it('仅显示向下取整的余额，悬浮时不展示原始小数', () => {
     const html = renderToStaticMarkup(
       <CodexCreditsSummary
         credits={{ creditsHasCredits: true, creditsBalance: '59897.4803850000' }}
@@ -15,7 +15,7 @@ describe('CodexCreditsSummary', () => {
       />
     );
     expect(html).toContain('59,897');
-    expect(html).toContain('59897.4803850000');
+    expect(html).not.toContain('59897.4803850000');
     expect(html).toContain('codex_quota.credits_in_use_hint');
     expect(html).not.toContain('$');
   });
@@ -25,6 +25,7 @@ describe('CodexCreditsSummary', () => {
       <CodexCreditsSummary credits={{ creditsHasCredits: true, creditsBalance: '0.4' }} />
     );
     expect(html).toContain('&lt;1');
+    expect(html).not.toContain('0.4');
     expect(html).not.toContain('data-codex-credits-in-use');
   });
 
