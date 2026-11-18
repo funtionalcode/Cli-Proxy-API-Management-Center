@@ -28,7 +28,7 @@ import {
   type CodexInspectionSettings,
 } from '@/features/monitoring/codexInspection';
 import { readString } from './codexInspectionSettings';
-import { canUseCodexCreditsFromPayload } from '@/utils/quota/codexCredits';
+import { resolveCodexInspectionCredits } from '@/utils/quota/codexCredits';
 
 const QUOTA_BODY_PATTERNS = ['quota exhausted', 'limit reached', 'payment_required'];
 const MAX_INSPECTION_ERROR_DETAIL_LENGTH = 2048;
@@ -477,13 +477,23 @@ export const inspectSingleAccount = async (
       settings.usedPercentThreshold,
       planType
     );
-    if (result.statusCode === 200 && canUseCodexCreditsFromPayload(payload)) {
-      decision = {
-        ...decision,
-        action: account.disabled ? 'enable' : 'keep',
-        actionReason: account.disabled ? '积分可用，建议启用账号' : '积分可用，保留账号',
-        isQuota: false,
-      };
+    if (result.statusCode === 200) {
+      const credits = resolveCodexInspectionCredits(payload, usedPercent);
+      if (credits === 'usable') {
+        decision = {
+          ...decision,
+          action: account.disabled ? 'enable' : 'keep',
+          actionReason: account.disabled ? '积分可用，建议启用账号' : '积分可用，保留账号',
+          isQuota: false,
+        };
+      } else if (credits === 'balance-at-plan-limit' && decision.action === 'disable') {
+        decision = {
+          ...decision,
+          action: 'keep',
+          actionReason: '额度信息不完整，保留账号',
+          isQuota: false,
+        };
+      }
     }
     const autoRecoverEligible = decision.action === 'enable' && account.autoRecoverOwned;
     const actionReason =

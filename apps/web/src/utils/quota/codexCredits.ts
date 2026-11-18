@@ -36,30 +36,27 @@ export const getCodexCreditsDisplay = (
   return balance !== null && balance > 0 ? { kind: 'balance', balance } : null;
 };
 
-export const areCodexCreditsUsable = (
-  fields:
-    | (CodexCreditsFields &
-        Pick<
-          CodexQuotaState,
-          | 'creditsOverageLimitReached'
-          | 'spendControlReached'
-          | 'rateLimitReachedType'
-          | 'rateLimitAllowed'
-        >)
-    | null
-    | undefined
-): boolean =>
+type CodexCreditEvidence = CodexCreditsFields &
+  Pick<
+    CodexQuotaState,
+    'creditsOverageLimitReached' | 'spendControlReached' | 'rateLimitReachedType' | 'rateLimitAllowed'
+  >;
+
+const hasCodexBalanceWithoutSpendBlock = (fields: CodexCreditEvidence | null | undefined) =>
   getCodexCreditsDisplay(fields) !== null &&
-  fields?.rateLimitAllowed !== false &&
   fields?.creditsOverageLimitReached !== true &&
   fields?.spendControlReached !== true &&
   !fields?.rateLimitReachedType?.trim();
 
-export const canUseCodexCreditsFromPayload = (
-  payload: CodexUsagePayload | null | undefined
-): boolean => {
+export const areCodexCreditsUsable = (fields: CodexCreditEvidence | null | undefined): boolean =>
+  fields?.rateLimitAllowed !== false && hasCodexBalanceWithoutSpendBlock(fields);
+
+export const resolveCodexInspectionCredits = (
+  payload: CodexUsagePayload | null | undefined,
+  usedPercent: number | null
+): 'unavailable' | 'usable' | 'balance-at-plan-limit' => {
   const rateLimit = payload?.rate_limit ?? payload?.rateLimit;
-  return areCodexCreditsUsable({
+  const evidence = {
     ...resolveCodexCreditsFields(payload),
     rateLimitAllowed: readCreditsFlag(rateLimit?.allowed),
     creditsOverageLimitReached: readCreditsFlag(
@@ -69,5 +66,13 @@ export const canUseCodexCreditsFromPayload = (
       (payload?.spend_control ?? payload?.spendControl)?.reached
     ),
     rateLimitReachedType: payload?.rate_limit_reached_type ?? payload?.rateLimitReachedType,
-  });
+  };
+  if (!hasCodexBalanceWithoutSpendBlock(evidence)) return 'unavailable';
+  if (evidence.rateLimitAllowed !== false) return 'usable';
+  // The included quota can be exhausted while paid credits still serve requests.
+  return readCreditsFlag(rateLimit?.limit_reached ?? rateLimit?.limitReached) === true &&
+    usedPercent !== null &&
+    usedPercent >= 100
+    ? 'balance-at-plan-limit'
+    : 'unavailable';
 };

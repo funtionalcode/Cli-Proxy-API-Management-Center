@@ -160,6 +160,40 @@ describe('inspectSingleAccount', () => {
     expect(result.quotaWindows?.[0]?.usedPercent).toBe(100);
   });
 
+  it.each([
+    { disabled: false, spendBlocked: false, action: 'keep', isQuota: false },
+    { disabled: false, spendBlocked: true, action: 'disable', isQuota: true },
+    { disabled: true, spendBlocked: false, action: 'keep', isQuota: true },
+  ])('区分周额度耗尽和积分消费受限 %#', async ({
+    disabled,
+    spendBlocked,
+    action,
+    isQuota,
+  }) => {
+    const response = createUsageResult(100, {
+      allowed: false,
+      limit_reached: true,
+      primary_window: { used_percent: 100, limit_window_seconds: 604_800 },
+    });
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      ...response,
+      payload: {
+        ...response.payload,
+        plan_type: 'pro',
+        credits: { has_credits: true, balance: '50', overage_limit_reached: false },
+        spend_control: { reached: spendBlocked },
+        rate_limit_reached_type: null,
+      },
+    });
+    const account = disabled ? createDisabledAccount(true) : baseAccount;
+    expect(await inspectSingleAccount(account, settings)).toMatchObject({
+      action,
+      isQuota,
+      usedPercent: 100,
+      autoRecoverEligible: false,
+    });
+  });
+
   it('积分可用时仍保留上游 429 拒绝', async () => {
     const response = createUsageResult(100);
     mockRequestCodexUsageRaw.mockResolvedValue({

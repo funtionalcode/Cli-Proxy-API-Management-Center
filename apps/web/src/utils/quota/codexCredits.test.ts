@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { CodexUsagePayload } from '@/types';
 import {
   areCodexCreditsUsable,
-  canUseCodexCreditsFromPayload,
   getCodexCreditsDisplay,
   resolveCodexCreditsFields,
+  resolveCodexInspectionCredits,
 } from './codexCredits';
 
 describe('Codex 积分可用性', () => {
@@ -53,6 +53,6 @@ describe('Codex 积分可用性', () => {
     },
     { credits: { has_credits: true, balance: '100' }, rate_limit: { allowed: false } },
   ])('明确的限额拒绝优先于积分余额 %#', (payload) => {
-    expect(canUseCodexCreditsFromPayload(payload)).toBe(false);
+    expect(resolveCodexInspectionCredits(payload, 100)).toBe('unavailable');
   });
 });
