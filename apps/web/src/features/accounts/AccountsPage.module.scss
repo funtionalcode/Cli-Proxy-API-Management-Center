@@ -2630,6 +2630,7 @@
 }
 
 .drawerBodyShell {
+  --account-drawer-tab-height: 43px;
   display: grid;
   gap: 12px;
   margin-top: -$spacing-md;
@@ -2734,8 +2735,8 @@
   align-items: stretch;
   gap: 12px;
   min-width: 0;
-  height: 43px;
-  min-height: 43px;
+  height: var(--account-drawer-tab-height);
+  min-height: var(--account-drawer-tab-height);
   overflow-x: auto;
   margin-inline: -$spacing-lg;
   padding: 0 calc(#{$spacing-lg} + 3px);
@@ -3557,14 +3558,16 @@
 
 .configurationToolbar {
   position: sticky;
-  top: 33px;
+  top: calc(var(--account-drawer-tab-height) - #{$spacing-md});
   z-index: 3;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 0;
-  background: transparent;
+  margin-inline: -$spacing-lg;
+  padding: $spacing-xs $spacing-lg;
+  border-bottom: 1px solid var(--accounts-border);
+  background: var(--accounts-surface);
 }
 
 .configurationDirtyBadge {
@@ -6471,12 +6474,6 @@
 
   .detailQuotaUsageMetrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .configurationToolbar {
-    align-items: center;
-    flex-direction: row;
-    padding: 0;
   }
 
   .configurationDirtyBadge {

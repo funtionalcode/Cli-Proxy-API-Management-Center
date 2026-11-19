@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -68,6 +69,7 @@ export function Drawer({
   const titleId = useId();
   const [isVisible, setIsVisible] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+  const onCloseRef = useRef(onClose);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeRequestPendingRef = useRef(false);
   const closeRequestTokenRef = useRef(0);
@@ -76,21 +78,23 @@ export function Drawer({
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const overlayPointerIdsRef = useRef<Set<number>>(new Set());
 
-  const startClose = useCallback(
-    (notifyParent: boolean) => {
-      if (closeTimerRef.current !== null) return;
-      setIsClosing(true);
-      closeTimerRef.current = globalThis.setTimeout(() => {
-        setIsVisible(false);
-        setIsClosing(false);
-        closeTimerRef.current = null;
-        if (notifyParent) {
-          onClose();
-        }
-      }, CLOSE_ANIMATION_DURATION);
-    },
-    [onClose]
-  );
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  // 父组件更新关闭回调时，继续执行已经开始的关闭动画。
+  const startClose = useCallback((notifyParent: boolean) => {
+    if (closeTimerRef.current !== null) return;
+    setIsClosing(true);
+    closeTimerRef.current = globalThis.setTimeout(() => {
+      setIsVisible(false);
+      setIsClosing(false);
+      closeTimerRef.current = null;
+      if (notifyParent) {
+        onCloseRef.current();
+      }
+    }, CLOSE_ANIMATION_DURATION);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

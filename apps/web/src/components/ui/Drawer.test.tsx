@@ -182,6 +182,29 @@ describe('Drawer overlay close guard', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('finishes closing when the parent changes its close callback', async () => {
+    const onClose = vi.fn();
+    const latestOnClose = vi.fn();
+    const mounted = await mountDrawer(onClose);
+    const closeButton = mounted.root.findByProps({ 'aria-label': 'common.close' });
+
+    await act(async () => {
+      closeButton.props.onClick();
+    });
+    expect(findOverlay(mounted).props.className).toContain('overlayClosing');
+
+    await act(async () => {
+      mounted.update(<Drawer open title="Updated drawer" onClose={latestOnClose} />);
+    });
+    expect(findOverlay(mounted).props.className).toContain('overlayClosing');
+
+    await act(async () => {
+      vi.advanceTimersByTime(CLOSE_ANIMATION_DURATION);
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(latestOnClose).toHaveBeenCalledTimes(1);
+  });
+
   it('does not close when pointer starts inside drawer and ends on overlay', async () => {
     const onClose = vi.fn();
     const mounted = await mountDrawer(onClose);
